@@ -1,3 +1,13 @@
+## 0.2.1 - 2026-04-11
+
+- Added message thread-subject helpers on `MessagesService`:
+	- `threadSubjectKey(subject)` for stable thread grouping.
+	- `ensureReplySubject(subject, {replyPrefix})` for consistent reply headers.
+- Clarified message attachment docs and examples:
+	- Corrected `MessageAttachment` field names (`fileId`, `name`, `mime`, `size`, ...).
+	- Added explicit `attachment.download(client)` usage for byte downloads.
+- Documented explicit logout/session reset path via `SmartschoolClient.clearCookies()`.
+
 ## 0.2.0 - 2026-04-11
 
 - Added `IntradeskService` with root/folder listing and file download support.

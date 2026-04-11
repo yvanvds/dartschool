@@ -33,6 +33,11 @@ class MessagesService {
   final SmartschoolClient _client;
   int? _archiveBoxIdCache;
 
+  static final RegExp _threadPrefixRegex = RegExp(
+    r'^(?:(?:re|fw|fwd|aw|wg)\s*(?:\[\d+\])?\s*:\s*)+',
+    caseSensitive: false,
+  );
+
   /// The URL for the legacy Smartschool XML dispatcher (messages module).
   static const _messagesXmlUrl = '/?module=Messages&file=dispatcher';
 
@@ -572,6 +577,35 @@ class MessagesService {
     }
 
     return null;
+  }
+
+  /// Normalises [subject] to a stable thread key.
+  ///
+  /// This strips leading reply/forward prefixes (for example `Re:`, `Fwd:`,
+  /// `FW:`, `AW:`, `WG:`), trims surrounding whitespace and collapses repeated
+  /// internal whitespace.
+  ///
+  /// Useful for grouping message headers by conversation thread.
+  static String threadSubjectKey(String subject) {
+    final compact = subject.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (compact.isEmpty) return '';
+    return compact.replaceFirst(_threadPrefixRegex, '').trim();
+  }
+
+  /// Returns a reply subject for [subject] with exactly one [replyPrefix].
+  ///
+  /// Existing reply/forward prefixes are removed before the prefix is added,
+  /// preventing values such as `Re: Re: Topic`.
+  static String ensureReplySubject(
+    String subject, {
+    String replyPrefix = 'Re:',
+  }) {
+    final cleanedPrefix = replyPrefix.trim();
+    final root = threadSubjectKey(subject);
+
+    if (cleanedPrefix.isEmpty) return root;
+    if (root.isEmpty) return cleanedPrefix;
+    return '$cleanedPrefix $root';
   }
 
   /// POSTs the compose-form search endpoint and returns parsed results.

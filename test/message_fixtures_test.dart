@@ -222,6 +222,35 @@ void main() {
       // IDs are distinct — different content in each fixture.
       expect(inboxMsgs.map((m) => m.id), isNot(contains(archiveMsgs.first.id)));
     });
+
+    test('threadSubjectKey strips stacked prefixes and normalises spaces', () {
+      expect(
+        MessagesService.threadSubjectKey(' Re:   FWD:  AW:   Project update '),
+        'Project update',
+      );
+      expect(MessagesService.threadSubjectKey('FW: Re: Topic'), 'Topic');
+      expect(
+        MessagesService.threadSubjectKey('No prefix subject'),
+        'No prefix subject',
+      );
+      expect(MessagesService.threadSubjectKey('   '), '');
+    });
+
+    test('ensureReplySubject adds one reply prefix only', () {
+      expect(
+        MessagesService.ensureReplySubject('Re:  Re: Lesson plan'),
+        'Re: Lesson plan',
+      );
+      expect(
+        MessagesService.ensureReplySubject('FW: Parent meeting'),
+        'Re: Parent meeting',
+      );
+      expect(
+        MessagesService.ensureReplySubject('Topic', replyPrefix: 'Antwort:'),
+        'Antwort: Topic',
+      );
+      expect(MessagesService.ensureReplySubject('   '), 'Re:');
+    });
   });
 }
 

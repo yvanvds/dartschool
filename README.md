@@ -71,7 +71,9 @@ Future<void> main() async {
 
 	final attachments = await messages.getAttachments(headers.first.id);
 	for (final a in attachments) {
-		print('  📎 ${a.filename} (${a.size} bytes)');
+		print('  📎 ${a.name} (${a.size})');
+		final bytes = await a.download(client);
+		print('     downloaded ${bytes.length} bytes');
 	}
 
 	// Send a message to yourself.
@@ -126,6 +128,7 @@ await client.ensureAuthenticated();
 |---|---|
 | `SmartschoolClient.create(credentials)` | Factory — creates the Dio client, configures cookie jar, returns ready instance |
 | `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly |
+| `clearCookies()` | Deletes persisted cookies (use this for explicit logout/session reset). |
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
 | `postFormRaw(path, fields)` | `application/x-www-form-urlencoded` POST → `String` |
@@ -154,6 +157,16 @@ final messages = MessagesService(client);
 | `getMessage(msgId, {boxType})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
 
+Attachment bytes can be downloaded from each `MessageAttachment`:
+
+```dart
+final attachments = await messages.getAttachments(messageId);
+for (final attachment in attachments) {
+	final bytes = await attachment.download(client);
+	print('${attachment.name}: ${bytes.length} bytes');
+}
+```
+
 ### Mutating
 
 | Method | Returns | Description |
@@ -171,6 +184,13 @@ final messages = MessagesService(client);
 | `searchRecipients(query)` | `Future<List<MessageSearchResult>>` | JSON-based recipient search; results lack `ssId` — use `searchRecipientsForCompose` when sending. |
 | `searchRecipientsForCompose(query)` | `Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>` | Compose-form XML search; results carry `ssId`/`userLt` required by `sendMessage`. |
 | `sendMessage({to, cc, bcc, toGroups, ..., subject, bodyHtml, attachmentPaths})` | `Future<void>` | Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. |
+
+### Thread subject helpers
+
+| Method | Returns | Description |
+|---|---|---|
+| `threadSubjectKey(subject)` | `String` | Normalises a subject for thread grouping by removing leading reply/forward prefixes (`Re:`, `Fwd:`, `FW:`, `AW:`, `WG:`). |
+| `ensureReplySubject(subject, {replyPrefix})` | `String` | Produces a reply subject with exactly one prefix (default `Re:`), avoiding `Re: Re: ...`. |
 
 ### Static parsers (exposed for testing)
 
@@ -239,7 +259,9 @@ Returned by `getHeaders` / `getArchiveHeaders`. Fields: `id`, `sender`, `subject
 Returned by `getMessage`. Adds: `body` (HTML), `receivers`, `ccReceivers`, `bccReceivers`, `canReply`, `senderPicture`, …
 
 ### `MessageAttachment`
-Returned by `getAttachments`. Fields: `id`, `filename`, `size`, `downloadUrl` (absolute).
+Returned by `getAttachments`. Fields: `fileId`, `name`, `mime`, `size`, `icon`, `wopiAllowed`, `order`.
+
+Use `attachment.download(client)` to fetch raw bytes for a specific attachment.
 
 ### `MessageSearchUser` / `MessageSearchGroup`
 Used as recipients in `sendMessage`. Key fields: `userId`/`groupId`, `ssId`, `userLt`, `displayName`.

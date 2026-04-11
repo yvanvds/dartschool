@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<server>
+    <response>
+        <status>ok</status>
+        <actions>
+            <action>
+                <subsystem>message list</subsystem>
+                <command>rebuild</command>
+                <data>
+                    <messages>
+                        <message>
+                            <id>999001</id>
+                            <from>Archived Sender</from>
+                            <fromImage>https://userpicture20.smartschool.be/User/ArchivedImage</fromImage>
+                            <subject>Archived Message Subject</subject>
+                            <date>2023-10-01 14:00</date>
+                            <status>1</status>
+                            <attachment>0</attachment>
+                            <unread>0</unread>
+                            <label>0</label>
+                            <deleted>0</deleted>
+                            <allowreply>1</allowreply>
+                            <allowreplyenabled>1</allowreplyenabled>
+                            <hasreply>0</hasreply>
+                            <hasForward>0</hasForward>
+                            <realBox>inbox</realBox>
+                            <sendDate/>
+                        </message>
+                    </messages>
+                </data>
+            </action>
+            <action>
+                <subsystem>message list</subsystem>
+                <command>changetext</command>
+                <data>
+                    <changeTextXml>
+                        <postboxName>Archief</postboxName>
+                    </changeTextXml>
+                </data>
+            </action>
+        </actions>
+    </response>
+</server>

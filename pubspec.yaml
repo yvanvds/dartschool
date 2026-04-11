@@ -1,0 +1,32 @@
+name: flutter_smartschool
+description: An unofficial Dart library for the Smartschool platform.
+version: 1.0.0
+# repository: https://github.com/my_org/my_repo
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  # HTTP client with interceptor support
+  dio: ^5.7.0
+  # Cookie persistence for dio
+  cookie_jar: ^4.0.8
+  dio_cookie_manager: ^3.1.1
+  # HTML parsing for login form scraping
+  html: ^0.15.4
+  # XML parsing for the legacy Smartschool XML protocol
+  xml: ^6.5.0
+  # YAML parsing for PathCredentials
+  yaml: ^3.1.2
+  # Path utilities
+  path: ^1.9.1
+  # TOTP/2FA support (optional — only needed when Smartschool requires 2FA)
+  otp: ^3.1.4
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
+  # For future REST JSON models (not yet needed for the XML-only messages scope)
+  json_annotation: ^4.9.0
+  json_serializable: ^6.8.0
+  build_runner: ^2.4.12

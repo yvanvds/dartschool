@@ -29,6 +29,8 @@ export 'src/exceptions.dart';
 
 // Models
 export 'src/models/message_models.dart';
+export 'src/models/intradesk_models.dart';
 
 // Services
 export 'src/services/messages_service.dart';
+export 'src/services/intradesk_service.dart';

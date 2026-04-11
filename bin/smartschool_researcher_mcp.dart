@@ -277,7 +277,7 @@ class _SmartschoolResearcherServer {
         }
         final response = {
           'ok': true,
-          if (user != null) 'authenticatedAs': user,
+          'authenticatedAs': ?user,
           'mainUrl': _credentials!.mainUrl,
         };
 

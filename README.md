@@ -6,6 +6,13 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 
 > **Unofficial.** This library reverse-engineers the private Smartschool web API. It is not endorsed by or affiliated with Smartschool. Use responsibly.
 
+## Features
+
+- Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
+- Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, archive, trash, labels.
+- Intradesk read support (`IntradeskService`): root/folder listing and file download.
+- Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
+
 ---
 
 ## Installation
@@ -78,6 +85,8 @@ Future<void> main() async {
 ```
 
 See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow.
+
+For Intradesk navigation and file downloads, see [example/intradesk_browser.dart](example/intradesk_browser.dart) (interactive text UI).
 
 ---
 
@@ -173,6 +182,54 @@ final messages = MessagesService(client);
 
 ---
 
+## `IntradeskService`
+
+Access to the Smartschool Intradesk document repository. Construct with a `SmartschoolClient`.
+
+```dart
+final intradesk = IntradeskService(client);
+
+// Root listing
+final root = await intradesk.getRootListing();
+for (final folder in root.folders) {
+  print('${folder.name}  hasChildren: ${folder.hasChildren}');
+}
+
+// Drill into a sub-folder
+final sub = await intradesk.getFolderListing(root.folders.first.id);
+
+// Download a file
+final bytes = await intradesk.downloadFile(sub.files.first.id);
+await File('output.docx').writeAsBytes(bytes);
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `getRootListing()` | `Future<IntradeskListing>` | Root-level folders, files, and weblinks. |
+| `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. |
+| `downloadFile(fileId)` | `Future<Uint8List>` | Raw bytes of the identified file. |
+
+> **Not yet implemented**: file upload — the server-side endpoint and required form fields have not been captured safely.  
+> **Not scoped**: the `/recent` endpoint returns an SPA HTML shell, not a JSON listing.
+
+### Example
+
+Run the interactive browser:
+
+```bash
+dart run example/intradesk_browser.dart
+```
+
+Controls:
+- `U` / `D`: move selection up/down
+- `Enter`: open folder or download selected file
+- `B` / `Backspace`: go to parent folder
+- `Q`: quit
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -189,6 +246,18 @@ Used as recipients in `sendMessage`. Key fields: `userId`/`groupId`, `ssId`, `us
 
 ### `MessageChanged` / `MessageDeletionStatus`
 Returned by mutation operations. Carry the `id` of the affected message and a `newValue` / status field.
+
+### `IntradeskListing`
+Returned by `getRootListing` / `getFolderListing`. Fields: `folders` (`List<IntradeskFolder>`), `files` (`List<IntradeskFile>`), `weblinks` (raw maps).
+
+### `IntradeskFolder`
+Fields: `id`, `name`, `color`, `state`, `visible`, `confidential`, `parentFolderId` (empty at root), `hasChildren`, `isFavourite`, `capabilities` (`IntradeskFolderCapabilities`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
+
+### `IntradeskFile`
+Fields: `id`, `name`, `state`, `parentFolderId`, `ownerId`, `confidential`, `isFavourite`, `currentRevision` (`IntradeskFileRevision?`), `capabilities` (`IntradeskFileCapabilities`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
+
+### `IntradeskFileRevision`
+Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCreated`, `owner` (`IntradeskFileOwner`).
 
 ---
 

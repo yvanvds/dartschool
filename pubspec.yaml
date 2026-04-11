@@ -1,7 +1,7 @@
 name: flutter_smartschool
 description: An unofficial Dart library for the Smartschool platform.
-version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+version: 0.1.0
+repository: https://github.com/yvanvds/dartschool
 
 environment:
   sdk: ^3.10.1

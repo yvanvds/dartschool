@@ -2,6 +2,8 @@
 
 An unofficial Dart client library for the [Smartschool](https://www.smartschool.be) school platform. It handles authentication (including TOTP 2FA and birthday-based account verification), cookie persistence, and the mix of XML-protocol and JSON/REST endpoints that Smartschool uses internally.
 
+Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
+
 > **Unofficial.** This library reverse-engineers the private Smartschool web API. It is not endorsed by or affiliated with Smartschool. Use responsibly.
 
 ---
@@ -12,9 +14,25 @@ Add the package to `pubspec.yaml`:
 
 ```yaml
 dependencies:
-	flutter_smartschool:
-		path: .   # or a git/pub reference once published
+	flutter_smartschool: ^0.1.0
 ```
+
+or directly from GitHub (`dartschool`) while iterating:
+
+```yaml
+dependencies:
+	flutter_smartschool:
+		git:
+			url: https://github.com/yvanvds/dartschool.git
+```
+
+### Package name vs repository name
+
+Using different names is totally fine:
+- Package/import name is `flutter_smartschool` (what users add in `pubspec.yaml` and import in code).
+- Git repository can be `dartschool`.
+
+This is common on pub.dev and does not cause technical issues.
 
 ---
 

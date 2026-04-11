@@ -1,0 +1,22 @@
+# Exclude local/editor/dev assets from the published package
+/.vscode/
+/.github/
+
+# Local credentials and captured live data
+/credentials.yml
+/dev_dumps/
+
+# Workspace tooling not needed by package consumers
+/tool/
+
+# Python reference project (separate codebase)
+/smartschool/
+
+# Local cache/build artifacts
+/.dart_tool/
+/.pub/
+/.pub-cache/
+/build/
+
+# Optional: exclude heavy test fixtures from package tarball
+/test/fixtures/

@@ -24,10 +24,11 @@ credentials.yml
 
 # ── Project-specific ─────────────────────────────────────────────────────────
 # Raw HTML/JSON response captures from the live Smartschool site
-dev_dumps/
+/dev_dumps/
 
-# Python reference implementation (separate project, has its own origin)
-smartschool/
+# Keep tracked project paths explicitly included (helps pub validation)
+!/lib/src/flutter_smartschool_base.dart
+!/smartschool
 
 # ── IDE ───────────────────────────────────────────────────────────────────────
 .idea/

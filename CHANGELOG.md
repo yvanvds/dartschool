@@ -1,3 +1,14 @@
+
+
+## 0.2.2 - 2026-04-15
+
+- Added notification support for new messages: `MessagesService` now emits real-time updates via `messageCounterUpdates` and can be bound to `SmartschoolClient.notificationCounterUpdates` for push-style notification flows.
+- Increased test coverage for `SmartschoolClient` and core session logic.
+- Added `test/session_additional_test.dart` with more unit and error-path tests.
+- Improved analyzer and linter compliance in test files.
+- Maintenance: removed unused imports, unnecessary type checks, and null comparisons in tests.
+- No breaking changes; all public APIs remain stable.
+
 ## 0.2.1 - 2026-04-11
 
 - Added message thread-subject helpers on `MessagesService`:

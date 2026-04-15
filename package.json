@@ -1,6 +1,6 @@
 {
   "name": "flutter_smartschool",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "description": "Dart Smartschool client with Lefthook for Git hooks",
   "devDependencies": {
     "lefthook": "latest"

@@ -49,7 +49,7 @@ class IntradeskService {
     final data = await _client.getJson(
       '/intradesk/api/v1/$platformId/directory-listing/forTreeOnlyFolders',
     );
-    return IntradeskListing.fromJson(_asMap(data));
+    return IntradeskListing.fromJson(asMap(data));
   }
 
   /// Returns the [IntradeskListing] for the folder identified by [folderId].
@@ -67,7 +67,7 @@ class IntradeskService {
     final data = await _client.getJson(
       '/intradesk/api/v1/$platformId/directory-listing/forTreeOnlyFolders/$folderId',
     );
-    return IntradeskListing.fromJson(_asMap(data));
+    return IntradeskListing.fromJson(asMap(data));
   }
 
   // -------------------------------------------------------------------------
@@ -104,7 +104,7 @@ class IntradeskService {
   /// Ensures the decoded JSON value is a [Map].  The listing endpoints always
   /// return a JSON object at the top level; anything else indicates a parsing
   /// error.
-  static Map<String, dynamic> _asMap(dynamic data) {
+  static Map<String, dynamic> asMap(dynamic data) {
     if (data is Map<String, dynamic>) return data;
     if (data is String) {
       final decoded = jsonDecode(data);

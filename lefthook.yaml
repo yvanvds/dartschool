@@ -1,0 +1,19 @@
+# Lefthook configuration for Git hooks
+# Project: flutter_smartschool
+# See: https://evilmartians.com/chronicles/lefthook-knock-down-your-git-workflow
+
+version: 1
+
+pre-commit:
+  parallel: false
+  commands:
+    analyze:
+      stage_fixed: false
+      run: dart analyze
+      pass_filename: false
+    test:
+      stage_fixed: false
+      run: dart test
+      pass_filename: false
+
+# Optionally, add pre-push hooks here

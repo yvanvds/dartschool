@@ -397,7 +397,7 @@ class SmartschoolClient {
     final expectsDate = answerInput?.attributes['type'] == 'date';
     final dateLike = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(mfa.trim());
     if (expectsDate && !dateLike) {
-      throw SmartschoolAuthenticationError(
+      throw const SmartschoolAuthenticationError(
         'Account verification expects a date (yyyy-mm-dd), but mfa looks like '
         'a TOTP secret. Set credentials.yml mfa to the requested date answer.',
       );

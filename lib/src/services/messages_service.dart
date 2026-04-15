@@ -10,7 +10,8 @@ import '../session.dart';
 import '../xml_interface.dart';
 import '../models/message_models.dart';
 import '../models/notification_models.dart';
-import 'message_send_options.dart';
+// import 'message_send_options.dart';
+import 'send_message_params.dart';
 
 const String _xpathMessage = './/data/message';
 
@@ -520,18 +521,7 @@ class MessagesService {
   /// Throws [SmartschoolComposeError] if the compose form cannot be parsed or
   /// the server rejects the submission.
   /// Throws [SmartschoolAttachmentUploadError] if an attachment fails to upload.
-  Future<void> sendMessage({
-    required List<MessageSearchUser> to,
-    List<MessageSearchUser> cc = const [],
-    List<MessageSearchUser> bcc = const [],
-    List<MessageSearchGroup> toGroups = const [],
-    List<MessageSearchGroup> ccGroups = const [],
-    List<MessageSearchGroup> bccGroups = const [],
-    required String subject,
-    required String bodyHtml,
-    List<String> attachmentPaths = const [],
-    MessageSendOptions options = const MessageSendOptions(),
-  }) async {
+  Future<void> sendMessage(SendMessageParams params) async {
     // Step 1: load a fresh compose form and extract all hidden token fields.
     final hidden = await _loadComposeFields();
 
@@ -546,33 +536,33 @@ class MessagesService {
     }
 
     // Step 2: register all recipients on the server-side form state.
-    for (final user in to) {
+    for (final user in params.to) {
       await _addUserToForm(user, RecipientType.to, uniqueUsc);
     }
-    for (final user in cc) {
+    for (final user in params.cc) {
       await _addUserToForm(user, RecipientType.cc, uniqueUsc);
     }
-    for (final user in bcc) {
+    for (final user in params.bcc) {
       await _addUserToForm(user, RecipientType.bcc, uniqueUsc);
     }
-    for (final group in toGroups) {
+    for (final group in params.toGroups) {
       await _addGroupToForm(group, RecipientType.to, uniqueUsc);
     }
-    for (final group in ccGroups) {
+    for (final group in params.ccGroups) {
       await _addGroupToForm(group, RecipientType.cc, uniqueUsc);
     }
-    for (final group in bccGroups) {
+    for (final group in params.bccGroups) {
       await _addGroupToForm(group, RecipientType.bcc, uniqueUsc);
     }
 
     // Step 3: upload attachments.
-    if (attachmentPaths.isNotEmpty && randomDir.isEmpty) {
+    if (params.attachmentPaths.isNotEmpty && randomDir.isEmpty) {
       throw const SmartschoolComposeError(
         'sendMessage: randomDir is missing from the compose form; '
         'cannot upload attachments.',
       );
     }
-    for (final path in attachmentPaths) {
+    for (final path in params.attachmentPaths) {
       await _uploadAttachment(path, randomDir);
     }
 
@@ -598,9 +588,9 @@ class MessagesService {
       'searchField1': '',
       'searchField4': '',
       'searchField5': '',
-      'subject': subject,
+      'subject': params.subject,
       'copyToLVS': 'dontCopyToLVS',
-      'message': bodyHtml,
+      'message': params.bodyHtml,
       'bcc': '0',
     };
 

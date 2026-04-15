@@ -98,7 +98,7 @@ class DevInspector {
     return request(
       'GET',
       path,
-      options: DevRequestOptions(
+      options: const DevRequestOptions(
         headers: {'Accept': 'application/json'},
         isJson: true,
       ),

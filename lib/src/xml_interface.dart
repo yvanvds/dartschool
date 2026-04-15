@@ -58,6 +58,7 @@ class XmlInterface {
     String xmlBody,
     String xpath,
   ) {
+    if (xmlBody.trim().isEmpty) return [];
     final XmlDocument doc;
     try {
       doc = XmlDocument.parse(xmlBody);

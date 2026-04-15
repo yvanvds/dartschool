@@ -172,7 +172,7 @@ class IntradeskFileRevision {
       dateCreated: _dateTime(json, 'dateCreated'),
       owner: ownerJson is Map<String, dynamic>
           ? IntradeskFileOwner.fromJson(ownerJson)
-          : IntradeskFileOwner(
+          : const IntradeskFileOwner(
               userIdentifier: '',
               name: '',
               nameReverse: '',
@@ -230,7 +230,7 @@ class IntradeskFolder {
       id: _str(json, 'id'),
       platform: platJson is Map<String, dynamic>
           ? IntradeskPlatform.fromJson(platJson)
-          : IntradeskPlatform(id: 0, name: ''),
+          : const IntradeskPlatform(id: 0, name: ''),
       name: _str(json, 'name'),
       color: _str(json, 'color'),
       state: _str(json, 'state'),
@@ -245,7 +245,7 @@ class IntradeskFolder {
       inConfidentialFolder: _bool(json, 'inConfidentialFolder'),
       capabilities: capJson is Map<String, dynamic>
           ? IntradeskFolderCapabilities.fromJson(capJson)
-          : IntradeskFolderCapabilities(
+          : const IntradeskFolderCapabilities(
               canManage: false,
               canAdd: false,
               canSeeHistory: false,
@@ -304,7 +304,7 @@ class IntradeskFile {
       id: _str(json, 'id'),
       platform: platJson is Map<String, dynamic>
           ? IntradeskPlatform.fromJson(platJson)
-          : IntradeskPlatform(id: 0, name: ''),
+          : const IntradeskPlatform(id: 0, name: ''),
       name: _str(json, 'name'),
       state: _str(json, 'state'),
       parentFolderId: _str(json, 'parentFolderId'),
@@ -321,7 +321,7 @@ class IntradeskFile {
       ownerId: _str(json, 'ownerId'),
       capabilities: capJson is Map<String, dynamic>
           ? IntradeskFileCapabilities.fromJson(capJson)
-          : IntradeskFileCapabilities(
+          : const IntradeskFileCapabilities(
               canManage: false,
               canMove: false,
               canHandleRevisions: false,

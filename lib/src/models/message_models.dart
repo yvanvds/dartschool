@@ -527,65 +527,100 @@ DateTime? _optionalDateTime(Map<String, dynamic> xml, String key) {
 /// space-separated formats with or without seconds, and milliseconds/microseconds.
 DateTime? _parseDateTime(String v) {
   if (v.isEmpty) return null;
-
   v = v.trim();
   if (v.isEmpty) return null;
 
-  // ISO 8601 with timezone: 2024-01-15T10:30:00+02:00 or with Z: 2024-01-15T10:30:00Z
+  DateTime? parsed;
+  parsed = _tryParseIsoWithTimezone(v);
+  if (parsed != null) return parsed;
+  parsed = _tryParseIsoMicro(v);
+  if (parsed != null) return parsed;
+  parsed = _tryParseIsoSeconds(v);
+  if (parsed != null) return parsed;
+  parsed = _tryParseSpaceFormat(v);
+  if (parsed != null) return parsed;
+  parsed = _tryParseSpaceFormatSeconds(v);
+  if (parsed != null) return parsed;
+  parsed = _tryParseDateOnly(v);
+  if (parsed != null) return parsed;
+
+  // If we get here, the datetime is in an unrecognized format.
+  // This can happen when Smartschool returns error messages or malformed data.
+  // Return epoch (1970-01-01) as a safe fallback rather than crashing.
+  return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+}
+
+DateTime? _tryParseIsoWithTimezone(String v) {
   try {
     return DateTime.parse(v);
-  } catch (_) {}
+  } catch (_) {
+    return null;
+  }
+}
 
-  // ISO 8601 with microseconds/milliseconds (no timezone): 2024-01-15T10:30:00.123456
+DateTime? _tryParseIsoMicro(String v) {
   final isoMicro = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+$');
   if (isoMicro.hasMatch(v)) {
     try {
-      // Truncate microseconds to milliseconds (6 digits to 3) if needed
       final parts = v.split('.');
       if (parts.length == 2 && parts[1].length > 3) {
         final truncated = '${parts[0]}.${parts[1].substring(0, 3)}';
         return DateTime.parse(truncated);
       }
       return DateTime.parse(v);
-    } catch (_) {}
+    } catch (_) {
+      return null;
+    }
   }
+  return null;
+}
 
-  // Date with time and seconds, no timezone: 2024-01-15T10:30:00
+DateTime? _tryParseIsoSeconds(String v) {
   final isoSeconds = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$');
   if (isoSeconds.hasMatch(v)) {
     try {
       return DateTime.parse(v);
-    } catch (_) {}
+    } catch (_) {
+      return null;
+    }
   }
+  return null;
+}
 
-  // Date with time, no timezone: 2024-01-15 10:30
+DateTime? _tryParseSpaceFormat(String v) {
   final spaceFormat = RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$');
   if (spaceFormat.hasMatch(v)) {
     try {
       return DateTime.parse(v.replaceFirst(' ', 'T'));
-    } catch (_) {}
+    } catch (_) {
+      return null;
+    }
   }
+  return null;
+}
 
-  // Date with time and seconds: 2024-01-15 10:30:00
+DateTime? _tryParseSpaceFormatSeconds(String v) {
   final spaceFormatSeconds = RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$');
   if (spaceFormatSeconds.hasMatch(v)) {
     try {
       return DateTime.parse(v.replaceFirst(' ', 'T'));
-    } catch (_) {}
+    } catch (_) {
+      return null;
+    }
   }
+  return null;
+}
 
-  // Date only: 2024-01-15
+DateTime? _tryParseDateOnly(String v) {
   final dateOnly = RegExp(r'^\d{4}-\d{2}-\d{2}$');
   if (dateOnly.hasMatch(v)) {
     try {
       return DateTime.parse(v);
-    } catch (_) {}
+    } catch (_) {
+      return null;
+    }
   }
-
-  // If we get here, the datetime is in an unrecognized format.
-  // This can happen when Smartschool returns error messages or malformed data.
-  // Return epoch (1970-01-01) as a safe fallback rather than crashing.
-  return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+  return null;
 }
 
 /// Normalises a receiver list field in a [FullMessage] XML map.

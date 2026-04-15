@@ -70,7 +70,11 @@ class AppCredentials extends Credentials {
     required this.password,
     required this.mainUrl,
     this.mfa,
-  });
+  }) {
+    assert(username.trim().isNotEmpty, 'username must not be empty');
+    assert(password.trim().isNotEmpty, 'password must not be empty');
+    assert(mainUrl.trim().isNotEmpty, 'mainUrl must not be empty');
+  }
 }
 
 // ---------------------------------------------------------------------------

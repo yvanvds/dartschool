@@ -43,11 +43,11 @@ class DevInspector {
     return Uri.https(
       _credentials.mainUrl,
       pathPart,
-      _parseQueryString(rawQuery),
+      DevInspector.parseQueryString(rawQuery),
     );
   }
 
-  Map<String, String> _parseQueryString(String rawQuery) {
+  static Map<String, String> parseQueryString(String rawQuery) {
     if (rawQuery.trim().isEmpty) return const {};
     final result = <String, String>{};
     for (final part in rawQuery.split('&')) {

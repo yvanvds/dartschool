@@ -16,6 +16,9 @@ import 'exceptions.dart';
 import 'models/notification_models.dart';
 import 'xml_interface.dart';
 
+const String kXRequestedWith = 'X-Requested-With';
+const String kAccountVerificationPath = '/account-verification';
+
 /// The main entry point for the Smartschool Dart library.
 ///
 /// Wraps a [Dio] HTTP client configured with:
@@ -165,7 +168,7 @@ class SmartschoolClient {
       url,
       data: {'command': command},
       options: Options(
-        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        headers: {kXRequestedWith: 'XMLHttpRequest'},
         contentType: Headers.formUrlEncodedContentType,
       ),
     );
@@ -231,7 +234,7 @@ class SmartschoolClient {
       queryParameters: query,
       options: Options(
         contentType: Headers.formUrlEncodedContentType,
-        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        headers: {kXRequestedWith: 'XMLHttpRequest'},
       ),
     );
     return resp.data ?? '';
@@ -259,7 +262,7 @@ class SmartschoolClient {
       data: body,
       options: Options(
         contentType: Headers.formUrlEncodedContentType,
-        headers: {'X-Requested-With': 'XMLHttpRequest'},
+        headers: {kXRequestedWith: 'XMLHttpRequest'},
       ),
     );
     return resp.data ?? '';
@@ -741,8 +744,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       nextResponse = await _client.doLogin(htmlBody, url);
     }
 
-    if (path.endsWith('/account-verification') ||
-        (nextResponse?.realUri.path.endsWith('/account-verification') ??
+    if (path.endsWith(kAccountVerificationPath) ||
+        (nextResponse?.realUri.path.endsWith(kAccountVerificationPath) ??
             false)) {
       final body = nextResponse != null ? (nextResponse.data ?? '') : htmlBody;
       final verUrl = nextResponse?.realUri.toString() ?? url;

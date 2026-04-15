@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import '../credentials.dart';
 import '../session.dart';
+import 'dev_request_options.dart';
 
 /// A developer tool for inspecting raw Smartschool HTTP traffic.
 /// Use this to reverse-engineer new endpoints and page structures.
@@ -85,8 +86,10 @@ class DevInspector {
     return request(
       'POST',
       path,
-      formData: formData,
-      contentType: Headers.formUrlEncodedContentType,
+      options: DevRequestOptions(
+        formData: formData,
+        contentType: Headers.formUrlEncodedContentType,
+      ),
     );
   }
 
@@ -95,8 +98,10 @@ class DevInspector {
     return request(
       'GET',
       path,
-      headers: {'Accept': 'application/json'},
-      isJson: true,
+      options: DevRequestOptions(
+        headers: {'Accept': 'application/json'},
+        isJson: true,
+      ),
     );
   }
 
@@ -112,13 +117,14 @@ class DevInspector {
   Future<InspectionResult> request(
     String method,
     String path, {
-    Map<String, String>? headers,
-    Map<String, dynamic>? query,
-    Object? data,
-    Map<String, String>? formData,
-    String? contentType,
-    bool isJson = false,
+    DevRequestOptions options = const DevRequestOptions(),
   }) async {
+    final headers = options.headers;
+    final query = options.query;
+    final data = options.data;
+    final formData = options.formData;
+    final contentType = options.contentType;
+    final isJson = options.isJson;
     final baseUri = _uri(path);
     final uri = (query == null || query.isEmpty)
         ? baseUri

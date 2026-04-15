@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:flutter_smartschool/src/dev/dev_inspector.dart';
 
+import 'package:flutter_smartschool/src/dev/dev_request_options.dart';
+
 Future<void> main(List<String> args) async {
   final server = _SmartschoolResearcherServer(
     defaultCredentialsPath: _parseDefaultCredentialsPath(args),
@@ -347,11 +349,13 @@ class _SmartschoolResearcherServer {
         final result = await inspector.request(
           method,
           path,
-          headers: headers,
-          query: query,
-          data: args['data'],
-          contentType: contentType,
-          isJson: isJson,
+          options: DevRequestOptions(
+            headers: headers,
+            query: query,
+            data: args['data'],
+            contentType: contentType,
+            isJson: isJson,
+          ),
         );
 
         return _toolResponse(result.toMap(maxBodyChars: maxBodyChars));

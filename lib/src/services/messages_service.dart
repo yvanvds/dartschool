@@ -10,6 +10,9 @@ import '../session.dart';
 import '../xml_interface.dart';
 import '../models/message_models.dart';
 import '../models/notification_models.dart';
+import 'message_send_options.dart';
+
+const String _xpathMessage = './/data/message';
 
 /// Provides access to the Smartschool messaging system.
 ///
@@ -293,7 +296,7 @@ class MessagesService {
         'boxType': boxType.value,
         'limitList': 'true',
       },
-      xpath: './/data/message',
+      xpath: _xpathMessage,
     );
 
     if (entries.isEmpty) return null;
@@ -355,7 +358,7 @@ class MessagesService {
         'msgID': '$msgId',
         'clAction': 'status',
       },
-      xpath: './/data/message',
+      xpath: _xpathMessage,
     );
 
     return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
@@ -379,7 +382,7 @@ class MessagesService {
         'msgID': '$msgId',
         'clAction': 'label',
       },
-      xpath: './/data/message',
+      xpath: _xpathMessage,
     );
 
     return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
@@ -527,6 +530,7 @@ class MessagesService {
     required String subject,
     required String bodyHtml,
     List<String> attachmentPaths = const [],
+    MessageSendOptions options = const MessageSendOptions(),
   }) async {
     // Step 1: load a fresh compose form and extract all hidden token fields.
     final hidden = await _loadComposeFields();

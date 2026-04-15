@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,6 +9,7 @@ import '../exceptions.dart';
 import '../session.dart';
 import '../xml_interface.dart';
 import '../models/message_models.dart';
+import '../models/notification_models.dart';
 
 /// Provides access to the Smartschool messaging system.
 ///
@@ -31,6 +33,15 @@ import '../models/message_models.dart';
 /// ```
 class MessagesService {
   final SmartschoolClient _client;
+  final StreamController<MessageCounterUpdate> _messageCounterController =
+      StreamController<MessageCounterUpdate>.broadcast();
+  final Map<String, Set<int>> _incrementalSeenIdsByMailbox = {};
+  final Map<String, Future<List<ShortMessage>>> _inFlightIncrementalByMailbox =
+      {};
+  final Map<String, Timer> _incrementalDebounceTimers = {};
+  final Map<String, Completer<List<ShortMessage>>> _incrementalCompleters = {};
+
+  int? _lastMessageCounter;
   int? _archiveBoxIdCache;
 
   static final RegExp _threadPrefixRegex = RegExp(
@@ -42,6 +53,134 @@ class MessagesService {
   static const _messagesXmlUrl = '/?module=Messages&file=dispatcher';
 
   MessagesService(SmartschoolClient client) : _client = client;
+
+  /// Emits message-specific counter updates derived from Smartschool
+  /// notification counters.
+  Stream<MessageCounterUpdate> get messageCounterUpdates =>
+      _messageCounterController.stream;
+
+  /// Normalizes a generic module [update] into a message counter update.
+  ///
+  /// Only updates for module `Messages` are emitted.
+  /// Returns `true` when an event was emitted.
+  bool handleNotificationCounterUpdate(NotificationCounterUpdate update) {
+    if (update.moduleName.toLowerCase() != 'messages') return false;
+    if (_lastMessageCounter == update.counter) return false;
+
+    final previousCounter = _lastMessageCounter;
+    _lastMessageCounter = update.counter;
+    _messageCounterController.add(
+      MessageCounterUpdate(
+        counter: update.counter,
+        previousCounter: previousCounter,
+        isNew: update.isNew,
+        source: update.source,
+        timestamp: update.timestamp,
+      ),
+    );
+    return true;
+  }
+
+  /// Binds this service to a stream of generic module counter updates.
+  ///
+  /// Caller owns the returned subscription and should cancel it when done.
+  StreamSubscription<NotificationCounterUpdate> bindNotificationCounterStream(
+    Stream<NotificationCounterUpdate> updates,
+  ) {
+    return updates.listen(handleNotificationCounterUpdate);
+  }
+
+  /// Seeds the incremental-sync seen-ID cache for a mailbox.
+  ///
+  /// Use this once after an initial header fetch to avoid a full list refresh
+  /// on the first event-triggered incremental sync.
+  void seedIncrementalSeenIds(
+    Iterable<int> messageIds, {
+    BoxType boxType = BoxType.inbox,
+    int boxId = 0,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+  }) {
+    final key = _mailboxKey(boxType, boxId, sortBy, sortOrder);
+    final seen = _incrementalSeenIdsByMailbox.putIfAbsent(key, () => <int>{});
+    seen.addAll(messageIds);
+  }
+
+  /// Schedules an incremental headers refresh with debounce and in-flight
+  /// dedupe per mailbox.
+  ///
+  /// Multiple calls within [debounceWindow] are coalesced into one request.
+  /// If a request is already in-flight for the same mailbox, callers await
+  /// that request instead of spawning another one.
+  Future<List<ShortMessage>> refreshHeadersIncremental({
+    BoxType boxType = BoxType.inbox,
+    int boxId = 0,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+    Duration debounceWindow = const Duration(milliseconds: 300),
+  }) {
+    final key = _mailboxKey(boxType, boxId, sortBy, sortOrder);
+    final existingCompleter = _incrementalCompleters[key];
+    if (existingCompleter != null && !existingCompleter.isCompleted) {
+      _rescheduleIncrementalTimer(
+        key: key,
+        boxType: boxType,
+        boxId: boxId,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+        debounceWindow: debounceWindow,
+        completer: existingCompleter,
+      );
+      return existingCompleter.future;
+    }
+
+    final completer = Completer<List<ShortMessage>>();
+    _incrementalCompleters[key] = completer;
+
+    _rescheduleIncrementalTimer(
+      key: key,
+      boxType: boxType,
+      boxId: boxId,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      debounceWindow: debounceWindow,
+      completer: completer,
+    );
+
+    return completer.future;
+  }
+
+  /// Consumes a [MessageCounterUpdate] and performs a debounced incremental
+  /// mailbox refresh.
+  Future<List<ShortMessage>> refreshHeadersOnMessageCounter(
+    MessageCounterUpdate update, {
+    BoxType boxType = BoxType.inbox,
+    int boxId = 0,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+    Duration debounceWindow = const Duration(milliseconds: 300),
+  }) {
+    return refreshHeadersIncremental(
+      boxType: boxType,
+      boxId: boxId,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      debounceWindow: debounceWindow,
+    );
+  }
+
+  /// Disposes timers/streams owned by this service.
+  Future<void> dispose() async {
+    for (final timer in _incrementalDebounceTimers.values) {
+      timer.cancel();
+    }
+    _incrementalDebounceTimers.clear();
+    _incrementalCompleters.clear();
+
+    if (!_messageCounterController.isClosed) {
+      await _messageCounterController.close();
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Read operations
@@ -751,4 +890,82 @@ class MessagesService {
     final ext = fileName.split('.').lastOrNull?.toLowerCase() ?? '';
     return table[ext] ?? 'application/octet-stream';
   }
+
+  void _rescheduleIncrementalTimer({
+    required String key,
+    required BoxType boxType,
+    required int boxId,
+    required SortField sortBy,
+    required SortOrder sortOrder,
+    required Duration debounceWindow,
+    required Completer<List<ShortMessage>> completer,
+  }) {
+    _incrementalDebounceTimers[key]?.cancel();
+    _incrementalDebounceTimers[key] = Timer(debounceWindow, () async {
+      try {
+        final headers = await _startOrJoinIncrementalFetch(
+          key: key,
+          boxType: boxType,
+          boxId: boxId,
+          sortBy: sortBy,
+          sortOrder: sortOrder,
+        );
+        if (!completer.isCompleted) {
+          completer.complete(headers);
+        }
+      } catch (error, stackTrace) {
+        if (!completer.isCompleted) {
+          completer.completeError(error, stackTrace);
+        }
+      } finally {
+        _incrementalDebounceTimers.remove(key);
+        if (identical(_incrementalCompleters[key], completer)) {
+          _incrementalCompleters.remove(key);
+        }
+      }
+    });
+  }
+
+  Future<List<ShortMessage>> _startOrJoinIncrementalFetch({
+    required String key,
+    required BoxType boxType,
+    required int boxId,
+    required SortField sortBy,
+    required SortOrder sortOrder,
+  }) {
+    final inFlight = _inFlightIncrementalByMailbox[key];
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final seen = _incrementalSeenIdsByMailbox.putIfAbsent(key, () => <int>{});
+
+    final future =
+        getHeaders(
+              boxType: boxType,
+              boxId: boxId,
+              sortBy: sortBy,
+              sortOrder: sortOrder,
+              alreadySeenIds: seen.toList(growable: false),
+            )
+            .then((headers) {
+              for (final header in headers) {
+                seen.add(header.id);
+              }
+              return headers;
+            })
+            .whenComplete(() {
+              _inFlightIncrementalByMailbox.remove(key);
+            });
+
+    _inFlightIncrementalByMailbox[key] = future;
+    return future;
+  }
+
+  static String _mailboxKey(
+    BoxType boxType,
+    int boxId,
+    SortField sortBy,
+    SortOrder sortOrder,
+  ) => '${boxType.value}|$boxId|${sortBy.value}|${sortOrder.value}';
 }

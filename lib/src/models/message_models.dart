@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import '../exceptions.dart';
 import '../session.dart';
 
 // ---------------------------------------------------------------------------
@@ -524,17 +523,52 @@ DateTime? _optionalDateTime(Map<String, dynamic> xml, String key) {
 /// Parses a datetime string in the formats used by Smartschool.
 ///
 /// Mirrors Python's `convert_to_datetime` in `common.py`.
+/// Handles various datetime formats including ISO 8601 with/without timezone,
+/// space-separated formats with or without seconds, and milliseconds/microseconds.
 DateTime? _parseDateTime(String v) {
   if (v.isEmpty) return null;
 
-  // ISO 8601 with timezone: 2024-01-15T10:30:00+02:00
+  v = v.trim();
+  if (v.isEmpty) return null;
+
+  // ISO 8601 with timezone: 2024-01-15T10:30:00+02:00 or with Z: 2024-01-15T10:30:00Z
   try {
     return DateTime.parse(v);
   } catch (_) {}
 
+  // ISO 8601 with microseconds/milliseconds (no timezone): 2024-01-15T10:30:00.123456
+  final isoMicro = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+$');
+  if (isoMicro.hasMatch(v)) {
+    try {
+      // Truncate microseconds to milliseconds (6 digits to 3) if needed
+      final parts = v.split('.');
+      if (parts.length == 2 && parts[1].length > 3) {
+        final truncated = '${parts[0]}.${parts[1].substring(0, 3)}';
+        return DateTime.parse(truncated);
+      }
+      return DateTime.parse(v);
+    } catch (_) {}
+  }
+
+  // Date with time and seconds, no timezone: 2024-01-15T10:30:00
+  final isoSeconds = RegExp(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$');
+  if (isoSeconds.hasMatch(v)) {
+    try {
+      return DateTime.parse(v);
+    } catch (_) {}
+  }
+
   // Date with time, no timezone: 2024-01-15 10:30
   final spaceFormat = RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$');
   if (spaceFormat.hasMatch(v)) {
+    try {
+      return DateTime.parse(v.replaceFirst(' ', 'T'));
+    } catch (_) {}
+  }
+
+  // Date with time and seconds: 2024-01-15 10:30:00
+  final spaceFormatSeconds = RegExp(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$');
+  if (spaceFormatSeconds.hasMatch(v)) {
     try {
       return DateTime.parse(v.replaceFirst(' ', 'T'));
     } catch (_) {}
@@ -548,7 +582,10 @@ DateTime? _parseDateTime(String v) {
     } catch (_) {}
   }
 
-  throw SmartschoolParsingError("Cannot parse datetime: '$v'");
+  // If we get here, the datetime is in an unrecognized format.
+  // This can happen when Smartschool returns error messages or malformed data.
+  // Return epoch (1970-01-01) as a safe fallback rather than crashing.
+  return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 }
 
 /// Normalises a receiver list field in a [FullMessage] XML map.

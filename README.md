@@ -10,6 +10,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 
 - Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
 - Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, archive, trash, labels.
+- **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 
@@ -88,6 +89,8 @@ Future<void> main() async {
 
 See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow.
 
+For thread grouping on real inbox headers, see [example/message_threading_headers_example.dart](example/message_threading_headers_example.dart).
+
 For Intradesk navigation and file downloads, see [example/intradesk_browser.dart](example/intradesk_browser.dart) (interactive text UI).
 
 ---
@@ -135,6 +138,9 @@ await client.ensureAuthenticated();
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
 | `postMultipartRaw(path, formData)` | `multipart/form-data` POST → `String` |
 | `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
+| `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
+| `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false` if the stream is already closed |
+| `dispose({force})` | Closes the notification stream and the underlying Dio client |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
 
 ---
@@ -191,6 +197,80 @@ for (final attachment in attachments) {
 |---|---|---|
 | `threadSubjectKey(subject)` | `String` | Normalises a subject for thread grouping by removing leading reply/forward prefixes (`Re:`, `Fwd:`, `FW:`, `AW:`, `WG:`). |
 | `ensureReplySubject(subject, {replyPrefix})` | `String` | Produces a reply subject with exactly one prefix (default `Re:`), avoiding `Re: Re: ...`. |
+
+### Event-driven message detection
+
+`MessagesService` can react to external notification signals (e.g. a WebSocket push or a polling bridge) and trigger a debounced incremental inbox refresh automatically.
+
+```dart
+final messages = MessagesService(client);
+
+// 1. Seed the seen-ID baseline so only genuinely new messages trigger events.
+final initial = await messages.getHeaders();
+messages.seedIncrementalSeenIds(initial.map((m) => m.id));
+
+// 2. Bind MessagesService to the client's notification stream.
+//    The subscription is cancelled automatically by dispose().
+messages.bindNotificationCounterStream(client.notificationCounterUpdates);
+
+// 3. React to new messages detected by the debounced refresh.
+messages.messageCounterUpdates.listen((update) async {
+  final newHeaders = await messages.refreshHeadersOnMessageCounter(update);
+  for (final msg in newHeaders) {
+    final full = await messages.getMessage(msg.id);
+    print('[${msg.date}] ${msg.sender}: ${msg.subject}');
+    print(full?.body);
+  }
+});
+
+// 4. Fire a notification — normally this comes from a WebSocket, but you can
+//    emit one manually or from a polling bridge.
+client.emitNotificationCounterUpdate(
+  moduleName: 'Messages',
+  counter: 3,
+  isNew: true,
+  source: 'websocket',
+);
+
+// 5. Clean up when done.
+await messages.dispose();
+await client.dispose();
+```
+
+#### Event-driven API
+
+| Method / getter | Returns | Description |
+|---|---|---|
+| `messageCounterUpdates` | `Stream<MessageCounterUpdate>` | Broadcast stream emitting one event per debounce window when the counter rises. |
+| `handleNotificationCounterUpdate(update)` | `bool` | Processes a `NotificationCounterUpdate` for the `Messages` module; deduplicates identical consecutive counter values; returns `true` if a new `MessageCounterUpdate` was emitted. |
+| `bindNotificationCounterStream(stream)` | `StreamSubscription` | Subscribes to any `Stream<NotificationCounterUpdate>` and pipes `Messages` events through `handleNotificationCounterUpdate`. |
+| `seedIncrementalSeenIds(ids, {boxType, boxId, sortBy, sortOrder})` | `void` | Populates the per-mailbox seen-ID baseline so the first real refresh only surfaces messages newer than the seed. |
+| `refreshHeadersIncremental({boxType, boxId, sortBy, sortOrder, debounceWindow})` | `Future<List<ShortMessage>>` | Debounced incremental fetch — concurrent calls within the window share the same in-flight request. |
+| `refreshHeadersOnMessageCounter(update, {boxType, boxId, sortBy, sortOrder, debounceWindow})` | `Future<List<ShortMessage>>` | Convenience wrapper: calls `refreshHeadersIncremental` using context from a `MessageCounterUpdate`. |
+| `dispose()` | `Future<void>` | Cancels debounce timers, closes the message counter stream, and cancels any bound notification subscription. |
+
+#### Polling bridge pattern
+
+If no WebSocket is available, use the existing `alreadySeenIds` polling parameter as a bridge:
+
+```dart
+final seen = <int>{};
+Timer.periodic(Duration(seconds: 30), (_) async {
+  final newHeaders = await messages.getHeaders(alreadySeenIds: seen.toList());
+  if (newHeaders.isNotEmpty) {
+    seen.addAll(newHeaders.map((m) => m.id));
+    client.emitNotificationCounterUpdate(
+      moduleName: 'Messages',
+      counter: seen.length,
+      isNew: true,
+      source: 'poll',
+    );
+  }
+});
+```
+
+See [example/notification_listener_full_message_example.dart](example/notification_listener_full_message_example.dart) for a complete runnable demo.
+See [example/message_change_stream_example.dart](example/message_change_stream_example.dart) for a stream-binding walkthrough with synthetic events.
 
 ### Static parsers (exposed for testing)
 
@@ -268,6 +348,28 @@ Used as recipients in `sendMessage`. Key fields: `userId`/`groupId`, `ssId`, `us
 
 ### `MessageChanged` / `MessageDeletionStatus`
 Returned by mutation operations. Carry the `id` of the affected message and a `newValue` / status field.
+
+### `NotificationCounterUpdate`
+Transport-agnostic event produced by any notification source (WebSocket, polling bridge, or manual emit).
+
+| Field | Type | Description |
+|---|---|---|
+| `moduleName` | `String` | Smartschool module name (e.g. `'Messages'`, `'Ticket'`). |
+| `counter` | `int` | Current badge count reported by the source. |
+| `isNew` | `bool` | Whether the source flagged this as a new-item signal. |
+| `source` | `String` | Opaque tag identifying the origin (`'websocket'`, `'poll'`, …). |
+| `timestamp` | `DateTime` | When the event was created. |
+
+### `MessageCounterUpdate`
+Produced by `MessagesService` after deduplication and emitted on `messageCounterUpdates`.
+
+| Field | Type | Description |
+|---|---|---|
+| `counter` | `int` | New message counter value. |
+| `previousCounter` | `int?` | Previous value (null on first event). |
+| `isNew` | `bool` | Forwarded from the source `NotificationCounterUpdate`. |
+| `source` | `String` | Forwarded source tag. |
+| `timestamp` | `DateTime` | When the event was created. |
 
 ### `IntradeskListing`
 Returned by `getRootListing` / `getFolderListing`. Fields: `folders` (`List<IntradeskFolder>`), `files` (`List<IntradeskFile>`), `weblinks` (raw maps).

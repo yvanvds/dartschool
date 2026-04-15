@@ -30,6 +30,7 @@ export 'src/exceptions.dart';
 // Models
 export 'src/models/message_models.dart';
 export 'src/models/intradesk_models.dart';
+export 'src/models/notification_models.dart';
 
 // Services
 export 'src/services/messages_service.dart';

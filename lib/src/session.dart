@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -12,6 +13,7 @@ import 'package:path/path.dart' as p;
 
 import 'credentials.dart';
 import 'exceptions.dart';
+import 'models/notification_models.dart';
 import 'xml_interface.dart';
 
 /// The main entry point for the Smartschool Dart library.
@@ -39,6 +41,9 @@ import 'xml_interface.dart';
 class SmartschoolClient {
   final Credentials credentials;
   final Dio _dio;
+  final StreamController<NotificationCounterUpdate>
+  _notificationCounterController =
+      StreamController<NotificationCounterUpdate>.broadcast();
   // Kept so callers can clear cookies on logout via [clearCookies].
   final PersistCookieJar _cookieJar; // ignore: unused_field
 
@@ -61,6 +66,14 @@ class SmartschoolClient {
   /// production code. This getter is intended for [DevInspector] and similar
   /// reverse-engineering helpers.
   Dio get dio => _dio;
+
+  /// Stream of normalized module counter updates.
+  ///
+  /// This is intentionally transport-agnostic: a websocket listener, polling
+  /// loop, or test harness can publish updates through
+  /// [emitNotificationCounterUpdate].
+  Stream<NotificationCounterUpdate> get notificationCounterUpdates =>
+      _notificationCounterController.stream;
 
   /// Creates and configures a [SmartschoolClient].
   ///
@@ -299,6 +312,41 @@ class SmartschoolClient {
 
   /// Deletes all persisted cookies for this user (effectively logs out).
   Future<void> clearCookies() => _cookieJar.deleteAll();
+
+  /// Emits a normalized notification counter update to listeners.
+  ///
+  /// Returns `false` when [moduleName] is empty, otherwise `true`.
+  bool emitNotificationCounterUpdate({
+    required String moduleName,
+    required int counter,
+    bool isNew = false,
+    String source = 'unknown',
+    DateTime? timestamp,
+  }) {
+    if (moduleName.trim().isEmpty) return false;
+
+    _notificationCounterController.add(
+      NotificationCounterUpdate(
+        moduleName: moduleName,
+        counter: counter,
+        isNew: isNew,
+        source: source,
+        timestamp: timestamp ?? DateTime.now(),
+      ),
+    );
+    return true;
+  }
+
+  /// Releases long-lived client resources.
+  ///
+  /// This is optional for short-lived scripts but recommended for daemon-like
+  /// usage that keeps a [SmartschoolClient] alive for longer periods.
+  Future<void> dispose({bool force = true}) async {
+    _dio.close(force: force);
+    if (!_notificationCounterController.isClosed) {
+      await _notificationCounterController.close();
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Internal auth helpers — called by [_SmartschoolAuthInterceptor]

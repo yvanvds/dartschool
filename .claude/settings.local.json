@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(claude mcp *)",
+      "WebSearch",
+      "mcp__smartschool-researcher__login_status",
+      "mcp__smartschool-researcher__login",
+      "mcp__smartschool-researcher__get_page",
+      "mcp__smartschool-researcher__request",
+      "Bash(curl -s -o /tmp/messages-main.js \"https://static6.smart-school.net/modules/Messages/dist/main-built.rev-9f1ed956d1.js\")",
+      "Read(//tmp/**)",
+      "Bash(curl -s -o ./.tmp-messages-main.js \"https://static6.smart-school.net/modules/Messages/dist/main-built.rev-9f1ed956d1.js\")"
+    ]
+  }
+}

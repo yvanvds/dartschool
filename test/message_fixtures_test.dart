@@ -68,6 +68,34 @@ void main() {
       expect(changed.newValue, 0);
     });
 
+    test('mark read fixture parses into MessageChanged with newValue=1', () {
+      final xml = _readFixture('post/postboxes/mark message read.xml');
+
+      final entries = XmlInterface.parseResponse(xml, './/data/message');
+      final changed = MessageChanged.fromXml(entries.single);
+
+      expect(changed.id, 123);
+      expect(changed.newValue, 1);
+    });
+
+    test('mark read and mark unread fixtures share the same xml schema', () {
+      // markRead  → server responds with status=1 (now read)
+      // markUnread → server responds with status=0 (now unread)
+      // Both use identical XML structure; only the status value differs.
+      final readXml = _readFixture('post/postboxes/mark message read.xml');
+      final unreadXml = _readFixture('post/postboxes/mark message unread.xml');
+
+      final readEntries = XmlInterface.parseResponse(readXml, './/data/message');
+      final unreadEntries = XmlInterface.parseResponse(unreadXml, './/data/message');
+
+      final readChanged = MessageChanged.fromXml(readEntries.single);
+      final unreadChanged = MessageChanged.fromXml(unreadEntries.single);
+
+      expect(readChanged.id, unreadChanged.id);
+      expect(readChanged.newValue, 1);
+      expect(unreadChanged.newValue, 0);
+    });
+
     test('save label fixture parses into MessageChanged', () {
       final xml = _readFixture('post/postboxes/save msglabel.xml');
 

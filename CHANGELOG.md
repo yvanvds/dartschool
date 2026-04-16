@@ -1,5 +1,16 @@
 
 
+## 0.2.3 - 2026-04-16
+
+### Added
+- `MessagesService.markRead(msgId, {boxType})` — explicitly marks a message as read using the `postboxes / mark message read` XML dispatcher action. This is the call the Smartschool website makes when opening a message (batched alongside `show message` and `attachment list`). `getMessage` continues to leave read-state untouched; call `markRead` separately when you want the server to record the message as opened.
+- New fixture `test/fixtures/smartschool/requests/post/postboxes/mark message read.xml` and two tests covering the response parsing.
+- New example `example/mark_read_toggle_example.dart` that toggles the read/unread status of the first inbox message and explains manual browser verification.
+
+### Fixed
+- **`ShortMessage.unread` and `FullMessage.unread` were inverted.** Smartschool's list XML uses `<status>0</status>` for *unread* messages and `<status>1</status>` for *read* messages — matching the website's own JavaScript (`isNew = parseInt(status) <= 0`). The `<unread>` XML field carries the same numeric value as `<status>` but its name implies the opposite, leading to a silent inversion in the Dart models. Both models now derive `unread` from `<status>` (`status == 0 → unread: true`) instead of from the misleadingly-named `<unread>` field. Callers that used `msg.unread` to display bold/unread indicators, count unread messages, or drive mark-read/unread logic were all affected.
+- Corrected the `message list` and `message list archive` fixtures to reflect the live server's consistent behaviour (both `<status>` and `<unread>` fields always carry the same value).
+
 ## 0.2.2 - 2026-04-15
 
 - Added notification support for new messages: `MessagesService` now emits real-time updates via `messageCounterUpdates` and can be bound to `SmartschoolClient.notificationCounterUpdates` for push-style notification flows.

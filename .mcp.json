@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "smartschool-researcher": {
+      "type": "stdio",
+      "command": "dart",
+      "args": [
+        "run",
+        "bin/smartschool_researcher_mcp.dart",
+        "--credentialsPath=credentials.yml"
+      ],
+      "env": {}
+    }
+  }
+}

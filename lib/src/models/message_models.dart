@@ -130,6 +130,11 @@ class ShortMessage {
 
   /// Constructs a [ShortMessage] from the [Map] produced by
   /// [XmlInterface.elementToMap] for a `<message>` element.
+  ///
+  /// The XML `<unread>` field is misleadingly named: Smartschool emits `0` for
+  /// unread messages and `1` for read messages (it mirrors `<status>`). The
+  /// Smartschool JavaScript derives the new/unread flag from `<status>` via
+  /// `isNew = parseInt(status) <= 0`, which is the semantic we follow here.
   factory ShortMessage.fromXml(Map<String, dynamic> xml) {
     return ShortMessage(
       id: _int(xml, 'id'),
@@ -139,7 +144,7 @@ class ShortMessage {
       date: _dateTime(xml, 'date'),
       status: _int(xml, 'status'),
       attachment: _int(xml, 'attachment'),
-      unread: _bool(xml, 'unread'),
+      unread: _int(xml, 'status') == 0,
       deleted: _bool(xml, 'deleted'),
       allowReply: _bool(xml, 'allowreply'),
       allowReplyEnabled: _bool(xml, 'allowreplyenabled'),
@@ -223,6 +228,9 @@ class FullMessage {
   /// Constructs a [FullMessage] from the map produced by
   /// [XmlInterface.elementToMap] for a `<message>` element, after running
   /// the post-processing that normalises the receiver lists.
+  ///
+  /// See [ShortMessage.fromXml] for the `<status>`/`<unread>` semantics —
+  /// `unread` is derived from `<status>` (`status == 0` → unread).
   factory FullMessage.fromXml(Map<String, dynamic> xml) {
     return FullMessage(
       id: _int(xml, 'id'),
@@ -232,7 +240,7 @@ class FullMessage {
       body: _str(xml, 'body'),
       status: _int(xml, 'status'),
       attachment: _int(xml, 'attachment'),
-      unread: _bool(xml, 'unread'),
+      unread: _int(xml, 'status') == 0,
       receivers: _receiverList(xml, 'receivers'),
       ccReceivers: _receiverList(xml, 'ccreceivers'),
       bccReceivers: _receiverList(xml, 'bccreceivers'),

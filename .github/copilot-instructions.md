@@ -19,7 +19,9 @@ This is an unofficial Dart HTTP client for the Smartschool school platform.
 1. Check `dev_dumps/` for a captured response
 2. Identify the form fields or JSON keys
 3. Add a model in `models/`, a method in the relevant service
-4. Export from `flutter_smartschool.dart`
+- Use one public class per file unless classes are tiny and tightly coupled.
+- Prefer small, focused services with a single responsibility.
+- When generating Dart code, prefer clear naming and null-safe patterns.
 
 ### NEVER EVER
 - Hardcode credentials or sensitive data in the codebase

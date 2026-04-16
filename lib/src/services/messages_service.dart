@@ -365,6 +365,34 @@ class MessagesService {
     return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
   }
 
+  /// Marks message [msgId] in [boxType] as read.
+  ///
+  /// [getMessage] intentionally does not flip the read state; call this method
+  /// after (or alongside) [getMessage] when you want the server to treat the
+  /// message as opened. The call is idempotent — invoking it on an
+  /// already-read message is a no-op.
+  ///
+  /// Returns the updated [MessageChanged] record from the server. The server
+  /// responds with `<status>1</status>` to indicate the message is now read.
+  Future<MessageChanged?> markRead(
+    int msgId, {
+    BoxType boxType = BoxType.inbox,
+  }) async {
+    final entries = await _client.postXml(
+      url: _messagesXmlUrl,
+      subsystem: 'postboxes',
+      action: 'mark message read',
+      params: {
+        'msgID': '$msgId',
+        'boxType': boxType.value,
+        'limitList': 'true',
+      },
+      xpath: _xpathMessage,
+    );
+
+    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+  }
+
   /// Sets the colour [label] on message [msgId] in [boxType].
   ///
   /// Use [MessageLabel.noFlag] to clear the flag.

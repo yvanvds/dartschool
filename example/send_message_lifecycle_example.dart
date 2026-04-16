@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter_smartschool/flutter_smartschool.dart';
-import 'package:flutter_smartschool/src/services/send_message_params.dart';
 
 /// Example: send a message to yourself then exercise the full
 /// archive / trash lifecycle, verifying each step with a fresh API poll.

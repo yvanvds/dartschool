@@ -1,7 +1,5 @@
 import 'package:test/test.dart';
-import 'package:flutter_smartschool/src/services/send_message_params.dart';
-import 'package:flutter_smartschool/src/models/message_models.dart';
-import 'package:flutter_smartschool/src/services/message_send_options.dart';
+import 'package:flutter_smartschool/flutter_smartschool.dart';
 
 void main() {
   group('SendMessageParams', () {

@@ -34,14 +34,6 @@ dependencies:
 			url: https://github.com/yvanvds/dartschool.git
 ```
 
-### Package name vs repository name
-
-Using different names is totally fine:
-- Package/import name is `flutter_smartschool` (what users add in `pubspec.yaml` and import in code).
-- Git repository can be `dartschool`.
-
-This is common on pub.dev and does not cause technical issues.
-
 ---
 
 ## Quick start

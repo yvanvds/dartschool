@@ -9,7 +9,10 @@
       "mcp__smartschool-researcher__request",
       "Bash(curl -s -o /tmp/messages-main.js \"https://static6.smart-school.net/modules/Messages/dist/main-built.rev-9f1ed956d1.js\")",
       "Read(//tmp/**)",
-      "Bash(curl -s -o ./.tmp-messages-main.js \"https://static6.smart-school.net/modules/Messages/dist/main-built.rev-9f1ed956d1.js\")"
+      "Bash(curl -s -o ./.tmp-messages-main.js \"https://static6.smart-school.net/modules/Messages/dist/main-built.rev-9f1ed956d1.js\")",
+      "Bash(node -e ' *)",
+      "mcp__smartschool-researcher__get_json",
+      "mcp__smartschool-researcher__post_form"
     ]
   }
 }

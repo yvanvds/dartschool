@@ -1,3 +1,14 @@
+## 0.2.5 - 2026-04-17
+
+### Added
+- `MessagesService.getMessage` now accepts an `includeAllRecipients` flag (default `false`). When set to `true` the request is sent with `limitList: 'false'`, and the server returns the full list of recipient display names in `FullMessage.receivers` / `ccReceivers` / `bccReceivers` instead of a truncated list.
+- `MessagesService.getReplyAllRecipients(msgId, {boxType})` — parses the reply-all compose page and returns every pre-populated recipient as a `(List<MessageSearchUser>, List<MessageSearchUser>)` record (To, CC). This is the only server-side endpoint that exposes numeric user IDs for all recipients, which are required for a subsequent reply-all send.
+- `MessagesService.parseReplyAllRecipients(htmlBody)` static method — pure HTML parser for the compose reply-all page, extracted for unit-testing without a live session.
+- `FullMessage` now exposes `totalNrOtherToReceivers`, `totalNrOtherCcReceivers`, and `totalNrOtherBccReceivers` — the count of recipients hidden behind a "show more" link when `limitList` is `true`.
+- New example `example/reply_all_recipients_example.dart`: scans the 50 most recent inbox messages, locates the first message with multiple To recipients and the first with multiple CC recipients, and prints the full recipient list with user IDs resolved via `getReplyAllRecipients`.
+- New test fixtures `test/fixtures/smartschool/requests/post/postboxes/show message all recipients.xml` and `test/fixtures/smartschool/requests/get/composemessage/reply-all.html` (all personal data replaced with fakes).
+- Six new tests in `test/message_fixtures_test.dart` covering full-recipient XML parsing, To/CC separation by `typeatt`, correct ID extraction, graceful skip of incomplete `receiverSpan` elements, missing `typeatt` defaulting to To, and missing `userltatt` defaulting to zero.
+
 ## 0.2.4 - 2026-04-16
 
 ### Fixed

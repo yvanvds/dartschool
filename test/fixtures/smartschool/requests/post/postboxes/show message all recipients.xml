@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<server>
+    <response>
+        <status>ok</status>
+        <actions>
+            <action>
+                <subsystem>show message</subsystem>
+                <command>rebuild</command>
+                <data>
+                    <message>
+                        <id>789012</id>
+                        <from>Teacher</from>
+                        <to/>
+                        <subject>Class trip announcement</subject>
+                        <date>2024-03-15 09:30</date>
+                        <body>&lt;p&gt;Dear all,&lt;/p&gt;</body>
+                        <status>1</status>
+                        <attachment>0</attachment>
+                        <unread>0</unread>
+                        <label>0</label>
+                        <receivers>
+                            <to>Student A</to>
+                            <to>Student B</to>
+                            <to>Student C</to>
+                        </receivers>
+                        <ccreceivers>
+                            <to>Parent X</to>
+                            <to>Parent Y</to>
+                        </ccreceivers>
+                        <bccreceivers/>
+                        <senderPicture>initials_T</senderPicture>
+                        <markedInLVS/>
+                        <fromTeam>0</fromTeam>
+                        <totalNrOtherToReciviers>0</totalNrOtherToReciviers>
+                        <totalnrOtherCcReceivers>0</totalnrOtherCcReceivers>
+                        <totalnrOtherBccReceivers>0</totalnrOtherBccReceivers>
+                        <canReply>1</canReply>
+                        <hasReply>0</hasReply>
+                        <hasForward>0</hasForward>
+                        <sendDate/>
+                    </message>
+                </data>
+            </action>
+        </actions>
+    </response>
+</server>

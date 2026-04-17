@@ -11,7 +11,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 ## Features
 
 - Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
-- Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, archive, trash, labels.
+- Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, archive, trash, labels, reply-all recipient resolution.
 - **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
@@ -24,7 +24,7 @@ Add the package to `pubspec.yaml`:
 
 ```yaml
 dependencies:
-	flutter_smartschool: ^0.2.3
+	flutter_smartschool: ^0.2.5
 ```
 
 or directly from GitHub (`dartschool`) while iterating:
@@ -84,6 +84,8 @@ Future<void> main() async {
 See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow.
 
 See [example/mark_read_toggle_example.dart](example/mark_read_toggle_example.dart) for toggling the read/unread status of a message.
+
+See [example/reply_all_recipients_example.dart](example/reply_all_recipients_example.dart) to scan the inbox for messages with multiple recipients and resolve their user IDs via `getReplyAllRecipients`.
 
 For thread grouping on real inbox headers, see [example/message_threading_headers_example.dart](example/message_threading_headers_example.dart).
 
@@ -156,7 +158,8 @@ final messages = MessagesService(client);
 | `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box. Pass `alreadySeenIds` for lightweight polling. |
 | `getArchiveHeaders({boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | Convenience wrapper for the archive folder — resolves the box ID automatically. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
-| `getMessage(msgId, {boxType})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. |
+| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. |
+| `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To and CC recipients with their numeric user IDs by parsing the reply-all compose page. Use this when you need IDs for a subsequent `sendMessage` reply-all. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
 
 Attachment bytes can be downloaded from each `MessageAttachment`:
@@ -276,6 +279,7 @@ See [example/message_change_stream_example.dart](example/message_change_stream_e
 | `parseHiddenFields(htmlBody)` | Extracts all `<input type="hidden">` name→value pairs from an HTML page. |
 | `parseComposeCurrentUserIds(htmlBody)` | Extracts `(userId, ssId, userLt)` from the `window.tinymceInitConfig` block. |
 | `parseArchiveBoxIdFromMessagesHtml(htmlBody)` | Extracts the archive folder box ID from the Messages module HTML. |
+| `parseReplyAllRecipients(htmlBody)` | Extracts To and CC recipients with numeric IDs from a reply-all compose page (parses `div.receiverSpan` elements). Returns `(toList, ccList)`. |
 
 ---
 
@@ -333,7 +337,7 @@ Controls:
 Returned by `getHeaders` / `getArchiveHeaders`. Fields: `id`, `sender`, `subject`, `date`, `unread`, `deleted`, `attachment`, `coloredFlag`, `allowReply`, `realBox`, …
 
 ### `FullMessage`
-Returned by `getMessage`. Adds: `body` (HTML), `receivers`, `ccReceivers`, `bccReceivers`, `canReply`, `senderPicture`, …
+Returned by `getMessage`. Adds: `body` (HTML), `receivers`, `ccReceivers`, `bccReceivers`, `canReply`, `senderPicture`, `totalNrOtherToReceivers`, `totalNrOtherCcReceivers`, `totalNrOtherBccReceivers` (count of recipients hidden behind a "show more" link when `includeAllRecipients` is `false`), …
 
 ### `MessageAttachment`
 Returned by `getAttachments`. Fields: `fileId`, `name`, `mime`, `size`, `icon`, `wopiAllowed`, `order`.

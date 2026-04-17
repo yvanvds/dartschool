@@ -283,10 +283,21 @@ class MessagesService {
 
   /// Fetches the full content of message [msgId] from [boxType].
   ///
+  /// By default Smartschool truncates the recipient lists and reports the
+  /// hidden count via [FullMessage.totalNrOtherToReceivers] /
+  /// [FullMessage.totalNrOtherCcReceivers].  Set [includeAllRecipients] to
+  /// `true` to retrieve the complete lists in a single call — the server
+  /// then returns all names and the `totalNr*` fields become 0.
+  ///
+  /// To also obtain the numeric user IDs of every recipient (required for a
+  /// programmatic reply-all), call [getReplyAllRecipients] instead of or in
+  /// addition to this method.
+  ///
   /// Returns `null` if the server returns no message element for this ID.
   Future<FullMessage?> getMessage(
     int msgId, {
     BoxType boxType = BoxType.inbox,
+    bool includeAllRecipients = false,
   }) async {
     final entries = await _client.postXml(
       url: _messagesXmlUrl,
@@ -295,7 +306,7 @@ class MessagesService {
       params: {
         'msgID': '$msgId',
         'boxType': boxType.value,
-        'limitList': 'true',
+        'limitList': includeAllRecipients ? 'false' : 'true',
       },
       xpath: _xpathMessage,
     );
@@ -506,6 +517,77 @@ class MessagesService {
       );
     }
     return _searchUsers(query, uniqueUsc);
+  }
+
+  /// Fetches all reply-all recipients for [msgId] with their platform user IDs.
+  ///
+  /// The XML `show message` endpoint only returns recipient display names.
+  /// This method loads the Smartschool reply-all compose page
+  /// (`composeType=2`), which pre-populates every recipient slot with the
+  /// resolved `realuserid` and `ssID`, and extracts that data via
+  /// [parseReplyAllRecipients].
+  ///
+  /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
+  /// instances ready to be passed directly to [sendMessage].  The sender of
+  /// the original message is placed in the `to` list following Smartschool's
+  /// standard reply-all logic.  The authenticated user is excluded.
+  Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
+  getReplyAllRecipients(
+    int msgId, {
+    BoxType boxType = BoxType.inbox,
+  }) async {
+    final html = await _client.getRaw(
+      _composeUrl(
+        boxType: boxType,
+        composeType: 2,
+        msgId: '$msgId',
+      ),
+    );
+    return parseReplyAllRecipients(html);
+  }
+
+  /// Parses the reply-all compose page HTML and extracts pre-populated
+  /// recipients with their numeric user IDs.
+  ///
+  /// Each recipient `<div class="receiverSpan">` carries `realuserid`,
+  /// `ssidatt`, `userltatt`, and `typeatt` attributes.  `typeatt=2` indicates
+  /// CC; everything else is treated as a To recipient.
+  ///
+  /// Returns `(toList, ccList)`.
+  static (List<MessageSearchUser>, List<MessageSearchUser>)
+  parseReplyAllRecipients(String htmlBody) {
+    final doc = html_parser.parse(htmlBody);
+    final to = <MessageSearchUser>[];
+    final cc = <MessageSearchUser>[];
+
+    for (final span in doc.querySelectorAll('div.receiverSpan')) {
+      final userIdStr = span.attributes['realuserid'];
+      final ssIdStr = span.attributes['ssidatt'];
+      final userLtStr = span.attributes['userltatt'] ?? '0';
+      final typeStr = span.attributes['typeatt'] ?? '0';
+      final nameEl = span.querySelector('.receiverSpanName');
+
+      if (userIdStr == null || ssIdStr == null || nameEl == null) continue;
+
+      final userId = int.tryParse(userIdStr);
+      final ssId = int.tryParse(ssIdStr);
+      if (userId == null || ssId == null) continue;
+
+      final user = MessageSearchUser(
+        userId: userId,
+        displayName: nameEl.text.trim(),
+        ssId: ssId,
+        userLt: int.tryParse(userLtStr) ?? 0,
+      );
+
+      if (typeStr == '2') {
+        cc.add(user);
+      } else {
+        to.add(user);
+      }
+    }
+
+    return (to, cc);
   }
 
   /// Returns the logged-in user as a compose recipient candidate.

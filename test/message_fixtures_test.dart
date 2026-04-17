@@ -279,6 +279,133 @@ void main() {
       );
       expect(MessagesService.ensureReplySubject('   '), 'Re:');
     });
+
+    // -----------------------------------------------------------------------
+    // getMessage with includeAllRecipients fixture
+    // -----------------------------------------------------------------------
+
+    test(
+      'show message all recipients fixture parses full To and CC lists',
+      () {
+        final xml = _readFixture(
+          'post/postboxes/show message all recipients.xml',
+        );
+
+        final entries = XmlInterface.parseResponse(xml, './/data/message');
+        expect(entries, hasLength(1));
+
+        final full = FullMessage.fromXml(entries.single);
+
+        expect(full.id, 789012);
+        expect(full.sender, 'Teacher');
+        expect(full.subject, 'Class trip announcement');
+        expect(full.receivers, ['Student A', 'Student B', 'Student C']);
+        expect(full.ccReceivers, ['Parent X', 'Parent Y']);
+        expect(full.bccReceivers, isEmpty);
+        expect(full.totalNrOtherToReceivers, 0);
+        expect(full.totalNrOtherCcReceivers, 0);
+      },
+    );
+
+    // -----------------------------------------------------------------------
+    // parseReplyAllRecipients
+    // -----------------------------------------------------------------------
+
+    test('reply-all fixture parses To and CC recipients with IDs', () {
+      final html = _readFixture('get/composemessage/reply-all.html');
+
+      final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+
+      expect(toList, hasLength(2));
+      expect(ccList, hasLength(2));
+
+      expect(toList[0].userId, 201);
+      expect(toList[0].displayName, 'Alice Johnson');
+      expect(toList[0].ssId, 4069);
+      expect(toList[0].userLt, 0);
+
+      expect(toList[1].userId, 202);
+      expect(toList[1].displayName, 'Bob Smith');
+      expect(toList[1].ssId, 4069);
+
+      expect(ccList[0].userId, 301);
+      expect(ccList[0].displayName, 'Carol White');
+      expect(ccList[0].ssId, 4069);
+      expect(ccList[0].userLt, 1);
+
+      expect(ccList[1].userId, 302);
+      expect(ccList[1].displayName, 'Dave Brown');
+    });
+
+    test('parseReplyAllRecipients returns empty lists for empty HTML', () {
+      final (toList, ccList) = MessagesService.parseReplyAllRecipients(
+        '<html><body></body></html>',
+      );
+
+      expect(toList, isEmpty);
+      expect(ccList, isEmpty);
+    });
+
+    test(
+      'parseReplyAllRecipients skips spans missing required attributes',
+      () {
+        const html = '''
+<html><body>
+  <div class="receiverSpan" ssidatt="4069" typeatt="0">
+    <span class="receiverSpanName">No userId</span>
+  </div>
+  <div class="receiverSpan" realuserid="401" typeatt="0">
+    <span class="receiverSpanName">No ssId</span>
+  </div>
+  <div class="receiverSpan" realuserid="402" ssidatt="4069" typeatt="0">
+  </div>
+  <div class="receiverSpan" realuserid="403" ssidatt="4069" typeatt="0">
+    <span class="receiverSpanName">Valid User</span>
+  </div>
+</body></html>''';
+
+        final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+
+        expect(toList, hasLength(1));
+        expect(toList.single.userId, 403);
+        expect(toList.single.displayName, 'Valid User');
+        expect(ccList, isEmpty);
+      },
+    );
+
+    test(
+      'parseReplyAllRecipients defaults typeatt-less spans to To list',
+      () {
+        const html = '''
+<html><body>
+  <div class="receiverSpan" realuserid="501" ssidatt="4069">
+    <span class="receiverSpanName">Default To</span>
+  </div>
+</body></html>''';
+
+        final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+
+        expect(toList, hasLength(1));
+        expect(toList.single.userId, 501);
+        expect(ccList, isEmpty);
+      },
+    );
+
+    test(
+      'parseReplyAllRecipients defaults missing userltatt to zero',
+      () {
+        const html = '''
+<html><body>
+  <div class="receiverSpan" realuserid="601" ssidatt="4069" typeatt="0">
+    <span class="receiverSpanName">No UserLt</span>
+  </div>
+</body></html>''';
+
+        final (toList, _) = MessagesService.parseReplyAllRecipients(html);
+
+        expect(toList.single.userLt, 0);
+      },
+    );
   });
 }
 

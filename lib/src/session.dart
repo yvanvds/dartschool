@@ -14,6 +14,7 @@ import 'package:path/path.dart' as p;
 import 'credentials.dart';
 import 'exceptions.dart';
 import 'models/notification_models.dart';
+import 'models/user_models.dart';
 import 'xml_interface.dart';
 
 const String kXRequestedWith = 'X-Requested-With';
@@ -275,6 +276,11 @@ class SmartschoolClient {
     if (_authenticatedUser == null) {
       await platformId; // login side-effect populates _authenticatedUser
     }
+    if (_authenticatedUser == null) {
+      // Session was already valid (no auth flow triggered), so
+      // _parseLoginInformation was never called. Fetch any page to hydrate it.
+      _parseLoginInformation(await getRaw('/'));
+    }
     final user = _authenticatedUser;
     if (user == null) {
       throw const SmartschoolAuthenticationError(
@@ -282,6 +288,40 @@ class SmartschoolClient {
       );
     }
     return user;
+  }
+
+  /// Returns the currently logged-in user.
+  ///
+  /// Reads from the `authenticatedUser` data embedded in every Smartschool page
+  /// (already cached after the first authenticated request).  No extra HTTP
+  /// requests are made.
+  ///
+  /// The integer [SmartschoolUser.id] is the server-assigned user ID, parsed
+  /// from the `authenticatedUser.id` string (`{ssID}_{userId}_{coaccountIdx}`).
+  Future<SmartschoolUser> getCurrentUser() async {
+    final user = await authenticatedUser;
+
+    final idStr = user['id'] as String? ?? '';
+    final parts = idStr.split('_');
+    final id = parts.length >= 2 ? int.tryParse(parts[1]) : null;
+    if (id == null) {
+      throw SmartschoolParsingError(
+        'Could not parse user ID from authenticatedUser.id "$idStr"',
+      );
+    }
+
+    final nameMap = user['name'] as Map<String, dynamic>?;
+    final displayName =
+        (nameMap?['startingWithFirstName'] as String? ?? '').trim();
+    if (displayName.isEmpty) {
+      throw const SmartschoolParsingError(
+        'Could not parse display name from authenticatedUser',
+      );
+    }
+
+    final avatarUrl = user['pictureUrl'] as String?;
+
+    return SmartschoolUser(id: id, displayName: displayName, avatarUrl: avatarUrl);
   }
 
   /// Returns the platform ID for the authenticated user.

@@ -1,3 +1,12 @@
+## 0.2.7 - 2026-04-18
+
+### Added
+- `SmartschoolUser` model — `id` (int), `displayName` (String), `avatarUrl` (String?) — representing the currently authenticated user.
+- `SmartschoolClient.getCurrentUser()` — returns a `SmartschoolUser` for the session owner. Reads directly from the `authenticatedUser` data already embedded in every Smartschool page; no extra HTTP requests are made after the first authenticated call.
+
+### Fixed
+- `SmartschoolClient.authenticatedUser` getter now correctly handles sessions where cookies are already valid and no authentication flow is triggered. Previously, calling `await authenticatedUser` after a cookie-based login silently returned an error because `_authenticatedUser` was never populated (the auth interceptor only calls `_parseLoginInformation` during a fresh login). The getter now falls back to fetching `/` and parsing it when `_authenticatedUser` is still `null` after `platformId`.
+
 ## 0.2.6 - 2026-04-18
 
 ### Added

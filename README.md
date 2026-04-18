@@ -24,7 +24,7 @@ Add the package to `pubspec.yaml`:
 
 ```yaml
 dependencies:
-	flutter_smartschool: ^0.2.5
+	flutter_smartschool: ^0.2.7
 ```
 
 or directly from GitHub (`dartschool`) while iterating:
@@ -140,6 +140,7 @@ await client.ensureAuthenticated();
 | `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
 | `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false` if the stream is already closed |
+| `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
 | `dispose({force})` | Closes the notification stream and the underlying Dio client |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
 
@@ -350,6 +351,9 @@ Use `attachment.download(client)` to fetch raw bytes for a specific attachment.
 
 ### `MessageSearchUser` / `MessageSearchGroup`
 Used as recipients in `sendMessage`. Key fields: `userId`/`groupId`, `ssId`, `userLt`, `displayName`.
+
+### `SmartschoolUser`
+Returned by `SmartschoolClient.getCurrentUser()`. Fields: `id` (int — server-assigned numeric user ID), `displayName` (String), `avatarUrl` (String? — profile picture URL).
 
 ### `MessageChanged` / `MessageDeletionStatus`
 Returned by mutation operations. Carry the `id` of the affected message and a `newValue` / status field.

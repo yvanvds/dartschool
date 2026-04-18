@@ -1,3 +1,10 @@
+## 0.2.6 - 2026-04-18
+
+### Added
+- `MessagesService.getSentMessageRecipients(msgId)` — resolves the original recipients of a sent-folder message with their numeric user IDs. The reply-all compose page for the outbox (`boxType=outbox&composeType=2`) pre-populates the To field with both the original recipients and the authenticated user (as sender); this method filters out the authenticated user and returns the remainder as a `(List<MessageSearchUser>, List<MessageSearchUser>)` record (To, CC). `getReplyAllRecipients` did not work for sent messages because no exclusion of the sender was applied.
+- `MessagesService.parseSentMessageRecipients(htmlBody)` static method — pure HTML parser counterpart to `parseReplyAllRecipients` for the sent-folder case; combines `parseComposeCurrentUserIds` to identify the sender and `parseReplyAllRecipients` to extract all recipient spans, then removes the sender by `userId`.
+- New example `example/get_recipients_from_sent_messages.dart`: fetches the 20 most recent sent messages and prints the resolved recipient IDs for each via `getSentMessageRecipients`.
+
 ## 0.2.5 - 2026-04-17
 
 ### Added

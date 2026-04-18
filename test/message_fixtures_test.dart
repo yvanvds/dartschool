@@ -406,6 +406,133 @@ void main() {
         expect(toList.single.userLt, 0);
       },
     );
+
+    // -----------------------------------------------------------------------
+    // parseSentMessageRecipients
+    // -----------------------------------------------------------------------
+
+    test(
+      'sent-reply-all fixture excludes authenticated user and returns recipients',
+      () {
+        final html = _readFixture('get/composemessage/sent-reply-all.html');
+
+        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
+          html,
+        );
+
+        // Sender (userId 146) must not appear in either list.
+        expect(toList.map((u) => u.userId), isNot(contains(146)));
+        expect(ccList.map((u) => u.userId), isNot(contains(146)));
+
+        // Two actual To recipients remain.
+        expect(toList, hasLength(2));
+        expect(toList[0].userId, 201);
+        expect(toList[0].displayName, 'Alice Johnson');
+        expect(toList[0].ssId, 4069);
+        expect(toList[1].userId, 202);
+        expect(toList[1].displayName, 'Bob Smith');
+
+        // One CC recipient.
+        expect(ccList, hasLength(1));
+        expect(ccList[0].userId, 301);
+        expect(ccList[0].displayName, 'Carol White');
+        expect(ccList[0].userLt, 1);
+      },
+    );
+
+    test(
+      'parseSentMessageRecipients removes sender from CC list when present',
+      () {
+        const html = '''
+<html>
+<head>
+<script>
+window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
+</script>
+</head>
+<body>
+  <div class="receiverSpan" realuserid="201" ssidatt="4069" userltatt="0" typeatt="0">
+    <div class="receiverSpanName">Alice Johnson</div>
+  </div>
+  <div class="receiverSpan" realuserid="146" ssidatt="4069" userltatt="0" typeatt="2">
+    <div class="receiverSpanName">Yvan Vander Sanden</div>
+  </div>
+  <div class="receiverSpan" realuserid="301" ssidatt="4069" userltatt="0" typeatt="2">
+    <div class="receiverSpanName">Carol White</div>
+  </div>
+</body></html>''';
+
+        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
+          html,
+        );
+
+        expect(toList, hasLength(1));
+        expect(toList.single.userId, 201);
+        expect(ccList, hasLength(1));
+        expect(ccList.single.userId, 301);
+      },
+    );
+
+    test('parseSentMessageRecipients returns empty lists for empty HTML', () {
+      final (toList, ccList) = MessagesService.parseSentMessageRecipients(
+        '<html><body></body></html>',
+      );
+
+      expect(toList, isEmpty);
+      expect(ccList, isEmpty);
+    });
+
+    test(
+      'parseSentMessageRecipients returns all recipients unfiltered when '
+      'tinymceInitConfig is absent',
+      () {
+        // No script block → parseComposeCurrentUserIds returns null →
+        // no filtering applied; all spans are returned as-is.
+        const html = '''
+<html><body>
+  <div class="receiverSpan" realuserid="201" ssidatt="4069" typeatt="0">
+    <div class="receiverSpanName">Alice Johnson</div>
+  </div>
+  <div class="receiverSpan" realuserid="146" ssidatt="4069" typeatt="0">
+    <div class="receiverSpanName">Unknown Sender</div>
+  </div>
+</body></html>''';
+
+        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
+          html,
+        );
+
+        expect(toList, hasLength(2));
+        expect(ccList, isEmpty);
+      },
+    );
+
+    test(
+      'parseSentMessageRecipients: sender-only message yields empty lists',
+      () {
+        // Edge case: the authenticated user is the only entry in the To field
+        // (e.g. a message sent to oneself). After filtering, both lists are empty.
+        const html = '''
+<html>
+<head>
+<script>
+window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
+</script>
+</head>
+<body>
+  <div class="receiverSpan" realuserid="146" ssidatt="4069" typeatt="0">
+    <div class="receiverSpanName">Yvan Vander Sanden</div>
+  </div>
+</body></html>''';
+
+        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
+          html,
+        );
+
+        expect(toList, isEmpty);
+        expect(ccList, isEmpty);
+      },
+    );
   });
 }
 

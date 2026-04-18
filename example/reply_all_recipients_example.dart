@@ -95,14 +95,18 @@ Future<void> main() async {
     if (toList.isNotEmpty) {
       print('  To (${toList.length}):');
       for (final u in toList) {
-        print('    • ${u.displayName.padRight(35)} userId=${u.userId}  ssId=${u.ssId}');
+        print(
+          '    • ${u.displayName.padRight(35)} userId=${u.userId}  ssId=${u.ssId}',
+        );
       }
     }
 
     if (ccList.isNotEmpty) {
       print('  CC (${ccList.length}):');
       for (final u in ccList) {
-        print('    • ${u.displayName.padRight(35)} userId=${u.userId}  ssId=${u.ssId}');
+        print(
+          '    • ${u.displayName.padRight(35)} userId=${u.userId}  ssId=${u.ssId}',
+        );
       }
     }
 
@@ -112,8 +116,10 @@ Future<void> main() async {
   if (multiToMsg != null) {
     await showMessage(multiToMsg, 'Message with multiple To recipients');
   } else {
-    print('No message with multiple To recipients found among the '
-        '${headers.length} most recent messages.');
+    print(
+      'No message with multiple To recipients found among the '
+      '${headers.length} most recent messages.',
+    );
     print('');
   }
 
@@ -122,14 +128,18 @@ Future<void> main() async {
     if (multiCcMsg.id == multiToMsg?.id) {
       print('══════════════════════════════════════════════════════════');
       print('Message with multiple CC recipients');
-      print('  (same message as above — #${multiCcMsg.id} "${multiCcMsg.subject}")');
+      print(
+        '  (same message as above — #${multiCcMsg.id} "${multiCcMsg.subject}")',
+      );
       print('');
     } else {
       await showMessage(multiCcMsg, 'Message with multiple CC recipients');
     }
   } else {
-    print('No message with multiple CC recipients found among the '
-        '${headers.length} most recent messages.');
+    print(
+      'No message with multiple CC recipients found among the '
+      '${headers.length} most recent messages.',
+    );
     print('');
   }
 

@@ -590,6 +590,55 @@ class MessagesService {
     return (to, cc);
   }
 
+  /// Returns the original recipients of a sent message identified by [msgId].
+  ///
+  /// The XML `show message` endpoint does not expose recipient user IDs for
+  /// outbox messages.  This method loads the reply-all compose page for the
+  /// sent folder (`boxType=outbox&composeType=2`), which pre-populates the
+  /// To field with both the original recipients **and** the authenticated user
+  /// (as sender).  The authenticated user is identified via the page's
+  /// embedded `tinymceInitConfig.userID` value and filtered out, leaving only
+  /// the actual recipients.
+  ///
+  /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
+  /// instances ready to be passed directly to [sendMessage].
+  Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
+  getSentMessageRecipients(int msgId) async {
+    final html = await _client.getRaw(
+      _composeUrl(
+        boxType: BoxType.sent,
+        composeType: 2,
+        msgId: '$msgId',
+      ),
+    );
+    return parseSentMessageRecipients(html);
+  }
+
+  /// Parses the reply-all compose page for a sent message and returns the
+  /// original recipients with the authenticated user excluded.
+  ///
+  /// The sent-folder reply-all compose page places the sender (the
+  /// authenticated user) alongside the original recipients in the To field.
+  /// This method combines [parseComposeCurrentUserIds] to identify the sender
+  /// and [parseReplyAllRecipients] to extract all pre-populated recipient
+  /// spans, then removes any entry whose `userId` matches the sender.
+  ///
+  /// Returns `(toList, ccList)`.
+  static (List<MessageSearchUser>, List<MessageSearchUser>)
+  parseSentMessageRecipients(String htmlBody) {
+    final ids = parseComposeCurrentUserIds(htmlBody);
+    final currentUserId = ids?.$1;
+
+    final (to, cc) = parseReplyAllRecipients(htmlBody);
+
+    if (currentUserId == null) return (to, cc);
+
+    return (
+      to.where((u) => u.userId != currentUserId).toList(),
+      cc.where((u) => u.userId != currentUserId).toList(),
+    );
+  }
+
   /// Returns the logged-in user as a compose recipient candidate.
   ///
   /// This reads `userID` / `ssID` directly from the compose page JavaScript,

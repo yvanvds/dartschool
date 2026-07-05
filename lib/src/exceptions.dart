@@ -43,3 +43,22 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 class SmartschoolComposeError extends SmartschoolException {
   const SmartschoolComposeError(super.message);
 }
+
+/// Thrown when a Presence (attendance) operation fails.
+///
+/// This covers both a rejected save (the server returns a non-empty `errors[]`
+/// array, exposed via [errors]) and precondition failures such as an unknown
+/// class, an unresolvable status code, or a pupil not present in the class.
+class SmartschoolPresenceError extends SmartschoolException {
+  /// The server-reported error strings, when the failure originated from a
+  /// non-empty `errors[]` in the save response. Empty for precondition
+  /// failures raised client-side.
+  final List<String> errors;
+
+  const SmartschoolPresenceError(super.message, {this.errors = const []});
+
+  @override
+  String toString() => errors.isEmpty
+      ? '$runtimeType: $message'
+      : '$runtimeType: $message (${errors.join('; ')})';
+}

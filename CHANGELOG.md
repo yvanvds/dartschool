@@ -1,3 +1,9 @@
+## 0.2.8 - 2026-07-05
+
+### Fixed
+- Auth: a **successful** 2FA verification is no longer misdetected as a failure (#1). `_driveAuthChain` decided success/failure by inspecting the request URL, but `do2fa()` POSTs to `/2fa/api/v1/google-authenticator` — whose path contains `/2fa/` — so a correct TOTP code (HTTP 200, `{"success":true}`) was wrongly classified as "still on the 2FA page" and threw `SmartschoolAuthenticationError('2FA verification failed…')`. Success/failure is now decided from the response **body** (`success: true`/`false`) via the new `SmartschoolClient.parse2faSuccess`. This surfaced only on a cold session (no cached cookie) on the first authenticated call.
+- MCP `login` tool now verifies the session with a real authenticated request and reports the true status instead of swallowing the error and always returning `ok: true`.
+
 ## 0.2.7 - 2026-04-18
 
 ### Added

@@ -270,20 +270,24 @@ class _SmartschoolResearcherServer {
         _credentials!.validate();
         _inspector = await DevInspector.create(_credentials!);
 
-        Map<String, dynamic>? user;
+        // Verify the session with a real authenticated request instead of
+        // assuming success. getAuthenticatedUser() forces the auth flow and
+        // fetches an authenticated endpoint, so a throw here means login
+        // actually failed — surface it rather than reporting a false `ok`.
         try {
-          user = await _inspector!.getAuthenticatedUser();
-        } catch (_) {
-          // authenticatedUser requires doAccountVerification(); not always
-          // available — safe to omit from the response.
+          final user = await _inspector!.getAuthenticatedUser();
+          return _toolResponse({
+            'ok': true,
+            'authenticatedAs': user,
+            'mainUrl': _credentials!.mainUrl,
+          });
+        } catch (error) {
+          return _toolResponse({
+            'ok': false,
+            'mainUrl': _credentials!.mainUrl,
+            'error': error.toString(),
+          });
         }
-        final response = {
-          'ok': true,
-          'authenticatedAs': ?user,
-          'mainUrl': _credentials!.mainUrl,
-        };
-
-        return _toolResponse(response);
 
       case 'login_status':
         final inspector = _inspector;

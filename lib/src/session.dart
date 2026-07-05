@@ -311,8 +311,8 @@ class SmartschoolClient {
     }
 
     final nameMap = user['name'] as Map<String, dynamic>?;
-    final displayName =
-        (nameMap?['startingWithFirstName'] as String? ?? '').trim();
+    final displayName = (nameMap?['startingWithFirstName'] as String? ?? '')
+        .trim();
     if (displayName.isEmpty) {
       throw const SmartschoolParsingError(
         'Could not parse display name from authenticatedUser',
@@ -321,7 +321,11 @@ class SmartschoolClient {
 
     final avatarUrl = user['pictureUrl'] as String?;
 
-    return SmartschoolUser(id: id, displayName: displayName, avatarUrl: avatarUrl);
+    return SmartschoolUser(
+      id: id,
+      displayName: displayName,
+      avatarUrl: avatarUrl,
+    );
   }
 
   /// Returns the platform ID for the authenticated user.
@@ -491,6 +495,33 @@ class SmartschoolClient {
       '{"google2fa":"$code"}',
       contentType: Headers.jsonContentType,
     );
+  }
+
+  /// Interprets the response returned by the `/2fa/api/v1/google-authenticator`
+  /// endpoint that [do2fa] posts to.
+  ///
+  /// That endpoint answers with HTTP 200 and a JSON body on **both** success
+  /// (`{"success":true,"redirectTo":"/"}`) and failure
+  /// (`{"success":false,"error":"…"}`), and never issues an HTTP redirect — so
+  /// the request URL alone (whose path contains `/2fa/`) cannot distinguish the
+  /// two. The body's `success` flag is the only reliable signal.
+  ///
+  /// Returns `true` when 2FA was accepted, `false` when it was rejected, and
+  /// `null` when the response is not the expected JSON shape (e.g. the client
+  /// was redirected back to the HTML `/2fa` page), leaving the caller to fall
+  /// back to URL-based classification.
+  bool? parse2faSuccess(Response<String> response) {
+    final body = response.data;
+    if (body == null || body.trim().isEmpty) return null;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic> && decoded['success'] is bool) {
+        return decoded['success'] as bool;
+      }
+    } on FormatException {
+      // Not JSON — most likely the HTML /2fa page.
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------
@@ -794,7 +825,28 @@ class _SmartschoolAuthInterceptor extends Interceptor {
 
     if (path.endsWith('/2fa') ||
         (nextResponse?.realUri.path.endsWith('/2fa') ?? false)) {
-      nextResponse = await _client.do2fa();
+      final twoFaResponse = await _client.do2fa();
+
+      // do2fa() POSTs to /2fa/api/v1/google-authenticator, which answers with
+      // HTTP 200 and a JSON body on BOTH success and failure — the URL alone
+      // (whose path contains '/2fa/') cannot tell them apart. Decide from the
+      // response body instead of misclassifying the API endpoint as "still on
+      // the 2FA page".
+      final success = _client.parse2faSuccess(twoFaResponse);
+      if (success == true) {
+        // 2FA accepted. The session cookie has already been persisted by the
+        // CookieManager, so the interceptor can retry the original request.
+        return;
+      }
+      if (success == false) {
+        throw const SmartschoolAuthenticationError(
+          '2FA verification failed. Check your TOTP secret (mfa) and '
+          'ensure your device time is synchronized.',
+        );
+      }
+      // Unrecognised response shape — fall through to the URL-based checks
+      // below (e.g. genuinely still on the HTML /2fa page).
+      nextResponse = twoFaResponse;
     }
 
     final finalUri = nextResponse?.realUri ?? uri;

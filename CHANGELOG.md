@@ -1,3 +1,18 @@
+## 0.2.9 - 2026-07-05
+
+### Added
+- `PresenceService` — writes a pupil's absence/presence code for a specific half-day via Smartschool's **internal** Presence module (the official/public API cannot write presences). Primary use case: mark a pupil **Te laat** ("late"), optionally **Te laat zonder geldige reden** ("late without a valid reason"), with a motivation.
+  - `setLate({userId, classGroupId, date, part, withoutValidReason, motivation})` and `setPresent({userId, classGroupId, date, part, motivation})` — resolve the class structure, resolve the status code by name, locate the target half-day cell, and save it (handling both the update case and the create case when a half-day has no record yet).
+  - Read helpers `getConfig()`, `getAllCodes(structId)`, and `getClassPupils({classGroupId, date, schoolyearRefDate})`, with the config cached and codes cached per structure.
+  - Status codes are resolved **dynamically by name** (`Presence/Code/getAllCodes`) rather than hard-coded, because code IDs are per-school/per-structure. "Te laat zonder geldige reden" is resolved as an alias of "Te laat".
+  - Requires an account with **Presence-handling access** for the class; otherwise the server rejects the save. A non-empty `errors[]` in the response is surfaced as a `SmartschoolPresenceError`.
+- `DayPart` enum (`morning` / `afternoon`, wire values `"am"` / `"pm"`).
+- Presence models `PresenceConfig`, `PresenceClassRef`, `PresenceCode`, `PresenceAlias`, `PresencePupil`, `PresenceHalfDay`.
+- `SmartschoolPresenceError` exception (carries the server-reported `errors`).
+- New example `example/set_late_example.dart`: marks the configured pupil late and restores the original status.
+
+> **Identity note:** the Presence module speaks Smartschool's internal `userID` (not the public API's `AccountID` / `RegisterID` / `UID`). Callers supply the internal `userId` and the class `groupID`; classes map to the public API by `adminNumber`.
+
 ## 0.2.8 - 2026-07-05
 
 ### Fixed

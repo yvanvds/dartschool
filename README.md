@@ -15,6 +15,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
+- Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 
 ---
 
@@ -336,6 +337,64 @@ Controls:
 
 ---
 
+## `PresenceService`
+
+Writes a pupil's absence/presence code for a specific half-day via Smartschool's **internal** Presence module. Smartschool's official (public) API cannot write presences — only this internal endpoint can. The primary use case is marking a pupil **Te laat** ("late"), optionally **Te laat zonder geldige reden** ("late without a valid reason").
+
+> **Access requirement:** this only works when the signed-in account has **Presence-handling access** for the class (`userCanRecord` is true in the module config). Without that right, the server rejects the save and a `SmartschoolPresenceError` is thrown.
+
+> **Identity note:** the Presence module speaks Smartschool's **internal `userID`** (e.g. `11110`), which is *not* the public API's `AccountID` / `RegisterID` / `UID`. You supply the internal `userId` and the class `groupID` (classes map to the public API by `adminNumber`).
+
+```dart
+final presence = PresenceService(client);
+
+// Mark internal userID 11110 (class groupID 298) late this morning.
+await presence.setLate(
+  userId: 11110,
+  classGroupId: 298,
+  date: DateTime(2026, 6, 1),
+  part: DayPart.morning,
+  motivation: 'Overslept',
+);
+
+// "Late without a valid reason" uses the alias of "Te laat".
+await presence.setLate(
+  userId: 11110,
+  classGroupId: 298,
+  date: DateTime(2026, 6, 1),
+  part: DayPart.afternoon,
+  withoutValidReason: true,
+);
+
+// Restore to present.
+await presence.setPresent(
+  userId: 11110,
+  classGroupId: 298,
+  date: DateTime(2026, 6, 1),
+  part: DayPart.morning,
+);
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `setLate({userId, classGroupId, date, part, withoutValidReason, motivation})` | `Future<void>` | Mark a pupil late for a half-day; `withoutValidReason` selects the "Te laat zonder geldige reden" alias. |
+| `setPresent({userId, classGroupId, date, part, motivation})` | `Future<void>` | Mark a pupil present ("Aanwezig") — useful to clear a status. |
+| `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record. Cached. |
+| `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. |
+| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<List<PresencePupil>>` | Pupils and their am/pm half-day cells for a single day. |
+
+Status codes are **not hard-coded** — their numeric IDs are per-school/per-structure, so they are resolved dynamically by name (`Te laat`, `Te laat zonder geldige reden`, `Aanwezig`). The service handles both updating an existing half-day cell and creating one where none exists, and surfaces a non-empty server `errors[]` as a `SmartschoolPresenceError`.
+
+### Example
+
+```bash
+dart run example/set_late_example.dart
+```
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -392,6 +451,18 @@ Fields: `id`, `name`, `state`, `parentFolderId`, `ownerId`, `confidential`, `isF
 ### `IntradeskFileRevision`
 Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCreated`, `owner` (`IntradeskFileOwner`).
 
+### `PresenceConfig`
+Returned by `PresenceService.getConfig()`. Fields: `activeClass` (`PresenceClassRef?`), `allowedClasses` (`List<PresenceClassRef>`), `schoolyearRefDate` (String, `yyyy-MM-dd`). Helper `classForGroup(groupId)`.
+
+### `PresenceClassRef`
+A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`.
+
+### `PresenceCode` / `PresenceAlias`
+A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`aliasId`, `parentCodeId`, `name`). Codes are per-structure, resolved by name. `PresenceCode.aliasByName(name)` looks up an alias case-insensitively.
+
+### `PresencePupil` / `PresenceHalfDay`
+Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell.
+
 ---
 
 ## Enums
@@ -403,6 +474,7 @@ Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCre
 | `SortOrder` | `asc`, `desc` |
 | `RecipientType` | `to`, `cc`, `bcc` |
 | `MessageLabel` | `noFlag`, `greenFlag`, `yellowFlag`, `redFlag`, `blueFlag` |
+| `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 
 ---
 
@@ -413,6 +485,7 @@ Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCre
 | `SmartschoolAuthenticationError` | Login fails or session has expired |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
+| `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), or a class/code/pupil cannot be resolved |
 
 ---
 

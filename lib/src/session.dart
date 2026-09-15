@@ -677,6 +677,13 @@ class SmartschoolClient {
   }
 
   /// A raw POST that bypasses the auth interceptor (marked with `_noAuth`).
+  ///
+  /// Follows a `301`/`302` the way a browser does — with a GET of the
+  /// `Location` — because `dart:io`'s `HttpClient` only auto-follows a redirect
+  /// after a POST when it is a `303`. Smartschool answers a successful login
+  /// form POST with `302 Location: /`, and without this the response handed
+  /// back still has `realUri` on `/login`, which the auth chain reads as a
+  /// failed login (#6).
   Future<Response<String>> _rawPost(
     String url,
     Object data, {
@@ -688,7 +695,7 @@ class SmartschoolClient {
             ? Headers.formUrlEncodedContentType
             : null);
 
-    return _dio.post<String>(
+    final response = await _dio.post<String>(
       url,
       data: data,
       options: Options(
@@ -698,6 +705,20 @@ class SmartschoolClient {
         validateStatus: (_) => true,
       ),
     );
+    return _followUnfollowedRedirect(response);
+  }
+
+  /// GETs the `Location` of a `301`/`302` that the HTTP client left unfollowed
+  /// (it does that for every POST; see [_rawPost]). Anything else is returned
+  /// untouched. Bounded by Dio's own `maxRedirects` on the GET.
+  Future<Response<String>> _followUnfollowedRedirect(
+    Response<String> response,
+  ) async {
+    const browserFollowsAsGet = {HttpStatus.movedPermanently, HttpStatus.found};
+    if (!browserFollowsAsGet.contains(response.statusCode)) return response;
+    final location = response.headers.value(HttpHeaders.locationHeader);
+    if (location == null || location.isEmpty) return response;
+    return _rawGet(response.realUri.resolve(location).toString());
   }
 
   /// A raw GET that bypasses the auth interceptor.

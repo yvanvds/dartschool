@@ -1,3 +1,8 @@
+## 0.2.10 - 2026-09-15
+
+### Fixed
+- Auth: a login POST that Smartschool answers with a **302** (`Location: /` — what the platform sends for an accepted password since September 2026) is no longer reported as `Login failed. Check username/password…` (#6). `dart:io`'s `HttpClient` only follows a redirect after a POST when it is a 303, so `doLogin()`'s response still had `realUri` on `/login` and the auth chain read that as a rejected password — with the right password, and before the 2FA step was ever reached. `_rawPost` now follows a 301/302 with a GET of the `Location`, as a browser does, so the chain sees the real next page (`/2fa`, `/account-verification`, or home). A wrong password (302 back to `/login`) still reads as a failed login.
+
 ## 0.2.9 - 2026-07-05
 
 ### Added

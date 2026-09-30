@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <title>Springfield Academy - Smartschool</title>
+    <meta charset="utf-8">
+</head>
+<body>
+<!--
+  Plain reply compose page of a RECEIVED message
+  (GET /?module=Messages&file=composeMessage&boxType=inbox&composeType=1&msgID=…),
+  with the structure of a live page, trimmed (#24). The To field holds one
+  entry, the sender of the message; CC and BCC are empty. Unlike the
+  new-message form (origMsgID 0, composeAction 0, composeTypeVal 0,
+  msgIDVal 0), the reply form carries the message ID in origMsgID and in the
+  unnamed msgIDVal input, composeAction 2 and composeTypeVal 1 (the reply-all
+  form differs only in composeTypeVal 2). The form's action is empty: the page
+  submits to its own URL. Names, IDs, subject, text and tokens are made up.
+-->
+<form name="form" id="msgForm" action="" method="post" enctype="multipart/form-data">
+<input type="hidden" id="msgEncryptedSender" name="encryptedSender" value="0123456789abcdef0123456789abcdef">
+<input type="hidden" id="msgFormsend" name="send" value="refresh">
+<input type="hidden" id="msgFormorigMsgID" name="origMsgID" value="900030">
+<input type="hidden" id="msgFormcomposeAction" name="composeAction" value="2">
+<input type="hidden" id="msgFormrandomDir" name="randomDir" value="fakeRandomDir0000000000000000000000000000">
+<input type="hidden" id="msgFormuniqueUsc" name="uniqueUsc" value="100fakeUniqueUsc00000000000000000000000100">
+<input type="hidden" id="showTab" name="showTab" value="tab1Container">
+<input type="hidden" id="msgFormdelFile" name="delFile" value="0">
+<input type="hidden" id="composeTypeVal" value="1">
+<input type="hidden" id="msgIDVal" value="900030">
+<input type="hidden" id="msgFormSelectedTab" name="msgFormSelectedTab" value="">
+<input type="hidden" id="sendDate" name="sendDate" value="">
+
+<div id="mainContainer">
+<div id="tomain">
+    <div id='comp_to'>
+        <div class="compose_title"><label for="searchField0">Aan:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="toInput" name="to" droppedtype="0">
+                <div oncontextmenu="disableContext(event); return false;" typeidatt="users" realuserid="201" idatt="U201" userltatt="0" typeatt="0" ssidatt="100" selected="no" unselectable="on" name="receiverPart0" id="receiverPart0_100_U201_0" class="receiverSpan user"><div class='receiverSpanName userm'>Piet Peeters</div><div class='receiverSpanDelete' onclick='oSearchUsers.deleteReceiverSpan(this);' title='Verwijder'></div></div>
+                <div class="insertSearchField" name="insertSearchFieldContainer0" id="insertSearchFieldContainer_0_0" data-tabindex="1">
+                    &nbsp;
+                    <input tabindex="1" class="searchInputField" autocomplete="off" type="text" name="searchField0" id="searchField0">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_tocc'>
+        <div class="compose_title"><label for="searchField2">Kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="toccInput" name="tocc" droppedtype="2">
+                <div class="insertSearchField" name="insertSearchFieldContainer2" id="insertSearchFieldContainer_2_0" data-tabindex="2">
+                    &nbsp;
+                    <input tabindex="2" class="searchInputField" autocomplete="off" type="text" name="searchField2" id="searchField2">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_tobcc'>
+        <div class="compose_title"><label for="searchField3">Blinde kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="tobccInput" name="tobcc" droppedtype="3">
+                <div class="insertSearchField" name="insertSearchFieldContainer3" id="insertSearchFieldContainer_3_0" data-tabindex="3">
+                    &nbsp;
+                    <input tabindex="3" class="searchInputField" autocomplete="off" type="text" name="searchField3" id="searchField3">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+</div>
+<div class="compose_subject">
+    <input tabindex="4" type="text" id="subjectInput" class="subjectInput" name="subject" value="Re: Schoolreis" size="90" maxlength="150">
+</div>
+<select name="copyToLVS">
+    <option value="dontCopyToLVS" selected>Niet kopiëren</option>
+    <option value="copyToLVS">Kopiëren</option>
+    <option value="copyToLVSAndMarkAsPrivate">Kopiëren als privé</option>
+</select>
+<textarea id="message" name="message" rows="23" cols="30" style="width: 100%;" class="mceEditor" mce_editable="true">&lt;p&gt;&lt;/p&gt;&lt;blockquote&gt;&lt;p&gt;Beste collega, de schoolreis gaat door op vrijdag.&lt;/p&gt;&lt;/blockquote&gt;</textarea>
+</div>
+<input type="hidden" id="msgFormbcc" name="bcc" value="0">
+</form>
+<script type="text/javascript"><!-- tinyMCE -->
+    window.tinymceInitConfig = {
+        toolbar_mode: 'wrap',
+        icons: 'smsc',
+        selector: '.mceEditor',
+        language : 'nl',
+        userID 	: '777',
+        userLT 	: '0',
+        ssID	: '100',
+    };
+    window.tinyMcePromise = tinymce.init(window.tinymceInitConfig);
+</script>
+</body>
+</html>

@@ -753,6 +753,34 @@ class MessagesService {
     return _searchUsers(query, uniqueUsc);
   }
 
+  /// Fetches the recipient of a plain reply to [msgId] with their platform
+  /// user ID: the sender of the message.
+  ///
+  /// This method loads the Smartschool reply compose page (`composeType=1`),
+  /// the form its Reply button opens, which pre-populates the To field with
+  /// the sender of the message, and extracts it via
+  /// [parseReplyAllRecipients]. The To list of [getReplyAllRecipients] holds
+  /// the sender too, but among the other To recipients, in no fixed place and
+  /// with nothing that says which entry it is (#24).
+  ///
+  /// Returns a record `(to, cc, bcc)` like [getReplyAllRecipients], one list
+  /// per field of the page, ready to be passed directly to [sendMessage]:
+  /// `to` holds the sender, and `cc` and `bcc` are empty.
+  ///
+  /// The page names the sender whoever it is, the authenticated user
+  /// included: for a message in the sent box ([BoxType.sent]) and for a
+  /// message the user sent to themselves, `to` holds the user. For a message
+  /// in the archive folder, pass [BoxType.inbox] (the default). When
+  /// [boxType] holds no message [msgId], Smartschool answers with a page
+  /// without a compose form, and all three lists are empty.
+  Future<
+    (List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)
+  >
+  getReplyRecipients(int msgId, {BoxType boxType = BoxType.inbox}) async {
+    final html = await _client.getRaw(_replyComposeUrl(msgId, boxType));
+    return parseReplyAllRecipients(html);
+  }
+
   /// Fetches all reply-all recipients for [msgId] with their platform user IDs.
   ///
   /// The XML `show message` endpoint only returns recipient display names.
@@ -766,7 +794,10 @@ class MessagesService {
   /// [sendMessage], one list per field of the page (see
   /// [parseReplyAllRecipients]).  The sender of the original message is
   /// placed in the `to` list following Smartschool's standard reply-all
-  /// logic.  The authenticated user is excluded.
+  /// logic, among the other To recipients and not marked as the sender; use
+  /// [getReplyRecipients] for the sender alone (#24). The authenticated user
+  /// is excluded, except as the sender: for a message the user sent to
+  /// themselves, the page names the user in To.
   ///
   /// For a message in the sent box, the page also lists the authenticated
   /// user, as the sender, in To, and the message's BCC recipients in BCC,
@@ -779,13 +810,14 @@ class MessagesService {
   >
   getReplyAllRecipients(int msgId, {BoxType boxType = BoxType.inbox}) async {
     final html = await _client.getRaw(
-      _composeUrl(boxType: boxType, composeType: 2, msgId: '$msgId'),
+      _replyComposeUrl(msgId, boxType, all: true),
     );
     return parseReplyAllRecipients(html);
   }
 
   /// Parses the reply-all compose page HTML and extracts pre-populated
-  /// recipients with their numeric user IDs.
+  /// recipients with their numeric user IDs. The reply compose page
+  /// ([getReplyRecipients]) has the same recipient markup.
   ///
   /// Each recipient `<div class="receiverSpan">` carries `realuserid`,
   /// `ssidatt`, `userltatt`, and `typeatt` attributes.  `typeatt` is the
@@ -866,7 +898,7 @@ class MessagesService {
   >
   getSentMessageRecipients(int msgId) async {
     final html = await _client.getRaw(
-      _composeUrl(boxType: BoxType.sent, composeType: 2, msgId: '$msgId'),
+      _replyComposeUrl(msgId, BoxType.sent, all: true),
     );
     final message = await getMessage(
       msgId,
@@ -1190,6 +1222,21 @@ class MessagesService {
   }) =>
       '/?module=Messages&file=composeMessage'
       '&boxType=${boxType.value}&composeType=$composeType&msgID=$msgId';
+
+  /// The URL of the form Smartschool opens to reply to message [msgId] in
+  /// [boxType]: its plain reply form (`composeType=1`), or with [all] its
+  /// reply-all form (`composeType=2`).
+  ///
+  /// Unlike the new-message form, both carry the ID of the message in their
+  /// hidden `origMsgID` field (and in the unnamed `msgIDVal` input), with
+  /// `composeAction` `2` instead of `0`. Their `<form>` has an empty
+  /// `action`, so the page submits a reply to this URL (#24).
+  static String _replyComposeUrl(
+    int msgId,
+    BoxType boxType, {
+    bool all = false,
+  }) =>
+      _composeUrl(boxType: boxType, composeType: all ? 2 : 1, msgId: '$msgId');
 
   /// GETs the compose page and returns all hidden `<input>` field values.
   Future<Map<String, String>> _loadComposeFields() async {

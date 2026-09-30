@@ -154,6 +154,15 @@ class SmartschoolAccountVerificationRejectedError
 /// after loading the compose form that way (#25): the message was not sent,
 /// and calling `sendMessage` again logs in and starts from a new compose form.
 ///
+/// Also thrown, without sending the request, for a request that must go out
+/// in the session of an earlier answer (`sameSessionAs` on the POST methods
+/// of `SmartschoolClient`) when the client logged in again since that
+/// answer's request went out, or is logging in, for instance for another
+/// request on the same client (#38). `MessagesService.sendMessage` and
+/// `sendReply` send every step after loading the compose form that way too:
+/// the send stops before the submit, nothing was sent, and calling the method
+/// again starts from a new compose form in the new session.
+///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
 /// error type (e.g. [SmartschoolPresenceError]).
@@ -211,10 +220,13 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 
 /// Thrown when Smartschool's message compose form cannot be used: its hidden
 /// fields (`uniqueUsc`, `randomDir`) or the IDs of the current user are
-/// missing from it. `MessagesService.sendReply` also throws it when
-/// Smartschool does not answer with the reply form of the message, or when
-/// the reply would go to a recipient that the reply form names and the
-/// params leave out (#26).
+/// missing from it, or Smartschool does not register a recipient on it (its
+/// answer to `addUserToSelected` does not name the recipient; the message
+/// names it, #39). `MessagesService.sendReply` also throws it when
+/// Smartschool does not answer with the reply form of the message (#26), or
+/// does not take a recipient that the reply form names and the params leave
+/// out off the form (its answer to `deleteUsersFromSelected` does not list
+/// the recipient; the message names it, #42).
 ///
 /// `MessagesService.sendMessage` and `sendReply` throw it before the message
 /// is submitted, so nothing was sent. A submitted message that Smartschool
@@ -247,7 +259,8 @@ class SmartschoolComposeError extends SmartschoolException {
 /// as a [SmartschoolComposeError], a [SmartschoolAttachmentUploadError], a
 /// [SmartschoolConnectionError] or a login failure), or Smartschool refusing
 /// the session for a step of the send, the submit included, before handling
-/// it ([SmartschoolSessionExpiredError]).
+/// it, or the client not sending a step because it logged in again since it
+/// loaded the compose form (both a [SmartschoolSessionExpiredError], #38).
 ///
 /// Deliberately not a [SmartschoolComposeError], so a `catch` meant for the
 /// failures that are safe to retry does not catch it.

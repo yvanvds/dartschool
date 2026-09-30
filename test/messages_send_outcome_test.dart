@@ -36,6 +36,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/add_recipient_answer.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -58,11 +60,6 @@ final _recordedComposeForm = _fixture('get/composemessage/new-message.html');
 /// The recorded answer to a sent message: `200` and a page whose script
 /// calls `checkOpenerActions(); window.close();`.
 final _recordedSendAnswer = _fixture('post/composemessage/on_send.html');
-
-/// The recorded answer to `addUserToSelected`.
-final _recordedAddRecipientAnswer = _fixture(
-  'post/composemessage/add-users-to-selected.xml',
-);
 
 /// The compose form of session [session]: the recorded form, with tokens
 /// that name the session.
@@ -94,9 +91,11 @@ const _addRecipient = 'POST /?file=searchUsers';
 const _upload = 'POST /Upload/Upload/Index';
 const _submit = 'POST /?file=composeMessage';
 
-/// The login chain that a GET redirected to `/login` runs, from the password
-/// to the 2FA answer.
-const _password = [
+/// The login chain that a GET redirected to `/login` runs: the login loads the
+/// login page itself, in a new session (#45), and goes from the password to
+/// the 2FA answer.
+const _login = [
+  'GET /login',
   'POST /login',
   'GET /',
   'GET /2fa/api/v1/config',
@@ -220,8 +219,8 @@ class _Smartschool implements HttpClientAdapter {
             'session $session: ${fields['uniqueUsc']} ${fields['id']}',
           );
           return _response(
-            _recordedAddRecipientAnswer,
-            contentType: 'text/xml',
+            registeredRecipientAnswer(fields),
+            contentType: registeredRecipientContentType,
           );
         case _upload:
           uploads.add('session $session: ${_field(options, 'uploadDir')}');
@@ -568,7 +567,7 @@ void main() {
       expect(server.logSinceExpiry, [
         _submit,
         _compose,
-        ..._password,
+        ..._login,
         _compose,
         _addRecipient,
         _submit,
@@ -588,7 +587,7 @@ void main() {
 
       expect(server.log, [
         _compose,
-        ..._password,
+        ..._login,
         _compose,
         _addRecipient,
         _submit,

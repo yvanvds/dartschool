@@ -96,7 +96,10 @@ class SmartschoolClient {
   /// Call this factory instead of the private constructor.
   ///
   /// When Smartschool refuses the session for a request, the client logs in
-  /// again and retries it. After three logins in a row that did not get the
+  /// again and retries it. Requests share that login: one that Smartschool
+  /// refuses while a login runs waits for it and is then retried, so
+  /// concurrent requests on an expired session log in once (#36). After
+  /// three logins in a row that did not get the
   /// session accepted, it stops logging in on its own, and tries one login
   /// again once [loginCooldown] has passed since the last one (see
   /// [resetLoginAttempts]). [loginCooldown] defaults to
@@ -154,9 +157,17 @@ class SmartschoolClient {
     );
 
     // Cookie manager must be added before auth interceptor so cookies are
-    // available on each retry request.
+    // available on each retry request. It keeps the answers that Smartschool
+    // refused out of the jar (#45), and stamps each request with the session
+    // its cookies were loaded in (#38).
     dio.interceptors
-      ..add(CookieManager(cookieJar))
+      ..add(
+        _SmartschoolCookieManager(
+          cookieJar,
+          client._auth.refusedSession,
+          () => client._auth.settledSession,
+        ),
+      )
       ..add(client._auth);
 
     return client;
@@ -263,10 +274,23 @@ class SmartschoolClient {
   /// response — it is used when the expected response is HTML or plain text
   /// (e.g. the message compose form page).
   Future<String> getRaw(String path, {Map<String, dynamic>? query}) async {
-    final resp = await _send(
-      () => _dio.get<String>(path, queryParameters: query),
-    );
+    final resp = await getResponse(path, query: query);
     return resp.data ?? '';
+  }
+
+  /// Performs the same GET as [getRaw], but returns the whole [Response]:
+  /// the status code, the headers and the final URL (`realUri`) as well as
+  /// the body.
+  ///
+  /// Pass it as `sameSessionAs` to a later request that carries state of
+  /// this page, such as the tokens of a form it holds, so that the request
+  /// goes out only in the session the page was loaded in (see
+  /// [postMultipartResponse]).
+  Future<Response<String>> getResponse(
+    String path, {
+    Map<String, dynamic>? query,
+  }) {
+    return _send(() => _dio.get<String>(path, queryParameters: query));
   }
 
   /// Performs an authenticated `application/x-www-form-urlencoded` POST and
@@ -275,18 +299,20 @@ class SmartschoolClient {
   /// Used for Smartschool operations that submit legacy HTML forms (such as
   /// recipient search) whose responses are XML or plain text instead of JSON.
   ///
-  /// [retryAfterLogin]: see [postMultipartResponse].
+  /// [retryAfterLogin] and [sameSessionAs]: see [postMultipartResponse].
   Future<String> postFormRaw(
     String path,
     Map<String, String> fields, {
     Map<String, dynamic>? query,
     bool retryAfterLogin = true,
+    Response<dynamic>? sameSessionAs,
   }) async {
     final resp = await postFormResponse(
       path,
       fields,
       query: query,
       retryAfterLogin: retryAfterLogin,
+      sameSessionAs: sameSessionAs,
     );
     return resp.data ?? '';
   }
@@ -300,12 +326,13 @@ class SmartschoolClient {
   /// client logs in again and retries the request once, and throws a
   /// [SmartschoolSessionExpiredError] when the retry is refused too.)
   ///
-  /// [retryAfterLogin]: see [postMultipartResponse].
+  /// [retryAfterLogin] and [sameSessionAs]: see [postMultipartResponse].
   Future<Response<String>> postFormResponse(
     String path,
     Map<String, String> fields, {
     Map<String, dynamic>? query,
     bool retryAfterLogin = true,
+    Response<dynamic>? sameSessionAs,
   }) {
     return _send(
       () => _dio.post<String>(
@@ -315,7 +342,7 @@ class SmartschoolClient {
         options: Options(
           contentType: Headers.formUrlEncodedContentType,
           headers: {kXRequestedWith: 'XMLHttpRequest'},
-          extra: _retryExtra(retryAfterLogin),
+          extra: _sessionStateExtra(retryAfterLogin, sameSessionAs),
         ),
       ),
     );
@@ -327,16 +354,18 @@ class SmartschoolClient {
   /// Used for the Smartschool message send endpoint and file upload endpoint,
   /// both of which require multipart rather than JSON or URL-encoded bodies.
   ///
-  /// [retryAfterLogin]: see [postMultipartResponse].
+  /// [retryAfterLogin] and [sameSessionAs]: see [postMultipartResponse].
   Future<String> postMultipartRaw(
     String path,
     FormData formData, {
     bool retryAfterLogin = true,
+    Response<dynamic>? sameSessionAs,
   }) async {
     final resp = await postMultipartResponse(
       path,
       formData,
       retryAfterLogin: retryAfterLogin,
+      sameSessionAs: sameSessionAs,
     );
     return resp.data ?? '';
   }
@@ -355,24 +384,56 @@ class SmartschoolClient {
   /// refuses its session, it fails at once with a
   /// [SmartschoolSessionExpiredError], and the next request that Smartschool
   /// refuses logs in (#25).
+  ///
+  /// That only covers the request being refused. Pass [sameSessionAs] too,
+  /// an earlier answer of this client that the state comes from (such as the
+  /// compose form, loaded with [getResponse]), for a request that must not
+  /// go out in another session than that answer's in any case. The client
+  /// replaces its session when it logs in again, also for another request on
+  /// the same client, and Smartschool then accepts the request in the new
+  /// session, stale state and all. Such a request is only sent when no login
+  /// started on this client since the request of [sameSessionAs] went out,
+  /// and none runs: otherwise it is not sent, and fails at once with a
+  /// [SmartschoolSessionExpiredError]. A login replaces the session in the
+  /// cookie cache before it completes (it loads the login form in a new
+  /// session, #45), and it may have replaced it when it fails, so a login
+  /// that runs or failed counts as well as one that completed (#38). Pass
+  /// `retryAfterLogin: false` with it: a retry after logging in would not be
+  /// sent either.
   Future<Response<String>> postMultipartResponse(
     String path,
     FormData formData, {
     bool retryAfterLogin = true,
+    Response<dynamic>? sameSessionAs,
   }) {
     return _send(
       () => _dio.post<String>(
         path,
         data: formData,
-        options: Options(extra: _retryExtra(retryAfterLogin)),
+        options: Options(
+          extra: _sessionStateExtra(retryAfterLogin, sameSessionAs),
+        ),
       ),
     );
   }
 
   /// The request `extra` that keeps the auth interceptor from retrying a
-  /// request in a new session, or `null` when it may.
-  static Map<String, dynamic>? _retryExtra(bool retryAfterLogin) =>
-      retryAfterLogin ? null : {_SmartschoolAuthInterceptor._noRetryKey: true};
+  /// request in a new session (unless [retryAfterLogin]), and from sending
+  /// it in another session than that of [sameSessionAs] (when given), or
+  /// `null` when neither applies.
+  static Map<String, dynamic>? _sessionStateExtra(
+    bool retryAfterLogin,
+    Response<dynamic>? sameSessionAs,
+  ) {
+    if (retryAfterLogin && sameSessionAs == null) return null;
+    return {
+      if (!retryAfterLogin) _SmartschoolAuthInterceptor._noRetryKey: true,
+      if (sameSessionAs != null)
+        _SmartschoolAuthInterceptor._sameSessionKey: _SameSession.of(
+          sameSessionAs,
+        ),
+    };
+  }
 
   /// Performs an authenticated `application/x-www-form-urlencoded` POST with
   /// a raw body string and returns the raw response body string.
@@ -906,11 +967,21 @@ class SmartschoolClient {
   }
 
   /// A raw GET that bypasses the auth interceptor.
-  Future<Response<String>> _rawGet(String url) async {
+  ///
+  /// With [newSession], the request is sent without the session cookie
+  /// ([_SmartschoolCookieManager.sessionCookie]), so that Smartschool starts
+  /// a new session for it and sends its id with the answer (#45).
+  Future<Response<String>> _rawGet(
+    String url, {
+    bool newSession = false,
+  }) async {
     return _dio.get<String>(
       url,
       options: Options(
-        extra: {_noAuthKey: true},
+        extra: {
+          _noAuthKey: true,
+          if (newSession) _SmartschoolCookieManager.newSessionKey: true,
+        },
         followRedirects: true,
         validateStatus: (_) => true,
       ),
@@ -972,8 +1043,102 @@ class SmartschoolClient {
 }
 
 // ---------------------------------------------------------------------------
+// Cookie manager
+// ---------------------------------------------------------------------------
+
+/// A [CookieManager] that keeps the session a login runs in to the login
+/// chain (#45).
+///
+/// It saves and loads cookies as [CookieManager] does, except that:
+/// - it does not save the cookies of an answer that Smartschool refused the
+///   session for (see [_SmartschoolAuthInterceptor.refusedSession]): such an
+///   answer comes from a session the client is about to replace, and one
+///   that comes in while a login runs, or after it, must not replace the
+///   cookies of the new session. Smartschool sets a `pid` cookie on every
+///   answer to a request without one, refused or not;
+/// - it sends a request marked with [newSessionKey] without the session
+///   cookie, so that Smartschool starts a new session for it;
+/// - it stamps each request with the session its cookies were loaded in
+///   (under [sessionKey]), so that a request can be kept to the session of
+///   an earlier answer (#38).
+class _SmartschoolCookieManager extends CookieManager {
+  _SmartschoolCookieManager(super.cookieJar, this._refused, this._session);
+
+  /// The name of Smartschool's session cookie, the PHP session that holds
+  /// the login state and the CSRF token of the login form.
+  static const sessionCookie = 'PHPSESSID';
+
+  /// The request `extra` that sends a request without [sessionCookie].
+  static const newSessionKey = '_smartschool_newSession';
+
+  /// The request `extra` that holds the session the request's cookies were
+  /// loaded in: [_SmartschoolAuthInterceptor.settledSession] when it was the
+  /// same before and after they were loaded, `null` when a login ran or
+  /// started meanwhile. Two requests with the same (non-null) stamp carried
+  /// the same session (#38).
+  static const sessionKey = '_smartschool_cookieSession';
+
+  /// Whether Smartschool refused the session for the request of a response.
+  final bool Function(Response<dynamic> response) _refused;
+
+  /// The session the cookie jar holds now, as
+  /// [_SmartschoolAuthInterceptor.settledSession] tells it.
+  final int? Function() _session;
+
+  @override
+  Future<String> loadCookies(RequestOptions options) async {
+    final before = _session();
+    final cookies = await _loadCookies(options);
+    options.extra[sessionKey] = before == _session() ? before : null;
+    return cookies;
+  }
+
+  Future<String> _loadCookies(RequestOptions options) async {
+    if (options.extra[newSessionKey] != true) {
+      return super.loadCookies(options);
+    }
+    final saved = await cookieJar.loadForRequest(options.uri);
+    return CookieManager.getCookies([
+      for (final cookie in saved)
+        if (cookie.name != sessionCookie) cookie,
+    ]);
+  }
+
+  @override
+  Future<void> saveCookies(Response<dynamic> response) async {
+    if (_refused(response)) return;
+    await super.saveCookies(response);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auth interceptor
 // ---------------------------------------------------------------------------
+
+/// The session of an earlier answer that a request goes out in only (see
+/// `sameSessionAs` of [SmartschoolClient.postMultipartResponse], #38).
+class _SameSession {
+  const _SameSession(this.session, this.answer);
+
+  /// The session of the request of [response], as the cookie manager stamped
+  /// it ([_SmartschoolCookieManager.sessionKey]).
+  factory _SameSession.of(Response<dynamic> response) {
+    final options = response.requestOptions;
+    final session = options.extra[_SmartschoolCookieManager.sessionKey];
+    return _SameSession(
+      session is int ? session : null,
+      '${options.method} ${options.uri}',
+    );
+  }
+
+  /// The session the answer's request carried its cookies in, or `null` when
+  /// that is not known (a login ran while they were loaded, or it is not an
+  /// answer of this client): then no request goes out in it.
+  final int? session;
+
+  /// The answer's request, as `METHOD url`, for the error message.
+  final String answer;
+}
 
 /// Intercepts Dio responses that show the session is not (or no longer)
 /// authenticated, drives the authentication flow transparently, then retries
@@ -998,7 +1163,8 @@ class SmartschoolClient {
 /// [SmartschoolClient.postMultipartResponse]) carries state of the session it
 /// was prepared in, such as the tokens of the compose form, so it is not
 /// retried in a new session: when refused, it fails with a
-/// [SmartschoolSessionExpiredError] at once, without a login (#25).
+/// [SmartschoolSessionExpiredError] at once, without a login (#25), also
+/// while a login runs (#36).
 ///
 /// The client does not keep logging in when that does not help: after
 /// [_maxLoginAttempts] logins in a row that did not get Smartschool to accept
@@ -1014,6 +1180,43 @@ class SmartschoolClient {
 /// rejected the credentials at the last login: trying them again every
 /// cooldown could get the account locked, so that waits for [reset]
 /// ([SmartschoolClient.resetLoginAttempts]) or a new client.
+///
+/// Requests on one client share a login (#36): a request that Smartschool
+/// refuses while a login runs does not start one of its own, but waits for
+/// that login and is then retried once in its session, and when that login
+/// fails, it fails with the same error. A request that went out before a
+/// login completed and is refused after it is retried in the new session
+/// without logging in again. So concurrent requests that find the session
+/// expired send the password (and the one-time 2FA code) once, and the login
+/// counts once toward [_maxLoginAttempts]. The login chain's own requests and
+/// the retries never wait for a login, so a login cannot wait for itself.
+///
+/// A login that starts at the login form loads that form itself, in a new
+/// session, instead of using the page of the refused request (#45). The
+/// form's CSRF token is stored in the PHP session, and Smartschool keeps a
+/// session id it does not know as a new, empty session, which it does not
+/// lock: concurrent requests on an expired session each render the login
+/// page in that one session, each store a token of their own there, and the
+/// last one stored wins, so the page the login got first could post a token
+/// that Smartschool no longer holds, which it answers like a wrong password.
+/// No other request carries the new session, and [_SmartschoolCookieManager]
+/// keeps the cookies of refused answers out of the jar, so the password POST
+/// always goes out in the session of the token it posts.
+///
+/// A request sent with `sameSessionAs` (see
+/// [SmartschoolClient.postMultipartResponse]) carries state of the session
+/// of an earlier answer, such as the compose form's tokens, and goes out only
+/// in that session (#38). A login replaces the session in the cookie jar,
+/// whichever request it runs for, and Smartschool would accept such a
+/// request in the new session, stale state and all. So when a login started
+/// since the answer's request went out, or runs, the request is not sent:
+/// it fails at once with a [SmartschoolSessionExpiredError]. The sessions of
+/// the two requests are told apart by the stamp of
+/// [_SmartschoolCookieManager.sessionKey], not by [_sessionGeneration]: the
+/// login replaces the session cookie with the one of its login form before
+/// it completes, and a login that fails after Smartschool accepted it (the
+/// connection dropped on the answer to the 2FA code) leaves an authenticated
+/// new session in the jar without completing.
 ///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
@@ -1039,14 +1242,54 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// [SmartschoolClient.postMultipartResponse]).
   static const _noRetryKey = '_smartschool_noRetry';
 
+  /// Holds the [_SameSession] of a request that goes out only in the
+  /// session of an earlier answer (`sameSessionAs`, #38).
+  static const _sameSessionKey = '_smartschool_sameSession';
+
   /// When the last login started; `null` when none did since the count was
-  /// last cleared. The cooldown runs from here, so a request refused while a
-  /// login after the cooldown is still running does not start a second one.
+  /// last cleared. The cooldown runs from here, not from when the login
+  /// ended.
   DateTime? _lastLoginAt;
 
   /// The failure of the last login when Smartschool rejected the credentials
   /// at it (see [_rejectsCredentials]), `null` otherwise.
   SmartschoolAuthenticationError? _rejectedCredentials;
+
+  /// The login that is running, which every request that Smartschool refuses
+  /// meanwhile waits for (#36); `null` when none is.
+  Future<void>? _login;
+
+  /// How many logins completed on this client: each one got it a new
+  /// session. Every request is stamped with it when it is sent (under
+  /// [_sessionKey]), so a request that Smartschool refuses can tell whether a
+  /// login completed since it went out, in which case it carried the session
+  /// from before that login and is retried in the new one without logging in
+  /// again (#36). It only grows, and it grows before the requests that waited
+  /// for that login are retried. It does not tell whether two requests
+  /// carried the same session (see [settledSession] for that, #38): a login
+  /// replaces the session cookie before it completes, and may have when it
+  /// fails.
+  int _sessionGeneration = 0;
+
+  /// The request `extra` that holds the [_sessionGeneration] the request was
+  /// sent in.
+  static const _sessionKey = '_smartschool_session';
+
+  /// How many logins started on this client, whether they completed, failed
+  /// or still run (#38).
+  int _loginsStarted = 0;
+
+  /// The session the cookie jar holds now, as a number that changes
+  /// whenever a login may have replaced it, or `null` while a login runs.
+  ///
+  /// Only a login puts another session cookie in the jar: it loads its login
+  /// form in a new session (#45), Smartschool may move the session to a new
+  /// id when it accepts the password, and the answers that Smartschool
+  /// refused are kept out of the jar. So the number of logins started tells
+  /// the sessions apart when no login runs: the jar held the same session at
+  /// two moments that give the same number, and possibly another one at two
+  /// moments that do not (#38).
+  int? get settledSession => _login == null ? _loginsStarted : null;
 
   _SmartschoolAuthInterceptor(
     this._client, {
@@ -1061,6 +1304,42 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     _loginAttempts = 0;
     _lastLoginAt = null;
     _rejectedCredentials = null;
+  }
+
+  /// Stamps [options] with the session the request goes out in (#36), and
+  /// does not send a request that must go out in the session of an earlier
+  /// answer when its cookies were not loaded in that session (#38).
+  ///
+  /// [CookieManager] runs before this interceptor and has put the cookies on
+  /// the request by now, so the stamp is never older than the session the
+  /// request carries: a request that it says went out before a login did.
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    options.extra[_sessionKey] = _sessionGeneration;
+    final same = options.extra[_sameSessionKey];
+    if (same is _SameSession) {
+      final loadedIn = options.extra[_SmartschoolCookieManager.sessionKey];
+      if (same.session == null || loadedIn != same.session) {
+        final why = same.session == null
+            ? 'the client was logging in when that request went out, or it '
+                  'is not a request of this client'
+            : 'the client has logged in again since that request went out, '
+                  'or is logging in (for another request)';
+        handler.reject(
+          DioException(
+            requestOptions: options,
+            error: SmartschoolSessionExpiredError(
+              '${options.method} ${options.uri} was not sent: it carries '
+              'state of the session that ${same.answer} was answered in, and '
+              '$why',
+            ),
+          ),
+          true,
+        );
+        return;
+      }
+    }
+    handler.next(options);
   }
 
   @override
@@ -1079,7 +1358,6 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       return;
     }
 
-    final realUri = response.realUri;
     final loginChain = _loginChainTarget(response);
     if (loginChain == null && !_isUnauthorized(response)) {
       reset();
@@ -1096,7 +1374,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     // with the compose state of the refused session (its recipients and
     // attachments), and what Smartschool makes of that was never checked.
     // Smartschool refused it before handling it, so it fails as not carried
-    // out, without a login: the next refused request logs in (#25).
+    // out, without a login: the next refused request logs in (#25). Nor does
+    // it wait for a login that is running (#36).
     if (extra[_noRetryKey] == true) {
       handler.reject(
         DioException(
@@ -1112,38 +1391,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       return;
     }
 
-    final notLoggingIn = _whyNotLogIn();
-    if (notLoggingIn != null) {
-      handler.reject(
-        DioException(
-          requestOptions: response.requestOptions,
-          error: SmartschoolSessionExpiredError(
-            'Smartschool did not accept the session for $request, and the '
-            'client did not log in again: its last $_maxLoginAttempts logins '
-            'in a row did not get the session accepted$notLoggingIn',
-          ),
-        ),
-        true,
-      );
-      return;
-    }
-
-    _loginAttempts++;
-    _lastLoginAt = _clock();
-    _rejectedCredentials = null;
-
     try {
-      if (_client.isAuthUri(realUri)) {
-        // Redirected onto the login chain: the response is its first page.
-        await _driveAuthChain(realUri, response);
-      } else {
-        // A 401 does not say where the login chain starts, and a redirect the
-        // HTTP client left unfollowed only points at it: open it ourselves.
-        final loginPage = await _client._rawGet(
-          loginChain?.toString() ?? '/login',
-        );
-        await _driveAuthChain(loginPage.realUri, loginPage);
-      }
+      await _renewSession(response, loginChain, request);
 
       // Re-issue the original request now that we are authenticated
       final data = response.requestOptions.data;
@@ -1178,12 +1427,97 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       reset();
       handler.resolve(retried);
     } on SmartschoolAuthenticationError catch (e) {
-      if (_rejectsCredentials(e)) _rejectedCredentials = e;
       handler.reject(
         DioException(requestOptions: response.requestOptions, error: e),
         true,
       );
     }
+  }
+
+  /// Gets the client a new session to retry the request of [response] in,
+  /// which Smartschool refused ([request] names it): the login that is
+  /// running, a login that completed since the request went out, or a new
+  /// login (#36).
+  ///
+  /// Only a new login counts toward [_maxLoginAttempts], and only it is held
+  /// back by the limit: waiting for a running login or retrying after one
+  /// that completed does not log in. When the client does not log in, this
+  /// throws a [SmartschoolSessionExpiredError]; when the login fails, it
+  /// throws what the login failed with, the same error for every request
+  /// that waited for it.
+  Future<void> _renewSession(
+    Response<dynamic> response,
+    Uri? loginChain,
+    String request,
+  ) async {
+    final running = _login;
+    if (running != null) return running;
+
+    final sentIn = response.requestOptions.extra[_sessionKey];
+    if (sentIn is int && sentIn != _sessionGeneration) return;
+
+    final notLoggingIn = _whyNotLogIn();
+    if (notLoggingIn != null) {
+      throw SmartschoolSessionExpiredError(
+        'Smartschool did not accept the session for $request, and the '
+        'client did not log in again: its last $_maxLoginAttempts logins '
+        'in a row did not get the session accepted$notLoggingIn',
+      );
+    }
+
+    // Set before the login sends anything, so a request that Smartschool
+    // refuses from now on waits for it; cleared before the requests that
+    // waited for it resume.
+    final login = _logIn(response, loginChain).whenComplete(() {
+      _login = null;
+    });
+    _login = login;
+    return login;
+  }
+
+  /// Runs the login chain for the refused [response], from the page of the
+  /// login chain it landed on, or else [loginChain], or else `/login` (a
+  /// `401` does not say where the chain starts).
+  ///
+  /// When that is the login form, the login loads it itself, in a new
+  /// session, so that the CSRF token it posts is the one stored in the
+  /// session it posts it in (#45). A `/2fa` or `/account-verification` page
+  /// continues the session that got past the password: the chain starts
+  /// from the refused page, or from a GET of [loginChain].
+  ///
+  /// Counts the login toward [_maxLoginAttempts] and in [_loginsStarted]
+  /// and, when it completes, moves the client to the next
+  /// [_sessionGeneration].
+  Future<void> _logIn(Response<dynamic> response, Uri? loginChain) async {
+    _loginsStarted++;
+    _loginAttempts++;
+    _lastLoginAt = _clock();
+    _rejectedCredentials = null;
+
+    try {
+      final realUri = response.realUri;
+      final landedOnChain = _client.isAuthUri(realUri);
+      final start = landedOnChain ? realUri : loginChain;
+      if (start == null || start.path.endsWith('/login')) {
+        final loginPage = await _client._rawGet(
+          start?.toString() ?? '/login',
+          newSession: true,
+        );
+        await _driveAuthChain(loginPage.realUri, loginPage);
+      } else if (landedOnChain) {
+        // Redirected onto the login chain: the response is its page.
+        await _driveAuthChain(realUri, response);
+      } else {
+        // A redirect the HTTP client left unfollowed only points at the
+        // page: open it ourselves.
+        final page = await _client._rawGet(start.toString());
+        await _driveAuthChain(page.realUri, page);
+      }
+    } on SmartschoolAuthenticationError catch (e) {
+      if (_rejectsCredentials(e)) _rejectedCredentials = e;
+      rethrow;
+    }
+    _sessionGeneration++;
   }
 
   /// Why the client does not log in for a refused request now, as the end of
@@ -1221,6 +1555,14 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       e is SmartschoolUnsupportedTwoFactorMethodError ||
       e is SmartschoolAccountVerificationRequiredError ||
       e is SmartschoolAccountVerificationRejectedError;
+
+  /// Whether Smartschool refused the session for the request of [response]:
+  /// a regular request (or a retry) that it answered with `401` or with its
+  /// login chain, the answers that make this interceptor log in (#45). An
+  /// answer to a request of the login chain itself is not refused.
+  bool refusedSession(Response<dynamic> response) =>
+      response.requestOptions.extra[_noAuthKey] != true &&
+      (_isUnauthorized(response) || _loginChainTarget(response) != null);
 
   /// Whether [response] is Smartschool's answer to an XHR/form POST on an
   /// expired session: `401 Unauthorized` (with an empty body), not a redirect

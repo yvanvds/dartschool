@@ -10,15 +10,19 @@
 // from, with `send=send` (#24; the compose script sets `send` and calls
 // `form.submit()`). They come with the recipients of the reply registered on
 // them: the web client registers only recipients the user adds, and a reply
-// sent without touching the recipients goes to them.
+// sent without touching the recipients goes to them. Its × on a recipient
+// takes it off the form with `deleteUsersFromSelected` (#42), and its drag and
+// drop moves one to another field by taking it off its field and registering
+// it in the other.
 //
 // The fake Smartschool below serves the recorded reply form
 // (`get/composemessage/reply.html`, whose names, IDs and tokens are made up)
 // and the recorded answers to the steps of a send, and logs every request
 // with its full URL, so the tests can check the exact requests: the form
-// that is loaded, the recipients that are registered, and the URL and fields
-// of the submit. A reply is never submitted to the live platform by these
-// tests or by their author: the live submit of a reply is untested.
+// that is loaded, the recipients that are taken off it and registered, and
+// the URL and fields of the submit. A reply is never submitted to the live
+// platform by these tests or by their author: the live submit of a reply is
+// untested.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -31,6 +35,9 @@ import 'package:flutter_smartschool/src/services/send_message_params.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+
+import 'support/add_recipient_answer.dart';
+import 'support/remove_recipient_answer.dart';
 
 const _host = 'school.smartschool.be';
 
@@ -63,11 +70,6 @@ final _newMessageForm = _fixture('get/composemessage/new-message.html');
 /// The recorded answer to a sent message: `200` and a page whose script
 /// calls `checkOpenerActions(); window.close();`.
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
-
-/// The recorded answer to `addUserToSelected`.
-final _addRecipientAnswer = _fixture(
-  'post/composemessage/add-users-to-selected.xml',
-);
 
 /// The To entry of the sender in [_replyForm].
 const _senderSpan =
@@ -130,10 +132,12 @@ const _replyAllUrl = '$_compose&boxType=inbox&composeType=2&msgID=900030';
 const _sentReplyUrl = '$_compose&boxType=outbox&composeType=1&msgID=900030';
 const _newMessageUrl = '$_compose&boxType=inbox&composeType=0&msgID=undefined';
 const _addUrl = '/?module=Messages&file=searchUsers&function=addUserToSelected';
+const _removeUrl =
+    '/?module=Messages&file=searchUsers&function=deleteUsersFromSelected';
 const _uploadUrl = '/Upload/Upload/Index';
 
 /// The step of a send that a request is.
-enum _Step { form, addRecipient, upload, submit, other }
+enum _Step { form, removeRecipient, addRecipient, upload, submit, other }
 
 /// A Smartschool that answers the steps of a send with the recorded answers,
 /// and refuses the session for the step [refuse] as the live platform does:
@@ -146,6 +150,7 @@ class _Smartschool implements HttpClientAdapter {
     this.unreachable,
     this.answerSubmit,
     this.failSubmit,
+    this.answerRemove,
   });
 
   /// The compose form Smartschool answers a form request with [query].
@@ -173,8 +178,16 @@ class _Smartschool implements HttpClientAdapter {
   /// connection failed after the message went out.
   final Object Function(RequestOptions options)? failSubmit;
 
+  /// Smartschool's answer to a `deleteUsersFromSelected` it handled; when
+  /// `null`, the recorded answer of an entry the form has, which lists the
+  /// entries of the request.
+  final ResponseBody Function(Map<String, String> fields)? answerRemove;
+
   /// Every request the client made, as `METHOD <path and query>`.
   final List<String> log = <String>[];
+
+  /// The fields of each `deleteUsersFromSelected` Smartschool handled.
+  final List<Map<String, String>> removed = <Map<String, String>>[];
 
   /// The fields of each `addUserToSelected` Smartschool handled.
   final List<Map<String, String>> registered = <Map<String, String>>[];
@@ -214,9 +227,21 @@ class _Smartschool implements HttpClientAdapter {
     switch (step) {
       case _Step.form:
         return _response(form(uri.queryParameters));
+      case _Step.removeRecipient:
+        final fields = Map<String, String>.from(options.data as Map);
+        removed.add(fields);
+        return answerRemove?.call(fields) ??
+            _response(
+              removedRecipientsAnswer(fields['xml']!),
+              contentType: removedRecipientContentType,
+            );
       case _Step.addRecipient:
-        registered.add(Map<String, String>.from(options.data as Map));
-        return _response(_addRecipientAnswer, contentType: 'text/xml');
+        final fields = Map<String, String>.from(options.data as Map);
+        registered.add(fields);
+        return _response(
+          registeredRecipientAnswer(fields),
+          contentType: registeredRecipientContentType,
+        );
       case _Step.upload:
         uploads.add(_fields(options)['uploadDir']);
         return _response('true');
@@ -238,6 +263,9 @@ class _Smartschool implements HttpClientAdapter {
     }
     if (post && query['function'] == 'addUserToSelected') {
       return _Step.addRecipient;
+    }
+    if (post && query['function'] == 'deleteUsersFromSelected') {
+      return _Step.removeRecipient;
     }
     if (post && options.uri.path == _uploadUrl) return _Step.upload;
     return _Step.other;
@@ -332,6 +360,17 @@ Map<String, String> _registration(MessageSearchUser user, RecipientType type) =>
       'userlt': '${user.userLt}',
       'uniqueUsc': _uniqueUsc,
     };
+
+/// The fields `deleteUsersFromSelected` takes the entry of [user] off the
+/// reply form with: the entry's `typeatt` [type] (`0` To, `2` CC, `3` BCC,
+/// `1`, `4` and `5` the co-account fields) and `idatt` (`U<userId>`), and its
+/// `ssidatt` and `userltatt`, as the web client's × sends them.
+Map<String, String> _removal(MessageSearchUser user, String type) => {
+  'xml':
+      '<users><user><type>$type</type><userid>U${user.userId}</userid>'
+      '<ssid>${user.ssId}</ssid><userlt>${user.userLt}</userlt></user></users>',
+  'uniqueUsc': _uniqueUsc,
+};
 
 /// The fields of the submit of the reply form of message 900030 in [box],
 /// with [composeType] `1` (reply) or `2` (reply all).
@@ -555,67 +594,101 @@ void main() {
     });
   });
 
-  group('a reply that would go to a recipient the form names and the params '
-      'leave out is refused before anything is registered (#26)', () {
-    test('the sender left out', () async {
+  group('sendReply takes a recipient that the form names and the params '
+      'leave out of its field off the form (#42)', () {
+    test('the sender left out: taken off before the other recipients are '
+        'registered, and the reply is submitted', () async {
       final server = await serve(_Smartschool());
 
-      await expectLater(
-        messages.sendReply(900030, _reply(to: [_alice])),
-        throwsA(
-          _composeError([
-            'reply form of message 900030',
-            'Piet Peeters (user 201, To)',
-            'getReplyRecipients',
-            'Nothing was sent',
-          ]),
+      // Before the change: a SmartschoolComposeError ("cannot be taken off")
+      // right after loading the form, and nothing else sent.
+      await messages.sendReply(900030, _reply(to: [_alice]));
+
+      expect(server.log, [
+        'GET $_replyUrl',
+        'POST $_removeUrl',
+        'POST $_addUrl',
+        'POST $_replyUrl',
+      ]);
+      expect(server.removed, [_removal(_sender, '0')]);
+      expect(server.registered, [_registration(_alice, RecipientType.to)]);
+      expect(
+        server.submits.single,
+        allOf([
+          for (final MapEntry(:key, :value) in _replySubmit().entries)
+            containsPair(key, value),
+        ]),
+      );
+    });
+
+    test('the sender moved to another field: taken off To, registered in '
+        'CC', () async {
+      final server = await serve(_Smartschool());
+
+      await messages.sendReply(900030, _reply(to: [_alice], cc: [_sender]));
+
+      expect(server.log, [
+        'GET $_replyUrl',
+        'POST $_removeUrl',
+        'POST $_addUrl',
+        'POST $_addUrl',
+        'POST $_replyUrl',
+      ]);
+      expect(server.removed, [_removal(_sender, '0')]);
+      expect(server.registered, [
+        _registration(_alice, RecipientType.to),
+        _registration(_sender, RecipientType.cc),
+      ]);
+      expect(server.submits, hasLength(1));
+    });
+
+    test('a reply to all without some of the recipients the reply-all form '
+        'names: each taken off its field, the others kept', () async {
+      final server = await serve(_Smartschool());
+      final (to, cc, _) = await messages.getReplyAllRecipients(900030);
+      final user203 = to.singleWhere((u) => u.userId == 203);
+      final user204 = cc.single;
+
+      await messages.sendReply(
+        900030,
+        _reply(to: to.where((u) => u.userId != 203).toList()),
+        all: true,
+      );
+
+      expect(server.log, [
+        'GET $_replyAllUrl', // getReplyAllRecipients
+        'GET $_replyAllUrl',
+        'POST $_removeUrl',
+        'POST $_removeUrl',
+        'POST $_replyAllUrl',
+      ]);
+      expect(server.removed, [_removal(user203, '0'), _removal(user204, '2')]);
+      expect(server.registered, isEmpty);
+      expect(server.submits.single, containsPair('composeType', '2'));
+    });
+
+    test('a recipient in a co-account field is taken off with the type of '
+        'that field', () async {
+      final server = await serve(
+        _Smartschool(
+          form: (_) => _withEntries(_replyForm, '2', _span(205, '4')),
         ),
       );
-      expect(server.log, ['GET $_replyUrl']);
-      expect(server.submits, isEmpty);
-    });
-
-    test('the sender moved to another field', () async {
-      final server = await serve(_Smartschool());
-
-      await expectLater(
-        messages.sendReply(900030, _reply(to: [_alice], cc: [_sender])),
-        throwsA(_composeError(['Piet Peeters (user 201, To)'])),
-      );
-      expect(server.log, ['GET $_replyUrl']);
-    });
-
-    test('a recipient of the reply-all form left out', () async {
-      final server = await serve(_Smartschool());
-      const user202 = MessageSearchUser(
-        userId: 202,
-        displayName: 'User 202',
+      const user205 = MessageSearchUser(
+        userId: 205,
+        displayName: 'User 205',
         ssId: 100,
       );
-      const user203 = MessageSearchUser(
-        userId: 203,
-        displayName: 'User 203',
-        ssId: 100,
-      );
 
-      await expectLater(
-        messages.sendReply(
-          900030,
-          _reply(to: [user202, user203, _sender]),
-          all: true,
-        ),
-        throwsA(
-          _composeError([
-            'reply-all form of message 900030',
-            'User 204 (user 204, CC)',
-            'getReplyAllRecipients',
-          ]),
-        ),
-      );
-      expect(server.log, ['GET $_replyAllUrl']);
+      await messages.sendReply(900030, _reply());
+
+      expect(server.removed, [_removal(user205, '4')]);
+      expect(server.registered, isEmpty);
+      expect(server.submits, hasLength(1));
     });
 
-    test('the same user with another ssId or userLt', () async {
+    test("the same user with another userLt: the form's entry is taken off, "
+        'and the user of the params registered', () async {
       final server = await serve(_Smartschool());
       const otherLt = MessageSearchUser(
         userId: 201,
@@ -624,11 +697,104 @@ void main() {
         userLt: 1,
       );
 
-      await expectLater(
-        messages.sendReply(900030, _reply(to: [otherLt])),
-        throwsA(_composeError(['Piet Peeters (user 201, To)'])),
+      await messages.sendReply(900030, _reply(to: [otherLt]));
+
+      expect(server.removed, [_removal(_sender, '0')]);
+      expect(server.registered, [_registration(otherLt, RecipientType.to)]);
+      expect(server.submits, hasLength(1));
+    });
+
+    test(
+      'an entry the form lists twice in one field is taken off once',
+      () async {
+        final server = await serve(
+          _Smartschool(
+            form: (_) => _replyForm.replaceFirst(
+              _senderSpan,
+              '$_senderSpan$_senderSpan',
+            ),
+          ),
+        );
+
+        await messages.sendReply(900030, _reply(to: [_alice]));
+
+        expect(server.removed, [_removal(_sender, '0')]);
+        expect(server.submits, hasLength(1));
+      },
+    );
+  });
+
+  group('sendReply stops before the submit when Smartschool does not take a '
+      'recipient off the form (#42)', () {
+    final answers = <String, ResponseBody Function()>{
+      'an empty list (the form does not have the entry)': () => _response(
+        noRecipientRemovedAnswer,
+        contentType: removedRecipientContentType,
+      ),
+      'an empty body': () => _response(''),
+      'another entry': () => _response(
+        removedRecipientsAnswer(_removal(_alice, '0')['xml']!),
+        contentType: removedRecipientContentType,
+      ),
+      'the entry in another field': () => _response(
+        removedRecipientsAnswer(_removal(_sender, '2')['xml']!),
+        contentType: removedRecipientContentType,
+      ),
+      'its error page (500)': () => _response(
+        '<html><body>Oeps, er liep iets fout.</body></html>',
+        status: 500,
+      ),
+      'a page that is not XML': () => _response('<html><body>'),
+    };
+
+    for (final MapEntry(key: name, value: answer) in answers.entries) {
+      test('Smartschool answers with $name: a SmartschoolComposeError, and '
+          'no recipient, attachment or submit is sent', () async {
+        final server = await serve(_Smartschool(answerRemove: (_) => answer()));
+
+        await expectLater(
+          messages.sendReply(
+            900030,
+            _reply(to: [_alice], attachments: [attachment().path]),
+          ),
+          throwsA(
+            _composeError([
+              'did not take the recipient Piet Peeters (user 201, To)',
+              'off the reply form of message 900030',
+              'Nothing was sent',
+            ]),
+          ),
+        );
+        expect(server.log, ['GET $_replyUrl', 'POST $_removeUrl']);
+        expect(server.registered, isEmpty);
+        expect(server.uploads, isEmpty);
+        expect(server.submits, isEmpty);
+      });
+    }
+
+    test('the error names the reply-all form and the field, and shows what '
+        'Smartschool answered', () async {
+      final server = await serve(
+        _Smartschool(
+          answerRemove: (_) => _response(
+            '<html><body>Oeps, er liep iets fout.</body></html>',
+            status: 500,
+          ),
+        ),
       );
-      expect(server.log, ['GET $_replyUrl']);
+      final (to, _, _) = await messages.getReplyAllRecipients(900030);
+
+      await expectLater(
+        messages.sendReply(900030, _reply(to: to), all: true),
+        throwsA(
+          _composeError([
+            'User 204 (user 204, CC)',
+            'off the reply-all form of message 900030',
+            'HTTP 500, answer: Oeps, er liep iets fout.',
+          ]),
+        ),
+      );
+      expect(server.submits, isEmpty);
     });
   });
 
@@ -760,6 +926,23 @@ void main() {
       expect(server.registered, isEmpty);
       expect(server.submits, isEmpty);
     });
+
+    test(
+      'the session refused for taking a recipient off the form (401): a '
+      'SmartschoolSessionExpiredError, and nothing else is sent (#42)',
+      () async {
+        final server = await serve(_Smartschool(refuse: _Step.removeRecipient));
+
+        await expectLater(
+          messages.sendReply(900030, _reply(to: [_alice])),
+          throwsA(_notRetried()),
+        );
+        expect(server.log, ['GET $_replyUrl', 'POST $_removeUrl']);
+        expect(server.removed, isEmpty);
+        expect(server.registered, isEmpty);
+        expect(server.submits, isEmpty);
+      },
+    );
 
     test('the session refused for an attachment upload (302 to /login): a '
         'SmartschoolSessionExpiredError, and nothing is submitted', () async {

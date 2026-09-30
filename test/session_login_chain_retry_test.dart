@@ -97,7 +97,9 @@ const _password = [
   'POST /2fa/api/v1/google-authenticator',
 ];
 
-/// The login chain that a refused POST starts: fetching the login page first.
+/// The login chain that a refused request starts: the login loads the login
+/// page itself first, in a new session, also for a GET that was redirected
+/// there (#45).
 const _login = ['GET /login', ..._password];
 
 /// A Smartschool that refuses the session as the live platform does: a page
@@ -404,7 +406,7 @@ void main() {
         throwsA(_sessionExpired()),
       );
       // The HTTP client followed the redirect to the login page itself.
-      expect(server.log, [_courses, ..._password, _courses]);
+      expect(server.log, [_courses, ..._login, _courses]);
     });
 
     test('a GET redirected to /login again: getRaw '
@@ -417,7 +419,7 @@ void main() {
         MessagesService(client).getCurrentUserAsRecipient(),
         throwsA(_sessionExpired()),
       );
-      expect(server.log, [_compose, ..._password, _compose]);
+      expect(server.log, [_compose, ..._login, _compose]);
     });
 
     test('a POST redirected to /login again: postMultipartRaw', () async {

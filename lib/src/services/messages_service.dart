@@ -498,6 +498,11 @@ class MessagesService {
   /// programmatic reply-all), call [getReplyAllRecipients] instead of or in
   /// addition to this method.
   ///
+  /// For a message in the sent box ([BoxType.sent]), the recipients also
+  /// say whether each has read the message
+  /// ([FullMessage.toRecipients] and [MessageRecipient.hasRead]); see
+  /// [FullMessage.fromXml].
+  ///
   /// Returns `null` when [boxType] holds no message [msgId]: an unknown ID,
   /// or the ID of a message in another box. Smartschool answers such a
   /// request with a placeholder message (sender `Niet beschikbaar`, no read
@@ -531,7 +536,7 @@ class MessagesService {
       }
     }
 
-    return FullMessage.fromXml(xml);
+    return FullMessage.fromXml(xml, boxType: boxType);
   }
 
   /// Whether [xml], the `<message>` of a `show message` answer, is the
@@ -855,14 +860,15 @@ class MessagesService {
   /// recipient of the message too (a message sent to themselves, or with
   /// themselves among the recipients), so the page alone cannot tell the
   /// two apart. Pass the sent [message] (from [getMessage] with
-  /// `includeAllRecipients: true`) to keep the sender where its recipient
-  /// names list them: in the To list when [FullMessage.receivers] or
-  /// [FullMessage.bccReceivers] name them (BCC entries of the page are
-  /// returned in the To list as well), in the CC list when
-  /// [FullMessage.ccReceivers] do. A recipient name of a sent message starts
-  /// with a `+` or `-` marker, which is ignored; a name counts only as far
-  /// as no other entry of the page with that name accounts for it. Without
-  /// [message], the sender is always removed.
+  /// `boxType: BoxType.sent` and `includeAllRecipients: true`) to keep the
+  /// sender where its recipients list them: in the To list when
+  /// [FullMessage.toRecipients] or [FullMessage.bccRecipients] name them
+  /// (BCC entries of the page are returned in the To list as well), in the
+  /// CC list when [FullMessage.ccRecipients] do. Their
+  /// [MessageRecipient.name]s are compared, without the read marker
+  /// Smartschool puts before each name in the sent box (#34); a name counts
+  /// only as far as no other entry of the page with that name accounts for
+  /// it. Without [message], the sender is always removed.
   ///
   /// Returns `(toList, ccList)`.
   static (List<MessageSearchUser>, List<MessageSearchUser>)
@@ -881,12 +887,12 @@ class MessagesService {
 
     if (sender != null && message != null) {
       if (_namesSender(sender, [
-        ...message.receivers,
-        ...message.bccReceivers,
+        ...message.toRecipients,
+        ...message.bccRecipients,
       ], toOthers)) {
         toOthers.add(sender);
       }
-      if (_namesSender(sender, message.ccReceivers, ccOthers)) {
+      if (_namesSender(sender, message.ccRecipients, ccOthers)) {
         ccOthers.add(sender);
       }
     }
@@ -894,21 +900,19 @@ class MessagesService {
     return (toOthers, ccOthers);
   }
 
-  /// Whether [names], recipient names of a sent message, name [sender] more
+  /// Whether [recipients], recipients of a sent message, name [sender] more
   /// often than the entries [others] of the compose page with that name
   /// account for — so that a namesake of the sender among the recipients
   /// does not make the sender a recipient too.
   static bool _namesSender(
     MessageSearchUser sender,
-    List<String> names,
+    List<MessageRecipient> recipients,
     List<MessageSearchUser> others,
   ) {
     String normalise(String name) => name.trim().replaceAll(_spaces, ' ');
     final senderName = normalise(sender.displayName);
-    // Smartschool starts each recipient name of a sent message with `+` or
-    // `-` (which appears to mark whether the recipient has read it).
-    final named = names
-        .where((n) => normalise(n).replaceFirst(_readMarker, '') == senderName)
+    final named = recipients
+        .where((r) => normalise(r.name) == senderName)
         .length;
     final namesakes = others
         .where((u) => normalise(u.displayName) == senderName)
@@ -917,7 +921,6 @@ class MessagesService {
   }
 
   static final _spaces = RegExp(r'\s+');
-  static final _readMarker = RegExp(r'^[+-]\s*');
 
   /// Returns the logged-in user as a compose recipient candidate.
   ///

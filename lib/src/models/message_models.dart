@@ -162,6 +162,56 @@ class ShortMessage {
       'sender: "$sender", unread: $unread)';
 }
 
+/// A recipient of a message, with whether they have read it where
+/// Smartschool says so.
+///
+/// Listed by [FullMessage.toRecipients], [FullMessage.ccRecipients] and
+/// [FullMessage.bccRecipients].
+class MessageRecipient {
+  /// Display name of the recipient, as Smartschool shows it.
+  final String name;
+
+  /// Whether the recipient has read the message: known for a message in the
+  /// sent box ([BoxType.sent]), `null` in every other box, where Smartschool
+  /// does not say (and for a sent-box name without a marker).
+  ///
+  /// In the sent box, Smartschool starts each recipient name with `+` when
+  /// the recipient's copy of the message is read and with `-` when it is
+  /// unread, as the recipient's own box shows it ([ShortMessage.unread]).
+  /// Its web client removes the marker and shows the recipients with `-` as
+  /// not having read the message.
+  final bool? hasRead;
+
+  const MessageRecipient({required this.name, this.hasRead});
+
+  /// Reads [raw], a recipient name of a message in the sent box as
+  /// Smartschool sends it: `+` and the name for a recipient who has read the
+  /// message, `-` and the name for one who has not.
+  ///
+  /// A name without either marker is kept as it is, with [hasRead] `null`.
+  factory MessageRecipient.fromSentBoxName(String raw) {
+    if (raw.startsWith('+')) {
+      return MessageRecipient(name: raw.substring(1), hasRead: true);
+    }
+    if (raw.startsWith('-')) {
+      return MessageRecipient(name: raw.substring(1), hasRead: false);
+    }
+    return MessageRecipient(name: raw);
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is MessageRecipient &&
+      other.name == name &&
+      other.hasRead == hasRead;
+
+  @override
+  int get hashCode => Object.hash(name, hasRead);
+
+  @override
+  String toString() => 'MessageRecipient(name: "$name", hasRead: $hasRead)';
+}
+
 /// The full content of a single message.
 ///
 /// Corresponds to Python's `FullMessage` Pydantic dataclass in `objects.py`.
@@ -175,14 +225,46 @@ class FullMessage {
   final int attachment;
   final bool unread;
 
-  /// Recipients in the To field.
+  /// Names of the recipients in the To field.
+  ///
+  /// For a message in the sent box, Smartschool starts each name with a
+  /// `+` or `-` read marker, which is not part of the name:
+  /// [FullMessage.fromXml] removes it, and [toRecipients] holds what it
+  /// says.
   final List<String> receivers;
 
-  /// Recipients in the CC field.
+  /// Names of the recipients in the CC field; see [receivers] and
+  /// [ccRecipients].
   final List<String> ccReceivers;
 
-  /// Recipients in the BCC field.
+  /// Names of the recipients in the BCC field; see [receivers] and
+  /// [bccRecipients].
   final List<String> bccReceivers;
+
+  final List<MessageRecipient>? _toRecipients;
+  final List<MessageRecipient>? _ccRecipients;
+  final List<MessageRecipient>? _bccRecipients;
+
+  /// The recipients in the To field, in the order of [receivers], with
+  /// whether each has read the message ([MessageRecipient.hasRead]) for a
+  /// message in the sent box.
+  ///
+  /// For a message constructed without them, these are the [receivers] with
+  /// an unknown read state.
+  List<MessageRecipient> get toRecipients =>
+      _toRecipients ?? _unknownReadState(receivers);
+
+  /// The recipients in the CC field; see [toRecipients].
+  List<MessageRecipient> get ccRecipients =>
+      _ccRecipients ?? _unknownReadState(ccReceivers);
+
+  /// The recipients in the BCC field; see [toRecipients].
+  List<MessageRecipient> get bccRecipients =>
+      _bccRecipients ?? _unknownReadState(bccReceivers);
+
+  static List<MessageRecipient> _unknownReadState(List<String> names) => [
+    for (final name in names) MessageRecipient(name: name),
+  ];
 
   final String senderPicture;
   final int fromTeam;
@@ -223,15 +305,43 @@ class FullMessage {
     this.sendDate,
     required this.sender,
     this.coloredFlag = 0,
-  });
+    List<MessageRecipient>? toRecipients,
+    List<MessageRecipient>? ccRecipients,
+    List<MessageRecipient>? bccRecipients,
+  }) : _toRecipients = toRecipients,
+       _ccRecipients = ccRecipients,
+       _bccRecipients = bccRecipients;
 
   /// Constructs a [FullMessage] from the map produced by
   /// [XmlInterface.elementToMap] for a `<message>` element, after running
   /// the post-processing that normalises the receiver lists.
   ///
+  /// [boxType] is the box the message was requested from. For
+  /// [BoxType.sent], each recipient name starts with a `+` (read) or `-`
+  /// (unread) marker, which is removed from the name and read into
+  /// [MessageRecipient.hasRead], as Smartschool's web client does for the
+  /// sent box. In any other box the names are kept as they are, and the
+  /// read state of the recipients is unknown.
+  ///
   /// See [ShortMessage.fromXml] for the `<status>`/`<unread>` semantics —
   /// `unread` is derived from `<status>` (`status == 0` → unread).
-  factory FullMessage.fromXml(Map<String, dynamic> xml) {
+  factory FullMessage.fromXml(
+    Map<String, dynamic> xml, {
+    BoxType boxType = BoxType.inbox,
+  }) {
+    List<MessageRecipient> recipients(String key) => [
+      for (final raw in _receiverList(xml, key))
+        boxType == BoxType.sent
+            ? MessageRecipient.fromSentBoxName(raw)
+            : MessageRecipient(name: raw),
+    ];
+    List<String> names(List<MessageRecipient> list) => [
+      for (final recipient in list) recipient.name,
+    ];
+    final to = recipients('receivers');
+    final cc = recipients('ccreceivers');
+    final bcc = recipients('bccreceivers');
+
     return FullMessage(
       id: _int(xml, 'id'),
       to: xml['to'] as String?,
@@ -241,9 +351,12 @@ class FullMessage {
       status: _int(xml, 'status'),
       attachment: _int(xml, 'attachment'),
       unread: _int(xml, 'status') == 0,
-      receivers: _receiverList(xml, 'receivers'),
-      ccReceivers: _receiverList(xml, 'ccreceivers'),
-      bccReceivers: _receiverList(xml, 'bccreceivers'),
+      receivers: names(to),
+      ccReceivers: names(cc),
+      bccReceivers: names(bcc),
+      toRecipients: to,
+      ccRecipients: cc,
+      bccRecipients: bcc,
       senderPicture: _str(xml, 'senderPicture'),
       fromTeam: _int(xml, 'fromTeam'),
       totalNrOtherToReceivers: _int(xml, 'totalNrOtherToReciviers'),

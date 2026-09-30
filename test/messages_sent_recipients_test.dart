@@ -139,7 +139,8 @@ String _sentXml({
       '<sendDate /></message></data></action></actions></response></server>';
 }
 
-/// The sent message of [_sentXml], parsed as `getMessage` parses it.
+/// The sent message of [_sentXml], parsed as `getMessage` parses it for the
+/// sent box.
 FullMessage _sent({
   List<String> to = const [],
   List<String> cc = const [],
@@ -155,7 +156,7 @@ FullMessage _sent({
     final v = xml[field];
     if (v == null || (v is String && v.trim().isEmpty)) xml[field] = null;
   }
-  return FullMessage.fromXml(xml);
+  return FullMessage.fromXml(xml, boxType: BoxType.sent);
 }
 
 List<int> _ids(List<MessageSearchUser> users) =>

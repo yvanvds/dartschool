@@ -10,7 +10,7 @@ import '../session.dart';
 import '../xml_interface.dart';
 import '../models/message_models.dart';
 import '../models/notification_models.dart';
-// import 'message_send_options.dart';
+import 'message_send_options.dart';
 import 'send_message_params.dart';
 
 const String _xpathMessage = './/data/message';
@@ -1108,6 +1108,13 @@ class MessagesService {
   ///   and the send stops before the first step that cannot, at the latest
   ///   before the submit (#38). A new call loads a new compose form in the
   ///   new session.
+  ///
+  /// Throws an [ArgumentError], before any request, when
+  /// [SendMessageParams.options] sets an option that Smartschool's compose
+  /// form has no field for (a read receipt, a high priority, or `extra`
+  /// fields; see [MessageSendOptions]), rather than send the message without
+  /// it (#43). Nothing was sent; the default options send the message as the
+  /// compose form does.
   Future<void> sendMessage(SendMessageParams params) =>
       _send(params, operation: 'sendMessage');
 
@@ -1125,8 +1132,9 @@ class MessagesService {
   /// method submits it the same way, with the form's own hidden fields.
   /// Everything else works as in [sendMessage]: the recipients are
   /// registered with the form's `uniqueUsc`, the attachments uploaded to its
-  /// `randomDir`, and the outcome and each failure mean what they mean
-  /// there. In particular, a [SmartschoolSendUnconfirmedError] means that the
+  /// `randomDir`, the options of [SendMessageParams.options] refused as there
+  /// (#43), and the outcome and each failure mean what they mean there. In
+  /// particular, a [SmartschoolSendUnconfirmedError] means that the
   /// reply may have been sent: check the sent box before sending it again;
   /// and when the client logs in again (for another request) after the reply
   /// form was loaded, the send stops with a [SmartschoolSessionExpiredError]
@@ -1182,6 +1190,10 @@ class MessagesService {
   }) async {
     // Everything up to the submit only prepares the compose form: a failure
     // there leaves nothing sent.
+
+    // Before any request, refuse an option that the compose form has no field
+    // for, rather than send the message without it (#43).
+    _checkOptions(params.options, operation);
 
     // Step 1: load a fresh compose form (the new-message form, or the reply
     // form) and extract all hidden token fields.
@@ -1294,7 +1306,9 @@ class MessagesService {
     // Step 4: build multipart payload matching the observed browser request.
     // The form is submitted to the URL it was loaded from, whose query the
     // payload repeats; a reply form's origMsgID and composeAction (2) are
-    // those of the message it answers.
+    // those of the message it answers. The form's own options, copyToLVS and
+    // sendDate (a delayed send), keep its defaults: no parameter sets them
+    // (#43, #47).
     final payload = <String, dynamic>{
       'module': 'Messages',
       'file': 'composeMessage',
@@ -1339,6 +1353,37 @@ class MessagesService {
     RecipientType.cc => 'CC',
     RecipientType.bcc => 'BCC',
   };
+
+  /// Throws an [ArgumentError] when [options] sets an option that
+  /// Smartschool's compose form has no field for (#43): a read receipt, a
+  /// high priority, or [MessageSendOptions.extra] fields. Such an option
+  /// cannot be sent, and the message is not sent without it. [operation]
+  /// names the calling method in the message.
+  ///
+  /// Checked live and in Smartschool's compose scripts: the new-message and
+  /// reply forms have no read receipt or priority, and every one of their
+  /// fields is in the submit already (see [_send]).
+  static void _checkOptions(MessageSendOptions options, String operation) {
+    final extra = options.extra;
+    final unsupported = [
+      if (options.requestReadReceipt)
+        'requestReadReceipt (Smartschool has no read receipt)',
+      if (options.highPriority)
+        'highPriority (Smartschool has no message priority)',
+      if (extra != null && extra.isNotEmpty)
+        'extra (${extra.keys.join(', ')}; the submit already holds every '
+            'field of the compose form)',
+    ];
+    if (unsupported.isEmpty) return;
+    throw ArgumentError.value(
+      options,
+      'params.options',
+      '$operation: Smartschool\'s compose form has no field for '
+          '${unsupported.join(', ')}. Nothing was sent; to send the message '
+          'without them, leave the options at their defaults '
+          '(MessageSendOptions())',
+    );
+  }
 
   /// Submits the compose form to [url] with [payload]: the request that
   /// sends the message.

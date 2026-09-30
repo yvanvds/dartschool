@@ -242,7 +242,7 @@ for (final attachment in attachments) {
 | `subject` | `String` | required | The subject. |
 | `bodyHtml` | `String` | required | The body, as HTML. |
 | `attachmentPaths` | `List<String>` | `[]` | Paths of local files to attach; each is uploaded before the submit. |
-| `options` | `MessageSendOptions` | `MessageSendOptions()` | `requestReadReceipt`, `highPriority` (both `false`) and `extra`. Not sent to Smartschool yet, so they have no effect (#43). |
+| `options` | `MessageSendOptions` | `MessageSendOptions()` | Leave it at its default. Its fields `requestReadReceipt`, `highPriority` (both `false`) and `extra` are deprecated: Smartschool's compose form has no read receipt or priority, and the submit already holds every field of the form, so none of them can be sent. A send that sets one (`true`, or a non-empty `extra`) throws an `ArgumentError` before any request, and sends nothing, instead of sending the message without it (#43). The form's own options, storing the message in the LVS and a delayed send, are submitted with its defaults: not stored, sent now (#47). |
 
 Get the recipients from `searchRecipientsForCompose`, `getCurrentUserAsRecipient`, or for a reply from `getReplyRecipients` / `getReplyAllRecipients`:
 

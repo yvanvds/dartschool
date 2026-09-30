@@ -157,9 +157,10 @@ class SmartschoolClient {
     );
 
     // Cookie manager must be added before auth interceptor so cookies are
-    // available on each retry request.
+    // available on each retry request. It keeps the answers that Smartschool
+    // refused out of the jar (#45).
     dio.interceptors
-      ..add(CookieManager(cookieJar))
+      ..add(_SmartschoolCookieManager(cookieJar, client._auth.refusedSession))
       ..add(client._auth);
 
     return client;
@@ -909,11 +910,21 @@ class SmartschoolClient {
   }
 
   /// A raw GET that bypasses the auth interceptor.
-  Future<Response<String>> _rawGet(String url) async {
+  ///
+  /// With [newSession], the request is sent without the session cookie
+  /// ([_SmartschoolCookieManager.sessionCookie]), so that Smartschool starts
+  /// a new session for it and sends its id with the answer (#45).
+  Future<Response<String>> _rawGet(
+    String url, {
+    bool newSession = false,
+  }) async {
     return _dio.get<String>(
       url,
       options: Options(
-        extra: {_noAuthKey: true},
+        extra: {
+          _noAuthKey: true,
+          if (newSession) _SmartschoolCookieManager.newSessionKey: true,
+        },
         followRedirects: true,
         validateStatus: (_) => true,
       ),
@@ -975,6 +986,54 @@ class SmartschoolClient {
 }
 
 // ---------------------------------------------------------------------------
+// Cookie manager
+// ---------------------------------------------------------------------------
+
+/// A [CookieManager] that keeps the session a login runs in to the login
+/// chain (#45).
+///
+/// It saves and loads cookies as [CookieManager] does, except that:
+/// - it does not save the cookies of an answer that Smartschool refused the
+///   session for (see [_SmartschoolAuthInterceptor.refusedSession]): such an
+///   answer comes from a session the client is about to replace, and one
+///   that comes in while a login runs, or after it, must not replace the
+///   cookies of the new session. Smartschool sets a `pid` cookie on every
+///   answer to a request without one, refused or not;
+/// - it sends a request marked with [newSessionKey] without the session
+///   cookie, so that Smartschool starts a new session for it.
+class _SmartschoolCookieManager extends CookieManager {
+  _SmartschoolCookieManager(super.cookieJar, this._refused);
+
+  /// The name of Smartschool's session cookie, the PHP session that holds
+  /// the login state and the CSRF token of the login form.
+  static const sessionCookie = 'PHPSESSID';
+
+  /// The request `extra` that sends a request without [sessionCookie].
+  static const newSessionKey = '_smartschool_newSession';
+
+  /// Whether Smartschool refused the session for the request of a response.
+  final bool Function(Response<dynamic> response) _refused;
+
+  @override
+  Future<String> loadCookies(RequestOptions options) async {
+    if (options.extra[newSessionKey] != true) {
+      return super.loadCookies(options);
+    }
+    final saved = await cookieJar.loadForRequest(options.uri);
+    return CookieManager.getCookies([
+      for (final cookie in saved)
+        if (cookie.name != sessionCookie) cookie,
+    ]);
+  }
+
+  @override
+  Future<void> saveCookies(Response<dynamic> response) async {
+    if (_refused(response)) return;
+    await super.saveCookies(response);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Auth interceptor
 // ---------------------------------------------------------------------------
 
@@ -1028,6 +1087,18 @@ class SmartschoolClient {
 /// expired send the password (and the one-time 2FA code) once, and the login
 /// counts once toward [_maxLoginAttempts]. The login chain's own requests and
 /// the retries never wait for a login, so a login cannot wait for itself.
+///
+/// A login that starts at the login form loads that form itself, in a new
+/// session, instead of using the page of the refused request (#45). The
+/// form's CSRF token is stored in the PHP session, and Smartschool keeps a
+/// session id it does not know as a new, empty session, which it does not
+/// lock: concurrent requests on an expired session each render the login
+/// page in that one session, each store a token of their own there, and the
+/// last one stored wins, so the page the login got first could post a token
+/// that Smartschool no longer holds, which it answers like a wrong password.
+/// No other request carries the new session, and [_SmartschoolCookieManager]
+/// keeps the cookies of refused answers out of the jar, so the password POST
+/// always goes out in the session of the token it posts.
 ///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
@@ -1240,8 +1311,15 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     return login;
   }
 
-  /// Runs the login chain for the refused [response]: from its own page when
-  /// it landed on the login chain, otherwise from [loginChain] (or `/login`).
+  /// Runs the login chain for the refused [response], from the page of the
+  /// login chain it landed on, or else [loginChain], or else `/login` (a
+  /// `401` does not say where the chain starts).
+  ///
+  /// When that is the login form, the login loads it itself, in a new
+  /// session, so that the CSRF token it posts is the one stored in the
+  /// session it posts it in (#45). A `/2fa` or `/account-verification` page
+  /// continues the session that got past the password: the chain starts
+  /// from the refused page, or from a GET of [loginChain].
   ///
   /// Counts the login toward [_maxLoginAttempts] and, when it completes,
   /// moves the client to the next [_sessionGeneration].
@@ -1252,16 +1330,22 @@ class _SmartschoolAuthInterceptor extends Interceptor {
 
     try {
       final realUri = response.realUri;
-      if (_client.isAuthUri(realUri)) {
-        // Redirected onto the login chain: the response is its first page.
-        await _driveAuthChain(realUri, response);
-      } else {
-        // A 401 does not say where the login chain starts, and a redirect the
-        // HTTP client left unfollowed only points at it: open it ourselves.
+      final landedOnChain = _client.isAuthUri(realUri);
+      final start = landedOnChain ? realUri : loginChain;
+      if (start == null || start.path.endsWith('/login')) {
         final loginPage = await _client._rawGet(
-          loginChain?.toString() ?? '/login',
+          start?.toString() ?? '/login',
+          newSession: true,
         );
         await _driveAuthChain(loginPage.realUri, loginPage);
+      } else if (landedOnChain) {
+        // Redirected onto the login chain: the response is its page.
+        await _driveAuthChain(realUri, response);
+      } else {
+        // A redirect the HTTP client left unfollowed only points at the
+        // page: open it ourselves.
+        final page = await _client._rawGet(start.toString());
+        await _driveAuthChain(page.realUri, page);
       }
     } on SmartschoolAuthenticationError catch (e) {
       if (_rejectsCredentials(e)) _rejectedCredentials = e;
@@ -1305,6 +1389,14 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       e is SmartschoolUnsupportedTwoFactorMethodError ||
       e is SmartschoolAccountVerificationRequiredError ||
       e is SmartschoolAccountVerificationRejectedError;
+
+  /// Whether Smartschool refused the session for the request of [response]:
+  /// a regular request (or a retry) that it answered with `401` or with its
+  /// login chain, the answers that make this interceptor log in (#45). An
+  /// answer to a request of the login chain itself is not refused.
+  bool refusedSession(Response<dynamic> response) =>
+      response.requestOptions.extra[_noAuthKey] != true &&
+      (_isUnauthorized(response) || _loginChainTarget(response) != null);
 
   /// Whether [response] is Smartschool's answer to an XHR/form POST on an
   /// expired session: `401 Unauthorized` (with an empty body), not a redirect

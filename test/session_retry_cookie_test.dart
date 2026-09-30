@@ -230,8 +230,10 @@ void main() {
       // received HTML".
       expect(await client.platformId, 42);
 
+      // The login loads the login page itself, in a new session (#45).
       expect(server.log, [
         'GET /course-list/api/v1/courses',
+        'GET /login',
         'POST /login',
         'GET /',
         'GET /2fa/api/v1/config',

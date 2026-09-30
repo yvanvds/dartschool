@@ -94,9 +94,11 @@ const _addRecipient = 'POST /?file=searchUsers';
 const _upload = 'POST /Upload/Upload/Index';
 const _submit = 'POST /?file=composeMessage';
 
-/// The login chain that a GET redirected to `/login` runs, from the password
-/// to the 2FA answer.
-const _password = [
+/// The login chain that a GET redirected to `/login` runs: the login loads the
+/// login page itself, in a new session (#45), and goes from the password to
+/// the 2FA answer.
+const _login = [
+  'GET /login',
   'POST /login',
   'GET /',
   'GET /2fa/api/v1/config',
@@ -568,7 +570,7 @@ void main() {
       expect(server.logSinceExpiry, [
         _submit,
         _compose,
-        ..._password,
+        ..._login,
         _compose,
         _addRecipient,
         _submit,
@@ -588,7 +590,7 @@ void main() {
 
       expect(server.log, [
         _compose,
-        ..._password,
+        ..._login,
         _compose,
         _addRecipient,
         _submit,

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../exceptions.dart';
 import '../session.dart';
 import '../models/intradesk_models.dart';
 
@@ -17,11 +18,15 @@ export '../models/intradesk_models.dart';
 /// // List root folders and files
 /// final root = await intradesk.getRootListing();
 /// for (final folder in root.folders) {
-///   print('${folder.name}  (hasChildren: ${folder.hasChildren})');
+///   print('${folder.name}  (hasSubfolders: ${folder.hasSubfolders})');
 /// }
 ///
-/// // Drill into a folder
+/// // Drill into a folder (also one without subfolders: it can still hold
+/// // files and weblinks)
 /// final sub = await intradesk.getFolderListing(root.folders.first.id);
+/// for (final link in sub.weblinks) {
+///   print('${link.name}: ${link.url}');
+/// }
 ///
 /// // Download a file
 /// final bytes = await intradesk.downloadFile(sub.files.first.id);
@@ -55,6 +60,18 @@ class IntradeskService {
   /// Returns the [IntradeskListing] for the folder identified by [folderId].
   ///
   /// Calls `GET /intradesk/api/v1/{platformId}/directory-listing/forTreeOnlyFolders/{folderId}`
+  ///
+  /// Throws a [SmartschoolIntradeskFolderNotFoundError] when Smartschool
+  /// knows no folder with [folderId]: an unknown ID, or the ID of a file or a
+  /// weblink (#37). Smartschool answers the listing of such an ID with HTTP
+  /// `500`, as it would for a failure of its own; to tell them apart, a
+  /// listing that fails with `500` is followed by one more request, for the
+  /// parents of the folder (`GET /intradesk/api/v1/{platformId}/folders/{folderId}/parents`),
+  /// which Smartschool answers with `404` for an ID that is not a folder. Any
+  /// other failure of the listing is thrown as before, typically as a
+  /// [SmartschoolDownloadError] with the HTTP status; that includes an ID
+  /// that is not a UUID at all, whose parents Smartschool answers with `500`
+  /// too.
   Future<IntradeskListing> getFolderListing(String folderId) async {
     if (folderId.isEmpty) {
       throw ArgumentError.value(
@@ -64,10 +81,35 @@ class IntradeskService {
       );
     }
     final platformId = await _client.platformId;
-    final data = await _client.getJson(
-      '/intradesk/api/v1/$platformId/directory-listing/forTreeOnlyFolders/$folderId',
-    );
+    final dynamic data;
+    try {
+      data = await _client.getJson(
+        '/intradesk/api/v1/$platformId/directory-listing/forTreeOnlyFolders/$folderId',
+      );
+    } on SmartschoolDownloadError catch (e) {
+      if (e.statusCode == 500 && await _isNotAFolder(platformId, folderId)) {
+        throw SmartschoolIntradeskFolderNotFoundError(folderId);
+      }
+      rethrow;
+    }
     return IntradeskListing.fromJson(asMap(data));
+  }
+
+  /// Whether Smartschool answers the parents of [folderId] with `404`, as it
+  /// does for an ID that is not a folder (an unknown ID, or the ID of a file
+  /// or a weblink), where it answers a folder with its parents (#37).
+  ///
+  /// `false` for any other answer, and when the request fails: the caller
+  /// then keeps the error of the listing.
+  Future<bool> _isNotAFolder(int platformId, String folderId) async {
+    try {
+      final resp = await _client.getResponse(
+        '/intradesk/api/v1/$platformId/folders/$folderId/parents',
+      );
+      return resp.statusCode == 404;
+    } on Exception {
+      return false;
+    }
   }
 
   // -------------------------------------------------------------------------

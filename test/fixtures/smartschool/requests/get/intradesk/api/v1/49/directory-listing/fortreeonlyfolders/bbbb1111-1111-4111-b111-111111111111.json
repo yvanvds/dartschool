@@ -1,0 +1,54 @@
+{
+  "folders": [],
+  "files": [
+    {
+      "id": "cccc3333-3333-4333-b333-333333333333",
+      "platform": {"id": 49, "name": "Testschool"},
+      "name": "jaarverslag.pdf",
+      "state": "active",
+      "parentFolderId": "bbbb1111-1111-4111-b111-111111111111",
+      "dateCreated": "2022-06-20T14:12:40+02:00",
+      "dateStateChanged": "2022-06-20T14:12:40+02:00",
+      "dateChanged": "2022-06-20T14:12:40+02:00",
+      "currentRevision": {
+        "id": "dddd3333-3333-4333-b333-333333333333",
+        "platform": {"id": 49, "name": "Testschool"},
+        "fileId": "cccc3333-3333-4333-b333-333333333333",
+        "fileSize": 20480,
+        "dateCreated": "2022-06-20T14:12:40+02:00",
+        "label": "jaarverslag.pdf",
+        "owner": {
+          "userIdentifier": "49_1001_0",
+          "userPictureHash": "initials_JJ",
+          "userPictureUrl": "https://userpicture.example.com/initials_JJ/128",
+          "name": "Jan Janssens",
+          "nameReverse": "Janssens Jan",
+          "description": "",
+          "descriptionReverse": ""
+        }
+      },
+      "isFavourite": false,
+      "confidential": false,
+      "ownerId": "49_1001_0",
+      "capabilities": {"canManage": false, "canMove": false, "canHandleRevisions": false, "canSeeHistory": false, "canSeeViewHistory": false}
+    }
+  ],
+  "weblinks": [
+    {
+      "id": "eeee1111-1111-4111-b111-111111111111",
+      "platform": {"id": 49, "name": "Testschool"},
+      "name": "Schoolkalender",
+      "state": "active",
+      "url": "https://www.example.com/springfield-academy/kalender",
+      "icon": "folder_orange",
+      "parentFolderId": "bbbb1111-1111-4111-b111-111111111111",
+      "dateStateChanged": "2023-03-25T12:29:59+01:00",
+      "dateCreated": "2023-03-25T12:29:59+01:00",
+      "dateChanged": "2023-07-01T11:11:13+02:00",
+      "isFavourite": false,
+      "confidential": true,
+      "ownerId": "49_1001_0",
+      "capabilities": {"canManage": true, "canMove": true, "canSeeHistory": false, "canSeeViewHistory": false}
+    }
+  ]
+}

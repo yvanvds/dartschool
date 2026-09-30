@@ -454,11 +454,15 @@ final intradesk = IntradeskService(client);
 // Root listing
 final root = await intradesk.getRootListing();
 for (final folder in root.folders) {
-  print('${folder.name}  hasChildren: ${folder.hasChildren}');
+  print('${folder.name}  hasSubfolders: ${folder.hasSubfolders}');
 }
 
-// Drill into a sub-folder
+// Drill into a sub-folder (also one without subfolders: it can still hold
+// files and weblinks)
 final sub = await intradesk.getFolderListing(root.folders.first.id);
+for (final link in sub.weblinks) {
+  print('${link.name}: ${link.url}');
+}
 
 // Download a file
 final bytes = await intradesk.downloadFile(sub.files.first.id);
@@ -470,7 +474,7 @@ await File('output.docx').writeAsBytes(bytes);
 | Method | Returns | Description |
 |---|---|---|
 | `getRootListing()` | `Future<IntradeskListing>` | Root-level folders, files, and weblinks. |
-| `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. |
+| `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. Throws a `SmartschoolIntradeskFolderNotFoundError` when Smartschool knows no folder with that ID (an unknown ID, or the ID of a file or a weblink). |
 | `downloadFile(fileId)` | `Future<Uint8List>` | Raw bytes of the identified file. |
 
 > **Not yet implemented**: file upload — the server-side endpoint and required form fields have not been captured safely.  
@@ -619,13 +623,18 @@ Produced by `MessagesService` after deduplication and emitted on `messageCounter
 | `timestamp` | `DateTime` | When the event was created. |
 
 ### `IntradeskListing`
-Returned by `getRootListing` / `getFolderListing`. Fields: `folders` (`List<IntradeskFolder>`), `files` (`List<IntradeskFile>`), `weblinks` (raw maps).
+Returned by `getRootListing` / `getFolderListing`. Fields: `folders` (`List<IntradeskFolder>`), `files` (`List<IntradeskFile>`), `weblinks` (`List<IntradeskWeblink>`).
 
 ### `IntradeskFolder`
 Fields: `id`, `name`, `color`, `state`, `visible`, `confidential`, `parentFolderId` (empty at root), `hasChildren`, `isFavourite`, `capabilities` (`IntradeskFolderCapabilities`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
 
+`hasChildren` is Smartschool's own flag for its folder tree and counts **subfolders only**: a folder with `hasChildren` false can still hold files and weblinks, so list it anyway to find them. `hasSubfolders` is the same value under a name that says what it counts.
+
 ### `IntradeskFile`
 Fields: `id`, `name`, `state`, `parentFolderId`, `ownerId`, `confidential`, `isFavourite`, `currentRevision` (`IntradeskFileRevision?`), `capabilities` (`IntradeskFileCapabilities`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
+
+### `IntradeskWeblink`
+A link to a web page, kept in a folder next to its files. Fields: `id`, `name`, `url`, `icon` (Smartschool's icon name, e.g. `folder_orange`), `state`, `parentFolderId`, `ownerId`, `confidential`, `isFavourite`, `capabilities` (`IntradeskWeblinkCapabilities`: `canManage`, `canMove`, `canSeeHistory`, `canSeeViewHistory`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
 
 ### `IntradeskFileRevision`
 Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCreated`, `owner` (`IntradeskFileOwner`).
@@ -675,6 +684,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
+| `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |
 
 The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. They are thrown directly, by `ensureAuthenticated()` and also by a service call (or any `SmartschoolClient` request method) that finds the session cold or expired and fails to log in again, so the same `on` clauses work around either. Only a request made on `client.dio` itself gets them wrapped in a `DioException`, as its `error`.
 

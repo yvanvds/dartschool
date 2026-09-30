@@ -213,6 +213,33 @@ class SmartschoolJsonError extends SmartschoolDownloadError {
   SmartschoolJsonError(super.message, super.statusCode);
 }
 
+/// Thrown by `IntradeskService.getFolderListing` when Smartschool knows no
+/// Intradesk folder with the given ID: an unknown ID, or the ID of a file or
+/// a weblink (#37).
+///
+/// Smartschool answers the listing of such an ID with HTTP `500` and a bare
+/// `Internal Server Error` problem, the same answer as for a failure of its
+/// own, so the answer alone does not tell them apart. When a listing fails
+/// with `500`, `getFolderListing` therefore asks Smartschool for the parents
+/// of the folder (`folders/{id}/parents`), which it answers with `404` for an
+/// ID that is not a folder, and with the parents for a folder. Only that
+/// `404` makes this error; any other answer keeps the plain
+/// [SmartschoolDownloadError] of the listing.
+///
+/// It is a [SmartschoolDownloadError] with the [statusCode] of the listing
+/// (`500`), so a `catch` of that type still catches it.
+class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
+  /// The ID that was asked for.
+  final String folderId;
+
+  SmartschoolIntradeskFolderNotFoundError(this.folderId)
+    : super(
+        'Intradesk has no folder with ID "$folderId": the ID is unknown, or '
+        'it is the ID of a file or a weblink.',
+        500,
+      );
+}
+
 /// Thrown when uploading a message attachment fails.
 class SmartschoolAttachmentUploadError extends SmartschoolException {
   const SmartschoolAttachmentUploadError(super.message);

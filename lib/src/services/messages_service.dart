@@ -199,6 +199,10 @@ class MessagesService {
   ///
   /// Pass [alreadySeenIds] to enable poll mode — only messages whose IDs are
   /// **not** in that list will be returned.
+  ///
+  /// Returns one page: at most the first 50 headers in the given order (the
+  /// newest 50 by default). Use [getHeaderPages] or [getAllHeaders] to get
+  /// the older ones too.
   Future<List<ShortMessage>> getHeaders({
     BoxType boxType = BoxType.inbox,
     int boxId = 0,
@@ -210,20 +214,105 @@ class MessagesService {
       url: _messagesXmlUrl,
       subsystem: 'postboxes',
       action: 'message list',
-      params: {
-        'boxType': boxType.value,
-        'boxID': '$boxId',
-        'sortField': sortBy.value,
-        'sortKey': sortOrder.value,
-        'poll': alreadySeenIds.isEmpty ? 'false' : 'true',
-        'poll_ids': alreadySeenIds.join(','),
-        'layout': 'new',
-      },
+      params: _messageListParams(
+        boxType: boxType,
+        boxId: boxId,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+        alreadySeenIds: alreadySeenIds,
+      ),
       xpath: './/messages/message',
     );
 
     return entries.map(ShortMessage.fromXml).toList();
   }
+
+  /// Returns the message headers in [boxType] page by page, not only the
+  /// first page that [getHeaders] returns.
+  ///
+  /// Smartschool's `message list` answers with at most 50 headers and takes
+  /// no offset. Its web client loads the rest while the user scrolls down:
+  /// as long as an answer announces more (with a `continue_messages`
+  /// action), it asks for the next page with a `continue_messages` request,
+  /// and Smartschool answers with the next 50 headers of the box, in the
+  /// order of the `message list`. This stream does the same. Its first event
+  /// is the page [getHeaders] returns; each next page is requested only when
+  /// the listener is ready for it, so `take`, `takeWhile` or cancelling the
+  /// subscription stops the paging without fetching the rest of the box.
+  ///
+  /// The stream closes after the last page of the box, and also at a page
+  /// that brings no header the stream has not emitted yet, so a server that
+  /// repeats a page cannot keep it going. A header already emitted is left
+  /// out of later pages, and a page is never empty: an empty box gives a
+  /// stream without events. Pages are about 50 headers each but may be
+  /// shorter before the last.
+  ///
+  /// Smartschool keeps the paging position in the session, one per box, and
+  /// restarts it on every `message list` of that box: a [getHeaders] (also in
+  /// poll mode, which [refreshHeadersIncremental] uses) or another paging of
+  /// the same box while this stream is paging makes the next page one that
+  /// was already emitted, which ends the stream early. Paging different boxes
+  /// at the same time is fine.
+  ///
+  /// [boxId], [sortBy] and [sortOrder] are those of [getHeaders]; for the
+  /// archive, use [getArchiveHeaderPages].
+  Stream<List<ShortMessage>> getHeaderPages({
+    BoxType boxType = BoxType.inbox,
+    int boxId = 0,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+  }) async* {
+    final emitted = <int>{};
+    var page = await _fetchHeaderPage(
+      'message list',
+      _messageListParams(
+        boxType: boxType,
+        boxId: boxId,
+        sortBy: sortBy,
+        sortOrder: sortOrder,
+      ),
+    );
+    while (true) {
+      final fresh = [
+        for (final header in page.headers)
+          if (emitted.add(header.id)) header,
+      ];
+      if (fresh.isEmpty) return;
+      yield fresh;
+      if (!page.hasMore) return;
+      page = await _fetchHeaderPage('continue_messages', {
+        'boxID': '$boxId',
+        'boxType': boxType.value,
+        'layout': 'new',
+      });
+    }
+  }
+
+  /// Returns all message headers in [boxType], not only the first 50 that
+  /// [getHeaders] returns, by collecting [getHeaderPages].
+  ///
+  /// Each page of 50 headers is a request, and a box can hold thousands of
+  /// messages. Pass [limit] (at least 1) to stop at that many headers: no
+  /// further page is requested once they are in, and at most [limit] headers
+  /// are returned, the first ones in the given order.
+  ///
+  /// The paging ends early when the box is listed again in the same session
+  /// while it runs; see [getHeaderPages].
+  Future<List<ShortMessage>> getAllHeaders({
+    BoxType boxType = BoxType.inbox,
+    int boxId = 0,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+    int? limit,
+  }) => _collectHeaders(
+    getHeaderPages(
+      boxType: boxType,
+      boxId: boxId,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+    ),
+    limit,
+  );
 
   /// Returns message headers from the archive folder.
   ///
@@ -250,6 +339,122 @@ class MessagesService {
       sortOrder: sortOrder,
       alreadySeenIds: alreadySeenIds,
     );
+  }
+
+  /// Returns the message headers in the archive folder page by page, not
+  /// only the first page that [getArchiveHeaders] returns.
+  ///
+  /// This is [getHeaderPages] with `boxType = BoxType.inbox` and the archive
+  /// folder's box ID, resolved as [getArchiveHeaders] does when [boxId] is
+  /// omitted.
+  Stream<List<ShortMessage>> getArchiveHeaderPages({
+    int? boxId,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+  }) async* {
+    final resolvedBoxId = boxId ?? await _resolveArchiveBoxId();
+    yield* getHeaderPages(
+      boxType: BoxType.inbox,
+      boxId: resolvedBoxId,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+    );
+  }
+
+  /// Returns all message headers in the archive folder, not only the first
+  /// 50 that [getArchiveHeaders] returns, by collecting
+  /// [getArchiveHeaderPages].
+  ///
+  /// [limit] works as for [getAllHeaders].
+  Future<List<ShortMessage>> getAllArchiveHeaders({
+    int? boxId,
+    SortField sortBy = SortField.date,
+    SortOrder sortOrder = SortOrder.desc,
+    int? limit,
+  }) => _collectHeaders(
+    getArchiveHeaderPages(boxId: boxId, sortBy: sortBy, sortOrder: sortOrder),
+    limit,
+  );
+
+  /// The params of a `message list` request.
+  static Map<String, String> _messageListParams({
+    required BoxType boxType,
+    required int boxId,
+    required SortField sortBy,
+    required SortOrder sortOrder,
+    List<int> alreadySeenIds = const [],
+  }) => {
+    'boxType': boxType.value,
+    'boxID': '$boxId',
+    'sortField': sortBy.value,
+    'sortKey': sortOrder.value,
+    'poll': alreadySeenIds.isEmpty ? 'false' : 'true',
+    'poll_ids': alreadySeenIds.join(','),
+    'layout': 'new',
+  };
+
+  /// Sends [action] (`message list` or `continue_messages`) and returns the
+  /// headers of the page it answers with, and whether Smartschool announces
+  /// a next page.
+  ///
+  /// The headers are in the `rebuild` action of a `message list` answer and
+  /// in the `rebuildcontinue` action of a `continue_messages` answer, both as
+  /// `<data><messages><message>`. A next page is announced by a
+  /// `continue_messages` action; the last page comes with a `rebuildfinish`
+  /// action (`<data><message/></data>`) instead.
+  Future<({List<ShortMessage> headers, bool hasMore})> _fetchHeaderPage(
+    String action,
+    Map<String, String> params,
+  ) async {
+    final actions = await _client.postXml(
+      url: _messagesXmlUrl,
+      subsystem: 'postboxes',
+      action: action,
+      params: params,
+      xpath: './/actions/action',
+    );
+
+    final headers = <ShortMessage>[];
+    var hasMore = false;
+    for (final answer in actions) {
+      if (answer['command'] == 'continue_messages') hasMore = true;
+      for (final data in _elements(answer['data'])) {
+        for (final messages in _elements(data['messages'])) {
+          headers.addAll(
+            _elements(messages['message']).map(ShortMessage.fromXml),
+          );
+        }
+      }
+    }
+    return (headers: headers, hasMore: hasMore);
+  }
+
+  /// The element maps in [value], a value of [XmlInterface.elementToMap]:
+  /// one element is a map, repeated elements are a list of them, and an
+  /// element without children is its text, which holds none.
+  static Iterable<Map<String, dynamic>> _elements(Object? value) =>
+      switch (value) {
+        Map<String, dynamic>() => [value],
+        List() => value.whereType<Map<String, dynamic>>(),
+        _ => const [],
+      };
+
+  /// Collects the headers of [pages], stopping at [limit] headers.
+  static Future<List<ShortMessage>> _collectHeaders(
+    Stream<List<ShortMessage>> pages,
+    int? limit,
+  ) async {
+    if (limit != null && limit < 1) {
+      throw ArgumentError.value(limit, 'limit', 'must be at least 1');
+    }
+    final headers = <ShortMessage>[];
+    await for (final page in pages) {
+      headers.addAll(page);
+      if (limit != null && headers.length >= limit) {
+        return headers.sublist(0, limit);
+      }
+    }
+    return headers;
   }
 
   /// Returns the archive folder box ID for the current account.

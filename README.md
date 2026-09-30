@@ -160,13 +160,32 @@ final messages = MessagesService(client);
 
 | Method | Returns | Description |
 |---|---|---|
-| `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box. Pass `alreadySeenIds` for lightweight polling. |
-| `getArchiveHeaders({boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | Convenience wrapper for the archive folder — resolves the box ID automatically. |
+| `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box: one page, at most the first 50 (the newest 50 by default). Pass `alreadySeenIds` for lightweight polling. |
+| `getArchiveHeaders({boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | Convenience wrapper for the archive folder — resolves the box ID automatically. One page, like `getHeaders`. |
+| `getHeaderPages({boxType, boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | All headers of a box, page by page (about 50 each), as Smartschool's web client loads them while scrolling. The first page is what `getHeaders` returns; each next page is requested only when the listener wants it, so `take`/`takeWhile` or cancelling stops the paging. Ends after the last page, or at a page that brings no header not yet emitted. |
+| `getArchiveHeaderPages({boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | `getHeaderPages` for the archive folder. |
+| `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. |
+| `getAllArchiveHeaders({boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | `getAllHeaders` for the archive folder. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
 | `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
 | `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To and CC recipients with their numeric user IDs by parsing the reply-all compose page. Use this when you need IDs for a subsequent `sendMessage` reply-all. |
 | `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients; this method strips the sender out automatically. Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
+
+Smartschool keeps the paging position in the session, one per box, and restarts it whenever that box is listed again (`getHeaders`, also in poll mode, or another paging of the same box), which ends a paging of that box early. Paging different boxes at once is fine.
+
+```dart
+// Every message of the sent box, 50 per request.
+final sent = await messages.getAllHeaders(boxType: BoxType.sent);
+
+// Inbox headers of the last 30 days: stops requesting pages once past them.
+final since = DateTime.now().subtract(const Duration(days: 30));
+final recent = await messages
+	.getHeaderPages()
+	.expand((page) => page)
+	.takeWhile((header) => header.date.isAfter(since))
+	.toList();
+```
 
 Attachment bytes can be downloaded from each `MessageAttachment`:
 

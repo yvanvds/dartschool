@@ -23,5 +23,16 @@ void main() {
       final client = await SmartschoolClient.create(DummyCredentials());
       expect(client.notificationCounterUpdates, isA<Stream>());
     });
+    test('create refuses a negative loginCooldown (#32)', () async {
+      await expectLater(
+        SmartschoolClient.create(
+          DummyCredentials(),
+          loginCooldown: const Duration(seconds: -1),
+        ),
+        throwsA(
+          isA<ArgumentError>().having((e) => e.name, 'name', 'loginCooldown'),
+        ),
+      );
+    });
   });
 }

@@ -140,8 +140,12 @@ class SmartschoolAccountVerificationRejectedError
 /// again: after three logins in a row that did not get the session accepted
 /// (the login failed, or the retry was refused), a request that Smartschool
 /// refuses fails at once, whichever way it was refused. The client logs in
-/// again after an answer that Smartschool accepts; a new `SmartschoolClient`
-/// starts counting afresh.
+/// again after an answer that Smartschool accepts, and tries one login again
+/// once the `loginCooldown` of `SmartschoolClient.create` (5 minutes by
+/// default) has passed since the last one (#32) — unless Smartschool rejected
+/// the credentials at that login. `SmartschoolClient.resetLoginAttempts()`
+/// lets it log in again at once; a new `SmartschoolClient` starts counting
+/// afresh.
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own

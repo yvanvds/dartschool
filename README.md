@@ -130,9 +130,10 @@ await client.ensureAuthenticated();
 
 | Method / getter | Description |
 |---|---|
-| `SmartschoolClient.create(credentials)` | Factory — creates the Dio client, configures cookie jar, returns ready instance |
+| `SmartschoolClient.create(credentials, {cacheDir, loginCooldown, clock})` | Factory — creates the Dio client, configures cookie jar, returns ready instance. `loginCooldown` (default 5 minutes) and `clock` (default `DateTime.now`): see *Logging in again* below |
 | `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly. Throws a `SmartschoolAuthenticationError` subtype when the login fails, a `SmartschoolConnectionError` when Smartschool is unreachable |
 | `clearCookies()` | Deletes persisted cookies (use this for explicit logout/session reset). |
+| `resetLoginAttempts()` | Lets a client that stopped logging in on its own log in again at once (see *Logging in again* below) |
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
 | `postFormRaw(path, fields)` | `application/x-www-form-urlencoded` POST → `String` |
@@ -145,6 +146,10 @@ await client.ensureAuthenticated();
 | `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
 | `dispose({force})` | Closes the notification stream and the underlying Dio client |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
+
+### Logging in again
+
+When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
 
 ---
 

@@ -257,16 +257,26 @@ void main() {
       },
     );
 
-    test('dispose closes the HTTP client: a later request fails without '
-        'reaching Smartschool', () async {
+    test('dispose closes the HTTP client: a later request fails with a '
+        'StateError saying so, without reaching Smartschool', () async {
       final server = _Smartschool();
       final client = await _clientOf(server);
 
       await client.dispose();
 
       expect(server.closes, [true], reason: 'closed with force by default');
-      // What it fails with is not settled yet (#54).
-      await expectLater(client.getRaw('/'), throwsA(anything));
+      // Not a SmartschoolConnectionError: Smartschool is not unreachable,
+      // the client was disposed (#54, see session_dispose_test.dart).
+      await expectLater(
+        client.getRaw('/'),
+        throwsA(
+          isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            startsWith('SmartschoolClient was disposed'),
+          ),
+        ),
+      );
       expect(server.requests, isEmpty);
     });
 

@@ -211,17 +211,22 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 
 /// Thrown when Smartschool's message compose form cannot be used: its hidden
 /// fields (`uniqueUsc`, `randomDir`) or the IDs of the current user are
-/// missing from it.
+/// missing from it. `MessagesService.sendReply` also throws it when
+/// Smartschool does not answer with the reply form of the message, or when
+/// the reply would go to a recipient that the reply form names and the
+/// params leave out (#26).
 ///
-/// `MessagesService.sendMessage` throws it before the message is submitted,
-/// so nothing was sent. A submitted message that Smartschool does not confirm
-/// as sent is a [SmartschoolSendUnconfirmedError] instead (#25).
+/// `MessagesService.sendMessage` and `sendReply` throw it before the message
+/// is submitted, so nothing was sent. A submitted message that Smartschool
+/// does not confirm as sent is a [SmartschoolSendUnconfirmedError] instead
+/// (#25).
 class SmartschoolComposeError extends SmartschoolException {
   const SmartschoolComposeError(super.message);
 }
 
-/// Thrown by `MessagesService.sendMessage` when the message was submitted,
-/// but Smartschool's answer does not confirm that it was sent (#25).
+/// Thrown by `MessagesService.sendMessage` (and `sendReply`, #26) when the
+/// message was submitted, but Smartschool's answer does not confirm that it
+/// was sent (#25).
 ///
 /// **The message may or may not have been sent.** Do not send it again
 /// blindly: check the sent box first (e.g. `getHeaders(boxType:

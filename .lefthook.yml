@@ -1,3 +1,8 @@
+# Abort the commit (instead of silently skipping every check) when the hook is
+# installed but the Lefthook binary is missing, e.g. node_modules/ was removed.
+# Baked into .git/hooks/* by `lefthook install`; fix with `npm install`.
+assert_lefthook_installed: true
+
 pre-commit:
   parallel: true
   commands:

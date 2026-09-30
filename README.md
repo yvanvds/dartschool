@@ -489,6 +489,32 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 
 ---
 
+## Development
+
+Git hooks are managed by [Lefthook](https://github.com/evilmartians/lefthook), installed as an npm dev dependency (`node_modules/` is not committed). Run this once after cloning — and once after pulling e09cd55, which removed the previously committed `node_modules/`:
+
+```bash
+npm install
+```
+
+This installs Lefthook (pinned in `package.json`) and its postinstall step installs the Git hooks. To (re)install the hooks yourself — e.g. after changing `.lefthook.yml` — run:
+
+```bash
+npx lefthook install
+```
+
+The `pre-commit` hook runs the same checks as CI, in parallel:
+
+| Command | Check |
+|---|---|
+| `dart format --output=none --set-exit-if-changed .` | Formatting |
+| `dart analyze` | Static analysis |
+| `dart test` | Unit tests |
+
+`.lefthook.yml` sets `assert_lefthook_installed: true`: if the hook is installed but Lefthook is missing (e.g. `node_modules/` was deleted), the commit is aborted with `Can't find lefthook in PATH` instead of silently skipping the checks. Run `npm install` to fix it.
+
+---
+
 ## Smartschool Researcher MCP Server
 
 This repository includes a local [MCP](https://modelcontextprotocol.io) server that wraps the `DevInspector` HTTP client so **Copilot Agent mode** can explore live Smartschool endpoints directly. It is intended for development and reverse-engineering only.

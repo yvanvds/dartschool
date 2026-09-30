@@ -14,7 +14,7 @@ Join us: https://www.smartschool.be/jobs
 -->
 <html>
 <head>
-    <title>Paridaensinstituut - Smartschool</title>
+    <title>Springfield Academy - Smartschool</title>
     <meta charset="utf-8">
     <meta http-equiv="x-ua-compatible" content="ie=edge">
     <link rel="icon" href="https://static2.smart-school.net/smsc/svg/favicon/favicon.svg">
@@ -23,7 +23,7 @@ Join us: https://www.smartschool.be/jobs
     <link rel="manifest" href="/manifest.json">
     <meta name="twitter:dnt" content="on">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Welkom op het digitaal schoolplatform van Paridaensinstituut.">
+    <meta name="description" content="Welkom op het digitaal schoolplatform van Springfield Academy.">
 
 
     <!-- jQuery & jQueryUI -->
@@ -100,7 +100,7 @@ Join us: https://www.smartschool.be/jobs
             <div class="login-app__right">
                 <div class="login-app__top">
                     <div class="login-app__platform-indicator"></div>
-                    <a href="http://www.paridaens.be" target="_blank" class="login-app__school-logo" style='background-image: url(/logo)'></a>
+                    <a href="http://www.springfield-academy.example.test" target="_blank" class="login-app__school-logo" style='background-image: url(/logo)'></a>
                     <div class="login-app__form">
                         <form class="form" name="login_form" method="post">
                             <div>

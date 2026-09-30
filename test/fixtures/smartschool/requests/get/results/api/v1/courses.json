@@ -7,17 +7,17 @@
   },
   "teachers": [{
     "id": "49_9423_0",
-    "pictureHash": "initials_LP",
-    "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_LP/plain/1/res/128",
+    "pictureHash": "initials_AA",
+    "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_AA/plain/1/res/128",
     "description": {
       "startingWithFirstName": "",
       "startingWithLastName": ""
     },
     "name": {
-      "startingWithFirstName": "Lotte Peeters",
-      "startingWithLastName": "Peeters Lotte"
+      "startingWithFirstName": "Anna Aerts",
+      "startingWithLastName": "Aerts Anna"
     },
-    "sort": "peeters-lotte"
+    "sort": "aerts-anna"
   }
   ],
   "class": {
@@ -46,17 +46,17 @@
   },
   "teachers": [{
     "id": "49_2825_0",
-    "pictureHash": "initials_CV",
-    "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_CV/plain/1/res/128",
+    "pictureHash": "initials_CC",
+    "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_CC/plain/1/res/128",
     "description": {
       "startingWithFirstName": "",
       "startingWithLastName": ""
     },
     "name": {
-      "startingWithFirstName": "Carla Verhoelst",
-      "startingWithLastName": "Verhoelst Carla"
+      "startingWithFirstName": "Cas Coppens",
+      "startingWithLastName": "Coppens Cas"
     },
-    "sort": "verhoelst-carla"
+    "sort": "coppens-cas"
   }
   ],
   "class": {

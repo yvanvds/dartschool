@@ -12,17 +12,17 @@
     "date": "2025-02-21T00:00:00+01:00",
     "gradebookOwner": {
       "id": "3323_3809_0",
-      "pictureHash": "initials_KV",
-      "pictureUrl": "https:\/\/userpicture10.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_KV\/plain\/1\/res\/128",
+      "pictureHash": "initials_KK",
+      "pictureUrl": "https:\/\/userpicture10.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_KK\/plain\/1\/res\/128",
       "description": {
         "startingWithFirstName": "",
         "startingWithLastName": ""
       },
       "name": {
-        "startingWithFirstName": "Karen Verscheure",
-        "startingWithLastName": "Verscheure Karen"
+        "startingWithFirstName": "Kobe Kerckhofs",
+        "startingWithLastName": "Kerckhofs Kobe"
       },
-      "sort": "verscheure-karen",
+      "sort": "kerckhofs-kobe",
       "deleted": false
     },
     "component": null,
@@ -37,17 +37,17 @@
         "teachers": [
           {
             "id": "3323_3809_0",
-            "pictureHash": "initials_KV",
-            "pictureUrl": "https:\/\/userpicture10.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_KV\/plain\/1\/res\/128",
+            "pictureHash": "initials_KK",
+            "pictureUrl": "https:\/\/userpicture10.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_KK\/plain\/1\/res\/128",
             "description": {
               "startingWithFirstName": "",
               "startingWithLastName": ""
             },
             "name": {
-              "startingWithFirstName": "Karen Verscheure",
-              "startingWithLastName": "Verscheure Karen"
+              "startingWithFirstName": "Kobe Kerckhofs",
+              "startingWithLastName": "Kerckhofs Kobe"
             },
-            "sort": "verscheure-karen",
+            "sort": "kerckhofs-kobe",
             "deleted": false
           }
         ],

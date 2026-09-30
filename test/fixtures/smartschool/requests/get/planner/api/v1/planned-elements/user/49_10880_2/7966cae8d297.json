@@ -12,17 +12,17 @@
       "users": [
         {
           "id": "49_8933_0",
-          "pictureHash": "initials_IW",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_IW\/plain\/1\/res\/128",
+          "pictureHash": "initials_OO",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_OO\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Iris Wittevrongel",
-            "startingWithLastName": "Wittevrongel Iris"
+            "startingWithFirstName": "Olga Ooms",
+            "startingWithLastName": "Ooms Olga"
           },
-          "sort": "wittevrongel-iris",
+          "sort": "ooms-olga",
           "deleted": false
         }
       ]
@@ -104,7 +104,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",

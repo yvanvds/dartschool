@@ -3,6 +3,6 @@
   "version": "0.2.4",
   "description": "Dart Smartschool client with Lefthook for Git hooks",
   "devDependencies": {
-    "lefthook": "latest"
+    "lefthook": "2.1.5"
   }
 }

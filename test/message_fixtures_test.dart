@@ -85,8 +85,14 @@ void main() {
       final readXml = _readFixture('post/postboxes/mark message read.xml');
       final unreadXml = _readFixture('post/postboxes/mark message unread.xml');
 
-      final readEntries = XmlInterface.parseResponse(readXml, './/data/message');
-      final unreadEntries = XmlInterface.parseResponse(unreadXml, './/data/message');
+      final readEntries = XmlInterface.parseResponse(
+        readXml,
+        './/data/message',
+      );
+      final unreadEntries = XmlInterface.parseResponse(
+        unreadXml,
+        './/data/message',
+      );
 
       final readChanged = MessageChanged.fromXml(readEntries.single);
       final unreadChanged = MessageChanged.fromXml(unreadEntries.single);
@@ -284,28 +290,25 @@ void main() {
     // getMessage with includeAllRecipients fixture
     // -----------------------------------------------------------------------
 
-    test(
-      'show message all recipients fixture parses full To and CC lists',
-      () {
-        final xml = _readFixture(
-          'post/postboxes/show message all recipients.xml',
-        );
+    test('show message all recipients fixture parses full To and CC lists', () {
+      final xml = _readFixture(
+        'post/postboxes/show message all recipients.xml',
+      );
 
-        final entries = XmlInterface.parseResponse(xml, './/data/message');
-        expect(entries, hasLength(1));
+      final entries = XmlInterface.parseResponse(xml, './/data/message');
+      expect(entries, hasLength(1));
 
-        final full = FullMessage.fromXml(entries.single);
+      final full = FullMessage.fromXml(entries.single);
 
-        expect(full.id, 789012);
-        expect(full.sender, 'Teacher');
-        expect(full.subject, 'Class trip announcement');
-        expect(full.receivers, ['Student A', 'Student B', 'Student C']);
-        expect(full.ccReceivers, ['Parent X', 'Parent Y']);
-        expect(full.bccReceivers, isEmpty);
-        expect(full.totalNrOtherToReceivers, 0);
-        expect(full.totalNrOtherCcReceivers, 0);
-      },
-    );
+      expect(full.id, 789012);
+      expect(full.sender, 'Teacher');
+      expect(full.subject, 'Class trip announcement');
+      expect(full.receivers, ['Student A', 'Student B', 'Student C']);
+      expect(full.ccReceivers, ['Parent X', 'Parent Y']);
+      expect(full.bccReceivers, isEmpty);
+      expect(full.totalNrOtherToReceivers, 0);
+      expect(full.totalNrOtherCcReceivers, 0);
+    });
 
     // -----------------------------------------------------------------------
     // parseReplyAllRecipients
@@ -346,10 +349,8 @@ void main() {
       expect(ccList, isEmpty);
     });
 
-    test(
-      'parseReplyAllRecipients skips spans missing required attributes',
-      () {
-        const html = '''
+    test('parseReplyAllRecipients skips spans missing required attributes', () {
+      const html = '''
 <html><body>
   <div class="receiverSpan" ssidatt="4069" typeatt="0">
     <span class="receiverSpanName">No userId</span>
@@ -364,48 +365,41 @@ void main() {
   </div>
 </body></html>''';
 
-        final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
 
-        expect(toList, hasLength(1));
-        expect(toList.single.userId, 403);
-        expect(toList.single.displayName, 'Valid User');
-        expect(ccList, isEmpty);
-      },
-    );
+      expect(toList, hasLength(1));
+      expect(toList.single.userId, 403);
+      expect(toList.single.displayName, 'Valid User');
+      expect(ccList, isEmpty);
+    });
 
-    test(
-      'parseReplyAllRecipients defaults typeatt-less spans to To list',
-      () {
-        const html = '''
+    test('parseReplyAllRecipients defaults typeatt-less spans to To list', () {
+      const html = '''
 <html><body>
   <div class="receiverSpan" realuserid="501" ssidatt="4069">
     <span class="receiverSpanName">Default To</span>
   </div>
 </body></html>''';
 
-        final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
 
-        expect(toList, hasLength(1));
-        expect(toList.single.userId, 501);
-        expect(ccList, isEmpty);
-      },
-    );
+      expect(toList, hasLength(1));
+      expect(toList.single.userId, 501);
+      expect(ccList, isEmpty);
+    });
 
-    test(
-      'parseReplyAllRecipients defaults missing userltatt to zero',
-      () {
-        const html = '''
+    test('parseReplyAllRecipients defaults missing userltatt to zero', () {
+      const html = '''
 <html><body>
   <div class="receiverSpan" realuserid="601" ssidatt="4069" typeatt="0">
     <span class="receiverSpanName">No UserLt</span>
   </div>
 </body></html>''';
 
-        final (toList, _) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, _) = MessagesService.parseReplyAllRecipients(html);
 
-        expect(toList.single.userLt, 0);
-      },
-    );
+      expect(toList.single.userLt, 0);
+    });
 
     // -----------------------------------------------------------------------
     // parseSentMessageRecipients
@@ -482,13 +476,11 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
       expect(ccList, isEmpty);
     });
 
-    test(
-      'parseSentMessageRecipients returns all recipients unfiltered when '
-      'tinymceInitConfig is absent',
-      () {
-        // No script block → parseComposeCurrentUserIds returns null →
-        // no filtering applied; all spans are returned as-is.
-        const html = '''
+    test('parseSentMessageRecipients returns all recipients unfiltered when '
+        'tinymceInitConfig is absent', () {
+      // No script block → parseComposeCurrentUserIds returns null →
+      // no filtering applied; all spans are returned as-is.
+      const html = '''
 <html><body>
   <div class="receiverSpan" realuserid="201" ssidatt="4069" typeatt="0">
     <div class="receiverSpanName">Alice Johnson</div>
@@ -498,14 +490,11 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
   </div>
 </body></html>''';
 
-        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
-          html,
-        );
+      final (toList, ccList) = MessagesService.parseSentMessageRecipients(html);
 
-        expect(toList, hasLength(2));
-        expect(ccList, isEmpty);
-      },
-    );
+      expect(toList, hasLength(2));
+      expect(ccList, isEmpty);
+    });
 
     test(
       'parseSentMessageRecipients: sender-only message yields empty lists',

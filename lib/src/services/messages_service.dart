@@ -532,16 +532,9 @@ class MessagesService {
   /// the original message is placed in the `to` list following Smartschool's
   /// standard reply-all logic.  The authenticated user is excluded.
   Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
-  getReplyAllRecipients(
-    int msgId, {
-    BoxType boxType = BoxType.inbox,
-  }) async {
+  getReplyAllRecipients(int msgId, {BoxType boxType = BoxType.inbox}) async {
     final html = await _client.getRaw(
-      _composeUrl(
-        boxType: boxType,
-        composeType: 2,
-        msgId: '$msgId',
-      ),
+      _composeUrl(boxType: boxType, composeType: 2, msgId: '$msgId'),
     );
     return parseReplyAllRecipients(html);
   }
@@ -605,11 +598,7 @@ class MessagesService {
   Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
   getSentMessageRecipients(int msgId) async {
     final html = await _client.getRaw(
-      _composeUrl(
-        boxType: BoxType.sent,
-        composeType: 2,
-        msgId: '$msgId',
-      ),
+      _composeUrl(boxType: BoxType.sent, composeType: 2, msgId: '$msgId'),
     );
     return parseSentMessageRecipients(html);
   }

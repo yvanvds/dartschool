@@ -169,7 +169,7 @@ final messages = MessagesService(client);
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
 | `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
 | `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To and CC recipients with their numeric user IDs by parsing the reply-all compose page. Use this when you need IDs for a subsequent `sendMessage` reply-all. |
-| `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients; this method strips the sender out automatically. Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
+| `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients, once, whether or not they were a recipient too; this method also fetches the message (`getMessage` with all recipients) and keeps the authenticated user only where its recipient names include them, so a message sent to yourself returns you. BCC recipients are returned in the To list (#33). Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
 
 Smartschool keeps the paging position in the session, one per box, and restarts it whenever that box is listed again (`getHeaders`, also in poll mode, or another paging of the same box), which ends a paging of that box early. Paging different boxes at once is fine.
@@ -305,7 +305,7 @@ See [example/message_change_stream_example.dart](example/message_change_stream_e
 | `parseComposeCurrentUserIds(htmlBody)` | Extracts `(userId, ssId, userLt)` from the `window.tinymceInitConfig` block. |
 | `parseArchiveBoxIdFromMessagesHtml(htmlBody)` | Extracts the archive folder box ID from the Messages module HTML. |
 | `parseReplyAllRecipients(htmlBody)` | Extracts To and CC recipients with numeric IDs from a reply-all compose page (parses `div.receiverSpan` elements). Returns `(toList, ccList)`. |
-| `parseSentMessageRecipients(htmlBody)` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result. Returns `(toList, ccList)`. |
+| `parseSentMessageRecipients(htmlBody, {message})` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result, unless the sent `message` (a `FullMessage`) names them among its recipients. Returns `(toList, ccList)`. |
 
 ---
 

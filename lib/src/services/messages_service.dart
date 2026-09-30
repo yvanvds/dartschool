@@ -819,8 +819,13 @@ class MessagesService {
   /// sent folder (`boxType=outbox&composeType=2`), which pre-populates the
   /// To field with both the original recipients **and** the authenticated user
   /// (as sender).  The authenticated user is identified via the page's
-  /// embedded `tinymceInitConfig.userID` value and filtered out, leaving only
-  /// the actual recipients.
+  /// embedded `tinymceInitConfig.userID` value.
+  ///
+  /// The page lists the authenticated user once, whether or not they were
+  /// also a recipient, so this method also fetches the message itself
+  /// ([getMessage] with all recipients) and keeps the authenticated user
+  /// only where its recipient names include them: a message the user sent
+  /// to themselves returns the user (#27). See [parseSentMessageRecipients].
   ///
   /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
   /// instances ready to be passed directly to [sendMessage].
@@ -829,11 +834,16 @@ class MessagesService {
     final html = await _client.getRaw(
       _composeUrl(boxType: BoxType.sent, composeType: 2, msgId: '$msgId'),
     );
-    return parseSentMessageRecipients(html);
+    final message = await getMessage(
+      msgId,
+      boxType: BoxType.sent,
+      includeAllRecipients: true,
+    );
+    return parseSentMessageRecipients(html, message: message);
   }
 
   /// Parses the reply-all compose page for a sent message and returns the
-  /// original recipients with the authenticated user excluded.
+  /// original recipients.
   ///
   /// The sent-folder reply-all compose page places the sender (the
   /// authenticated user) alongside the original recipients in the To field.
@@ -841,9 +851,22 @@ class MessagesService {
   /// and [parseReplyAllRecipients] to extract all pre-populated recipient
   /// spans, then removes any entry whose `userId` matches the sender.
   ///
+  /// The page has a single entry for the sender, also when they were a
+  /// recipient of the message too (a message sent to themselves, or with
+  /// themselves among the recipients), so the page alone cannot tell the
+  /// two apart. Pass the sent [message] (from [getMessage] with
+  /// `includeAllRecipients: true`) to keep the sender where its recipient
+  /// names list them: in the To list when [FullMessage.receivers] or
+  /// [FullMessage.bccReceivers] name them (BCC entries of the page are
+  /// returned in the To list as well), in the CC list when
+  /// [FullMessage.ccReceivers] do. A recipient name of a sent message starts
+  /// with a `+` or `-` marker, which is ignored; a name counts only as far
+  /// as no other entry of the page with that name accounts for it. Without
+  /// [message], the sender is always removed.
+  ///
   /// Returns `(toList, ccList)`.
   static (List<MessageSearchUser>, List<MessageSearchUser>)
-  parseSentMessageRecipients(String htmlBody) {
+  parseSentMessageRecipients(String htmlBody, {FullMessage? message}) {
     final ids = parseComposeCurrentUserIds(htmlBody);
     final currentUserId = ids?.$1;
 
@@ -851,11 +874,50 @@ class MessagesService {
 
     if (currentUserId == null) return (to, cc);
 
-    return (
-      to.where((u) => u.userId != currentUserId).toList(),
-      cc.where((u) => u.userId != currentUserId).toList(),
-    );
+    bool isSender(MessageSearchUser u) => u.userId == currentUserId;
+    final sender = [...to, ...cc].where(isSender).firstOrNull;
+    final toOthers = to.where((u) => !isSender(u)).toList();
+    final ccOthers = cc.where((u) => !isSender(u)).toList();
+
+    if (sender != null && message != null) {
+      if (_namesSender(sender, [
+        ...message.receivers,
+        ...message.bccReceivers,
+      ], toOthers)) {
+        toOthers.add(sender);
+      }
+      if (_namesSender(sender, message.ccReceivers, ccOthers)) {
+        ccOthers.add(sender);
+      }
+    }
+
+    return (toOthers, ccOthers);
   }
+
+  /// Whether [names], recipient names of a sent message, name [sender] more
+  /// often than the entries [others] of the compose page with that name
+  /// account for — so that a namesake of the sender among the recipients
+  /// does not make the sender a recipient too.
+  static bool _namesSender(
+    MessageSearchUser sender,
+    List<String> names,
+    List<MessageSearchUser> others,
+  ) {
+    String normalise(String name) => name.trim().replaceAll(_spaces, ' ');
+    final senderName = normalise(sender.displayName);
+    // Smartschool starts each recipient name of a sent message with `+` or
+    // `-` (which appears to mark whether the recipient has read it).
+    final named = names
+        .where((n) => normalise(n).replaceFirst(_readMarker, '') == senderName)
+        .length;
+    final namesakes = others
+        .where((u) => normalise(u.displayName) == senderName)
+        .length;
+    return named > namesakes;
+  }
+
+  static final _spaces = RegExp(r'\s+');
+  static final _readMarker = RegExp(r'^[+-]\s*');
 
   /// Returns the logged-in user as a compose recipient candidate.
   ///

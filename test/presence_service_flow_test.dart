@@ -5,7 +5,8 @@
 //   - Presence/Main/getConfig
 //   - Presence/Code/getAllCodes
 //   - Presence/Class/getClass
-// with personal data reduced to fakes where practical.
+// with pupil names and IDs replaced by obvious fakes (userID 11110 is the
+// school's test pupil, as in `example/set_late_example.dart`).
 //
 // End-to-end verification (which performs a real save + restore against a test
 // pupil) lives in `example/set_late_example.dart`.
@@ -219,24 +220,24 @@ void main() {
       "structID": 311,
       "pupils": [
         {
-          "movementID": 33046,
-          "userID": 12326,
-          "name": "Ahmed Hassan Mohamed",
+          "movementID": 5001,
+          "userID": 1001,
+          "name": "Enrolled Pupil",
           "presence": [
-            {"presenceID":11725778,"presenceDate":"2026-06-01","studentID":12326,
+            {"presenceID":90001,"presenceDate":"2026-06-01","studentID":1001,
              "hourID":null,"partOfDay":"am","codeID":70,"aliasID":null,
              "motivation":null,"deleteStatus":0},
-            {"presenceID":11731166,"presenceDate":"2026-06-01","studentID":12326,
+            {"presenceID":90002,"presenceDate":"2026-06-01","studentID":1001,
              "hourID":null,"partOfDay":"pm","codeID":70,"aliasID":null,
              "motivation":null,"deleteStatus":0},
-            {"presenceID":11722686,"presenceDate":"2026-06-01","studentID":12326,
+            {"presenceID":90003,"presenceDate":"2026-06-01","studentID":1001,
              "hourID":198,"partOfDay":"none","codeID":1,"aliasID":null,
              "motivation":null,"deleteStatus":0}
           ]
         },
         {
-          "movementID": 36018,
-          "userID": 12748,
+          "movementID": 5002,
+          "userID": 1002,
           "name": "Departed Pupil",
           "presence": []
         }
@@ -252,8 +253,8 @@ void main() {
     });
 
     test('extracts only the am/pm half-day cells (skips per-lesson rows)', () {
-      final p = pupils.firstWhere((p) => p.userId == 12326);
-      expect(p.movementId, 33046);
+      final p = pupils.firstWhere((p) => p.userId == 1001);
+      expect(p.movementId, 5001);
       expect(p.halfDays, hasLength(2));
       expect(
         p.halfDays.map((c) => c.part),
@@ -262,20 +263,20 @@ void main() {
     });
 
     test('halfDayFor returns the matching cell', () {
-      final p = pupils.firstWhere((p) => p.userId == 12326);
+      final p = pupils.firstWhere((p) => p.userId == 1001);
       final am = p.halfDayFor(DayPart.morning, date: '2026-06-01');
       expect(am, isNotNull);
-      expect(am!.presenceId, 11725778);
+      expect(am!.presenceId, 90001);
       expect(am.codeId, 70);
     });
 
     test('halfDayFor returns null for a non-matching date', () {
-      final p = pupils.firstWhere((p) => p.userId == 12326);
+      final p = pupils.firstWhere((p) => p.userId == 1001);
       expect(p.halfDayFor(DayPart.morning, date: '2020-01-01'), isNull);
     });
 
     test('departed pupil has no half-day cells (create case)', () {
-      final p = pupils.firstWhere((p) => p.userId == 12748);
+      final p = pupils.firstWhere((p) => p.userId == 1002);
       expect(p.halfDays, isEmpty);
       expect(p.halfDayFor(DayPart.morning), isNull);
     });

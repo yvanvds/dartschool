@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<server>
+    <response>
+        <status>ok</status>
+        <actions>
+            <action>
+                <subsystem>message list</subsystem>
+                <command>rebuildcontinue</command>
+                <data>
+                    <messages>
+                        <message>
+                            <id>6400002</id>
+                            <from>Els Peeters</from>
+                            <fromImage>https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_EP/plain/1/res/32</fromImage>
+                            <subject>Welkom</subject>
+                            <date>2026-09-02 07:33</date>
+                            <status>0</status>
+                            <attachment>0</attachment>
+                            <unread>0</unread>
+                            <label>0</label>
+                            <deleted>0</deleted>
+                            <allowreply>1</allowreply>
+                            <allowreplyenabled>1</allowreplyenabled>
+                            <hasreply>0</hasreply>
+                            <hasForward>0</hasForward>
+                            <realBox>inbox</realBox>
+                            <sendDate/>
+                        </message>
+                    </messages>
+                </data>
+            </action>
+            <action>
+                <subsystem>message list</subsystem>
+                <command>rebuildfinish</command>
+                <data>
+                    <message/>
+                </data>
+            </action>
+        </actions>
+    </response>
+</server>

@@ -12,17 +12,17 @@
       "users": [
         {
           "id": "49_8933_0",
-          "pictureHash": "initials_IW",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_IW\/plain\/1\/res\/128",
+          "pictureHash": "initials_OO",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_OO\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Iris Wittevrongel",
-            "startingWithLastName": "Wittevrongel Iris"
+            "startingWithFirstName": "Olga Ooms",
+            "startingWithLastName": "Ooms Olga"
           },
-          "sort": "wittevrongel-iris",
+          "sort": "ooms-olga",
           "deleted": false
         }
       ]
@@ -104,7 +104,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -135,17 +135,17 @@
       "users": [
         {
           "id": "49_2046_0",
-          "pictureHash": "initials_MH",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_MH\/plain\/1\/res\/128",
+          "pictureHash": "initials_HH",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_HH\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Marie Herbosch",
-            "startingWithLastName": "Herbosch Marie"
+            "startingWithFirstName": "Hilde Hermans",
+            "startingWithLastName": "Hermans Hilde"
           },
-          "sort": "herbosch-marie",
+          "sort": "hermans-hilde",
           "deleted": false
         }
       ]
@@ -231,7 +231,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -261,17 +261,17 @@
       "users": [
         {
           "id": "49_9891_0",
-          "pictureHash": "initials_JB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JB\/plain\/1\/res\/128",
+          "pictureHash": "initials_BB",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_BB\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jef Binnemans",
-            "startingWithLastName": "Binnemans Jef"
+            "startingWithFirstName": "Bert Bosmans",
+            "startingWithLastName": "Bosmans Bert"
           },
-          "sort": "binnemans-jef",
+          "sort": "bosmans-bert",
           "deleted": false
         }
       ]
@@ -359,7 +359,7 @@
       {
         "id": "27d420ac-40e9-4aa3-92bc-df56a9ffb6eb",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "C.0.08",
         "icon": "classroom_red",
@@ -390,17 +390,17 @@
       "users": [
         {
           "id": "49_9897_0",
-          "pictureHash": "initials_HG",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_HG\/plain\/1\/res\/128",
+          "pictureHash": "initials_VV",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_VV\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Hanne Geets",
-            "startingWithLastName": "Geets Hanne"
+            "startingWithFirstName": "Vera Vos",
+            "startingWithLastName": "Vos Vera"
           },
-          "sort": "geets-hanne",
+          "sort": "vos-vera",
           "deleted": false
         }
       ]
@@ -486,7 +486,7 @@
       {
         "id": "eaf974ed-11cb-415f-b05f-29babc22d1c6",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.07",
         "icon": "classroom_green",
@@ -517,17 +517,17 @@
       "users": [
         {
           "id": "49_1016_0",
-          "pictureHash": "initials_EW",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EW\/plain\/1\/res\/128",
+          "pictureHash": "initials_II",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_II\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Elke Wuytack",
-            "startingWithLastName": "Wuytack Elke"
+            "startingWithFirstName": "Ilse Ickx",
+            "startingWithLastName": "Ickx Ilse"
           },
-          "sort": "wuytack-elke",
+          "sort": "ickx-ilse",
           "deleted": false
         }
       ]
@@ -613,7 +613,7 @@
       {
         "id": "47e327fe-0f2a-436b-8ae7-73452580842d",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "D.1.10",
         "icon": "classroom_lavender",
@@ -644,17 +644,17 @@
       "users": [
         {
           "id": "49_7243_0",
-          "pictureHash": "initials_LV",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_LV\/plain\/1\/res\/128",
+          "pictureHash": "initials_EE",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EE\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Liske Versieren",
-            "startingWithLastName": "Versieren Liske"
+            "startingWithFirstName": "Eva Everaert",
+            "startingWithLastName": "Everaert Eva"
           },
-          "sort": "versieren-liske",
+          "sort": "everaert-eva",
           "deleted": false
         }
       ]
@@ -739,7 +739,7 @@
       {
         "id": "5ed7d7ba-85f2-4a56-b6c6-5362a34f429e",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "E.4.06",
         "icon": "classroom_purple",
@@ -770,17 +770,17 @@
       "users": [
         {
           "id": "49_7243_0",
-          "pictureHash": "initials_LV",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_LV\/plain\/1\/res\/128",
+          "pictureHash": "initials_EE",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EE\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Liske Versieren",
-            "startingWithLastName": "Versieren Liske"
+            "startingWithFirstName": "Eva Everaert",
+            "startingWithLastName": "Everaert Eva"
           },
-          "sort": "versieren-liske",
+          "sort": "everaert-eva",
           "deleted": false
         }
       ]
@@ -864,7 +864,7 @@
       {
         "id": "5ed7d7ba-85f2-4a56-b6c6-5362a34f429e",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "E.4.06",
         "icon": "classroom_purple",
@@ -895,17 +895,17 @@
       "users": [
         {
           "id": "49_2039_0",
-          "pictureHash": "initials_TV",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_TV\/plain\/1\/res\/128",
+          "pictureHash": "initials_TT",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_TT\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Thomas Verhaegen",
-            "startingWithLastName": "Verhaegen Thomas"
+            "startingWithFirstName": "Tijl Timmermans",
+            "startingWithLastName": "Timmermans Tijl"
           },
-          "sort": "verhaegen-thomas",
+          "sort": "timmermans-tijl",
           "deleted": false
         }
       ]
@@ -989,7 +989,7 @@
       {
         "id": "044fa59c-ae1d-499c-87cf-6406ccd3f1f5",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.0.03",
         "icon": "classroom_green",
@@ -1027,17 +1027,17 @@
       "users": [
         {
           "id": "49_2753_0",
-          "pictureHash": "initials_JA",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JA\/plain\/1\/res\/128",
+          "pictureHash": "initials_GG",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_GG\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jan Anthonis",
-            "startingWithLastName": "Anthonis Jan"
+            "startingWithFirstName": "Gust Goossens",
+            "startingWithLastName": "Goossens Gust"
           },
-          "sort": "anthonis-jan",
+          "sort": "goossens-gust",
           "deleted": false
         }
       ]
@@ -1127,7 +1127,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -1157,17 +1157,17 @@
       "users": [
         {
           "id": "49_2046_0",
-          "pictureHash": "initials_MH",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_MH\/plain\/1\/res\/128",
+          "pictureHash": "initials_HH",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_HH\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Marie Herbosch",
-            "startingWithLastName": "Herbosch Marie"
+            "startingWithFirstName": "Hilde Hermans",
+            "startingWithLastName": "Hermans Hilde"
           },
-          "sort": "herbosch-marie",
+          "sort": "hermans-hilde",
           "deleted": false
         }
       ]
@@ -1252,7 +1252,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -1283,17 +1283,17 @@
       "users": [
         {
           "id": "49_2046_0",
-          "pictureHash": "initials_MH",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_MH\/plain\/1\/res\/128",
+          "pictureHash": "initials_HH",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_HH\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Marie Herbosch",
-            "startingWithLastName": "Herbosch Marie"
+            "startingWithFirstName": "Hilde Hermans",
+            "startingWithLastName": "Hermans Hilde"
           },
-          "sort": "herbosch-marie",
+          "sort": "hermans-hilde",
           "deleted": false
         }
       ]
@@ -1379,7 +1379,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -1417,17 +1417,17 @@
       "users": [
         {
           "id": "49_10356_0",
-          "pictureHash": "initials_EB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EB\/plain\/1\/res\/128",
+          "pictureHash": "initials_DD",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_DD\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Elke Barbier",
-            "startingWithLastName": "Barbier Elke"
+            "startingWithFirstName": "Dora Dierckx",
+            "startingWithLastName": "Dierckx Dora"
           },
-          "sort": "barbier-elke",
+          "sort": "dierckx-dora",
           "deleted": false
         }
       ]
@@ -1517,7 +1517,7 @@
       {
         "id": "05c6452c-a9a2-46f5-a1db-cf9c169abbaa",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "D.2.05",
         "icon": "classroom_lavender",
@@ -1547,17 +1547,17 @@
       "users": [
         {
           "id": "49_9891_0",
-          "pictureHash": "initials_JB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JB\/plain\/1\/res\/128",
+          "pictureHash": "initials_BB",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_BB\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jef Binnemans",
-            "startingWithLastName": "Binnemans Jef"
+            "startingWithFirstName": "Bert Bosmans",
+            "startingWithLastName": "Bosmans Bert"
           },
-          "sort": "binnemans-jef",
+          "sort": "bosmans-bert",
           "deleted": false
         }
       ]
@@ -1645,7 +1645,7 @@
       {
         "id": "27d420ac-40e9-4aa3-92bc-df56a9ffb6eb",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "C.0.08",
         "icon": "classroom_red",
@@ -1676,17 +1676,17 @@
       "users": [
         {
           "id": "49_10356_0",
-          "pictureHash": "initials_EB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EB\/plain\/1\/res\/128",
+          "pictureHash": "initials_DD",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_DD\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Elke Barbier",
-            "startingWithLastName": "Barbier Elke"
+            "startingWithFirstName": "Dora Dierckx",
+            "startingWithLastName": "Dierckx Dora"
           },
-          "sort": "barbier-elke",
+          "sort": "dierckx-dora",
           "deleted": false
         }
       ]
@@ -1771,7 +1771,7 @@
       {
         "id": "dd30208d-d9ff-492f-846c-6466b1cb12ab",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "D.2.03",
         "icon": "classroom_lavender",
@@ -1801,17 +1801,17 @@
       "users": [
         {
           "id": "49_9891_0",
-          "pictureHash": "initials_JB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JB\/plain\/1\/res\/128",
+          "pictureHash": "initials_BB",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_BB\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jef Binnemans",
-            "startingWithLastName": "Binnemans Jef"
+            "startingWithFirstName": "Bert Bosmans",
+            "startingWithLastName": "Bosmans Bert"
           },
-          "sort": "binnemans-jef",
+          "sort": "bosmans-bert",
           "deleted": false
         }
       ]
@@ -1899,7 +1899,7 @@
       {
         "id": "73dea8c3-52ee-4a17-8038-0eae51cb3bc0",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.04",
         "icon": "classroom_green",
@@ -1930,17 +1930,17 @@
       "users": [
         {
           "id": "49_7243_0",
-          "pictureHash": "initials_LV",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_LV\/plain\/1\/res\/128",
+          "pictureHash": "initials_EE",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EE\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Liske Versieren",
-            "startingWithLastName": "Versieren Liske"
+            "startingWithFirstName": "Eva Everaert",
+            "startingWithLastName": "Everaert Eva"
           },
-          "sort": "versieren-liske",
+          "sort": "everaert-eva",
           "deleted": false
         }
       ]
@@ -2025,7 +2025,7 @@
       {
         "id": "5ed7d7ba-85f2-4a56-b6c6-5362a34f429e",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "E.4.06",
         "icon": "classroom_purple",
@@ -2056,17 +2056,17 @@
       "users": [
         {
           "id": "49_2753_0",
-          "pictureHash": "initials_JA",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JA\/plain\/1\/res\/128",
+          "pictureHash": "initials_GG",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_GG\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jan Anthonis",
-            "startingWithLastName": "Anthonis Jan"
+            "startingWithFirstName": "Gust Goossens",
+            "startingWithLastName": "Goossens Gust"
           },
-          "sort": "anthonis-jan",
+          "sort": "goossens-gust",
           "deleted": false
         }
       ]
@@ -2151,7 +2151,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -2182,17 +2182,17 @@
       "users": [
         {
           "id": "49_9801_0",
-          "pictureHash": "initials_TB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_TB\/plain\/1\/res\/128",
+          "pictureHash": "initials_KK",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_KK\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Tiffany Bousard",
-            "startingWithLastName": "Bousard Tiffany"
+            "startingWithFirstName": "Kaat Kools",
+            "startingWithLastName": "Kools Kaat"
           },
-          "sort": "bousard-tiffany",
+          "sort": "kools-kaat",
           "deleted": false
         }
       ]
@@ -2276,7 +2276,7 @@
       {
         "id": "2ebcfbde-d5db-4f2e-9d09-8607885142bd",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "C.2.08",
         "icon": "classroom_red",
@@ -2307,17 +2307,17 @@
       "users": [
         {
           "id": "49_2320_0",
-          "pictureHash": "initials_NM",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_NM\/plain\/1\/res\/128",
+          "pictureHash": "initials_FF",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_FF\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Nathalie Moss",
-            "startingWithLastName": "Moss Nathalie"
+            "startingWithFirstName": "Fien Fierens",
+            "startingWithLastName": "Fierens Fien"
           },
-          "sort": "moss-nathalie",
+          "sort": "fierens-fien",
           "deleted": false
         }
       ]
@@ -2402,7 +2402,7 @@
       {
         "id": "13e1e06d-9e63-4b83-a9ba-2d69c278d42f",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "E.2.07",
         "icon": "classroom_purple",
@@ -2440,17 +2440,17 @@
       "users": [
         {
           "id": "49_2753_0",
-          "pictureHash": "initials_JA",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JA\/plain\/1\/res\/128",
+          "pictureHash": "initials_GG",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_GG\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jan Anthonis",
-            "startingWithLastName": "Anthonis Jan"
+            "startingWithFirstName": "Gust Goossens",
+            "startingWithLastName": "Goossens Gust"
           },
-          "sort": "anthonis-jan",
+          "sort": "goossens-gust",
           "deleted": false
         }
       ]
@@ -2540,7 +2540,7 @@
       {
         "id": "cb15a596-f526-4df1-bb6f-9b7639984172",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.06",
         "icon": "classroom_green",
@@ -2571,17 +2571,17 @@
       "users": [
         {
           "id": "49_9891_0",
-          "pictureHash": "initials_JB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JB\/plain\/1\/res\/128",
+          "pictureHash": "initials_BB",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_BB\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Jef Binnemans",
-            "startingWithLastName": "Binnemans Jef"
+            "startingWithFirstName": "Bert Bosmans",
+            "startingWithLastName": "Bosmans Bert"
           },
-          "sort": "binnemans-jef",
+          "sort": "bosmans-bert",
           "deleted": false
         }
       ]
@@ -2670,7 +2670,7 @@
       {
         "id": "73dea8c3-52ee-4a17-8038-0eae51cb3bc0",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "G.2.04",
         "icon": "classroom_green",
@@ -2701,17 +2701,17 @@
       "users": [
         {
           "id": "49_10356_0",
-          "pictureHash": "initials_EB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_EB\/plain\/1\/res\/128",
+          "pictureHash": "initials_DD",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_DD\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Elke Barbier",
-            "startingWithLastName": "Barbier Elke"
+            "startingWithFirstName": "Dora Dierckx",
+            "startingWithLastName": "Dierckx Dora"
           },
-          "sort": "barbier-elke",
+          "sort": "dierckx-dora",
           "deleted": false
         }
       ]
@@ -2796,7 +2796,7 @@
       {
         "id": "05c6452c-a9a2-46f5-a1db-cf9c169abbaa",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "D.2.05",
         "icon": "classroom_lavender",
@@ -2827,17 +2827,17 @@
       "users": [
         {
           "id": "49_9897_0",
-          "pictureHash": "initials_HG",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_HG\/plain\/1\/res\/128",
+          "pictureHash": "initials_VV",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_VV\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Hanne Geets",
-            "startingWithLastName": "Geets Hanne"
+            "startingWithFirstName": "Vera Vos",
+            "startingWithLastName": "Vos Vera"
           },
-          "sort": "geets-hanne",
+          "sort": "vos-vera",
           "deleted": false
         }
       ]
@@ -2923,7 +2923,7 @@
       {
         "id": "1bd970d8-885a-4aa6-b762-ed34db7bb4b2",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "C.3.06",
         "icon": "classroom_red",
@@ -2953,17 +2953,17 @@
       "users": [
         {
           "id": "49_9801_0",
-          "pictureHash": "initials_TB",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_TB\/plain\/1\/res\/128",
+          "pictureHash": "initials_KK",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_KK\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Tiffany Bousard",
-            "startingWithLastName": "Bousard Tiffany"
+            "startingWithFirstName": "Kaat Kools",
+            "startingWithLastName": "Kools Kaat"
           },
-          "sort": "bousard-tiffany",
+          "sort": "kools-kaat",
           "deleted": false
         }
       ]
@@ -3046,7 +3046,7 @@
       {
         "id": "2ebcfbde-d5db-4f2e-9d09-8607885142bd",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "C.2.08",
         "icon": "classroom_red",
@@ -3084,17 +3084,17 @@
       "users": [
         {
           "id": "49_2320_0",
-          "pictureHash": "initials_NM",
-          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_NM\/plain\/1\/res\/128",
+          "pictureHash": "initials_FF",
+          "pictureUrl": "https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_FF\/plain\/1\/res\/128",
           "description": {
             "startingWithFirstName": "",
             "startingWithLastName": ""
           },
           "name": {
-            "startingWithFirstName": "Nathalie Moss",
-            "startingWithLastName": "Moss Nathalie"
+            "startingWithFirstName": "Fien Fierens",
+            "startingWithLastName": "Fierens Fien"
           },
-          "sort": "moss-nathalie",
+          "sort": "fierens-fien",
           "deleted": false
         }
       ]
@@ -3184,7 +3184,7 @@
       {
         "id": "13e1e06d-9e63-4b83-a9ba-2d69c278d42f",
         "platformId": 49,
-        "platformName": "Paridaensinstituut",
+        "platformName": "Springfield Academy",
         "number": "",
         "title": "E.2.07",
         "icon": "classroom_purple",

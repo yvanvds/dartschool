@@ -160,13 +160,32 @@ final messages = MessagesService(client);
 
 | Method | Returns | Description |
 |---|---|---|
-| `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box. Pass `alreadySeenIds` for lightweight polling. |
-| `getArchiveHeaders({boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | Convenience wrapper for the archive folder — resolves the box ID automatically. |
+| `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box: one page, at most the first 50 (the newest 50 by default). Pass `alreadySeenIds` for lightweight polling. |
+| `getArchiveHeaders({boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | Convenience wrapper for the archive folder — resolves the box ID automatically. One page, like `getHeaders`. |
+| `getHeaderPages({boxType, boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | All headers of a box, page by page (about 50 each), as Smartschool's web client loads them while scrolling. The first page is what `getHeaders` returns; each next page is requested only when the listener wants it, so `take`/`takeWhile` or cancelling stops the paging. Ends after the last page, or at a page that brings no header not yet emitted. |
+| `getArchiveHeaderPages({boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | `getHeaderPages` for the archive folder. |
+| `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. |
+| `getAllArchiveHeaders({boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | `getAllHeaders` for the archive folder. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
-| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. |
+| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
 | `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To and CC recipients with their numeric user IDs by parsing the reply-all compose page. Use this when you need IDs for a subsequent `sendMessage` reply-all. |
-| `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients; this method strips the sender out automatically. Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
+| `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients, once, whether or not they were a recipient too; this method also fetches the message (`getMessage` with all recipients) and keeps the authenticated user only where its recipient names include them, so a message sent to yourself returns you. BCC recipients are returned in the To list (#33). Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
+
+Smartschool keeps the paging position in the session, one per box, and restarts it whenever that box is listed again (`getHeaders`, also in poll mode, or another paging of the same box), which ends a paging of that box early. Paging different boxes at once is fine.
+
+```dart
+// Every message of the sent box, 50 per request.
+final sent = await messages.getAllHeaders(boxType: BoxType.sent);
+
+// Inbox headers of the last 30 days: stops requesting pages once past them.
+final since = DateTime.now().subtract(const Duration(days: 30));
+final recent = await messages
+	.getHeaderPages()
+	.expand((page) => page)
+	.takeWhile((header) => header.date.isAfter(since))
+	.toList();
+```
 
 Attachment bytes can be downloaded from each `MessageAttachment`:
 
@@ -286,7 +305,7 @@ See [example/message_change_stream_example.dart](example/message_change_stream_e
 | `parseComposeCurrentUserIds(htmlBody)` | Extracts `(userId, ssId, userLt)` from the `window.tinymceInitConfig` block. |
 | `parseArchiveBoxIdFromMessagesHtml(htmlBody)` | Extracts the archive folder box ID from the Messages module HTML. |
 | `parseReplyAllRecipients(htmlBody)` | Extracts To and CC recipients with numeric IDs from a reply-all compose page (parses `div.receiverSpan` elements). Returns `(toList, ccList)`. |
-| `parseSentMessageRecipients(htmlBody)` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result. Returns `(toList, ccList)`. |
+| `parseSentMessageRecipients(htmlBody, {message})` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result, unless the sent `message` (a `FullMessage`) names them among its recipients. Returns `(toList, ccList)`. |
 
 ---
 
@@ -393,7 +412,7 @@ Status codes are **not hard-coded** — their numeric IDs are per-school/per-str
 An expired session and a missing access right need opposite actions, so they arrive as different types:
 
 - `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help.
-- `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again where it could. The request was not carried out: sign in again and retry.
+- `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again and retried the request once. The request was not carried out: sign in again and retry.
 
 ```dart
 try {
@@ -511,7 +530,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
-| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: a request is still answered with `401` after logging in again, or (`PresenceService`) the login chain answers a request. Sign in again and retry |
+| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`). Sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |

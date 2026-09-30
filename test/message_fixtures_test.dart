@@ -500,7 +500,9 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
       'parseSentMessageRecipients: sender-only message yields empty lists',
       () {
         // Edge case: the authenticated user is the only entry in the To field
-        // (e.g. a message sent to oneself). After filtering, both lists are empty.
+        // (e.g. a message sent to oneself). Without the sent message, the page
+        // alone cannot tell the sender from a recipient, so both lists are
+        // empty; with it, the user is kept (#27, messages_sent_recipients_test).
         const html = '''
 <html>
 <head>

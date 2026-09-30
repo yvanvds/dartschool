@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <title>Springfield Academy - Smartschool</title>
+    <meta charset="utf-8">
+</head>
+<body>
+<!--
+  Reply-all compose page of a SENT message that the user sent to themselves
+  (GET /?module=Messages&file=composeMessage&boxType=outbox&composeType=2&msgID=…),
+  trimmed from a live capture (#27). The page lists the user once, in the To
+  field, exactly as for a message to someone else: nothing marks that the
+  user was also the recipient. Names, IDs and tokens are made up.
+-->
+<form id="composeForm" method="post" action="/?module=Messages&amp;file=composeMessage">
+<input type="hidden" id="msgEncryptedSender" name="encryptedSender" value="0123456789abcdef0123456789abcdef">
+<input type="hidden" id="msgFormsend" name="send" value="refresh">
+<input type="hidden" id="msgFormorigMsgID" name="origMsgID" value="900001">
+<input type="hidden" id="msgFormcomposeAction" name="composeAction" value="2">
+<input type="hidden" id="msgFormrandomDir" name="randomDir" value="fakeRandomDir0000000000000000000000000000">
+<input type="hidden" id="msgFormuniqueUsc" name="uniqueUsc" value="100fakeUniqueUsc00000000000000000000000100">
+<input type="hidden" id="showTab" name="showTab" value="tab1Container">
+<input type="hidden" id="msgFormdelFile" name="delFile" value="0">
+<input type="hidden" id="composeTypeVal" value="2">
+<input type="hidden" id="msgIDVal" value="900001">
+<input type="hidden" id="msgFormSelectedTab" name="msgFormSelectedTab" value="">
+<input type="hidden" id="sendDate" name="sendDate" value="">
+
+<div id="tomain">
+    <div id='comp_to'>
+        <div class="compose_title"><label for="searchField0">Aan:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="toInput" name="to" droppedtype="0">
+                <div oncontextmenu="disableContext(event); return false;" typeidatt="users" realuserid="777" idatt="U777" userltatt="0" typeatt="0" ssidatt="100" selected="no" unselectable="on" name="receiverPart0" id="receiverPart0_100_U777_0" class="receiverSpan user"><div class='receiverSpanName userm'>Jan Janssens</div><div class='receiverSpanDelete' onclick='oSearchUsers.deleteReceiverSpan(this);' title='Verwijder'></div></div>
+                <div class="insertSearchField" name="insertSearchFieldContainer0" id="insertSearchFieldContainer_0_0" data-tabindex="1">
+                    &nbsp;
+                    <input tabindex="1" class="searchInputField" autocomplete="off" type="text" name="searchField0" id="searchField0">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_tocc'>
+        <div class="compose_title"><label for="searchField2">Kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="toccInput" name="tocc" droppedtype="2">
+                <div class="insertSearchField" name="insertSearchFieldContainer2" id="insertSearchFieldContainer_2_0" data-tabindex="2">
+                    &nbsp;
+                    <input tabindex="2" class="searchInputField" autocomplete="off" type="text" name="searchField2" id="searchField2">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_tobcc'>
+        <div class="compose_title"><label for="searchField3">Blinde kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="tobccInput" name="tobcc" droppedtype="3">
+                <div class="insertSearchField" name="insertSearchFieldContainer3" id="insertSearchFieldContainer_3_0" data-tabindex="3">
+                    &nbsp;
+                    <input tabindex="3" class="searchInputField" autocomplete="off" type="text" name="searchField3" id="searchField3">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+</div>
+</form>
+<script type="text/javascript"><!-- tinyMCE -->
+    window.tinymceInitConfig = {
+        toolbar_mode: 'wrap',
+        icons: 'smsc',
+        selector: '.mceEditor',
+        language : 'nl',
+        userID 	: '777',
+        userLT 	: '0',
+        ssID	: '100',
+    };
+    window.tinyMcePromise = tinymce.init(window.tinymceInitConfig);
+</script>
+</body>
+</html>

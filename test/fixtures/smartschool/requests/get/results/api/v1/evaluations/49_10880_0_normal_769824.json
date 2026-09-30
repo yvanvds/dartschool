@@ -11,17 +11,17 @@
   "date": "2023-11-10T00:00:00+01:00",
   "gradebookOwner": {
     "id": "49_10844_0",
-    "pictureHash": "initials_GS",
-    "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_GS/plain/1/res/128",
+    "pictureHash": "initials_RR",
+    "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_RR/plain/1/res/128",
     "description": {
       "startingWithFirstName": "",
       "startingWithLastName": ""
     },
     "name": {
-      "startingWithFirstName": "Gert Segers",
-      "startingWithLastName": "Segers Gert"
+      "startingWithFirstName": "Rik Renders",
+      "startingWithLastName": "Renders Rik"
     },
-    "sort": "segers-gert"
+    "sort": "renders-rik"
   },
   "component": {
     "id": 7,
@@ -37,17 +37,17 @@
     },
     "teachers": [{
       "id": "49_10844_0",
-      "pictureHash": "initials_GS",
-      "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_GS/plain/1/res/128",
+      "pictureHash": "initials_RR",
+      "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_RR/plain/1/res/128",
       "description": {
         "startingWithFirstName": "",
         "startingWithLastName": ""
       },
       "name": {
-        "startingWithFirstName": "Gert Segers",
-        "startingWithLastName": "Segers Gert"
+        "startingWithFirstName": "Rik Renders",
+        "startingWithLastName": "Renders Rik"
       },
-      "sort": "segers-gert"
+      "sort": "renders-rik"
     }
     ],
     "class": {
@@ -107,33 +107,33 @@
     },
     "teachers": [{
       "id": "49_10844_0",
-      "pictureHash": "initials_GS",
-      "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_GS/plain/1/res/128",
+      "pictureHash": "initials_RR",
+      "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_RR/plain/1/res/128",
       "description": {
         "startingWithFirstName": "",
         "startingWithLastName": ""
       },
       "name": {
-        "startingWithFirstName": "Gert Segers",
-        "startingWithLastName": "Segers Gert"
+        "startingWithFirstName": "Rik Renders",
+        "startingWithLastName": "Renders Rik"
       },
-      "sort": "segers-gert"
+      "sort": "renders-rik"
     }
     ],
     "dateChanged": "2023-11-12T12:57:34+01:00",
     "userChanged": {
       "id": "49_10844_0",
-      "pictureHash": "initials_GS",
-      "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_GS/plain/1/res/128",
+      "pictureHash": "initials_RR",
+      "pictureUrl": "https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_RR/plain/1/res/128",
       "description": {
         "startingWithFirstName": "",
         "startingWithLastName": ""
       },
       "name": {
-        "startingWithFirstName": "Gert Segers",
-        "startingWithLastName": "Segers Gert"
+        "startingWithFirstName": "Rik Renders",
+        "startingWithLastName": "Renders Rik"
       },
-      "sort": "segers-gert"
+      "sort": "renders-rik"
     }
   }
 }

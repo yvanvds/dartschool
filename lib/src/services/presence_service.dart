@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:dio/dio.dart';
 
@@ -43,8 +42,8 @@ export '../models/presence_models.dart';
 ///   class, code or pupil could not be resolved. The session was accepted:
 ///   signing in again does not help.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session,
-///   also after the client logged in again where it could. The request was
-///   not carried out: sign in again and retry.
+///   also after the client logged in again and retried the request once. The
+///   request was not carried out: sign in again and retry.
 /// - Another [SmartschoolAuthenticationError] (e.g.
 ///   [SmartschoolInvalidCredentialsError]): logging in again for the request
 ///   failed.
@@ -483,34 +482,20 @@ class PresenceService {
 
   /// Decodes the JSON body of [response] to a request for [path].
   ///
-  /// A response that is not JSON is one of two things, which need opposite
-  /// actions from the caller (#5), so they are told apart by where the answer
-  /// came from rather than by its content:
+  /// A response that is not JSON is the Presence module answering with an
+  /// HTML page instead: such as Smartschool's generic `500` error page, which
+  /// it sends for a request it cannot handle (an invalid request; the account
+  /// may also lack Presence access). The session was accepted, so signing in
+  /// again does not help: this is a [SmartschoolPresenceError]. (A class the
+  /// account may not record for is answered in JSON, not here: `getConfig`
+  /// does not list it, and `setLate` / `setPresent` check that first.)
   ///
-  /// - The login chain answered: the request was redirected to `/login`,
-  ///   `/2fa` or `/account-verification` (the final URL is there, or a
-  ///   redirect the HTTP client left unfollowed, as it does after a POST,
-  ///   points there). Smartschool did not accept the session, so this is a
-  ///   [SmartschoolSessionExpiredError]. (A `401`, the other way Smartschool
-  ///   refuses a session, never gets here: the client logs in again for it,
-  ///   and throws that error itself when the retry is refused too.)
-  /// - The Presence module answered, with an HTML page instead of JSON: such
-  ///   as Smartschool's generic `500` error page, which it sends for a
-  ///   request it cannot handle (an invalid request; the account may also
-  ///   lack Presence access). The session was accepted, so signing in again
-  ///   does not help: this is a [SmartschoolPresenceError]. (A class the
-  ///   account may not record for is answered in JSON, not here: `getConfig`
-  ///   does not list it, and `setLate` / `setPresent` check that first.)
+  /// The login chain answering never gets here (#5, #22): for a request that
+  /// is answered with `401` or redirected to `/login`, `/2fa` or
+  /// `/account-verification`, the client logs in again and retries it once,
+  /// and a retry that Smartschool refuses again fails with a
+  /// [SmartschoolSessionExpiredError].
   dynamic _decode(Response<String> response, String path) {
-    final loginChain = _loginChainTarget(response);
-    if (loginChain != null) {
-      throw SmartschoolSessionExpiredError(
-        'Smartschool answered $path with its login chain ($loginChain) '
-        'instead of JSON: the session has expired or was not accepted. The '
-        'request was not carried out.',
-      );
-    }
-
     final body = response.data ?? '';
     final status = response.statusCode;
     final trimmed = body.trimLeft();
@@ -532,20 +517,6 @@ class PresenceService {
     } on FormatException catch (e) {
       throw SmartschoolPresenceError('Failed to decode JSON from $path: $e');
     }
-  }
-
-  /// The path on the login chain that [response] comes from or redirects to,
-  /// or `null` when it is not an answer of the login chain.
-  String? _loginChainTarget(Response<String> response) {
-    final realUri = response.realUri;
-    if (_client.isAuthUri(realUri)) return realUri.path;
-
-    final status = response.statusCode ?? 0;
-    if (status < 300 || status >= 400) return null;
-    final location = response.headers.value(HttpHeaders.locationHeader);
-    if (location == null || location.isEmpty) return null;
-    final target = realUri.resolve(location);
-    return _client.isAuthUri(target) ? target.path : null;
   }
 }
 

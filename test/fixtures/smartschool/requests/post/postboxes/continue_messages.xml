@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<server>
+    <response>
+        <status>ok</status>
+        <actions>
+            <action>
+                <subsystem>message list</subsystem>
+                <command>rebuildcontinue</command>
+                <data>
+                    <messages>
+                        <message>
+                            <id>6400004</id>
+                            <from>Piet Pieters</from>
+                            <fromImage>https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_PP/plain/1/res/32</fromImage>
+                            <subject>Vergadering</subject>
+                            <date>2026-09-18 16:44</date>
+                            <status>0</status>
+                            <attachment>0</attachment>
+                            <unread>0</unread>
+                            <label>0</label>
+                            <deleted>0</deleted>
+                            <allowreply>1</allowreply>
+                            <allowreplyenabled>1</allowreplyenabled>
+                            <hasreply>0</hasreply>
+                            <hasForward>0</hasForward>
+                            <realBox>inbox</realBox>
+                            <sendDate/>
+                        </message>
+                        <message>
+                            <id>6400003</id>
+                            <from>Jan Janssens</from>
+                            <fromImage>https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/initials_JJ/plain/1/res/32</fromImage>
+                            <subject>Uurrooster</subject>
+                            <date>2026-09-09 10:26</date>
+                            <status>1</status>
+                            <attachment>0</attachment>
+                            <unread>1</unread>
+                            <label>0</label>
+                            <deleted>0</deleted>
+                            <allowreply>1</allowreply>
+                            <allowreplyenabled>1</allowreplyenabled>
+                            <hasreply>0</hasreply>
+                            <hasForward>0</hasForward>
+                            <realBox>inbox</realBox>
+                            <sendDate/>
+                        </message>
+                    </messages>
+                </data>
+            </action>
+            <action>
+                <subsystem>message list</subsystem>
+                <command>continue_messages</command>
+                <data>
+                    <details>
+                        <boxID>0</boxID>
+                        <boxType>inbox</boxType>
+                    </details>
+                </data>
+            </action>
+        </actions>
+    </response>
+</server>

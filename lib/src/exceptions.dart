@@ -33,10 +33,11 @@ class SmartschoolException implements Exception {
 /// logging in again. Catching [SmartschoolAuthenticationError] catches all of
 /// them.
 ///
-/// When a login is triggered by a regular request (e.g. a service call on a
-/// cold session), the error reaches the caller wrapped in a `DioException`
-/// (as its `error`); `SmartschoolClient.ensureAuthenticated()` throws it
-/// unwrapped.
+/// It is thrown as itself also when the login is triggered by a regular
+/// request (e.g. a service call on a cold or expired session): the request
+/// methods of `SmartschoolClient`, and so every service, unwrap it from the
+/// `DioException` the login failure travels in. Only a request made on
+/// `SmartschoolClient.dio` directly gets it wrapped (as the `error`).
 ///
 /// An unreachable Smartschool is not an authentication failure:
 /// `ensureAuthenticated()` throws a [SmartschoolConnectionError] for that.

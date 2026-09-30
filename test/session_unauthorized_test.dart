@@ -156,11 +156,6 @@ ResponseBody _response(
   },
 );
 
-/// A `DioException` carrying an error that matches [error]: how a login
-/// failure reaches the caller of a regular request.
-Matcher _wrapping(Matcher error) =>
-    isA<DioException>().having((e) => e.error, 'error', error);
-
 void main() {
   late Directory cacheDir;
   late SmartschoolClient client;
@@ -225,7 +220,7 @@ void main() {
 
       await expectLater(
         MessagesService(client).getHeaders(),
-        throwsA(_wrapping(isA<SmartschoolInvalidCredentialsError>())),
+        throwsA(isA<SmartschoolInvalidCredentialsError>()),
       );
       expect(server.dispatcherPosts, 1, reason: 'no retry without a login');
     });
@@ -237,12 +232,10 @@ void main() {
       await expectLater(
         MessagesService(client).getHeaders(),
         throwsA(
-          _wrapping(
-            isA<SmartschoolAuthenticationError>().having(
-              (e) => e.message,
-              'message',
-              contains('still answered 401'),
-            ),
+          isA<SmartschoolAuthenticationError>().having(
+            (e) => e.message,
+            'message',
+            contains('still answered 401'),
           ),
         ),
       );

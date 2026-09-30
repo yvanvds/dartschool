@@ -494,11 +494,12 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), or a class/code/pupil cannot be resolved |
 
-The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. `ensureAuthenticated()` throws them directly; when a login is triggered by a regular request (a service call on a cold or expired session), the error arrives wrapped in a `DioException`, as its `error`:
+The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. They are thrown directly, by `ensureAuthenticated()` and also by a service call (or any `SmartschoolClient` request method) that finds the session cold or expired and fails to log in again, so the same `on` clauses work around either. Only a request made on `client.dio` itself gets them wrapped in a `DioException`, as its `error`.
 
 ```dart
 try {
   await client.ensureAuthenticated();
+  final headers = await MessagesService(client).getHeaders();
 } on SmartschoolInvalidCredentialsError {
   // Ask the user to check their username and password.
 } on SmartschoolTwoFactorRejectedError {
@@ -510,7 +511,7 @@ try {
 }
 ```
 
-`SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem.
+`SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem. Only `ensureAuthenticated()` reports an unreachable Smartschool this way; a service call still lets the network failure through as a `DioException`.
 
 ---
 

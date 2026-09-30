@@ -202,11 +202,6 @@ ResponseBody _json(String body) => ResponseBody.fromString(
   },
 );
 
-/// A `DioException` carrying an error that matches [error]: how a login
-/// failure reaches the caller of a regular request.
-Matcher _wrapping(Matcher error) =>
-    isA<DioException>().having((e) => e.error, 'error', error);
-
 void main() {
   late Directory cacheDir;
   late SmartschoolClient client;
@@ -241,12 +236,10 @@ void main() {
         await expectLater(
           client.getRaw('/index'),
           throwsA(
-            _wrapping(
-              isA<SmartschoolInvalidCredentialsError>().having(
-                (e) => e.message,
-                'message',
-                startsWith('Login failed'),
-              ),
+            isA<SmartschoolInvalidCredentialsError>().having(
+              (e) => e.message,
+              'message',
+              startsWith('Login failed'),
             ),
           ),
         );
@@ -262,7 +255,7 @@ void main() {
 
         await expectLater(
           client.getRaw('/index'),
-          throwsA(_wrapping(isA<SmartschoolTwoFactorRejectedError>())),
+          throwsA(isA<SmartschoolTwoFactorRejectedError>()),
         );
       },
     );
@@ -276,7 +269,7 @@ void main() {
 
       await expectLater(
         client.getRaw('/index'),
-        throwsA(_wrapping(isA<SmartschoolTwoFactorRejectedError>())),
+        throwsA(isA<SmartschoolTwoFactorRejectedError>()),
       );
       expect(server.log, contains('POST /2fa/api/v1/google-authenticator'));
     });
@@ -289,12 +282,10 @@ void main() {
       await expectLater(
         client.getRaw('/index'),
         throwsA(
-          _wrapping(
-            isA<SmartschoolUnsupportedTwoFactorMethodError>().having(
-              (e) => e.availableMethods,
-              'availableMethods',
-              ['sms'],
-            ),
+          isA<SmartschoolUnsupportedTwoFactorMethodError>().having(
+            (e) => e.availableMethods,
+            'availableMethods',
+            ['sms'],
           ),
         ),
       );
@@ -313,7 +304,7 @@ void main() {
 
         await expectLater(
           client.getRaw('/index'),
-          throwsA(_wrapping(isA<SmartschoolTwoFactorRequiredError>())),
+          throwsA(isA<SmartschoolTwoFactorRequiredError>()),
         );
         expect(
           server.log,
@@ -331,7 +322,7 @@ void main() {
 
       await expectLater(
         client.getRaw('/index'),
-        throwsA(_wrapping(isA<SmartschoolAccountVerificationRequiredError>())),
+        throwsA(isA<SmartschoolAccountVerificationRequiredError>()),
       );
       expect(server.log, isNot(contains('POST /account-verification')));
     });
@@ -346,12 +337,10 @@ void main() {
       await expectLater(
         client.getRaw('/index'),
         throwsA(
-          _wrapping(
-            isA<SmartschoolAccountVerificationRequiredError>().having(
-              (e) => e.message,
-              'message',
-              contains('expects a date'),
-            ),
+          isA<SmartschoolAccountVerificationRequiredError>().having(
+            (e) => e.message,
+            'message',
+            contains('expects a date'),
           ),
         ),
       );
@@ -368,7 +357,7 @@ void main() {
 
       await expectLater(
         client.getRaw('/index'),
-        throwsA(_wrapping(isA<SmartschoolAccountVerificationRejectedError>())),
+        throwsA(isA<SmartschoolAccountVerificationRejectedError>()),
       );
       expect(server.log, contains('POST /account-verification'));
     });
@@ -394,12 +383,10 @@ void main() {
       await expectLater(
         client.getRaw('/index'),
         throwsA(
-          _wrapping(
-            isA<SmartschoolAuthenticationError>().having(
-              (e) => e.runtimeType,
-              'runtimeType',
-              SmartschoolAuthenticationError,
-            ),
+          isA<SmartschoolAuthenticationError>().having(
+            (e) => e.runtimeType,
+            'runtimeType',
+            SmartschoolAuthenticationError,
           ),
         ),
       );

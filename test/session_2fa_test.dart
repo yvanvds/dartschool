@@ -121,18 +121,15 @@ void main() {
             '{"success":false,"error":"authentication.google2fa_not_valid"}',
       );
 
-      // The interceptor rejects by wrapping the auth error in a DioException.
+      // Thrown as itself, not wrapped in the DioException the interceptor
+      // rejects the request with (#20).
       await expectLater(
         client.getRaw('/index'),
         throwsA(
-          isA<DioException>().having(
-            (e) => e.error,
-            'error',
-            isA<SmartschoolAuthenticationError>().having(
-              (e) => e.message,
-              'message',
-              contains('2FA verification failed'),
-            ),
+          isA<SmartschoolAuthenticationError>().having(
+            (e) => e.message,
+            'message',
+            contains('2FA verification failed'),
           ),
         ),
       );

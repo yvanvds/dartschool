@@ -69,6 +69,9 @@ class SmartschoolClient {
   /// Prefer the typed methods ([getRaw], [postFormRaw], [getJson], etc.) in
   /// production code. This getter is intended for [DevInspector] and similar
   /// reverse-engineering helpers.
+  ///
+  /// A request made on it directly still gets a login failure wrapped in a
+  /// [DioException] (as its `error`); the typed methods throw it as itself.
   Dio get dio => _dio;
 
   /// Stream of normalized module counter updates.
@@ -127,6 +130,11 @@ class SmartschoolClient {
 
   // -------------------------------------------------------------------------
   // Public API used by services
+  //
+  // A request that finds the session unauthenticated logs in first. When that
+  // login fails, these methods throw the SmartschoolException (typically a
+  // SmartschoolAuthenticationError subtype) itself, not the DioException that
+  // carries it (see _send, #20).
   // -------------------------------------------------------------------------
 
   /// Performs a GET request and returns the decoded JSON body.
@@ -134,7 +142,9 @@ class SmartschoolClient {
   /// Handles Smartschool's double-encoded JSON (a JSON string whose content
   /// is another JSON string) transparently.
   Future<dynamic> getJson(String path, {Map<String, dynamic>? query}) async {
-    final resp = await _dio.get<String>(path, queryParameters: query);
+    final resp = await _send(
+      () => _dio.get<String>(path, queryParameters: query),
+    );
     return _decodeJson(resp);
   }
 
@@ -144,10 +154,8 @@ class SmartschoolClient {
     Object? data,
     Map<String, dynamic>? query,
   }) async {
-    final resp = await _dio.post<String>(
-      path,
-      data: data,
-      queryParameters: query,
+    final resp = await _send(
+      () => _dio.post<String>(path, data: data, queryParameters: query),
     );
     return _decodeJson(resp);
   }
@@ -165,12 +173,14 @@ class SmartschoolClient {
   }) async {
     final command = XmlInterface.buildCommand(subsystem, action, params);
 
-    final resp = await _dio.post<String>(
-      url,
-      data: {'command': command},
-      options: Options(
-        headers: {kXRequestedWith: 'XMLHttpRequest'},
-        contentType: Headers.formUrlEncodedContentType,
+    final resp = await _send(
+      () => _dio.post<String>(
+        url,
+        data: {'command': command},
+        options: Options(
+          headers: {kXRequestedWith: 'XMLHttpRequest'},
+          contentType: Headers.formUrlEncodedContentType,
+        ),
       ),
     );
 
@@ -196,9 +206,11 @@ class SmartschoolClient {
 
   /// Downloads raw bytes from [path].
   Future<Uint8List> download(String path) async {
-    final resp = await _dio.get<List<int>>(
-      path,
-      options: Options(responseType: ResponseType.bytes),
+    final resp = await _send(
+      () => _dio.get<List<int>>(
+        path,
+        options: Options(responseType: ResponseType.bytes),
+      ),
     );
     if ((resp.statusCode ?? 0) != 200) {
       throw SmartschoolDownloadError(
@@ -215,7 +227,9 @@ class SmartschoolClient {
   /// response — it is used when the expected response is HTML or plain text
   /// (e.g. the message compose form page).
   Future<String> getRaw(String path, {Map<String, dynamic>? query}) async {
-    final resp = await _dio.get<String>(path, queryParameters: query);
+    final resp = await _send(
+      () => _dio.get<String>(path, queryParameters: query),
+    );
     return resp.data ?? '';
   }
 
@@ -229,13 +243,15 @@ class SmartschoolClient {
     Map<String, String> fields, {
     Map<String, dynamic>? query,
   }) async {
-    final resp = await _dio.post<String>(
-      path,
-      data: fields,
-      queryParameters: query,
-      options: Options(
-        contentType: Headers.formUrlEncodedContentType,
-        headers: {kXRequestedWith: 'XMLHttpRequest'},
+    final resp = await _send(
+      () => _dio.post<String>(
+        path,
+        data: fields,
+        queryParameters: query,
+        options: Options(
+          contentType: Headers.formUrlEncodedContentType,
+          headers: {kXRequestedWith: 'XMLHttpRequest'},
+        ),
       ),
     );
     return resp.data ?? '';
@@ -247,7 +263,7 @@ class SmartschoolClient {
   /// Used for the Smartschool message send endpoint and file upload endpoint,
   /// both of which require multipart rather than JSON or URL-encoded bodies.
   Future<String> postMultipartRaw(String path, FormData formData) async {
-    final resp = await _dio.post<String>(path, data: formData);
+    final resp = await _send(() => _dio.post<String>(path, data: formData));
     return resp.data ?? '';
   }
 
@@ -258,12 +274,14 @@ class SmartschoolClient {
   /// names (e.g. `msgIDs[]=123&msgIDs[]=456`), which cannot be represented
   /// as a [Map<String, String>].
   Future<String> postFormEncodedRaw(String path, String body) async {
-    final resp = await _dio.post<String>(
-      path,
-      data: body,
-      options: Options(
-        contentType: Headers.formUrlEncodedContentType,
-        headers: {kXRequestedWith: 'XMLHttpRequest'},
+    final resp = await _send(
+      () => _dio.post<String>(
+        path,
+        data: body,
+        options: Options(
+          contentType: Headers.formUrlEncodedContentType,
+          headers: {kXRequestedWith: 'XMLHttpRequest'},
+        ),
       ),
     );
     return resp.data ?? '';
@@ -339,8 +357,8 @@ class SmartschoolClient {
   /// Forces a lightweight authenticated request and throws if session is invalid.
   ///
   /// A login failure is thrown as the matching [SmartschoolAuthenticationError]
-  /// subclass (e.g. [SmartschoolInvalidCredentialsError]), unwrapped from the
-  /// `DioException` it travels in.
+  /// subclass (e.g. [SmartschoolInvalidCredentialsError]), as every request
+  /// helper throws it.
   ///
   /// When Smartschool cannot be reached (the host does not resolve, the
   /// connection fails or times out), a [SmartschoolConnectionError] is thrown
@@ -350,10 +368,6 @@ class SmartschoolClient {
     try {
       await platformId;
     } on DioException catch (e) {
-      final inner = e.error;
-      if (inner is SmartschoolException) {
-        throw inner;
-      }
       final unreachable = _describeConnectionFailure(e);
       if (unreachable != null) {
         throw SmartschoolConnectionError(
@@ -540,6 +554,27 @@ class SmartschoolClient {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /// Runs [request], a request on [_dio], and throws a [SmartschoolException]
+  /// that it failed with as itself rather than wrapped in a [DioException].
+  ///
+  /// Dio delivers every failure of a request as a [DioException]: when the
+  /// auth interceptor logs in for a regular request and the login fails, the
+  /// [SmartschoolAuthenticationError] (subtype) arrives as its `error`. The
+  /// public request helpers go through here so that a service call throws the
+  /// typed error its caller can catch (#20). Any other [DioException] (a
+  /// network failure, for one) is rethrown unchanged.
+  Future<Response<T>> _send<T>(Future<Response<T>> Function() request) async {
+    try {
+      return await request();
+    } on DioException catch (e) {
+      final inner = e.error;
+      if (inner is SmartschoolException) {
+        Error.throwWithStackTrace(inner, e.stackTrace);
+      }
+      rethrow;
+    }
+  }
 
   Future<int> _fetchPlatformId() async {
     final courses = await getJson('/course-list/api/v1/courses') as List;

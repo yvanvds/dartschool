@@ -69,6 +69,11 @@ class SmartschoolClient {
   /// Prefer the typed methods ([getRaw], [postFormRaw], [getJson], etc.) in
   /// production code. This getter is intended for [DevInspector] and similar
   /// reverse-engineering helpers.
+  ///
+  /// A request made on it directly still gets a login failure wrapped in a
+  /// [DioException] (as its `error`), and a network failure as the plain
+  /// [DioException]; the typed methods throw the login failure as itself and
+  /// the network failure as a [SmartschoolConnectionError].
   Dio get dio => _dio;
 
   /// Stream of normalized module counter updates.
@@ -127,6 +132,13 @@ class SmartschoolClient {
 
   // -------------------------------------------------------------------------
   // Public API used by services
+  //
+  // A request that finds the session unauthenticated logs in first. When that
+  // login fails, these methods throw the SmartschoolException (typically a
+  // SmartschoolAuthenticationError subtype) itself, not the DioException that
+  // carries it (see _send, #20). When Smartschool cannot be reached, they
+  // throw a SmartschoolConnectionError with the DioException as its cause
+  // (#21).
   // -------------------------------------------------------------------------
 
   /// Performs a GET request and returns the decoded JSON body.
@@ -134,7 +146,9 @@ class SmartschoolClient {
   /// Handles Smartschool's double-encoded JSON (a JSON string whose content
   /// is another JSON string) transparently.
   Future<dynamic> getJson(String path, {Map<String, dynamic>? query}) async {
-    final resp = await _dio.get<String>(path, queryParameters: query);
+    final resp = await _send(
+      () => _dio.get<String>(path, queryParameters: query),
+    );
     return _decodeJson(resp);
   }
 
@@ -144,10 +158,8 @@ class SmartschoolClient {
     Object? data,
     Map<String, dynamic>? query,
   }) async {
-    final resp = await _dio.post<String>(
-      path,
-      data: data,
-      queryParameters: query,
+    final resp = await _send(
+      () => _dio.post<String>(path, data: data, queryParameters: query),
     );
     return _decodeJson(resp);
   }
@@ -165,12 +177,14 @@ class SmartschoolClient {
   }) async {
     final command = XmlInterface.buildCommand(subsystem, action, params);
 
-    final resp = await _dio.post<String>(
-      url,
-      data: {'command': command},
-      options: Options(
-        headers: {kXRequestedWith: 'XMLHttpRequest'},
-        contentType: Headers.formUrlEncodedContentType,
+    final resp = await _send(
+      () => _dio.post<String>(
+        url,
+        data: {'command': command},
+        options: Options(
+          headers: {kXRequestedWith: 'XMLHttpRequest'},
+          contentType: Headers.formUrlEncodedContentType,
+        ),
       ),
     );
 
@@ -196,9 +210,11 @@ class SmartschoolClient {
 
   /// Downloads raw bytes from [path].
   Future<Uint8List> download(String path) async {
-    final resp = await _dio.get<List<int>>(
-      path,
-      options: Options(responseType: ResponseType.bytes),
+    final resp = await _send(
+      () => _dio.get<List<int>>(
+        path,
+        options: Options(responseType: ResponseType.bytes),
+      ),
     );
     if ((resp.statusCode ?? 0) != 200) {
       throw SmartschoolDownloadError(
@@ -215,7 +231,9 @@ class SmartschoolClient {
   /// response — it is used when the expected response is HTML or plain text
   /// (e.g. the message compose form page).
   Future<String> getRaw(String path, {Map<String, dynamic>? query}) async {
-    final resp = await _dio.get<String>(path, queryParameters: query);
+    final resp = await _send(
+      () => _dio.get<String>(path, queryParameters: query),
+    );
     return resp.data ?? '';
   }
 
@@ -229,16 +247,33 @@ class SmartschoolClient {
     Map<String, String> fields, {
     Map<String, dynamic>? query,
   }) async {
-    final resp = await _dio.post<String>(
-      path,
-      data: fields,
-      queryParameters: query,
-      options: Options(
-        contentType: Headers.formUrlEncodedContentType,
-        headers: {kXRequestedWith: 'XMLHttpRequest'},
+    final resp = await postFormResponse(path, fields, query: query);
+    return resp.data ?? '';
+  }
+
+  /// Performs the same POST as [postFormRaw], but returns the whole
+  /// [Response]: the status code, the headers and the final URL
+  /// (`realUri`) as well as the body.
+  ///
+  /// Used when the body alone cannot tell what answered: an HTML page can be
+  /// the login chain (the session was not accepted) or an error page of the
+  /// module itself.
+  Future<Response<String>> postFormResponse(
+    String path,
+    Map<String, String> fields, {
+    Map<String, dynamic>? query,
+  }) {
+    return _send(
+      () => _dio.post<String>(
+        path,
+        data: fields,
+        queryParameters: query,
+        options: Options(
+          contentType: Headers.formUrlEncodedContentType,
+          headers: {kXRequestedWith: 'XMLHttpRequest'},
+        ),
       ),
     );
-    return resp.data ?? '';
   }
 
   /// Performs an authenticated `multipart/form-data` POST and returns the raw
@@ -247,7 +282,7 @@ class SmartschoolClient {
   /// Used for the Smartschool message send endpoint and file upload endpoint,
   /// both of which require multipart rather than JSON or URL-encoded bodies.
   Future<String> postMultipartRaw(String path, FormData formData) async {
-    final resp = await _dio.post<String>(path, data: formData);
+    final resp = await _send(() => _dio.post<String>(path, data: formData));
     return resp.data ?? '';
   }
 
@@ -258,12 +293,14 @@ class SmartschoolClient {
   /// names (e.g. `msgIDs[]=123&msgIDs[]=456`), which cannot be represented
   /// as a [Map<String, String>].
   Future<String> postFormEncodedRaw(String path, String body) async {
-    final resp = await _dio.post<String>(
-      path,
-      data: body,
-      options: Options(
-        contentType: Headers.formUrlEncodedContentType,
-        headers: {kXRequestedWith: 'XMLHttpRequest'},
+    final resp = await _send(
+      () => _dio.post<String>(
+        path,
+        data: body,
+        options: Options(
+          contentType: Headers.formUrlEncodedContentType,
+          headers: {kXRequestedWith: 'XMLHttpRequest'},
+        ),
       ),
     );
     return resp.data ?? '';
@@ -337,14 +374,19 @@ class SmartschoolClient {
   }
 
   /// Forces a lightweight authenticated request and throws if session is invalid.
+  ///
+  /// A login failure is thrown as the matching [SmartschoolAuthenticationError]
+  /// subclass (e.g. [SmartschoolInvalidCredentialsError]), as every request
+  /// helper throws it.
+  ///
+  /// When Smartschool cannot be reached (the host does not resolve, the
+  /// connection fails or times out), a [SmartschoolConnectionError] is thrown
+  /// instead, with the `DioException` as its `cause`, as every request helper
+  /// throws it: a network problem is not reported as a failed login.
   Future<void> ensureAuthenticated() async {
     try {
       await platformId;
     } on DioException catch (e) {
-      final inner = e.error;
-      if (inner is SmartschoolException) {
-        throw inner;
-      }
       throw SmartschoolAuthenticationError(
         'Unable to validate Smartschool session: ${e.message ?? e.toString()}',
       );
@@ -429,9 +471,7 @@ class SmartschoolClient {
 
     final mfa = credentials.mfa;
     if (mfa == null || mfa.trim().isEmpty) {
-      throw const SmartschoolAuthenticationError(
-        'account-verification requires mfa (birthday date) in credentials',
-      );
+      throw const SmartschoolAccountVerificationRequiredError();
     }
 
     final doc = html_parser.parse(htmlBody);
@@ -441,7 +481,7 @@ class SmartschoolClient {
     final expectsDate = answerInput?.attributes['type'] == 'date';
     final dateLike = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(mfa.trim());
     if (expectsDate && !dateLike) {
-      throw const SmartschoolAuthenticationError(
+      throw const SmartschoolAccountVerificationRequiredError(
         'Account verification expects a date (yyyy-mm-dd), but mfa looks like '
         'a TOTP secret. Set credentials.yml mfa to the requested date answer.',
       );
@@ -464,9 +504,7 @@ class SmartschoolClient {
   Future<Response<String>> do2fa() async {
     final mfa = credentials.mfa;
     if (mfa == null || mfa.trim().isEmpty) {
-      throw const SmartschoolAuthenticationError(
-        '2FA requires a TOTP secret in the mfa field of credentials',
-      );
+      throw const SmartschoolTwoFactorRequiredError();
     }
 
     // Verify TOTP is configured on this account
@@ -476,8 +514,8 @@ class SmartschoolClient {
         (config['possibleAuthenticationMechanisms'] as List?)?.cast<String>() ??
         [];
     if (!mechanisms.contains('googleAuthenticator')) {
-      throw const SmartschoolAuthenticationError(
-        'Only googleAuthenticator 2FA is supported',
+      throw SmartschoolUnsupportedTwoFactorMethodError(
+        List.unmodifiable(mechanisms),
       );
     }
 
@@ -527,6 +565,40 @@ class SmartschoolClient {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /// Runs [request], a request on [_dio], and throws the [SmartschoolException]
+  /// that its failure means rather than the [DioException] it arrives in.
+  ///
+  /// Dio delivers every failure of a request as a [DioException]: when the
+  /// auth interceptor logs in for a regular request and the login fails, the
+  /// [SmartschoolAuthenticationError] (subtype) arrives as its `error`, and
+  /// that is thrown as itself (#20). When Smartschool cannot be reached (see
+  /// [_describeConnectionFailure]), a [SmartschoolConnectionError] is thrown
+  /// with the [DioException] as its `cause` (#21). The public request helpers
+  /// go through here so that a service call throws the typed error its caller
+  /// can catch. Any other [DioException] is rethrown unchanged.
+  Future<Response<T>> _send<T>(Future<Response<T>> Function() request) async {
+    try {
+      return await request();
+    } on DioException catch (e) {
+      final inner = e.error;
+      if (inner is SmartschoolException) {
+        Error.throwWithStackTrace(inner, e.stackTrace);
+      }
+      final unreachable = _describeConnectionFailure(e);
+      if (unreachable != null) {
+        Error.throwWithStackTrace(
+          SmartschoolConnectionError(
+            'Unable to reach Smartschool at ${credentials.mainUrl}: '
+            '$unreachable',
+            cause: e,
+          ),
+          e.stackTrace,
+        );
+      }
+      rethrow;
+    }
+  }
 
   Future<int> _fetchPlatformId() async {
     final courses = await getJson('/course-list/api/v1/courses') as List;
@@ -743,6 +815,39 @@ class SmartschoolClient {
     return p.join(home, '.cache', 'smartschool', username);
   }
 
+  /// Describes [e] when it means Smartschool could not be reached (the request
+  /// got no complete answer), or returns `null` for any other failure.
+  ///
+  /// `IOHttpClientAdapter` reports a DNS failure or refused connection as
+  /// [DioExceptionType.connectionError] and a timeout as the matching timeout
+  /// type; other socket, HTTP or TLS errors (a connection reset mid-request, a
+  /// failed TLS handshake) pass through unconverted and reach us as
+  /// [DioExceptionType.unknown].
+  static String? _describeConnectionFailure(DioException e) {
+    final error = e.error;
+    final String failure;
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+        failure = 'the connection failed';
+      case DioExceptionType.connectionTimeout:
+        failure = 'the connection timed out';
+      case DioExceptionType.sendTimeout:
+        failure = 'sending the request timed out';
+      case DioExceptionType.receiveTimeout:
+        failure = 'waiting for the response timed out';
+      case DioExceptionType.badCertificate:
+        failure = 'the server certificate was rejected';
+      case DioExceptionType.unknown
+          when error is SocketException ||
+              error is HttpException ||
+              error is TlsException:
+        failure = 'the connection failed';
+      default:
+        return null;
+    }
+    return error == null ? failure : '$failure ($error)';
+  }
+
   static bool _isLikelyHtml(String body) {
     final lower = body.toLowerCase();
     return lower.startsWith('<!doctype html') || lower.startsWith('<html');
@@ -758,8 +863,16 @@ class SmartschoolClient {
 // Auth interceptor
 // ---------------------------------------------------------------------------
 
-/// Intercepts Dio responses that land on Smartschool's login chain and drives
-/// the authentication flow transparently, then retries the original request.
+/// Intercepts Dio responses that show the session is not (or no longer)
+/// authenticated, drives the authentication flow transparently, then retries
+/// the original request once.
+///
+/// Smartschool signals an unauthenticated session in two ways:
+/// - a page request (GET) is redirected to the login chain (`/login`, `/2fa`,
+///   `/account-verification`), so the response lands on an auth page;
+/// - an XHR or form POST (the XML dispatcher, for instance) is answered with a
+///   bare `401` and an empty body (#8). The chain is then started by fetching
+///   `/login`.
 ///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
@@ -787,7 +900,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     }
 
     final realUri = response.realUri;
-    if (!_client.isAuthUri(realUri)) {
+    final onLoginChain = _client.isAuthUri(realUri);
+    if (!onLoginChain && !_isUnauthorized(response)) {
       _resetAttempts(realUri);
       handler.next(response);
       return;
@@ -809,13 +923,31 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     _loginAttempts++;
 
     try {
-      await _driveAuthChain(realUri, response);
+      if (onLoginChain) {
+        await _driveAuthChain(realUri, response);
+      } else {
+        // A 401 does not say where the login chain starts: open it ourselves.
+        final loginPage = await _client._rawGet('/login');
+        await _driveAuthChain(loginPage.realUri, loginPage);
+      }
 
       // Re-issue the original request now that we are authenticated
       final originalOptions = response.requestOptions.copyWith(
         extra: {...response.requestOptions.extra, _retryKey: true},
       );
+      // The copied headers include the `Cookie` header CookieManager put on
+      // the original request, with the session id that was just refused.
+      // CookieManager would merge it with the jar and list it first, so
+      // Smartschool would read the stale session again (#9). Drop it: the
+      // retry gets its cookies from the jar, which holds the new session.
+      originalOptions.headers.remove(HttpHeaders.cookieHeader);
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
+      if (_isUnauthorized(retried)) {
+        throw SmartschoolSessionExpiredError(
+          'Smartschool still answered 401 to ${originalOptions.method} '
+          '${originalOptions.uri} after logging in again',
+        );
+      }
       handler.resolve(retried);
     } on SmartschoolAuthenticationError catch (e) {
       handler.reject(
@@ -824,6 +956,12 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       );
     }
   }
+
+  /// Whether [response] is Smartschool's answer to an XHR/form POST on an
+  /// expired session: `401 Unauthorized` (with an empty body), not a redirect
+  /// to the login chain.
+  static bool _isUnauthorized(Response<dynamic> response) =>
+      response.statusCode == HttpStatus.unauthorized;
 
   Future<void> _driveAuthChain(Uri uri, Response<dynamic> response) async {
     final path = uri.path;
@@ -860,10 +998,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
         return;
       }
       if (success == false) {
-        throw const SmartschoolAuthenticationError(
-          '2FA verification failed. Check your TOTP secret (mfa) and '
-          'ensure your device time is synchronized.',
-        );
+        throw const SmartschoolTwoFactorRejectedError();
       }
       // Unrecognised response shape — fall through to the URL-based checks
       // below (e.g. genuinely still on the HTML /2fa page).
@@ -873,21 +1008,13 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     final finalUri = nextResponse?.realUri ?? uri;
     if (_client.isAuthUri(finalUri)) {
       if (finalUri.path.endsWith('/login')) {
-        throw const SmartschoolAuthenticationError(
-          'Login failed. Check username/password or SSO-only account setup.',
-        );
+        throw const SmartschoolInvalidCredentialsError();
       }
-      if (finalUri.path.endsWith('/account-verification')) {
-        throw const SmartschoolAuthenticationError(
-          'Account verification is still pending. Check the verification '
-          'answer format in credentials.yml (often yyyy-mm-dd).',
-        );
+      if (finalUri.path.endsWith(kAccountVerificationPath)) {
+        throw const SmartschoolAccountVerificationRejectedError();
       }
       if (finalUri.path.endsWith('/2fa') || finalUri.path.contains('/2fa/')) {
-        throw const SmartschoolAuthenticationError(
-          '2FA verification failed. Check your TOTP secret (mfa) and '
-          'ensure your device time is synchronized.',
-        );
+        throw const SmartschoolTwoFactorRejectedError();
       }
 
       throw SmartschoolAuthenticationError(

@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
 
 import '../exceptions.dart';
 import '../session.dart';
@@ -31,6 +34,21 @@ export '../models/presence_models.dart';
 /// for the class (i.e. `userCanRecord` is true in the module config). Accounts
 /// without that right receive a rejection from the server, surfaced as a
 /// [SmartschoolPresenceError].
+///
+/// ### Errors
+/// The failures a caller has to tell apart arrive as different types:
+///
+/// - [SmartschoolPresenceError]: the Presence module refused the request (an
+///   error page instead of JSON, or a non-empty `errors[]` on a save), or a
+///   class, code or pupil could not be resolved. The session was accepted:
+///   signing in again does not help.
+/// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session,
+///   also after the client logged in again where it could. The request was
+///   not carried out: sign in again and retry.
+/// - Another [SmartschoolAuthenticationError] (e.g.
+///   [SmartschoolInvalidCredentialsError]): logging in again for the request
+///   failed.
+/// - [SmartschoolConnectionError]: Smartschool could not be reached.
 ///
 /// ### Identity note
 /// The Presence module speaks Smartschool's internal `userID` (e.g. 11110),
@@ -72,8 +90,8 @@ class PresenceService {
   /// Cached after the first call; pass [forceRefresh] to re-fetch.
   Future<PresenceConfig> getConfig({bool forceRefresh = false}) async {
     if (_config != null && !forceRefresh) return _config!;
-    final body = await _client.postFormRaw(_getConfigPath, const {});
-    final decoded = _decode(body, _getConfigPath);
+    final response = await _client.postFormResponse(_getConfigPath, const {});
+    final decoded = _decode(response, _getConfigPath);
     if (decoded is! Map<String, dynamic>) {
       throw SmartschoolPresenceError(
         'Unexpected getConfig response (${decoded.runtimeType}).',
@@ -91,11 +109,11 @@ class PresenceService {
   }) async {
     final cached = _codesByStruct[structId];
     if (cached != null && !forceRefresh) return cached;
-    final body = await _client.postFormRaw(_getAllCodesPath, {
+    final response = await _client.postFormResponse(_getAllCodesPath, {
       'structID': '$structId',
       'ofschoolage': 'of_school_age',
     });
-    final decoded = _decode(body, _getAllCodesPath);
+    final decoded = _decode(response, _getAllCodesPath);
     if (decoded is! List) {
       throw SmartschoolPresenceError(
         'Unexpected getAllCodes response (${decoded.runtimeType}).',
@@ -115,7 +133,7 @@ class PresenceService {
     required String schoolyearRefDate,
   }) async {
     final day = formatDate(date);
-    final body = await _client.postFormRaw(_getClassPath, {
+    final response = await _client.postFormResponse(_getClassPath, {
       'classID': '$classGroupId',
       'startDate': day,
       'endDate': day,
@@ -123,7 +141,7 @@ class PresenceService {
       'includePupils': '1',
       'includePresences': '1',
     });
-    final decoded = _decode(body, _getClassPath);
+    final decoded = _decode(response, _getClassPath);
     if (decoded is! Map<String, dynamic>) {
       throw SmartschoolPresenceError(
         'Unexpected getClass response (${decoded.runtimeType}).',
@@ -253,8 +271,10 @@ class PresenceService {
       motivation: motivation,
     );
 
-    final body = await _client.postFormRaw(_savePath, {'pupils': payload});
-    final errors = parseSaveErrors(_decode(body, _savePath));
+    final response = await _client.postFormResponse(_savePath, {
+      'pupils': payload,
+    });
+    final errors = parseSaveErrors(_decode(response, _savePath));
     if (errors.isNotEmpty) {
       throw SmartschoolPresenceError(
         'Saving the presence for userID $userId failed.',
@@ -461,18 +481,50 @@ class PresenceService {
     return '$y-$m-$d';
   }
 
-  /// Decodes a raw response [body], raising a helpful error for HTML pages
-  /// (which indicate an expired session or a server-side 500).
-  static dynamic _decode(String body, String path) {
+  /// Decodes the JSON body of [response] to a request for [path].
+  ///
+  /// A response that is not JSON is one of two things, which need opposite
+  /// actions from the caller (#5), so they are told apart by where the answer
+  /// came from rather than by its content:
+  ///
+  /// - The login chain answered: the request was redirected to `/login`,
+  ///   `/2fa` or `/account-verification` (the final URL is there, or a
+  ///   redirect the HTTP client left unfollowed, as it does after a POST,
+  ///   points there). Smartschool did not accept the session, so this is a
+  ///   [SmartschoolSessionExpiredError]. (A `401`, the other way Smartschool
+  ///   refuses a session, never gets here: the client logs in again for it,
+  ///   and throws that error itself when the retry is refused too.)
+  /// - The Presence module answered, with an HTML page instead of JSON: such
+  ///   as Smartschool's generic `500` error page, which it sends for a
+  ///   request it cannot handle (an invalid request; the account may also
+  ///   lack Presence access). The session was accepted, so signing in again
+  ///   does not help: this is a [SmartschoolPresenceError]. (A class the
+  ///   account may not record for is answered in JSON, not here: `getConfig`
+  ///   does not list it, and `setLate` / `setPresent` check that first.)
+  dynamic _decode(Response<String> response, String path) {
+    final loginChain = _loginChainTarget(response);
+    if (loginChain != null) {
+      throw SmartschoolSessionExpiredError(
+        'Smartschool answered $path with its login chain ($loginChain) '
+        'instead of JSON: the session has expired or was not accepted. The '
+        'request was not carried out.',
+      );
+    }
+
+    final body = response.data ?? '';
+    final status = response.statusCode;
     final trimmed = body.trimLeft();
     if (trimmed.isEmpty) {
-      throw SmartschoolPresenceError('Empty response from $path.');
+      throw SmartschoolPresenceError(
+        'Empty response from $path (HTTP $status).',
+      );
     }
     final lower = trimmed.toLowerCase();
     if (lower.startsWith('<!doctype html') || lower.startsWith('<html')) {
       throw SmartschoolPresenceError(
-        'Received HTML instead of JSON from $path. The session may have '
-        'expired, or the account lacks Presence access.',
+        'The Presence module answered $path with an HTML page (HTTP $status) '
+        'instead of JSON: it could not handle the request (the request is '
+        'invalid, or the account may lack Presence access).',
       );
     }
     try {
@@ -480,6 +532,20 @@ class PresenceService {
     } on FormatException catch (e) {
       throw SmartschoolPresenceError('Failed to decode JSON from $path: $e');
     }
+  }
+
+  /// The path on the login chain that [response] comes from or redirects to,
+  /// or `null` when it is not an answer of the login chain.
+  String? _loginChainTarget(Response<String> response) {
+    final realUri = response.realUri;
+    if (_client.isAuthUri(realUri)) return realUri.path;
+
+    final status = response.statusCode ?? 0;
+    if (status < 300 || status >= 400) return null;
+    final location = response.headers.value(HttpHeaders.locationHeader);
+    if (location == null || location.isEmpty) return null;
+    final target = realUri.resolve(location);
+    return _client.isAuthUri(target) ? target.path : null;
   }
 }
 

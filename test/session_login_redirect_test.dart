@@ -187,14 +187,10 @@ void main() {
       await expectLater(
         client.getRaw('/index'),
         throwsA(
-          isA<DioException>().having(
-            (e) => e.error,
-            'error',
-            isA<SmartschoolAuthenticationError>().having(
-              (e) => e.message,
-              'message',
-              contains('Login failed'),
-            ),
+          isA<SmartschoolAuthenticationError>().having(
+            (e) => e.message,
+            'message',
+            contains('Login failed'),
           ),
         ),
       );

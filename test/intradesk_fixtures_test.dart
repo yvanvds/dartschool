@@ -66,11 +66,11 @@ void main() {
       expect(c.canSeeViewHistory, isFalse);
     });
 
-    test('first folder – dates parse without throwing', () {
+    test('first folder – dates', () {
       final f = listing.folders.first;
-      expect(f.dateCreated, isA<DateTime>());
-      expect(f.dateChanged, isA<DateTime>());
-      expect(f.dateStateChanged, isA<DateTime>());
+      expect(f.dateCreated, DateTime.parse('2019-09-01T08:00:00+01:00'));
+      expect(f.dateChanged, DateTime.parse('2024-08-29T17:01:56+02:00'));
+      expect(f.dateStateChanged, DateTime.parse('2020-01-15T10:00:00+01:00'));
     });
 
     test('second folder has no children', () {
@@ -107,7 +107,7 @@ void main() {
       expect(rev.fileId, 'cccc1111-1111-4111-b111-111111111111');
       expect(rev.fileSize, 182108);
       expect(rev.label, 'welkom.docx');
-      expect(rev.dateCreated, isA<DateTime>());
+      expect(rev.dateCreated, DateTime.parse('2023-02-13T10:38:11+01:00'));
     });
 
     test('file – revision owner', () {

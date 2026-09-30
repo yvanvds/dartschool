@@ -12,12 +12,6 @@ void main() {
   forbidRealNetwork();
 
   group('IntradeskService', () {
-    test('can be instantiated', () {
-      final fakeClient = _FakeSmartschoolClient();
-      final service = IntradeskService(fakeClient);
-      expect(service, isA<IntradeskService>());
-    });
-
     test('getFolderListing throws on empty folderId', () async {
       final fakeClient = _FakeSmartschoolClient();
       final service = IntradeskService(fakeClient);

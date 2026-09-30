@@ -804,8 +804,16 @@ class SmartschoolClient {
 // Auth interceptor
 // ---------------------------------------------------------------------------
 
-/// Intercepts Dio responses that land on Smartschool's login chain and drives
-/// the authentication flow transparently, then retries the original request.
+/// Intercepts Dio responses that show the session is not (or no longer)
+/// authenticated, drives the authentication flow transparently, then retries
+/// the original request once.
+///
+/// Smartschool signals an unauthenticated session in two ways:
+/// - a page request (GET) is redirected to the login chain (`/login`, `/2fa`,
+///   `/account-verification`), so the response lands on an auth page;
+/// - an XHR or form POST (the XML dispatcher, for instance) is answered with a
+///   bare `401` and an empty body (#8). The chain is then started by fetching
+///   `/login`.
 ///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
@@ -833,7 +841,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     }
 
     final realUri = response.realUri;
-    if (!_client.isAuthUri(realUri)) {
+    final onLoginChain = _client.isAuthUri(realUri);
+    if (!onLoginChain && !_isUnauthorized(response)) {
       _resetAttempts(realUri);
       handler.next(response);
       return;
@@ -855,13 +864,25 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     _loginAttempts++;
 
     try {
-      await _driveAuthChain(realUri, response);
+      if (onLoginChain) {
+        await _driveAuthChain(realUri, response);
+      } else {
+        // A 401 does not say where the login chain starts: open it ourselves.
+        final loginPage = await _client._rawGet('/login');
+        await _driveAuthChain(loginPage.realUri, loginPage);
+      }
 
       // Re-issue the original request now that we are authenticated
       final originalOptions = response.requestOptions.copyWith(
         extra: {...response.requestOptions.extra, _retryKey: true},
       );
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
+      if (_isUnauthorized(retried)) {
+        throw SmartschoolAuthenticationError(
+          'Smartschool still answered 401 to ${originalOptions.method} '
+          '${originalOptions.uri} after logging in again',
+        );
+      }
       handler.resolve(retried);
     } on SmartschoolAuthenticationError catch (e) {
       handler.reject(
@@ -870,6 +891,12 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       );
     }
   }
+
+  /// Whether [response] is Smartschool's answer to an XHR/form POST on an
+  /// expired session: `401 Unauthorized` (with an empty body), not a redirect
+  /// to the login chain.
+  static bool _isUnauthorized(Response<dynamic> response) =>
+      response.statusCode == HttpStatus.unauthorized;
 
   Future<void> _driveAuthChain(Uri uri, Response<dynamic> response) async {
     final path = uri.path;

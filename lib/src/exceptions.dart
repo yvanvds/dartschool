@@ -28,8 +28,10 @@ class SmartschoolException implements Exception {
 ///
 /// This class itself is still thrown for the remaining authentication
 /// failures, such as reaching the maximum number of login attempts, an
-/// unrecognised step in the login chain, or an HTML page where data was
-/// expected. Catching [SmartschoolAuthenticationError] catches all of them.
+/// unrecognised step in the login chain, an HTML page where data was
+/// expected, or a request that Smartschool still answers with `401` after
+/// logging in again. Catching [SmartschoolAuthenticationError] catches all of
+/// them.
 ///
 /// When a login is triggered by a regular request (e.g. a service call on a
 /// cold session), the error reaches the caller wrapped in a `DioException`

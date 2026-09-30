@@ -17,6 +17,9 @@ pubspec.lock
 *.js_
 *.split.js
 
+# ── Node / npm (Lefthook) ────────────────────────────────────────────────────
+node_modules/
+
 # ── Credentials / secrets ────────────────────────────────────────────────────
 credentials.yml
 *.env

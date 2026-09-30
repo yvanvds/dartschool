@@ -17,6 +17,8 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -102,6 +104,8 @@ TypeMatcher<SmartschoolConnectionError> _connectionError(
     .having((e) => e.message, 'message', contains(_host));
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
 

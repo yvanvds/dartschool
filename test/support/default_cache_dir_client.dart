@@ -10,7 +10,10 @@ import 'dart:io';
 
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 
+import 'no_network.dart';
+
 Future<void> main(List<String> args) async {
+  forbidRealNetwork();
   final username = args[0];
   final client = await SmartschoolClient.create(
     AppCredentials(

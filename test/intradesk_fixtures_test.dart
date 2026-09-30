@@ -12,6 +12,8 @@ import 'dart:io';
 import 'package:flutter_smartschool/src/models/intradesk_models.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 String _readFixture(String path) => File(
   'test/fixtures/smartschool/requests/get/intradesk/api/v1/49/$path',
 ).readAsStringSync();
@@ -20,6 +22,8 @@ Map<String, dynamic> _jsonFixture(String path) =>
     jsonDecode(_readFixture(path)) as Map<String, dynamic>;
 
 void main() {
+  forbidRealNetwork();
+
   group('IntradeskListing (root) fixture', () {
     late IntradeskListing listing;
 

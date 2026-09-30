@@ -25,6 +25,8 @@ import 'package:flutter_smartschool/src/services/messages_service.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -141,6 +143,8 @@ List<int> _ids(List<MessageSearchUser> users) =>
     users.map((u) => u.userId).toList();
 
 void main() {
+  forbidRealNetwork();
+
   group('MessagesService.getReplyRecipients (#24)', () {
     late Directory cacheDir;
     late SmartschoolClient client;

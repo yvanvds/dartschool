@@ -1,7 +1,11 @@
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   group('Credentials', () {
     test('AppCredentials exposes provided values', () {
       const username = 'john.doe';

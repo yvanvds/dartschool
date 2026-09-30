@@ -1,12 +1,16 @@
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 class _FakeSmartschoolClient implements SmartschoolClient {
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('IntradeskService', () {
     test('can be instantiated', () {
       final fakeClient = _FakeSmartschoolClient();

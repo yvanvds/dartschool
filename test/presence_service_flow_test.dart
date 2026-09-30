@@ -17,11 +17,15 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/services/presence_service.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 Map<String, dynamic> _obj(String src) =>
     jsonDecode(src) as Map<String, dynamic>;
 List<dynamic> _arr(String src) => jsonDecode(src) as List<dynamic>;
 
 void main() {
+  forbidRealNetwork();
+
   // ---------------------------------------------------------------------------
   // DayPart
   // ---------------------------------------------------------------------------

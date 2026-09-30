@@ -15,6 +15,7 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
 import 'support/temp_cache_dir.dart';
 
 /// Credentials with a valid base32 TOTP secret so `do2fa()` can generate a code.
@@ -101,6 +102,8 @@ class _FakeAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('_SmartschoolAuthInterceptor 2FA handling', () {
     test('accepted 2FA code does NOT throw (issue #1 regression)', () async {
       final client = await SmartschoolClient.create(

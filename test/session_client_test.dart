@@ -2,6 +2,7 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
 import 'support/temp_cache_dir.dart';
 
 class DummyCredentials extends Credentials {
@@ -16,6 +17,8 @@ class DummyCredentials extends Credentials {
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('SmartschoolClient', () {
     test('dio getter returns Dio instance', () async {
       final client = await SmartschoolClient.create(

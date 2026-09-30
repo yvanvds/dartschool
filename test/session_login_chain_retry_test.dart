@@ -38,6 +38,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -288,6 +290,8 @@ Matcher _sessionExpired() => isA<SmartschoolSessionExpiredError>().having(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory tempDir;
   late SmartschoolClient client;
 

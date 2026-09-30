@@ -18,7 +18,11 @@ import 'package:flutter_smartschool/src/services/messages_service.dart';
 import 'package:flutter_smartschool/src/xml_interface.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   // ---------------------------------------------------------------------------
   // parseHiddenFields
   // ---------------------------------------------------------------------------

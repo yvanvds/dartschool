@@ -11,6 +11,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 /// Files that may create a client in the default cache folder, with why.
 const _allowed = <String, String>{
   'test/support/default_cache_dir_client.dart':
@@ -74,6 +76,8 @@ String _topLevelArguments(String source, int start) {
 String _packagePath(String path) => p.split(p.relative(path)).join('/');
 
 void main() {
+  forbidRealNetwork();
+
   test('no test creates a client in the default cache folder', () {
     final files =
         Directory('test')

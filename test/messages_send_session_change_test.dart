@@ -37,6 +37,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/add_recipient_answer.dart';
+import 'support/no_network.dart';
 import 'support/remove_recipient_answer.dart';
 
 const _host = 'school.smartschool.be';
@@ -395,6 +396,8 @@ final Matcher _sessionChanged = allOf(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
   late MessagesService messages;

@@ -27,6 +27,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 const _session = 'PHPSESSID';
 const _staleSession = 'stale-session';
@@ -291,6 +293,8 @@ final Matcher _notRetried = isA<SmartschoolSessionExpiredError>().having(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
   late _Smartschool server;

@@ -15,6 +15,8 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _totpSecret = 'JBSWY3DPEHPK3PXP';
 
 class _Credentials extends Credentials {
@@ -203,6 +205,8 @@ ResponseBody _json(String body) => ResponseBody.fromString(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
 

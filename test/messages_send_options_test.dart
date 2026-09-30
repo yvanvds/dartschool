@@ -31,6 +31,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/add_recipient_answer.dart';
+import 'support/no_network.dart';
 
 const _host = 'school.smartschool.be';
 
@@ -248,6 +249,8 @@ Matcher _refused(String operation, List<String> options) => isA<ArgumentError>()
     );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory tempDir;
   late SmartschoolClient client;
   late MessagesService messages;

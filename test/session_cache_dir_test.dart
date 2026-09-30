@@ -13,6 +13,8 @@ import 'package:flutter_smartschool/src/cache_dir.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 AppCredentials _credentials(String username) => AppCredentials(
   username: username,
   password: 'pass',
@@ -20,6 +22,8 @@ AppCredentials _credentials(String username) => AppCredentials(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory tempDir;
 
   setUp(() {

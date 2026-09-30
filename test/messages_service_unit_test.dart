@@ -3,12 +3,16 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:flutter_smartschool/src/models/notification_models.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 class _FakeSmartschoolClient implements SmartschoolClient {
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('MessagesService', () {
     test('can be instantiated', () {
       // Use a minimal fake SmartschoolClient

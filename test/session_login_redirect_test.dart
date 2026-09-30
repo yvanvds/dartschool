@@ -15,6 +15,7 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
 import 'support/temp_cache_dir.dart';
 
 class _TwoFaCredentials extends Credentials {
@@ -142,6 +143,8 @@ class _FakeSmartschool implements HttpClientAdapter {
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('login POST answered with a redirect the client did not follow', () {
     test(
       '302 after the password is followed into 2FA (issue #6 regression)',

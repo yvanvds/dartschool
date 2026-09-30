@@ -37,6 +37,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 const _session = 'PHPSESSID';
 const _pid = 'pid';
@@ -312,6 +314,8 @@ class _Probe extends Interceptor {
 }
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
   late _Smartschool server;

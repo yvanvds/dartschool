@@ -55,7 +55,8 @@ Future<void> main() async {
 	// 3. Use a service.
 	final messages = MessagesService(client);
 
-	// List the 20 most-recent inbox headers.
+	// List the newest inbox headers: one page, at most 50 (getAllHeaders
+	// pages through the rest).
 	final headers = await messages.getHeaders();
 	for (final msg in headers) {
 		print('${msg.date}  ${msg.sender}: ${msg.subject}');
@@ -75,9 +76,11 @@ Future<void> main() async {
 	// Send a message to yourself.
 	final myself = await messages.getCurrentUserAsRecipient();
 	await messages.sendMessage(
-		to: [myself],
-		subject: 'Hello from flutter_smartschool',
-		bodyHtml: '<p>It works!</p>',
+		SendMessageParams(
+			to: [myself],
+			subject: 'Hello from flutter_smartschool',
+			bodyHtml: '<p>It works!</p>',
+		),
 	);
 }
 ```
@@ -223,8 +226,35 @@ for (final attachment in attachments) {
 | `getCurrentUserAsRecipient()` | `Future<MessageSearchUser>` | Returns the currently-logged-in user as a compose recipient (reads IDs from compose page JS — safe and reliable). |
 | `searchRecipients(query)` | `Future<List<MessageSearchResult>>` | JSON-based recipient search; results lack `ssId` — use `searchRecipientsForCompose` when sending. |
 | `searchRecipientsForCompose(query)` | `Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>` | Compose-form XML search; results carry `ssId`/`userLt` required by `sendMessage`. |
-| `sendMessage({to, cc, bcc, toGroups, ..., subject, bodyHtml, attachmentPaths})` | `Future<void>` | Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. Returns normally only when Smartschool confirms the send; see below for what a failure means. |
+| `sendMessage(params)` | `Future<void>` | Sends `params` (a `SendMessageParams`, see below) as a new message. Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. Returns normally only when Smartschool confirms the send; see below for what a failure means. |
 | `sendReply(msgId, params, {boxType, all})` | `Future<void>` | Sends `params` (a `SendMessageParams`) as a reply that Smartschool links to message `msgId`: the same steps as `sendMessage`, on the message's reply form (`composeType=1`, or the reply-all form with `all: true`), submitted with its `origMsgID` and `composeAction`. The recipients the form names are not registered again, and must be in `params`; see below. |
+
+`sendMessage` and `sendReply` take the message as a `SendMessageParams`:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `to` | `List<MessageSearchUser>` | required | To recipients. |
+| `cc`, `bcc` | `List<MessageSearchUser>` | `[]` | CC and BCC recipients. |
+| `toGroups`, `ccGroups`, `bccGroups` | `List<MessageSearchGroup>` | `[]` | Groups as To, CC and BCC recipients. |
+| `subject` | `String` | required | The subject. |
+| `bodyHtml` | `String` | required | The body, as HTML. |
+| `attachmentPaths` | `List<String>` | `[]` | Paths of local files to attach; each is uploaded before the submit. |
+| `options` | `MessageSendOptions` | `MessageSendOptions()` | `requestReadReceipt`, `highPriority` (both `false`) and `extra`. Not sent to Smartschool yet, so they have no effect (#43). |
+
+Get the recipients from `searchRecipientsForCompose`, `getCurrentUserAsRecipient`, or for a reply from `getReplyRecipients` / `getReplyAllRecipients`:
+
+```dart
+final (users, _) = await messages.searchRecipientsForCompose('Janssens');
+final myself = await messages.getCurrentUserAsRecipient();
+final params = SendMessageParams(
+  to: [users.first],
+  bcc: [myself],
+  subject: 'Report',
+  bodyHtml: '<p>See the attachment.</p>',
+  attachmentPaths: ['report.pdf'],
+);
+await messages.sendMessage(params);
+```
 
 `sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
 
@@ -481,7 +511,7 @@ dart run example/set_late_example.dart
 ## Models
 
 ### `ShortMessage`
-Returned by `getHeaders` / `getArchiveHeaders`. Fields: `id`, `sender`, `subject`, `date`, `unread`, `deleted`, `attachment`, `coloredFlag`, `allowReply`, `realBox`, …
+Returned by `getHeaders` / `getArchiveHeaders`, `getHeaderPages` / `getArchiveHeaderPages` (page by page) and `getAllHeaders` / `getAllArchiveHeaders`. Fields: `id`, `sender`, `subject`, `date`, `unread`, `deleted`, `attachment`, `coloredFlag`, `allowReply`, `realBox`, …
 
 ### `FullMessage`
 Returned by `getMessage`. Adds: `body` (HTML), `receivers`, `ccReceivers`, `bccReceivers` (recipient names), `toRecipients`, `ccRecipients`, `bccRecipients` (the same recipients as `MessageRecipient`s), `canReply`, `senderPicture`, `totalNrOtherToReceivers`, `totalNrOtherCcReceivers`, `totalNrOtherBccReceivers` (count of recipients hidden behind a "show more" link when `includeAllRecipients` is `false`), …
@@ -495,7 +525,7 @@ Returned by `getAttachments`. Fields: `fileId`, `name`, `mime`, `size`, `icon`, 
 Use `attachment.download(client)` to fetch raw bytes for a specific attachment.
 
 ### `MessageSearchUser` / `MessageSearchGroup`
-Used as recipients in `sendMessage`. Key fields: `userId`/`groupId`, `ssId`, `userLt`, `displayName`.
+Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompose`; users also by `getCurrentUserAsRecipient`, `getReplyRecipients`, `getReplyAllRecipients` and `getSentMessageRecipients`. Key fields: `userId`/`groupId`, `ssId`, `userLt` (users only), `displayName`.
 
 ### `SmartschoolUser`
 Returned by `SmartschoolClient.getCurrentUser()`. Fields: `id` (int — server-assigned numeric user ID), `displayName` (String), `avatarUrl` (String? — profile picture URL).

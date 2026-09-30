@@ -317,10 +317,13 @@ void main() {
     test('reply-all fixture parses To and CC recipients with IDs', () {
       final html = _readFixture('get/composemessage/reply-all.html');
 
-      final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, ccList, bccList) = MessagesService.parseReplyAllRecipients(
+        html,
+      );
 
       expect(toList, hasLength(2));
       expect(ccList, hasLength(2));
+      expect(bccList, isEmpty);
 
       expect(toList[0].userId, 201);
       expect(toList[0].displayName, 'Alice Johnson');
@@ -341,12 +344,13 @@ void main() {
     });
 
     test('parseReplyAllRecipients returns empty lists for empty HTML', () {
-      final (toList, ccList) = MessagesService.parseReplyAllRecipients(
+      final (toList, ccList, bccList) = MessagesService.parseReplyAllRecipients(
         '<html><body></body></html>',
       );
 
       expect(toList, isEmpty);
       expect(ccList, isEmpty);
+      expect(bccList, isEmpty);
     });
 
     test('parseReplyAllRecipients skips spans missing required attributes', () {
@@ -365,12 +369,15 @@ void main() {
   </div>
 </body></html>''';
 
-      final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, ccList, bccList) = MessagesService.parseReplyAllRecipients(
+        html,
+      );
 
       expect(toList, hasLength(1));
       expect(toList.single.userId, 403);
       expect(toList.single.displayName, 'Valid User');
       expect(ccList, isEmpty);
+      expect(bccList, isEmpty);
     });
 
     test('parseReplyAllRecipients defaults typeatt-less spans to To list', () {
@@ -381,11 +388,14 @@ void main() {
   </div>
 </body></html>''';
 
-      final (toList, ccList) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, ccList, bccList) = MessagesService.parseReplyAllRecipients(
+        html,
+      );
 
       expect(toList, hasLength(1));
       expect(toList.single.userId, 501);
       expect(ccList, isEmpty);
+      expect(bccList, isEmpty);
     });
 
     test('parseReplyAllRecipients defaults missing userltatt to zero', () {
@@ -396,7 +406,7 @@ void main() {
   </div>
 </body></html>''';
 
-      final (toList, _) = MessagesService.parseReplyAllRecipients(html);
+      final (toList, _, _) = MessagesService.parseReplyAllRecipients(html);
 
       expect(toList.single.userLt, 0);
     });
@@ -410,9 +420,8 @@ void main() {
       () {
         final html = _readFixture('get/composemessage/sent-reply-all.html');
 
-        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
-          html,
-        );
+        final (toList, ccList, bccList) =
+            MessagesService.parseSentMessageRecipients(html);
 
         // Sender (userId 146) must not appear in either list.
         expect(toList.map((u) => u.userId), isNot(contains(146)));
@@ -431,6 +440,8 @@ void main() {
         expect(ccList[0].userId, 301);
         expect(ccList[0].displayName, 'Carol White');
         expect(ccList[0].userLt, 1);
+
+        expect(bccList, isEmpty);
       },
     );
 
@@ -456,24 +467,29 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
   </div>
 </body></html>''';
 
-        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
-          html,
-        );
+        final (toList, ccList, bccList) =
+            MessagesService.parseSentMessageRecipients(html);
 
         expect(toList, hasLength(1));
         expect(toList.single.userId, 201);
         expect(ccList, hasLength(1));
         expect(ccList.single.userId, 301);
+        expect(bccList, isEmpty);
       },
     );
 
     test('parseSentMessageRecipients returns empty lists for empty HTML', () {
-      final (toList, ccList) = MessagesService.parseSentMessageRecipients(
+      final (
+        toList,
+        ccList,
+        bccList,
+      ) = MessagesService.parseSentMessageRecipients(
         '<html><body></body></html>',
       );
 
       expect(toList, isEmpty);
       expect(ccList, isEmpty);
+      expect(bccList, isEmpty);
     });
 
     test('parseSentMessageRecipients returns all recipients unfiltered when '
@@ -490,10 +506,12 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
   </div>
 </body></html>''';
 
-      final (toList, ccList) = MessagesService.parseSentMessageRecipients(html);
+      final (toList, ccList, bccList) =
+          MessagesService.parseSentMessageRecipients(html);
 
       expect(toList, hasLength(2));
       expect(ccList, isEmpty);
+      expect(bccList, isEmpty);
     });
 
     test(
@@ -516,12 +534,12 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
   </div>
 </body></html>''';
 
-        final (toList, ccList) = MessagesService.parseSentMessageRecipients(
-          html,
-        );
+        final (toList, ccList, bccList) =
+            MessagesService.parseSentMessageRecipients(html);
 
         expect(toList, isEmpty);
         expect(ccList, isEmpty);
+        expect(bccList, isEmpty);
       },
     );
   });

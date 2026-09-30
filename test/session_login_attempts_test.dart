@@ -16,6 +16,13 @@
 // The count is now cleared only by an answer to a request that Smartschool
 // did not refuse, and reaching the limit is a `SmartschoolSessionExpiredError`.
 //
+// Issue #32: a client that reached the limit stayed stuck until a new
+// `SmartschoolClient` was made, since only an answer Smartschool accepts
+// cleared the count, and none can arrive without a login. It now tries one
+// login again once a cooldown has passed (unless Smartschool rejected the
+// credentials at the last login), and `resetLoginAttempts()` lets it log in
+// again at once. Those tests move a fake clock instead of waiting.
+//
 // Like the fakes in the other session tests, the fake Smartschool below keeps
 // the session state itself and ignores the cookies the client sends. It does
 // not accept the session after a login unless a test says so: the login goes
@@ -63,14 +70,21 @@ const _password = 'POST /login';
 /// bare `401`, and a POST without `X-Requested-With` gets a `302` to `/login`
 /// that the HTTP client does not follow.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool({this.twoFactor = true, this.passwordAccepted = true});
+  _Smartschool({
+    this.twoFactor = true,
+    this.passwordAccepted = true,
+    this.twoFactorAccepted = true,
+  });
 
   /// Whether an accepted password leads to the 2FA step, or straight home.
   final bool twoFactor;
 
   /// Whether the login POST is answered with a redirect home or back to
   /// `/login`.
-  final bool passwordAccepted;
+  bool passwordAccepted;
+
+  /// Whether the 2FA code is accepted.
+  final bool twoFactorAccepted;
 
   /// Whether Smartschool accepts the session for a request right now.
   bool acceptsSession = false;
@@ -108,6 +122,12 @@ class _Smartschool implements HttpClientAdapter {
       );
     }
     if (path == '/2fa/api/v1/google-authenticator') {
+      if (!twoFactorAccepted) {
+        return _response(
+          '{"success":false,"error":"Ongeldige code"}',
+          contentType: Headers.jsonContentType,
+        );
+      }
       acceptsSession = acceptsSessionAfterLogin;
       return _response(
         '{"success":true,"redirectTo":"/"}',
@@ -192,16 +212,37 @@ final Matcher _limitReached = isA<SmartschoolSessionExpiredError>().having(
   allOf(contains('did not log in again'), contains('3 logins in a row')),
 );
 
+/// The failure of a refused request once the limit is reached, when
+/// Smartschool rejected the credentials at the last login: no login, also
+/// after the cooldown (#32).
+final Matcher _credentialsRejected = allOf(
+  _limitReached,
+  isA<SmartschoolSessionExpiredError>().having(
+    (e) => e.message,
+    'message',
+    allOf(
+      contains('rejected the credentials'),
+      contains('resetLoginAttempts()'),
+    ),
+  ),
+);
+
 void main() {
   late Directory cacheDir;
   late SmartschoolClient client;
   late _Smartschool server;
 
-  Future<void> serve(_Smartschool smartschool) async {
+  Future<void> serve(
+    _Smartschool smartschool, {
+    DateTime Function() clock = DateTime.now,
+    Duration loginCooldown = SmartschoolClient.defaultLoginCooldown,
+  }) async {
     server = smartschool;
     client = await SmartschoolClient.create(
       _Credentials(),
       cacheDir: cacheDir.path,
+      clock: clock,
+      loginCooldown: loginCooldown,
     );
     client.dio.httpClientAdapter = server;
   }
@@ -349,6 +390,215 @@ void main() {
 
       await expectLater(client.postJson('/x'), throwsA(_retryRefused));
       expect(server.logins, 4);
+    });
+  });
+
+  group('a client that reached the limit logs in again after a cooldown '
+      '(#32)', () {
+    // The fake clock: it only moves when a test moves it.
+    late DateTime now;
+    DateTime clock() => now;
+
+    setUp(() => now = DateTime.utc(2026, 9, 30, 12));
+
+    /// Three logins in a row, each with its retry refused: the limit.
+    Future<void> reachLimit(Future<Object?> Function() send) async {
+      for (var i = 1; i <= 3; i++) {
+        await expectLater(send(), throwsA(_retryRefused), reason: '#$i');
+      }
+      expect(server.logins, 3);
+    }
+
+    for (final MapEntry(key: trigger, value: send) in triggers.entries) {
+      test('$trigger: one login once 5 minutes have passed since the last, '
+          'and after another 5 minutes when it fails', () async {
+        await serve(_Smartschool(), clock: clock);
+        await reachLimit(send);
+
+        now = now.add(const Duration(minutes: 5, microseconds: -1));
+        await expectLater(
+          send(),
+          throwsA(
+            allOf(
+              _limitReached,
+              isA<SmartschoolSessionExpiredError>().having(
+                (e) => e.message,
+                'message',
+                contains('again from 2026-09-30T12:05:00.000Z on'),
+              ),
+            ),
+          ),
+        );
+        expect(server.logins, 3);
+
+        // Before #32: no login, however long the client had waited.
+        now = now.add(const Duration(microseconds: 1));
+        await expectLater(send(), throwsA(_retryRefused));
+        expect(server.logins, 4);
+
+        // It failed: the next login waits another 5 minutes.
+        await expectLater(send(), throwsA(_limitReached));
+        now = now.add(const Duration(minutes: 4, seconds: 59));
+        await expectLater(send(), throwsA(_limitReached));
+        expect(server.logins, 4);
+
+        now = now.add(const Duration(seconds: 1));
+        await expectLater(send(), throwsA(_retryRefused));
+        expect(server.logins, 5);
+      });
+    }
+
+    test('a login after the cooldown that gets the session accepted clears '
+        'the count', () async {
+      await serve(_Smartschool(), clock: clock);
+      await reachLimit(() => client.getRaw('/x'));
+
+      now = now.add(SmartschoolClient.defaultLoginCooldown);
+      server.acceptsSessionAfterLogin = true;
+      expect(await client.getRaw('/x'), _home);
+      expect(server.logins, 4);
+
+      // Three logins in a row again, without waiting.
+      server
+        ..acceptsSession = false
+        ..acceptsSessionAfterLogin = false;
+      for (var i = 1; i <= 3; i++) {
+        await expectLater(client.getRaw('/x'), throwsA(_retryRefused));
+      }
+      await expectLater(client.getRaw('/x'), throwsA(_limitReached));
+      expect(server.logins, 7);
+    });
+
+    test(
+      'requests refused while that login runs do not start another one',
+      () async {
+        await serve(_Smartschool(), clock: clock);
+        await reachLimit(() => client.postFormRaw('/x', {}));
+
+        now = now.add(SmartschoolClient.defaultLoginCooldown);
+        final failures = await Future.wait([
+          for (var i = 0; i < 3; i++)
+            client
+                .postFormRaw('/x', {})
+                .then<Object?>((_) => null, onError: (Object e) => e),
+        ]);
+        expect(
+          failures,
+          unorderedMatches([_retryRefused, _limitReached, _limitReached]),
+        );
+        expect(server.logins, 4);
+      },
+    );
+
+    test('loginCooldown sets how long the client waits', () async {
+      await serve(
+        _Smartschool(),
+        clock: clock,
+        loginCooldown: const Duration(seconds: 30),
+      );
+      await reachLimit(() => client.postJson('/x'));
+
+      now = now.add(const Duration(seconds: 29));
+      await expectLater(client.postJson('/x'), throwsA(_limitReached));
+      expect(server.logins, 3);
+
+      now = now.add(const Duration(seconds: 1));
+      await expectLater(client.postJson('/x'), throwsA(_retryRefused));
+      expect(server.logins, 4);
+    });
+
+    test('a clock that was set back does not hold the client for the size '
+        'of the jump', () async {
+      await serve(_Smartschool(), clock: clock);
+      await reachLimit(() => client.getRaw('/x'));
+
+      now = now.subtract(const Duration(hours: 1));
+      await expectLater(client.getRaw('/x'), throwsA(_retryRefused));
+      expect(server.logins, 4);
+
+      // The cooldown runs from that login.
+      await expectLater(client.getRaw('/x'), throwsA(_limitReached));
+      expect(server.logins, 4);
+    });
+
+    final credentialFailures = <String, (_Smartschool Function(), Matcher)>{
+      'a rejected password': (
+        () => _Smartschool(passwordAccepted: false),
+        isA<SmartschoolInvalidCredentialsError>(),
+      ),
+      'a rejected 2FA code': (
+        () => _Smartschool(twoFactorAccepted: false),
+        isA<SmartschoolTwoFactorRejectedError>(),
+      ),
+    };
+    for (final MapEntry(key: failure, value: (smartschool, loginFailed))
+        in credentialFailures.entries) {
+      test('$failure: no login after the cooldown, until '
+          'resetLoginAttempts()', () async {
+        await serve(smartschool(), clock: clock);
+        for (var i = 1; i <= 3; i++) {
+          await expectLater(
+            client.postFormRaw('/x', {}),
+            throwsA(loginFailed),
+            reason: '#$i',
+          );
+        }
+        expect(server.logins, 3);
+
+        // Trying the same credentials every few minutes could get the
+        // account locked.
+        now = now.add(const Duration(days: 1));
+        await expectLater(
+          client.postFormRaw('/x', {}),
+          throwsA(_credentialsRejected),
+        );
+        expect(server.logins, 3);
+
+        client.resetLoginAttempts();
+        await expectLater(client.postFormRaw('/x', {}), throwsA(loginFailed));
+        expect(server.logins, 4);
+      });
+    }
+
+    test('a login after the cooldown whose password is rejected stops the '
+        'client until resetLoginAttempts()', () async {
+      await serve(_Smartschool(), clock: clock);
+      await reachLimit(() => client.getRaw('/x'));
+
+      // The password was changed in the meantime.
+      server.passwordAccepted = false;
+      now = now.add(SmartschoolClient.defaultLoginCooldown);
+      await expectLater(
+        client.getRaw('/x'),
+        throwsA(isA<SmartschoolInvalidCredentialsError>()),
+      );
+      expect(server.logins, 4);
+
+      now = now.add(const Duration(days: 1));
+      await expectLater(client.getRaw('/x'), throwsA(_credentialsRejected));
+      expect(server.logins, 4);
+
+      // The app got the new password.
+      server
+        ..passwordAccepted = true
+        ..acceptsSessionAfterLogin = true;
+      client.resetLoginAttempts();
+      expect(await client.getRaw('/x'), _home);
+      expect(server.logins, 5);
+    });
+
+    test('resetLoginAttempts() lets the client log in again at once, three '
+        'times in a row', () async {
+      await serve(_Smartschool(), clock: clock);
+      await reachLimit(() => client.postJson('/x'));
+      await expectLater(client.postJson('/x'), throwsA(_limitReached));
+
+      client.resetLoginAttempts();
+      for (var i = 1; i <= 3; i++) {
+        await expectLater(client.postJson('/x'), throwsA(_retryRefused));
+      }
+      await expectLater(client.postJson('/x'), throwsA(_limitReached));
+      expect(server.logins, 6);
     });
   });
 }

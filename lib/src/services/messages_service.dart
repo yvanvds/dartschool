@@ -15,6 +15,10 @@ import 'send_message_params.dart';
 
 const String _xpathMessage = './/data/message';
 
+/// The message a send replies to (see [MessagesService.sendReply]): its ID,
+/// its box, and whether the reply goes to all its recipients.
+typedef _Reply = ({int msgId, BoxType boxType, bool all});
+
 /// Provides access to the Smartschool messaging system.
 ///
 /// All Python message classes (`MessageHeaders`, `Message`, `Attachments`,
@@ -498,6 +502,11 @@ class MessagesService {
   /// programmatic reply-all), call [getReplyAllRecipients] instead of or in
   /// addition to this method.
   ///
+  /// For a message in the sent box ([BoxType.sent]), the recipients also
+  /// say whether each has read the message
+  /// ([FullMessage.toRecipients] and [MessageRecipient.hasRead]); see
+  /// [FullMessage.fromXml].
+  ///
   /// Returns `null` when [boxType] holds no message [msgId]: an unknown ID,
   /// or the ID of a message in another box. Smartschool answers such a
   /// request with a placeholder message (sender `Niet beschikbaar`, no read
@@ -531,7 +540,7 @@ class MessagesService {
       }
     }
 
-    return FullMessage.fromXml(xml);
+    return FullMessage.fromXml(xml, boxType: boxType);
   }
 
   /// Whether [xml], the `<message>` of a `show message` answer, is the
@@ -748,6 +757,34 @@ class MessagesService {
     return _searchUsers(query, uniqueUsc);
   }
 
+  /// Fetches the recipient of a plain reply to [msgId] with their platform
+  /// user ID: the sender of the message.
+  ///
+  /// This method loads the Smartschool reply compose page (`composeType=1`),
+  /// the form its Reply button opens, which pre-populates the To field with
+  /// the sender of the message, and extracts it via
+  /// [parseReplyAllRecipients]. The To list of [getReplyAllRecipients] holds
+  /// the sender too, but among the other To recipients, in no fixed place and
+  /// with nothing that says which entry it is (#24).
+  ///
+  /// Returns a record `(to, cc, bcc)` like [getReplyAllRecipients], one list
+  /// per field of the page, ready to be passed directly to [sendReply] (or
+  /// [sendMessage]): `to` holds the sender, and `cc` and `bcc` are empty.
+  ///
+  /// The page names the sender whoever it is, the authenticated user
+  /// included: for a message in the sent box ([BoxType.sent]) and for a
+  /// message the user sent to themselves, `to` holds the user. For a message
+  /// in the archive folder, pass [BoxType.inbox] (the default). When
+  /// [boxType] holds no message [msgId], Smartschool answers with a page
+  /// without a compose form, and all three lists are empty.
+  Future<
+    (List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)
+  >
+  getReplyRecipients(int msgId, {BoxType boxType = BoxType.inbox}) async {
+    final html = await _client.getRaw(_replyComposeUrl(msgId, boxType));
+    return parseReplyAllRecipients(html);
+  }
+
   /// Fetches all reply-all recipients for [msgId] with their platform user IDs.
   ///
   /// The XML `show message` endpoint only returns recipient display names.
@@ -756,31 +793,56 @@ class MessagesService {
   /// resolved `realuserid` and `ssID`, and extracts that data via
   /// [parseReplyAllRecipients].
   ///
-  /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
-  /// instances ready to be passed directly to [sendMessage].  The sender of
-  /// the original message is placed in the `to` list following Smartschool's
-  /// standard reply-all logic.  The authenticated user is excluded.
-  Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
+  /// Returns a record `(to, cc, bcc)` where each list contains
+  /// [MessageSearchUser] instances ready to be passed directly to
+  /// [sendReply] with `all: true` (or [sendMessage]), one list per field of
+  /// the page (see [parseReplyAllRecipients]).  The sender of the original
+  /// message is placed in the `to` list following Smartschool's standard
+  /// reply-all logic, among the other To recipients and not marked as the
+  /// sender; use [getReplyRecipients] for the sender alone (#24). The
+  /// authenticated user is excluded, except as the sender: for a message the
+  /// user sent to themselves, the page names the user in To.
+  ///
+  /// For a message in the sent box, the page also lists the authenticated
+  /// user, as the sender, in To, and the message's BCC recipients in BCC,
+  /// which are returned in `bcc` (#33); [getSentMessageRecipients] returns
+  /// that message's recipients. The reply-all page of a received message is
+  /// not expected to name BCC recipients, which its recipients do not see;
+  /// `bcc` is then empty.
+  Future<
+    (List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)
+  >
   getReplyAllRecipients(int msgId, {BoxType boxType = BoxType.inbox}) async {
     final html = await _client.getRaw(
-      _composeUrl(boxType: boxType, composeType: 2, msgId: '$msgId'),
+      _replyComposeUrl(msgId, boxType, all: true),
     );
     return parseReplyAllRecipients(html);
   }
 
   /// Parses the reply-all compose page HTML and extracts pre-populated
-  /// recipients with their numeric user IDs.
+  /// recipients with their numeric user IDs. The reply compose page
+  /// ([getReplyRecipients]) has the same recipient markup.
   ///
   /// Each recipient `<div class="receiverSpan">` carries `realuserid`,
-  /// `ssidatt`, `userltatt`, and `typeatt` attributes.  `typeatt=2` indicates
-  /// CC; everything else is treated as a To recipient.
+  /// `ssidatt`, `userltatt`, and `typeatt` attributes.  `typeatt` is the
+  /// field the recipient is in: the `droppedtype` of the field's container,
+  /// which is also the `type` [sendMessage] adds a recipient with
+  /// ([RecipientType]). `2` is CC and `3` is BCC; `4` and `5` are the CC and
+  /// BCC fields for co-accounts (`1` is their To field), read from the
+  /// page's layout (#33). Everything else, and an entry without `typeatt`,
+  /// is treated as a To recipient.
   ///
-  /// Returns `(toList, ccList)`.
-  static (List<MessageSearchUser>, List<MessageSearchUser>)
+  /// Returns `(toList, ccList, bccList)`.
+  static (
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+  )
   parseReplyAllRecipients(String htmlBody) {
     final doc = html_parser.parse(htmlBody);
     final to = <MessageSearchUser>[];
     final cc = <MessageSearchUser>[];
+    final bcc = <MessageSearchUser>[];
 
     for (final span in doc.querySelectorAll('div.receiverSpan')) {
       final userIdStr = span.attributes['realuserid'];
@@ -802,14 +864,17 @@ class MessagesService {
         userLt: int.tryParse(userLtStr) ?? 0,
       );
 
-      if (typeStr == '2') {
-        cc.add(user);
-      } else {
-        to.add(user);
+      switch (typeStr) {
+        case '2' || '4':
+          cc.add(user);
+        case '3' || '5':
+          bcc.add(user);
+        default:
+          to.add(user);
       }
     }
 
-    return (to, cc);
+    return (to, cc, bcc);
   }
 
   /// Returns the original recipients of a sent message identified by [msgId].
@@ -827,12 +892,17 @@ class MessagesService {
   /// only where its recipient names include them: a message the user sent
   /// to themselves returns the user (#27). See [parseSentMessageRecipients].
   ///
-  /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
-  /// instances ready to be passed directly to [sendMessage].
-  Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
+  /// Returns a record `(to, cc, bcc)` where each list contains
+  /// [MessageSearchUser] instances ready to be passed directly to
+  /// [sendMessage]: the recipients of the message's To, CC and BCC fields.
+  /// A reply-all built from `to` and `cc` does not reveal the BCC
+  /// recipients (#33).
+  Future<
+    (List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)
+  >
   getSentMessageRecipients(int msgId) async {
     final html = await _client.getRaw(
-      _composeUrl(boxType: BoxType.sent, composeType: 2, msgId: '$msgId'),
+      _replyComposeUrl(msgId, BoxType.sent, all: true),
     );
     final message = await getMessage(
       msgId,
@@ -846,69 +916,72 @@ class MessagesService {
   /// original recipients.
   ///
   /// The sent-folder reply-all compose page places the sender (the
-  /// authenticated user) alongside the original recipients in the To field.
+  /// authenticated user) alongside the original recipients in the To field;
+  /// the original CC and BCC recipients are in the CC and BCC fields.
   /// This method combines [parseComposeCurrentUserIds] to identify the sender
   /// and [parseReplyAllRecipients] to extract all pre-populated recipient
   /// spans, then removes any entry whose `userId` matches the sender.
   ///
-  /// The page has a single entry for the sender, also when they were a
-  /// recipient of the message too (a message sent to themselves, or with
-  /// themselves among the recipients), so the page alone cannot tell the
-  /// two apart. Pass the sent [message] (from [getMessage] with
-  /// `includeAllRecipients: true`) to keep the sender where its recipient
-  /// names list them: in the To list when [FullMessage.receivers] or
-  /// [FullMessage.bccReceivers] name them (BCC entries of the page are
-  /// returned in the To list as well), in the CC list when
-  /// [FullMessage.ccReceivers] do. A recipient name of a sent message starts
-  /// with a `+` or `-` marker, which is ignored; a name counts only as far
-  /// as no other entry of the page with that name accounts for it. Without
-  /// [message], the sender is always removed.
+  /// The page has a single entry for the sender, in the To field, also when
+  /// they were a recipient of the message too (a message sent to
+  /// themselves, or with themselves among the recipients, in any field), so
+  /// the page alone cannot tell the two apart. Pass the sent [message] (from
+  /// [getMessage] with `boxType: BoxType.sent` and
+  /// `includeAllRecipients: true`) to keep the sender where its recipients
+  /// list them: in the To list when [FullMessage.toRecipients] name them, in
+  /// the CC list when [FullMessage.ccRecipients] do, in the BCC list when
+  /// [FullMessage.bccRecipients] do. Their [MessageRecipient.name]s are
+  /// compared, without the read marker Smartschool puts before each name in
+  /// the sent box (#34); a name counts only as far as no other entry of the
+  /// page in that field with that name accounts for it. Without [message],
+  /// the sender is always removed.
   ///
-  /// Returns `(toList, ccList)`.
-  static (List<MessageSearchUser>, List<MessageSearchUser>)
+  /// Returns `(toList, ccList, bccList)`.
+  static (
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+  )
   parseSentMessageRecipients(String htmlBody, {FullMessage? message}) {
     final ids = parseComposeCurrentUserIds(htmlBody);
     final currentUserId = ids?.$1;
 
-    final (to, cc) = parseReplyAllRecipients(htmlBody);
+    final (to, cc, bcc) = parseReplyAllRecipients(htmlBody);
 
-    if (currentUserId == null) return (to, cc);
+    if (currentUserId == null) return (to, cc, bcc);
 
     bool isSender(MessageSearchUser u) => u.userId == currentUserId;
-    final sender = [...to, ...cc].where(isSender).firstOrNull;
+    final sender = [...to, ...cc, ...bcc].where(isSender).firstOrNull;
     final toOthers = to.where((u) => !isSender(u)).toList();
     final ccOthers = cc.where((u) => !isSender(u)).toList();
+    final bccOthers = bcc.where((u) => !isSender(u)).toList();
 
     if (sender != null && message != null) {
-      if (_namesSender(sender, [
-        ...message.receivers,
-        ...message.bccReceivers,
-      ], toOthers)) {
-        toOthers.add(sender);
-      }
-      if (_namesSender(sender, message.ccReceivers, ccOthers)) {
-        ccOthers.add(sender);
+      for (final (recipients, others) in [
+        (message.toRecipients, toOthers),
+        (message.ccRecipients, ccOthers),
+        (message.bccRecipients, bccOthers),
+      ]) {
+        if (_namesSender(sender, recipients, others)) others.add(sender);
       }
     }
 
-    return (toOthers, ccOthers);
+    return (toOthers, ccOthers, bccOthers);
   }
 
-  /// Whether [names], recipient names of a sent message, name [sender] more
+  /// Whether [recipients], recipients of a sent message, name [sender] more
   /// often than the entries [others] of the compose page with that name
   /// account for — so that a namesake of the sender among the recipients
   /// does not make the sender a recipient too.
   static bool _namesSender(
     MessageSearchUser sender,
-    List<String> names,
+    List<MessageRecipient> recipients,
     List<MessageSearchUser> others,
   ) {
     String normalise(String name) => name.trim().replaceAll(_spaces, ' ');
     final senderName = normalise(sender.displayName);
-    // Smartschool starts each recipient name of a sent message with `+` or
-    // `-` (which appears to mark whether the recipient has read it).
-    final named = names
-        .where((n) => normalise(n).replaceFirst(_readMarker, '') == senderName)
+    final named = recipients
+        .where((r) => normalise(r.name) == senderName)
         .length;
     final namesakes = others
         .where((u) => normalise(u.displayName) == senderName)
@@ -917,7 +990,6 @@ class MessagesService {
   }
 
   static final _spaces = RegExp(r'\s+');
-  static final _readMarker = RegExp(r'^[+-]\s*');
 
   /// Returns the logged-in user as a compose recipient candidate.
   ///
@@ -944,45 +1016,158 @@ class MessagesService {
 
   /// Sends a new message using the full Smartschool compose-form workflow.
   ///
+  /// A message sent with this method is not linked to another message, also
+  /// when it answers one; use [sendReply] to send a reply that Smartschool
+  /// links to the message it answers (#26).
+  ///
   /// This follows the exact multi-step flow observed in the browser:
   /// 1. Fetch the compose page and extract hidden form tokens
   ///    (`uniqueUsc`, `randomDir`, `encryptedSender`, …).
   /// 2. Register each recipient via `addUserToSelected` for every
   ///    to / cc / bcc slot.
-  /// 3. Optionally upload files from [attachmentPaths].
-  /// 4. POST the completed payload as `multipart/form-data`.
+  /// 3. Optionally upload files from [SendMessageParams.attachmentPaths].
+  /// 4. Submit the completed form as `multipart/form-data`: the request that
+  ///    sends the message.
   ///
   /// Obtain [MessageSearchUser] / [MessageSearchGroup] objects from
   /// [searchRecipientsForCompose], or build them directly when you already
   /// know the recipient's `userId`/`groupId` and `ssId`
   /// (e.g. from [SmartschoolClient.authenticatedUser]).
   ///
-  /// Throws [SmartschoolComposeError] if the compose form cannot be parsed or
-  /// the server rejects the submission.
-  /// Throws [SmartschoolAttachmentUploadError] if an attachment fails to upload.
-  Future<void> sendMessage(SendMessageParams params) async {
-    // Step 1: load a fresh compose form and extract all hidden token fields.
-    final hidden = await _loadComposeFields();
+  /// Returns normally only when Smartschool confirms that the message was
+  /// sent: it answers the submit with HTTP `200` and the page that closes the
+  /// compose window (`window.close()`).
+  ///
+  /// Throws [SmartschoolSendUnconfirmedError] when the message was submitted
+  /// but that confirmation did not come: another answer, or the connection
+  /// failed or timed out after the submit went out. The message may or may
+  /// not have been sent, so do not send it again without checking the sent
+  /// box (#25).
+  ///
+  /// Every other failure means the message was not sent, and calling
+  /// [sendMessage] again is safe:
+  /// - [SmartschoolComposeError] if the compose form cannot be used;
+  /// - [SmartschoolAttachmentUploadError] if an attachment fails to upload;
+  /// - [SmartschoolConnectionError] if Smartschool cannot be reached before
+  ///   the submit, and the [SmartschoolAuthenticationError] subtypes if a
+  ///   login fails;
+  /// - [SmartschoolSessionExpiredError] if Smartschool refuses the session
+  ///   for a step, the submit included, before handling it. The steps after
+  ///   loading the compose form carry its tokens, which belong to the session
+  ///   they were issued in, so they are not retried after logging in again
+  ///   (see [SmartschoolClient.postMultipartResponse]); a new call loads a
+  ///   new compose form, logging in first.
+  Future<void> sendMessage(SendMessageParams params) =>
+      _send(params, operation: 'sendMessage');
+
+  /// Sends a reply to message [msgId] in [boxType] that Smartschool links to
+  /// that message, as its Reply button does; with [all], as its Reply all
+  /// button does (#26).
+  ///
+  /// [sendMessage] submits the new-message form, so a reply sent with it is a
+  /// new message, linked to the one it answers by its subject only. This
+  /// method loads the reply form of the message instead (`composeType=1`, or
+  /// `composeType=2` with [all]), the form that [getReplyRecipients] (or
+  /// [getReplyAllRecipients]) reads. Unlike the new-message form, it carries
+  /// the ID of the message (`origMsgID`) and `composeAction` `2`, and
+  /// Smartschool's web client submits it to the URL it was loaded from; this
+  /// method submits it the same way, with the form's own hidden fields.
+  /// Everything else works as in [sendMessage]: the recipients are
+  /// registered with the form's `uniqueUsc`, the attachments uploaded to its
+  /// `randomDir`, and the outcome and each failure mean what they mean
+  /// there. In particular, a [SmartschoolSendUnconfirmedError] means that the
+  /// reply may have been sent: check the sent box before sending it again.
+  ///
+  /// [params] is the whole reply: its [SendMessageParams.subject] (see
+  /// [ensureReplySubject]) and [SendMessageParams.bodyHtml] are sent as they
+  /// are (the quote of the message that the form starts with is not added),
+  /// and it goes to the recipients of [params]. The reply form already
+  /// names recipients, which Smartschool registered with the form: the sender
+  /// of the message, or with [all] the recipients that
+  /// [getReplyAllRecipients] returns. Pass them in [params], in the field the
+  /// form has them in: the lists of [getReplyRecipients] (or
+  /// [getReplyAllRecipients] with [all]) as they are, with more recipients
+  /// if needed. A recipient that the form names is not registered again,
+  /// since the form has it registered already; the others are registered as
+  /// [sendMessage] registers them. The recipients the form names cannot be
+  /// taken off: when [params] leave one of them out of its field, this
+  /// method throws a [SmartschoolComposeError] before it registers any
+  /// recipient, and nothing is sent. Recipients are compared by
+  /// [MessageSearchUser.userId], [MessageSearchUser.ssId] and
+  /// [MessageSearchUser.userLt].
+  ///
+  /// It throws a [SmartschoolComposeError], and sends nothing, too when
+  /// Smartschool does not answer with the reply form of message [msgId], for
+  /// instance when [boxType] holds no such message. For a message in the
+  /// archive folder, pass [BoxType.inbox] (the default).
+  Future<void> sendReply(
+    int msgId,
+    SendMessageParams params, {
+    BoxType boxType = BoxType.inbox,
+    bool all = false,
+  }) => _send(
+    params,
+    operation: 'sendReply',
+    reply: (msgId: msgId, boxType: boxType, all: all),
+  );
+
+  /// Sends [params] as [sendMessage] does, or with [reply] as [sendReply]
+  /// does; [operation] names the method in error messages.
+  Future<void> _send(
+    SendMessageParams params, {
+    required String operation,
+    _Reply? reply,
+  }) async {
+    // Everything up to the submit only prepares the compose form: a failure
+    // there leaves nothing sent.
+
+    // Step 1: load a fresh compose form (the new-message form, or the reply
+    // form) and extract all hidden token fields.
+    final formUrl = reply == null
+        ? _composeUrl()
+        : _replyComposeUrl(reply.msgId, reply.boxType, all: reply.all);
+    final html = await _client.getRaw(formUrl);
+    final hidden = parseHiddenFields(html);
+
+    if (reply != null && hidden['origMsgID'] != '${reply.msgId}') {
+      throw SmartschoolComposeError(
+        '$operation: Smartschool did not answer with the reply form of '
+        'message ${reply.msgId} (box ${reply.boxType.value}); the box may not '
+        'hold that message. Nothing was sent.',
+      );
+    }
 
     final uniqueUsc = hidden['uniqueUsc'] ?? '';
     final randomDir = hidden['randomDir'] ?? '';
 
     if (uniqueUsc.isEmpty) {
-      throw const SmartschoolComposeError(
-        'sendMessage: could not extract uniqueUsc from the compose form. '
+      throw SmartschoolComposeError(
+        '$operation: could not extract uniqueUsc from the compose form. '
         'Check that the account has permission to send messages.',
       );
     }
 
-    // Step 2: register all recipients on the server-side form state.
-    for (final user in params.to) {
-      await _addUserToForm(user, RecipientType.to, uniqueUsc);
-    }
-    for (final user in params.cc) {
-      await _addUserToForm(user, RecipientType.cc, uniqueUsc);
-    }
-    for (final user in params.bcc) {
-      await _addUserToForm(user, RecipientType.bcc, uniqueUsc);
+    // Step 2: register all recipients on the server-side form state. The
+    // recipients a reply form names are registered with it already.
+    final (onFormTo, onFormCc, onFormBcc) = reply == null
+        ? const (
+            <MessageSearchUser>[],
+            <MessageSearchUser>[],
+            <MessageSearchUser>[],
+          )
+        : parseReplyAllRecipients(html);
+    final fields = [
+      (RecipientType.to, params.to, onFormTo),
+      (RecipientType.cc, params.cc, onFormCc),
+      (RecipientType.bcc, params.bcc, onFormBcc),
+    ];
+    if (reply != null) _checkReplyRecipientsKept(fields, reply, operation);
+    for (final (type, users, onForm) in fields) {
+      final registered = onForm.map(_recipientKey).toSet();
+      for (final user in users) {
+        if (registered.contains(_recipientKey(user))) continue;
+        await _addUserToForm(user, type, uniqueUsc);
+      }
     }
     for (final group in params.toGroups) {
       await _addGroupToForm(group, RecipientType.to, uniqueUsc);
@@ -996,8 +1181,8 @@ class MessagesService {
 
     // Step 3: upload attachments.
     if (params.attachmentPaths.isNotEmpty && randomDir.isEmpty) {
-      throw const SmartschoolComposeError(
-        'sendMessage: randomDir is missing from the compose form; '
+      throw SmartschoolComposeError(
+        '$operation: randomDir is missing from the compose form; '
         'cannot upload attachments.',
       );
     }
@@ -1006,17 +1191,19 @@ class MessagesService {
     }
 
     // Step 4: build multipart payload matching the observed browser request.
-    final url = _composeUrl();
+    // The form is submitted to the URL it was loaded from, whose query the
+    // payload repeats; a reply form's origMsgID and composeAction (2) are
+    // those of the message it answers.
     final payload = <String, dynamic>{
       'module': 'Messages',
       'file': 'composeMessage',
-      'boxType': BoxType.inbox.value,
-      'composeType': '0',
-      'msgID': 'undefined',
+      'boxType': (reply?.boxType ?? BoxType.inbox).value,
+      'composeType': reply == null ? '0' : (reply.all ? '2' : '1'),
+      'msgID': reply == null ? 'undefined' : '${reply.msgId}',
       'encryptedSender': hidden['encryptedSender'] ?? '',
       'send': 'send',
       'origMsgID': hidden['origMsgID'] ?? '0',
-      'composeAction': hidden['composeAction'] ?? '0',
+      'composeAction': hidden['composeAction'] ?? (reply == null ? '0' : '2'),
       'randomDir': randomDir,
       'uniqueUsc': uniqueUsc,
       'showTab': hidden['showTab'] ?? 'tab1Container',
@@ -1033,20 +1220,133 @@ class MessagesService {
       'bcc': '0',
     };
 
-    final formData = FormData.fromMap(payload);
-    final responseHtml = await _client.postMultipartRaw(url, formData);
+    await _submitComposeForm(formUrl, payload, operation: operation);
+  }
 
-    // The success response is an HTML window-close page.  An error page
-    // typically contains a JS `var error` assignment or an error element.
-    if (responseHtml.contains('var error') ||
-        responseHtml.contains('type=\'error\'') ||
-        responseHtml.contains('type="error"')) {
-      throw SmartschoolComposeError(
-        'sendMessage: server returned an error page. '
-        'Response preview: '
-        '${responseHtml.substring(0, responseHtml.length.clamp(0, 300))}',
+  /// Throws a [SmartschoolComposeError] when [fields], the recipients of
+  /// each field of [reply] with the recipients its reply form names in that
+  /// field, leave out a recipient that the form names: the form has it
+  /// registered, and taking it off is not supported, so the reply would go
+  /// to a recipient the caller did not ask for.
+  static void _checkReplyRecipientsKept(
+    List<(RecipientType, List<MessageSearchUser>, List<MessageSearchUser>)>
+    fields,
+    _Reply reply,
+    String operation,
+  ) {
+    final missing = <String>[];
+    for (final (type, users, onForm) in fields) {
+      final requested = users.map(_recipientKey).toSet();
+      for (final user in onForm) {
+        if (requested.contains(_recipientKey(user))) continue;
+        final field = switch (type) {
+          RecipientType.to => 'To',
+          RecipientType.cc => 'CC',
+          RecipientType.bcc => 'BCC',
+        };
+        missing.add('${user.displayName} (user ${user.userId}, $field)');
+      }
+    }
+    if (missing.isEmpty) return;
+    final form = reply.all ? 'reply-all form' : 'reply form';
+    final getter = reply.all ? 'getReplyAllRecipients' : 'getReplyRecipients';
+    throw SmartschoolComposeError(
+      '$operation: the $form of message ${reply.msgId} names '
+      '${missing.join(', ')}, which the params leave out of that field. A '
+      'recipient that the form names cannot be taken off: pass the '
+      'recipients of $getter in the params, in their field. Nothing was '
+      'sent.',
+    );
+  }
+
+  /// What identifies [user] as a recipient of the compose form.
+  static (int, int, int) _recipientKey(MessageSearchUser user) =>
+      (user.userId, user.ssId, user.userLt);
+
+  /// Submits the compose form to [url] with [payload]: the request that
+  /// sends the message.
+  ///
+  /// Returns normally only when Smartschool's answer confirms the send (see
+  /// [_confirmsSend]). Any other outcome after the submit went out is a
+  /// [SmartschoolSendUnconfirmedError], never retried: the message may have
+  /// been sent (#25). A session that Smartschool refuses for the submit is a
+  /// [SmartschoolSessionExpiredError]: refused before being handled, the
+  /// message was not sent, and the submit is not retried with the compose
+  /// state of the refused session. [operation] names the calling method in
+  /// error messages.
+  Future<void> _submitComposeForm(
+    String url,
+    Map<String, dynamic> payload, {
+    required String operation,
+  }) async {
+    final Response<String> response;
+    try {
+      response = await _client.postMultipartResponse(
+        url,
+        FormData.fromMap(payload),
+        retryAfterLogin: false,
+      );
+    } on SmartschoolSessionExpiredError {
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolSendUnconfirmedError(
+          '$operation: the message was submitted, but no answer from '
+          'Smartschool came in ($e). It may or may not have been sent: check '
+          'the sent box before sending it again.',
+          cause: e,
+        ),
+        stackTrace,
       );
     }
+
+    if (!_confirmsSend(response)) {
+      final status = response.statusCode;
+      throw SmartschoolSendUnconfirmedError(
+        "$operation: the message was submitted, but Smartschool's answer "
+        '(HTTP $status) does not confirm that it was sent. It may or may not '
+        'have been sent: check the sent box before sending it again. '
+        'Answer: ${_answerPreview(response.data ?? '')}',
+        statusCode: status,
+      );
+    }
+  }
+
+  /// Whether [response], Smartschool's answer to the compose form's submit,
+  /// confirms that the message was sent.
+  ///
+  /// Smartschool answers a sent message with HTTP `200` and a page whose
+  /// script closes the compose window (`checkOpenerActions(); window.close();`
+  /// in the recorded answer, `post/composemessage/on_send.html`; the
+  /// `window.close()` confirmed live, see #25). The compose form itself does
+  /// not close the window. A page that closes it but carries an error marker
+  /// (`var error`, `type='error'`, which the library has always read as an
+  /// error page) does not count: it could be an error popup that closes
+  /// itself.
+  static bool _confirmsSend(Response<String> response) {
+    if (response.statusCode != HttpStatus.ok) return false;
+    final body = response.data ?? '';
+    if (_sendErrorMarkers.any(body.contains)) return false;
+    return html_parser
+        .parse(body)
+        .querySelectorAll('script')
+        .any((script) => _windowClose.hasMatch(script.text));
+  }
+
+  static final _windowClose = RegExp(r'\bwindow\.close\s*\(\s*\)');
+  static const _sendErrorMarkers = [
+    'var error',
+    "type='error'",
+    'type="error"',
+  ];
+
+  /// The visible text of [html], shortened for an error message.
+  static String _answerPreview(String html) {
+    final text = (html_parser.parse(html).body?.text ?? html)
+        .replaceAll(_spaces, ' ')
+        .trim();
+    if (text.isEmpty) return '(no text)';
+    return text.length <= 200 ? text : '${text.substring(0, 200)}…';
   }
 
   // -------------------------------------------------------------------------
@@ -1060,6 +1360,22 @@ class MessagesService {
   }) =>
       '/?module=Messages&file=composeMessage'
       '&boxType=${boxType.value}&composeType=$composeType&msgID=$msgId';
+
+  /// The URL of the form Smartschool opens to reply to message [msgId] in
+  /// [boxType]: its plain reply form (`composeType=1`), or with [all] its
+  /// reply-all form (`composeType=2`).
+  ///
+  /// Unlike the new-message form, both carry the ID of the message in their
+  /// hidden `origMsgID` field (and in the unnamed `msgIDVal` input), with
+  /// `composeAction` `2` instead of `0`. Their `<form>` has an empty
+  /// `action`, so the page submits a reply to this URL (#24), and so does
+  /// [sendReply] (#26).
+  static String _replyComposeUrl(
+    int msgId,
+    BoxType boxType, {
+    bool all = false,
+  }) =>
+      _composeUrl(boxType: boxType, composeType: all ? 2 : 1, msgId: '$msgId');
 
   /// GETs the compose page and returns all hidden `<input>` field values.
   Future<Map<String, String>> _loadComposeFields() async {
@@ -1208,6 +1524,10 @@ class MessagesService {
   }
 
   /// Registers a single user recipient on the server-side compose form state.
+  ///
+  /// Like every step of [sendMessage] after loading the compose form, it is
+  /// not retried after logging in again: `uniqueUsc` belongs to the session
+  /// the form was loaded in (#25).
   Future<void> _addUserToForm(
     MessageSearchUser user,
     RecipientType recipientType,
@@ -1223,9 +1543,11 @@ class MessagesService {
       'userlt': '${user.userLt}',
       'uniqueUsc': uniqueUsc,
     },
+    retryAfterLogin: false,
   );
 
-  /// Registers a single group recipient on the server-side compose form state.
+  /// Registers a single group recipient on the server-side compose form state
+  /// (not retried after logging in again, see [_addUserToForm]).
   Future<void> _addGroupToForm(
     MessageSearchGroup group,
     RecipientType recipientType,
@@ -1241,11 +1563,14 @@ class MessagesService {
       'userlt': '0',
       'uniqueUsc': uniqueUsc,
     },
+    retryAfterLogin: false,
   );
 
   /// Uploads a single attachment file to `/Upload/Upload/Index`.
   ///
-  /// [uploadDir] should be the `randomDir` token from the compose form.
+  /// [uploadDir] should be the `randomDir` token from the compose form. It
+  /// belongs to the session the form was loaded in, so the upload is not
+  /// retried after logging in again (#25).
   Future<void> _uploadAttachment(String filePath, String uploadDir) async {
     final file = File(filePath);
     if (!file.existsSync()) {
@@ -1270,6 +1595,7 @@ class MessagesService {
     final response = await _client.postMultipartRaw(
       '/Upload/Upload/Index',
       formData,
+      retryAfterLogin: false,
     );
 
     final result = response.trim().toLowerCase();

@@ -140,8 +140,19 @@ class SmartschoolAccountVerificationRejectedError
 /// again: after three logins in a row that did not get the session accepted
 /// (the login failed, or the retry was refused), a request that Smartschool
 /// refuses fails at once, whichever way it was refused. The client logs in
-/// again after an answer that Smartschool accepts; a new `SmartschoolClient`
-/// starts counting afresh.
+/// again after an answer that Smartschool accepts, and tries one login again
+/// once the `loginCooldown` of `SmartschoolClient.create` (5 minutes by
+/// default) has passed since the last one (#32) — unless Smartschool rejected
+/// the credentials at that login. `SmartschoolClient.resetLoginAttempts()`
+/// lets it log in again at once; a new `SmartschoolClient` starts counting
+/// afresh.
+///
+/// Also thrown, without logging in again and without a retry, for a request
+/// that must not be retried in a new session because it carries state of the
+/// session that was refused (`retryAfterLogin: false` on the request methods
+/// of `SmartschoolClient`). `MessagesService.sendMessage` sends every step
+/// after loading the compose form that way (#25): the message was not sent,
+/// and calling `sendMessage` again logs in and starts from a new compose form.
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
@@ -198,10 +209,62 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
   const SmartschoolAttachmentUploadError(super.message);
 }
 
-/// Thrown when the message compose flow fails (e.g. hidden fields missing,
-/// recipient add rejected, or the final send returns an unexpected response).
+/// Thrown when Smartschool's message compose form cannot be used: its hidden
+/// fields (`uniqueUsc`, `randomDir`) or the IDs of the current user are
+/// missing from it. `MessagesService.sendReply` also throws it when
+/// Smartschool does not answer with the reply form of the message, or when
+/// the reply would go to a recipient that the reply form names and the
+/// params leave out (#26).
+///
+/// `MessagesService.sendMessage` and `sendReply` throw it before the message
+/// is submitted, so nothing was sent. A submitted message that Smartschool
+/// does not confirm as sent is a [SmartschoolSendUnconfirmedError] instead
+/// (#25).
 class SmartschoolComposeError extends SmartschoolException {
   const SmartschoolComposeError(super.message);
+}
+
+/// Thrown by `MessagesService.sendMessage` (and `sendReply`, #26) when the
+/// message was submitted, but Smartschool's answer does not confirm that it
+/// was sent (#25).
+///
+/// **The message may or may not have been sent.** Do not send it again
+/// blindly: check the sent box first (e.g. `getHeaders(boxType:
+/// BoxType.sent)`), or tell the user to.
+///
+/// Smartschool confirms a sent message by answering the submit with HTTP
+/// `200` and a page that closes the compose window (`window.close()`). This
+/// error is thrown when:
+///
+/// - the answer is anything else: another status (in [statusCode]), or a
+///   page without `window.close()` or with an error marker;
+/// - the submit failed after it went out, before an answer came in: the
+///   connection dropped or timed out ([cause] holds the failure, typically a
+///   [SmartschoolConnectionError]).
+///
+/// Every other failure of `sendMessage` means the message was not sent, and
+/// it is safe to call `sendMessage` again: a failure before the submit (such
+/// as a [SmartschoolComposeError], a [SmartschoolAttachmentUploadError], a
+/// [SmartschoolConnectionError] or a login failure), or Smartschool refusing
+/// the session for a step of the send, the submit included, before handling
+/// it ([SmartschoolSessionExpiredError]).
+///
+/// Deliberately not a [SmartschoolComposeError], so a `catch` meant for the
+/// failures that are safe to retry does not catch it.
+class SmartschoolSendUnconfirmedError extends SmartschoolException {
+  /// The HTTP status of Smartschool's answer to the submit, or `null` when no
+  /// answer came in (see [cause]).
+  final int? statusCode;
+
+  /// The failure of the submit when no answer came in, typically a
+  /// [SmartschoolConnectionError]; `null` when Smartschool answered.
+  final Object? cause;
+
+  const SmartschoolSendUnconfirmedError(
+    super.message, {
+    this.statusCode,
+    this.cause,
+  });
 }
 
 /// Thrown when a Presence (attendance) operation fails.

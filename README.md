@@ -11,7 +11,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 ## Features
 
 - Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
-- Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, archive, trash, labels, reply-all recipient resolution.
+- Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, replies linked to the original message, archive, trash, labels, reply-all recipient resolution.
 - **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
@@ -55,7 +55,8 @@ Future<void> main() async {
 	// 3. Use a service.
 	final messages = MessagesService(client);
 
-	// List the 20 most-recent inbox headers.
+	// List the newest inbox headers: one page, at most 50 (getAllHeaders
+	// pages through the rest).
 	final headers = await messages.getHeaders();
 	for (final msg in headers) {
 		print('${msg.date}  ${msg.sender}: ${msg.subject}');
@@ -75,9 +76,11 @@ Future<void> main() async {
 	// Send a message to yourself.
 	final myself = await messages.getCurrentUserAsRecipient();
 	await messages.sendMessage(
-		to: [myself],
-		subject: 'Hello from flutter_smartschool',
-		bodyHtml: '<p>It works!</p>',
+		SendMessageParams(
+			to: [myself],
+			subject: 'Hello from flutter_smartschool',
+			bodyHtml: '<p>It works!</p>',
+		),
 	);
 }
 ```
@@ -130,21 +133,29 @@ await client.ensureAuthenticated();
 
 | Method / getter | Description |
 |---|---|
-| `SmartschoolClient.create(credentials)` | Factory — creates the Dio client, configures cookie jar, returns ready instance |
+| `SmartschoolClient.create(credentials, {cacheDir, loginCooldown, clock})` | Factory — creates the Dio client, configures cookie jar, returns ready instance. `loginCooldown` (default 5 minutes) and `clock` (default `DateTime.now`): see *Logging in again* below |
 | `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly. Throws a `SmartschoolAuthenticationError` subtype when the login fails, a `SmartschoolConnectionError` when Smartschool is unreachable |
 | `clearCookies()` | Deletes persisted cookies (use this for explicit logout/session reset). |
+| `resetLoginAttempts()` | Lets a client that stopped logging in on its own log in again at once (see *Logging in again* below) |
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
-| `postFormRaw(path, fields)` | `application/x-www-form-urlencoded` POST → `String` |
-| `postFormResponse(path, fields)` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
+| `postFormRaw(path, fields, {query, retryAfterLogin})` | `application/x-www-form-urlencoded` POST → `String` |
+| `postFormResponse(path, fields, {query, retryAfterLogin})` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
-| `postMultipartRaw(path, formData)` | `multipart/form-data` POST → `String` |
+| `postMultipartRaw(path, formData, {retryAfterLogin})` | `multipart/form-data` POST → `String` |
+| `postMultipartResponse(path, formData, {retryAfterLogin})` | Same POST → the whole `Response<String>` |
 | `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
 | `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false` if the stream is already closed |
 | `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
 | `dispose({force})` | Closes the notification stream and the underlying Dio client |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
+
+### Logging in again
+
+When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
+
+Pass `retryAfterLogin: false` to `postFormRaw`, `postFormResponse`, `postMultipartRaw` or `postMultipartResponse` for a request that carries state of the session it was prepared in, such as the tokens of Smartschool's compose form: a retry would send that state in a session it does not belong to. When Smartschool refuses the session for such a request, it is neither retried nor used to log in again: it throws `SmartschoolSessionExpiredError` at once, and the next refused request logs in. `MessagesService.sendMessage` sends its steps after loading the compose form this way.
 
 ---
 
@@ -167,9 +178,10 @@ final messages = MessagesService(client);
 | `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. |
 | `getAllArchiveHeaders({boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | `getAllHeaders` for the archive folder. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
-| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
-| `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To and CC recipients with their numeric user IDs by parsing the reply-all compose page. Use this when you need IDs for a subsequent `sendMessage` reply-all. |
-| `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients, once, whether or not they were a recipient too; this method also fetches the message (`getMessage` with all recipients) and keeps the authenticated user only where its recipient names include them, so a message sent to yourself returns you. BCC recipients are returned in the To list (#33). Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
+| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. For a message in the sent box, `toRecipients`/`ccRecipients`/`bccRecipients` also say whether each recipient has read it. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
+| `getReplyRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the recipient of a plain reply, the sender of the message, with their numeric user ID by parsing Smartschool's reply compose page (`composeType=1`), as `(to, cc, bcc)`: the sender in `to`, `cc` and `bcc` empty. Pass the lists to `sendReply` to send the reply; the To list of `getReplyAllRecipients` holds the sender too, but among the other recipients, unmarked. For a message in the sent box, or one you sent to yourself, the sender is you. |
+| `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To, CC and BCC recipients with their numeric user IDs by parsing the reply-all compose page, as `(to, cc, bcc)`. Pass the lists to `sendReply(…, all: true)` to send the reply to all. The page of a received message is not expected to name BCC recipients. |
+| `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients, once, whether or not they were a recipient too; this method also fetches the message (`getMessage` with all recipients) and keeps the authenticated user only where its recipient names include them, so a message sent to yourself returns you. Returns `(to, cc, bcc)`: the BCC recipients are in `bcc`, so a reply-all built from `to` and `cc` does not reveal them (#33). Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
 
 Smartschool keeps the paging position in the session, one per box, and restarts it whenever that box is listed again (`getHeaders`, also in poll mode, or another paging of the same box), which ends a paging of that box early. Paging different boxes at once is fine.
@@ -214,7 +226,67 @@ for (final attachment in attachments) {
 | `getCurrentUserAsRecipient()` | `Future<MessageSearchUser>` | Returns the currently-logged-in user as a compose recipient (reads IDs from compose page JS — safe and reliable). |
 | `searchRecipients(query)` | `Future<List<MessageSearchResult>>` | JSON-based recipient search; results lack `ssId` — use `searchRecipientsForCompose` when sending. |
 | `searchRecipientsForCompose(query)` | `Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>` | Compose-form XML search; results carry `ssId`/`userLt` required by `sendMessage`. |
-| `sendMessage({to, cc, bcc, toGroups, ..., subject, bodyHtml, attachmentPaths})` | `Future<void>` | Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. |
+| `sendMessage(params)` | `Future<void>` | Sends `params` (a `SendMessageParams`, see below) as a new message. Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. Returns normally only when Smartschool confirms the send; see below for what a failure means. |
+| `sendReply(msgId, params, {boxType, all})` | `Future<void>` | Sends `params` (a `SendMessageParams`) as a reply that Smartschool links to message `msgId`: the same steps as `sendMessage`, on the message's reply form (`composeType=1`, or the reply-all form with `all: true`), submitted with its `origMsgID` and `composeAction`. The recipients the form names are not registered again, and must be in `params`; see below. |
+
+`sendMessage` and `sendReply` take the message as a `SendMessageParams`:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `to` | `List<MessageSearchUser>` | required | To recipients. |
+| `cc`, `bcc` | `List<MessageSearchUser>` | `[]` | CC and BCC recipients. |
+| `toGroups`, `ccGroups`, `bccGroups` | `List<MessageSearchGroup>` | `[]` | Groups as To, CC and BCC recipients. |
+| `subject` | `String` | required | The subject. |
+| `bodyHtml` | `String` | required | The body, as HTML. |
+| `attachmentPaths` | `List<String>` | `[]` | Paths of local files to attach; each is uploaded before the submit. |
+| `options` | `MessageSendOptions` | `MessageSendOptions()` | `requestReadReceipt`, `highPriority` (both `false`) and `extra`. Not sent to Smartschool yet, so they have no effect (#43). |
+
+Get the recipients from `searchRecipientsForCompose`, `getCurrentUserAsRecipient`, or for a reply from `getReplyRecipients` / `getReplyAllRecipients`:
+
+```dart
+final (users, _) = await messages.searchRecipientsForCompose('Janssens');
+final myself = await messages.getCurrentUserAsRecipient();
+final params = SendMessageParams(
+  to: [users.first],
+  bcc: [myself],
+  subject: 'Report',
+  bodyHtml: '<p>See the attachment.</p>',
+  attachmentPaths: ['report.pdf'],
+);
+await messages.sendMessage(params);
+```
+
+`sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
+
+```dart
+try {
+  await messages.sendMessage(params);
+} on SmartschoolSendUnconfirmedError {
+  // Submitted, not confirmed: it may have been sent. Check the sent box
+  // before sending it again.
+} on SmartschoolException {
+  // Not sent: the compose form, a recipient, an attachment, the network or
+  // the session failed before the message was sent. Safe to try again.
+}
+```
+
+The steps after loading the compose form carry its tokens, which belong to the session it was loaded in, so they are not retried after logging in again: when Smartschool refuses the session for one of them (the submit included), `sendMessage` throws `SmartschoolSessionExpiredError` and nothing was sent. Calling it again loads a new compose form, logging in first.
+
+A message sent with `sendMessage` is a new message, also when it answers another one. `sendReply` sends a reply that Smartschool links to the message it answers, as its Reply (and Reply all) button does: it loads the message's reply form instead of the new-message form. That form already names the recipients of the reply (the sender, or with `all: true` everyone `getReplyAllRecipients` returns), which cannot be taken off: pass them in `params`, in their field, with more recipients if needed. They are not registered a second time; when `params` leave one of them out, `sendReply` throws `SmartschoolComposeError` and sends nothing. The subject and body are sent as given (the form's quote of the message is not added). Outcomes and failures are those of `sendMessage` above.
+
+```dart
+final (to, cc, bcc) = await messages.getReplyRecipients(original.id);
+await messages.sendReply(
+  original.id,
+  SendMessageParams(
+    to: to,
+    cc: cc,
+    bcc: bcc,
+    subject: MessagesService.ensureReplySubject(original.subject),
+    bodyHtml: '<p>Thanks!</p>',
+  ),
+);
+```
 
 ### Thread subject helpers
 
@@ -304,8 +376,8 @@ See [example/message_change_stream_example.dart](example/message_change_stream_e
 | `parseHiddenFields(htmlBody)` | Extracts all `<input type="hidden">` name→value pairs from an HTML page. |
 | `parseComposeCurrentUserIds(htmlBody)` | Extracts `(userId, ssId, userLt)` from the `window.tinymceInitConfig` block. |
 | `parseArchiveBoxIdFromMessagesHtml(htmlBody)` | Extracts the archive folder box ID from the Messages module HTML. |
-| `parseReplyAllRecipients(htmlBody)` | Extracts To and CC recipients with numeric IDs from a reply-all compose page (parses `div.receiverSpan` elements). Returns `(toList, ccList)`. |
-| `parseSentMessageRecipients(htmlBody, {message})` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result, unless the sent `message` (a `FullMessage`) names them among its recipients. Returns `(toList, ccList)`. |
+| `parseReplyAllRecipients(htmlBody)` | Extracts To, CC and BCC recipients with numeric IDs from a reply-all or reply compose page (parses `div.receiverSpan` elements; their `typeatt` is the field: `0`/`1` To, `2`/`4` CC, `3`/`5` BCC, the second of each for co-accounts). Returns `(toList, ccList, bccList)`. |
+| `parseSentMessageRecipients(htmlBody, {message})` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result, unless the sent `message` (a `FullMessage`) names them among its recipients (in the field that names them). Returns `(toList, ccList, bccList)`. |
 
 ---
 
@@ -439,10 +511,13 @@ dart run example/set_late_example.dart
 ## Models
 
 ### `ShortMessage`
-Returned by `getHeaders` / `getArchiveHeaders`. Fields: `id`, `sender`, `subject`, `date`, `unread`, `deleted`, `attachment`, `coloredFlag`, `allowReply`, `realBox`, …
+Returned by `getHeaders` / `getArchiveHeaders`, `getHeaderPages` / `getArchiveHeaderPages` (page by page) and `getAllHeaders` / `getAllArchiveHeaders`. Fields: `id`, `sender`, `subject`, `date`, `unread`, `deleted`, `attachment`, `coloredFlag`, `allowReply`, `realBox`, …
 
 ### `FullMessage`
-Returned by `getMessage`. Adds: `body` (HTML), `receivers`, `ccReceivers`, `bccReceivers`, `canReply`, `senderPicture`, `totalNrOtherToReceivers`, `totalNrOtherCcReceivers`, `totalNrOtherBccReceivers` (count of recipients hidden behind a "show more" link when `includeAllRecipients` is `false`), …
+Returned by `getMessage`. Adds: `body` (HTML), `receivers`, `ccReceivers`, `bccReceivers` (recipient names), `toRecipients`, `ccRecipients`, `bccRecipients` (the same recipients as `MessageRecipient`s), `canReply`, `senderPicture`, `totalNrOtherToReceivers`, `totalNrOtherCcReceivers`, `totalNrOtherBccReceivers` (count of recipients hidden behind a "show more" link when `includeAllRecipients` is `false`), …
+
+### `MessageRecipient`
+A recipient in `FullMessage.toRecipients` / `ccRecipients` / `bccRecipients`. Fields: `name`, `hasRead` (`bool?`). For a message in the sent box, Smartschool starts each recipient name with `+` (the recipient's copy is read) or `-` (unread); `getMessage` removes the marker from the name and sets `hasRead` from it. In every other box `hasRead` is `null`.
 
 ### `MessageAttachment`
 Returned by `getAttachments`. Fields: `fileId`, `name`, `mime`, `size`, `icon`, `wopiAllowed`, `order`.
@@ -450,7 +525,7 @@ Returned by `getAttachments`. Fields: `fileId`, `name`, `mime`, `size`, `icon`, 
 Use `attachment.download(client)` to fetch raw bytes for a specific attachment.
 
 ### `MessageSearchUser` / `MessageSearchGroup`
-Used as recipients in `sendMessage`. Key fields: `userId`/`groupId`, `ssId`, `userLt`, `displayName`.
+Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompose`; users also by `getCurrentUserAsRecipient`, `getReplyRecipients`, `getReplyAllRecipients` and `getSentMessageRecipients`. Key fields: `userId`/`groupId`, `ssId`, `userLt` (users only), `displayName`.
 
 ### `SmartschoolUser`
 Returned by `SmartschoolClient.getCurrentUser()`. Fields: `id` (int — server-assigned numeric user ID), `displayName` (String), `avatarUrl` (String? — profile picture URL).
@@ -530,9 +605,10 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
-| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`). Sign in again and retry |
+| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`), or a request sent with `retryAfterLogin: false` (such as a step of `sendMessage`) is refused. The request was not carried out: sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
-| `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
+| `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or when `params` leave out a recipient that the reply form names |
+| `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 

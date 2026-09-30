@@ -139,7 +139,8 @@ String _sentXml({
       '<sendDate /></message></data></action></actions></response></server>';
 }
 
-/// The sent message of [_sentXml], parsed as `getMessage` parses it.
+/// The sent message of [_sentXml], parsed as `getMessage` parses it for the
+/// sent box.
 FullMessage _sent({
   List<String> to = const [],
   List<String> cc = const [],
@@ -155,7 +156,7 @@ FullMessage _sent({
     final v = xml[field];
     if (v == null || (v is String && v.trim().isEmpty)) xml[field] = null;
   }
-  return FullMessage.fromXml(xml);
+  return FullMessage.fromXml(xml, boxType: BoxType.sent);
 }
 
 List<int> _ids(List<MessageSearchUser> users) =>
@@ -200,7 +201,7 @@ void main() {
         );
 
         // Before the fix: ([], []).
-        final (to, cc) = await MessagesService(
+        final (to, cc, bcc) = await MessagesService(
           client,
         ).getSentMessageRecipients(900001);
 
@@ -210,6 +211,7 @@ void main() {
         expect(to.single.ssId, 100);
         expect(to.single.userLt, 0);
         expect(cc, isEmpty);
+        expect(bcc, isEmpty);
 
         expect(
           server.composeRequests.single,
@@ -231,12 +233,13 @@ void main() {
         showMessage: _sentXml(to: ['+Piet Peeters']),
       );
 
-      final (to, cc) = await MessagesService(
+      final (to, cc, bcc) = await MessagesService(
         client,
       ).getSentMessageRecipients(900003);
 
       expect(_ids(to), [201]);
       expect(cc, isEmpty);
+      expect(bcc, isEmpty);
     });
   });
 
@@ -251,19 +254,21 @@ void main() {
         to: ['+Piet Peeters', '-Jan Janssens', '+An Claes'],
       );
 
-      final (to, cc) = MessagesService.parseSentMessageRecipients(
+      final (to, cc, bcc) = MessagesService.parseSentMessageRecipients(
         html,
         message: message,
       );
 
       expect(_ids(to), [201, 202, 777]);
       expect(cc, isEmpty);
+      expect(bcc, isEmpty);
     });
 
-    test('keeps the user who is one of the BCC recipients in the To list, '
+    test('keeps the user who is one of the BCC recipients in the BCC list, '
         'with the other BCC recipients', () {
       // Live shape: the page lists the user in To (typeatt 0) and the
-      // other BCC recipients with typeatt 3, which are returned in To.
+      // other BCC recipients in the BCC field (typeatt 3). Until #33 all
+      // of them were returned in To.
       final html = _composePage(
         _span(777, 'Jan Janssens') +
             _span(201, 'Piet Peeters', type: 3) +
@@ -273,13 +278,14 @@ void main() {
         bcc: ['+Jan Janssens', '+Piet Peeters', '-An Claes'],
       );
 
-      final (to, cc) = MessagesService.parseSentMessageRecipients(
+      final (to, cc, bcc) = MessagesService.parseSentMessageRecipients(
         html,
         message: message,
       );
 
-      expect(_ids(to), [201, 202, 777]);
+      expect(to, isEmpty);
       expect(cc, isEmpty);
+      expect(_ids(bcc), [201, 202, 777]);
     });
 
     test('puts the user who is a CC recipient in the CC list', () {
@@ -293,13 +299,14 @@ void main() {
         cc: ['+Els Maes', '+Jan Janssens'],
       );
 
-      final (to, cc) = MessagesService.parseSentMessageRecipients(
+      final (to, cc, bcc) = MessagesService.parseSentMessageRecipients(
         html,
         message: message,
       );
 
       expect(_ids(to), [201]);
       expect(_ids(cc), [301, 777]);
+      expect(bcc, isEmpty);
     });
 
     test('does not take a namesake of the user for the user', () {
@@ -308,16 +315,17 @@ void main() {
         _span(203, 'Jan Janssens') + _span(777, 'Jan Janssens'),
       );
 
-      final (to, cc) = MessagesService.parseSentMessageRecipients(
+      final (to, cc, bcc) = MessagesService.parseSentMessageRecipients(
         html,
         message: _sent(to: ['+Jan Janssens']),
       );
 
       expect(_ids(to), [203]);
       expect(cc, isEmpty);
+      expect(bcc, isEmpty);
 
       // Both are recipients: the name is there twice.
-      final (toBoth, _) = MessagesService.parseSentMessageRecipients(
+      final (toBoth, _, _) = MessagesService.parseSentMessageRecipients(
         html,
         message: _sent(to: ['+Jan Janssens', '-Jan Janssens']),
       );
@@ -329,7 +337,7 @@ void main() {
       final html = _composePage(_span(777, 'Jan Janssens'));
 
       for (final name in ['+Jan Janssens', '-Jan Janssens', 'Jan Janssens']) {
-        final (to, _) = MessagesService.parseSentMessageRecipients(
+        final (to, _, _) = MessagesService.parseSentMessageRecipients(
           html,
           message: _sent(to: [name]),
         );
@@ -342,13 +350,14 @@ void main() {
         _span(201, 'Piet Peeters') + _span(777, 'Jan Janssens'),
       );
 
-      final (to, cc) = MessagesService.parseSentMessageRecipients(
+      final (to, cc, bcc) = MessagesService.parseSentMessageRecipients(
         html,
         message: _sent(to: ['+Piet Peeters']),
       );
 
       expect(_ids(to), [201]);
       expect(cc, isEmpty);
+      expect(bcc, isEmpty);
     });
   });
 }

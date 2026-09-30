@@ -293,7 +293,11 @@ class MessagesService {
   /// programmatic reply-all), call [getReplyAllRecipients] instead of or in
   /// addition to this method.
   ///
-  /// Returns `null` if the server returns no message element for this ID.
+  /// Returns `null` when [boxType] holds no message [msgId]: an unknown ID,
+  /// or the ID of a message in another box. Smartschool answers such a
+  /// request with a placeholder message (sender `Niet beschikbaar`, no read
+  /// state, no date) rather than none; this method recognises it and does
+  /// not return it.
   Future<FullMessage?> getMessage(
     int msgId, {
     BoxType boxType = BoxType.inbox,
@@ -311,7 +315,7 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    if (entries.isEmpty) return null;
+    if (entries.isEmpty || _isPlaceholderMessage(entries.first)) return null;
 
     // Post-process receiver lists (mirrors Python's `_post_process_element`)
     final xml = Map<String, dynamic>.from(entries.first);
@@ -323,6 +327,26 @@ class MessagesService {
     }
 
     return FullMessage.fromXml(xml);
+  }
+
+  /// Whether [xml], the `<message>` of a `show message` answer, is the
+  /// placeholder Smartschool sends for a message ID the requested box does
+  /// not hold, instead of leaving the element out (#16).
+  ///
+  /// The placeholder echoes the requested ID and has made-up texts in the
+  /// platform's language (sender `Niet beschikbaar`, subject
+  /// `* Bericht zonder onderwerp *` in Dutch), which a real message can
+  /// have too: a draft without a subject shows that subject. What gives it
+  /// away is that no message record is behind it: its `<status>` (the read
+  /// state, `0` or `1` on every real message, in every box) is empty, and
+  /// its `<date>` is not a date (`wrong input format`). Both must hold.
+  static bool _isPlaceholderMessage(Map<String, dynamic> xml) {
+    final status = xml['status'];
+    final date = xml['date'];
+    final noStatus =
+        status == null || (status is String && status.trim().isEmpty);
+    final noDate = date is! String || DateTime.tryParse(date.trim()) == null;
+    return noStatus && noDate;
   }
 
   /// Returns the attachments on message [msgId] in [boxType].

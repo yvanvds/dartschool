@@ -831,6 +831,57 @@ void main() {
           everyElement('GET /?module=Messages&file=download&fileID=7&target=0'),
         );
       });
+
+      // #52: the doc said Smartschool sends an attachment Base64-encoded and
+      // that download decodes it; neither was so. Checked live on an
+      // attachment of a sent message: the answer is the file itself (a ZIP
+      // container, `PK\x03\x04`), with a Content-Length equal to the size in
+      // the attachment list and `application/x-www-form-urlencoded` as its
+      // Content-Type. Both calls hand over the bytes as they came in.
+      group('hand over the file as Smartschool sends it (#52)', () {
+        const attachment = MessageAttachment(
+          fileId: 7,
+          name: 'verslag.pdf',
+          mime: 'PDF-bestand',
+          size: '0.05 KiB',
+          icon: 'mime_pdf',
+          wopiAllowed: true,
+          order: 0,
+        );
+
+        /// An answer in the shape of Smartschool's, with [bytes] as the file.
+        ResponseBody attachmentAnswer(List<int> bytes) => _answer(
+          Stream.value(Uint8List.fromList(bytes)),
+          headers: {
+            'content-length': ['${bytes.length}'],
+            Headers.contentTypeHeader: [Headers.formUrlEncodedContentType],
+            'content-disposition': ['attachment; filename="verslag.pdf"'],
+          },
+        );
+
+        test('the bytes of a file', () async {
+          final pdf = ascii.encode(
+            '%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n',
+          );
+          await start(() => attachmentAnswer(pdf));
+
+          expect(await attachment.download(client), pdf);
+          expect(await attachment.download(client, maxBytes: pdf.length), pdf);
+          final download = await attachment.downloadStream(client);
+          expect(download.contentLength, pdf.length);
+          expect(await _read(download), pdf);
+        });
+
+        test('a file that reads as Base64 is not decoded', () async {
+          // A text file whose content happens to be valid Base64 (of
+          // "%PDF-1.4\n"): a decoding download would hand over the PDF.
+          final text = ascii.encode('JVBERi0xLjQK');
+          await start(() => attachmentAnswer(text));
+
+          expect(await attachment.download(client), text);
+          expect(await _read(await attachment.downloadStream(client)), text);
+        });
+      });
     });
   });
 

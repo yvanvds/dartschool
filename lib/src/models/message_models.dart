@@ -416,8 +416,10 @@ class MessageAttachment {
 
   /// Downloads and returns the raw bytes of this attachment.
   ///
-  /// The Smartschool server returns the file as Base64-encoded content —
-  /// this method decodes it automatically.
+  /// Smartschool sends the file itself, not encoded (no Base64; checked
+  /// live, #52): the bytes are returned as they come in and can be written
+  /// to a file as they are. [size] gives their number, rounded (such as
+  /// `3.87 KiB`).
   ///
   /// With [maxBytes], the download fails with a
   /// `SmartschoolDownloadTooLargeError` as soon as the attachment turns out
@@ -431,6 +433,11 @@ class MessageAttachment {
   /// returns as soon as the headers of Smartschool's answer are in, with the
   /// content to be read from its `stream` as it comes in (#41). See
   /// [SmartschoolClient.downloadStream], also for [maxBytes].
+  ///
+  /// The stream holds the same bytes as [download] returns: the file itself.
+  /// Its `contentType` does not tell the type of the file (Smartschool
+  /// answered `application/x-www-form-urlencoded` for an attachment checked
+  /// live, #52); the extension of [name] does.
   Future<SmartschoolDownload> downloadStream(
     SmartschoolClient client, {
     int? maxBytes,

@@ -20,19 +20,22 @@ void main() {
   forbidRealNetwork();
 
   group('SmartschoolClient', () {
-    test('dio getter returns Dio instance', () async {
-      final client = await SmartschoolClient.create(
-        DummyCredentials(),
-        cacheDir: tempCacheDir(),
-      );
-      expect(client.dio, isNotNull);
-    });
     test('notificationCounterUpdates is a broadcast stream', () async {
       final client = await SmartschoolClient.create(
         DummyCredentials(),
         cacheDir: tempCacheDir(),
       );
-      expect(client.notificationCounterUpdates, isA<Stream>());
+      addTearDown(client.dispose);
+      final updates = client.notificationCounterUpdates;
+      expect(updates.isBroadcast, isTrue);
+
+      // Two listeners at once: each gets the update.
+      final first = updates.first;
+      final second = updates.first;
+      client.emitNotificationCounterUpdate(moduleName: 'Messages', counter: 3);
+
+      expect((await first).counter, 3);
+      expect((await second).counter, 3);
     });
     test('create refuses a negative loginCooldown (#32)', () async {
       await expectLater(

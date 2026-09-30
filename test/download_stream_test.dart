@@ -1046,7 +1046,17 @@ void main() {
     });
 
     test('cancel() without an onCancel does nothing', () async {
-      await withHeaders({}).cancel();
+      final download = SmartschoolDownload(
+        stream: Stream.value([1, 2, 3]),
+        headers: Headers.fromMap({}),
+      );
+
+      await expectLater(download.cancel(), completes);
+
+      // The content is left alone: still there to be read, all of it.
+      expect(await download.stream.toList(), [
+        [1, 2, 3],
+      ]);
     });
   });
 

@@ -14,12 +14,6 @@ void main() {
   forbidRealNetwork();
 
   group('MessagesService', () {
-    test('can be instantiated', () {
-      // Use a minimal fake SmartschoolClient
-      final fakeClient = _FakeSmartschoolClient();
-      final service = MessagesService(fakeClient);
-      expect(service, isA<MessagesService>());
-    });
     test('handleNotificationCounterUpdate emits for messages', () async {
       final fakeClient = _FakeSmartschoolClient();
       final service = MessagesService(fakeClient);

@@ -883,11 +883,21 @@ class SmartschoolClient {
 /// retried again: it fails with a [SmartschoolSessionExpiredError] (#22), so
 /// the caller never gets a login page in place of the data.
 ///
+/// The client does not keep logging in when that does not help: after
+/// [_maxLoginAttempts] logins in a row that did not get Smartschool to accept
+/// the session (the login failed, or the retry was refused again), a refused
+/// request fails with a [SmartschoolSessionExpiredError] without logging in.
+/// Every way of refusing counts the same, and only an answer that Smartschool
+/// did not refuse, to a request or to its retry, clears the count (#31).
+///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
 /// `super().request()`.
 class _SmartschoolAuthInterceptor extends Interceptor {
   final SmartschoolClient _client;
+
+  /// The logins started since Smartschool last accepted the session for a
+  /// request, whatever way it refused the session (#31).
   int _loginAttempts = 0;
   static const _maxLoginAttempts = 3;
   static const _noAuthKey = '_smartschool_noAuth';
@@ -900,10 +910,13 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     Response<dynamic> response,
     ResponseInterceptorHandler handler,
   ) async {
-    // Do not intercept requests we marked as part of the auth flow, or retries
+    // Do not intercept requests we marked as part of the auth flow, or
+    // retries. Neither touches the login count: an answer of the login chain
+    // does not say whether Smartschool accepts the session for a request (a
+    // login without 2FA lands on `/`), and a retry is judged below, where it
+    // is made (#31).
     final extra = response.requestOptions.extra;
     if (extra[_noAuthKey] == true || extra[_retryKey] == true) {
-      _resetAttempts(response.realUri);
       handler.next(response);
       return;
     }
@@ -911,17 +924,21 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     final realUri = response.realUri;
     final loginChain = _loginChainTarget(response);
     if (loginChain == null && !_isUnauthorized(response)) {
-      _resetAttempts(realUri);
+      _loginAttempts = 0;
       handler.next(response);
       return;
     }
 
     if (_loginAttempts >= _maxLoginAttempts) {
+      final request =
+          '${response.requestOptions.method} ${response.requestOptions.uri}';
       handler.reject(
         DioException(
           requestOptions: response.requestOptions,
-          error: const SmartschoolAuthenticationError(
-            'Maximum login attempts reached',
+          error: SmartschoolSessionExpiredError(
+            'Smartschool did not accept the session for $request, and the '
+            'client did not log in again: its last $_maxLoginAttempts logins '
+            'in a row did not get the session accepted',
           ),
         ),
         true,
@@ -975,6 +992,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
           '(${stillOnLoginChain.path}) after logging in again',
         );
       }
+      _loginAttempts = 0;
       handler.resolve(retried);
     } on SmartschoolAuthenticationError catch (e) {
       handler.reject(
@@ -1069,12 +1087,6 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       throw SmartschoolAuthenticationError(
         'Authentication flow did not complete. Still on ${finalUri.path}',
       );
-    }
-  }
-
-  void _resetAttempts(Uri uri) {
-    if (_loginAttempts > 0 && !_client.isAuthUri(uri)) {
-      _loginAttempts = 0;
     }
   }
 

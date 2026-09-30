@@ -29,9 +29,9 @@ class SmartschoolException implements Exception {
 ///   for a request, also after logging in again.
 ///
 /// This class itself is still thrown for the remaining authentication
-/// failures, such as reaching the maximum number of login attempts, an
-/// unrecognised step in the login chain, or an HTML page where data was
-/// expected. Catching [SmartschoolAuthenticationError] catches all of them.
+/// failures, such as an unrecognised step in the login chain, or an HTML page
+/// where data was expected. Catching [SmartschoolAuthenticationError] catches
+/// all of them.
 ///
 /// It is thrown as itself also when the login is triggered by a regular
 /// request (e.g. a service call on a cold or expired session): the request
@@ -135,6 +135,13 @@ class SmartschoolAccountVerificationRejectedError
 /// Thrown by the request methods of `SmartschoolClient`, and so by every
 /// service, when that retry is still answered with `401` or by the login
 /// chain.
+///
+/// Also thrown, without logging in, once the client has stopped logging in
+/// again: after three logins in a row that did not get the session accepted
+/// (the login failed, or the retry was refused), a request that Smartschool
+/// refuses fails at once, whichever way it was refused. The client logs in
+/// again after an answer that Smartschool accepts; a new `SmartschoolClient`
+/// starts counting afresh.
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own

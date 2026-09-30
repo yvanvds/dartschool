@@ -482,10 +482,13 @@ void main() {
                 .postFormRaw('/x', {})
                 .then<Object?>((_) => null, onError: (Object e) => e),
         ]);
-        expect(
-          failures,
-          unorderedMatches([_retryRefused, _limitReached, _limitReached]),
-        );
+        // Since #36 they wait for that login and are retried in its session,
+        // instead of failing at once; it is still one login.
+        expect(failures, [_retryRefused, _retryRefused, _retryRefused]);
+        expect(server.logins, 4);
+
+        // It counted once, and failed: the next login waits a cooldown.
+        await expectLater(client.postFormRaw('/x', {}), throwsA(_limitReached));
         expect(server.logins, 4);
       },
     );

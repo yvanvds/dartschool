@@ -29,6 +29,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:flutter_smartschool/src/xml_interface.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -128,6 +130,8 @@ String _span(int userId, String type) =>
     'User $userId</div></div>';
 
 void main() {
+  forbidRealNetwork();
+
   group('MessagesService with a sent message to BCC recipients (#33)', () {
     late Directory cacheDir;
     late SmartschoolClient client;

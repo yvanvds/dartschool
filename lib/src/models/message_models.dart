@@ -418,11 +418,28 @@ class MessageAttachment {
   ///
   /// The Smartschool server returns the file as Base64-encoded content —
   /// this method decodes it automatically.
-  Future<Uint8List> download(SmartschoolClient client) {
-    return client.download(
-      '/?module=Messages&file=download&fileID=$fileId&target=0',
-    );
+  ///
+  /// With [maxBytes], the download fails with a
+  /// `SmartschoolDownloadTooLargeError` as soon as the attachment turns out
+  /// to be larger than that many bytes, and stops the transfer (#41); see
+  /// [SmartschoolClient.download].
+  Future<Uint8List> download(SmartschoolClient client, {int? maxBytes}) {
+    return client.download(_downloadPath, maxBytes: maxBytes);
   }
+
+  /// Downloads this attachment as a stream, from the same URL as [download]:
+  /// returns as soon as the headers of Smartschool's answer are in, with the
+  /// content to be read from its `stream` as it comes in (#41). See
+  /// [SmartschoolClient.downloadStream], also for [maxBytes].
+  Future<SmartschoolDownload> downloadStream(
+    SmartschoolClient client, {
+    int? maxBytes,
+  }) {
+    return client.downloadStream(_downloadPath, maxBytes: maxBytes);
+  }
+
+  String get _downloadPath =>
+      '/?module=Messages&file=download&fileID=$fileId&target=0';
 
   @override
   String toString() => 'MessageAttachment(fileId: $fileId, name: "$name")';
@@ -451,23 +468,54 @@ class MessageChanged {
 ///
 /// Corresponds to Python's `MessageDeletionStatus` dataclass.
 class MessageDeletionStatus {
+  /// The ID of the message, as Smartschool's answer names it.
   final int msgId;
+
+  /// The type of box the message was in, as Smartschool's answer names it
+  /// (`inbox` for a message in the archive too, a folder of the inbox).
   final String boxType;
+
+  /// Whether Smartschool's answer confirms that the message was deleted.
   final bool isDeleted;
+
+  /// Whether the message was unread, from the `<status>` of Smartschool's
+  /// answer (`0` unread, `1` read, as in every message list); `null` when the
+  /// answer gives neither.
+  final bool? unread;
 
   const MessageDeletionStatus({
     required this.msgId,
     required this.boxType,
     required this.isDeleted,
+    this.unread,
   });
 
+  /// Reads the `<details>` of Smartschool's `finish quick delete` answer, the
+  /// answer to a `quick delete` of a message ([MessagesService.moveToTrash]).
+  ///
+  /// Smartschool's web client takes that answer as the message deleted: it
+  /// removes the message from the list whatever the details say. So
+  /// [isDeleted] is `true`. The details' `<status>` is not the outcome of the
+  /// deletion but the read state of the message ([unread]), which the web
+  /// client passes on to its unread counter (#19).
   factory MessageDeletionStatus.fromXml(Map<String, dynamic> xml) {
+    final status = _str(xml, 'status');
     return MessageDeletionStatus(
       msgId: _int(xml, 'msgID'),
       boxType: _str(xml, 'boxType'),
-      isDeleted: _bool(xml, 'status'),
+      isDeleted: true,
+      unread: switch (status) {
+        '0' => true,
+        '1' => false,
+        _ => null,
+      },
     );
   }
+
+  @override
+  String toString() =>
+      'MessageDeletionStatus(msgId: $msgId, boxType: "$boxType", '
+      'isDeleted: $isDeleted, unread: $unread)';
 }
 
 /// A user or group returned by the recipient search endpoint.

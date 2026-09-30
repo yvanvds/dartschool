@@ -1,7 +1,11 @@
 import 'package:flutter_smartschool/src/models/user_models.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   group('SmartschoolUser', () {
     test('can be constructed with all fields', () {
       const user = SmartschoolUser(

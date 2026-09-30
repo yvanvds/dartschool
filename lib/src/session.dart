@@ -11,11 +11,15 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:otp/otp.dart';
 import 'package:path/path.dart' as p;
 
+import 'cache_dir.dart';
 import 'credentials.dart';
+import 'download.dart';
 import 'exceptions.dart';
 import 'models/notification_models.dart';
 import 'models/user_models.dart';
 import 'xml_interface.dart';
+
+export 'download.dart' show SmartschoolDownload;
 
 const String kXRequestedWith = 'X-Requested-With';
 const String kAccountVerificationPath = '/account-verification';
@@ -44,6 +48,21 @@ const String kAccountVerificationPath = '/account-verification';
 /// ```
 class SmartschoolClient {
   final Credentials credentials;
+
+  /// The folder this client keeps its per-user data in, such as the saved
+  /// session cookies (in `.cookies`), which let a new client for the same user
+  /// carry on in that session (#30).
+  ///
+  /// It is the `cacheDir` given to [create], exactly as given, or
+  /// [defaultCacheDir] for the username of [credentials] when none was given.
+  /// [create] makes the folder when it does not exist yet.
+  ///
+  /// An app can keep its own per-user data here too, so that it is found and
+  /// cleaned up together with the library's: put it in a subfolder of its own
+  /// and leave the library's files alone (call [clearCookies] to delete the
+  /// session).
+  final String cacheDir;
+
   final Dio _dio;
   final StreamController<NotificationCounterUpdate>
   _notificationCounterController =
@@ -66,10 +85,28 @@ class SmartschoolClient {
 
   SmartschoolClient._({
     required this.credentials,
+    required this.cacheDir,
     required Dio dio,
     required PersistCookieJar cookieJar,
   }) : _dio = dio,
        _cookieJar = cookieJar;
+
+  /// The folder that [create] keeps the per-user data of [username] in when
+  /// it is given no `cacheDir` (#30).
+  ///
+  /// That is `.cache/smartschool/<username>` in the user's home folder: the
+  /// `HOME` environment variable, or `USERPROFILE` when `HOME` is not set (as
+  /// on Windows, where it is typically `C:\Users\<name>`), or the current
+  /// directory when neither is set (the path is then relative). Call this
+  /// rather than building the path yourself, so it keeps matching [create]
+  /// if the library's default ever changes.
+  ///
+  /// It only works out the path: it does not create the folder, and does not
+  /// tell whether it exists. Use it to find a user's folder without a client,
+  /// for example to clean it up; a client reports the folder it actually
+  /// uses, default or given, as [cacheDir].
+  static String defaultCacheDir(String username) =>
+      defaultCacheDirFor(username, Platform.environment);
 
   /// Exposes the underlying [Dio] instance for low-level / dev-tool use.
   ///
@@ -94,6 +131,11 @@ class SmartschoolClient {
   /// Creates and configures a [SmartschoolClient].
   ///
   /// Call this factory instead of the private constructor.
+  ///
+  /// [cacheDir] is the folder the client keeps its per-user data in, such as
+  /// the saved session cookies; it defaults to [defaultCacheDir] for the
+  /// username of [credentials], and is made when it does not exist yet. The
+  /// client reports it as [SmartschoolClient.cacheDir].
   ///
   /// When Smartschool refuses the session for a request, the client logs in
   /// again and retries it. Requests share that login: one that Smartschool
@@ -122,7 +164,7 @@ class SmartschoolClient {
       );
     }
 
-    final cachePath = cacheDir ?? _defaultCachePath(credentials.username);
+    final cachePath = cacheDir ?? defaultCacheDir(credentials.username);
     await Directory(cachePath).create(recursive: true);
 
     final cookieJar = PersistCookieJar(
@@ -146,6 +188,7 @@ class SmartschoolClient {
 
     final client = SmartschoolClient._(
       credentials: credentials,
+      cacheDir: cachePath,
       dio: dio,
       cookieJar: cookieJar,
     );
@@ -252,20 +295,119 @@ class SmartschoolClient {
   }
 
   /// Downloads raw bytes from [path].
-  Future<Uint8List> download(String path) async {
+  ///
+  /// The whole file is held in memory; [downloadStream] reads it as it comes
+  /// in instead.
+  ///
+  /// With [maxBytes], the download fails with a
+  /// [SmartschoolDownloadTooLargeError] as soon as the file turns out to be
+  /// larger than that many bytes: before any of it is read when Smartschool
+  /// announces a larger size (`Content-Length`), otherwise once more than
+  /// [maxBytes] bytes came in. The client then stops the transfer (#41).
+  /// Without it, there is no limit.
+  ///
+  /// Throws a [SmartschoolDownloadError] when Smartschool answers with
+  /// another status than `200`, and a [SmartschoolConnectionError] when the
+  /// connection fails, also halfway through the file. A session that
+  /// Smartschool refuses is handled as for every request (see
+  /// [downloadStream]).
+  Future<Uint8List> download(String path, {int? maxBytes}) async {
+    final file = await downloadStream(path, maxBytes: maxBytes);
+    final bytes = BytesBuilder();
+    await for (final chunk in file.stream) {
+      bytes.add(chunk);
+    }
+    return bytes.takeBytes();
+  }
+
+  /// Downloads [path] as a stream: returns the [SmartschoolDownload] as soon
+  /// as the headers of Smartschool's answer are in, with its size
+  /// (`contentLength`), `fileName` and `contentType`, and the content to be
+  /// read from its `stream` as it comes in (#41).
+  ///
+  /// Reading the stream reads the transfer: pausing the subscription pauses
+  /// it, and cancelling the subscription (or [SmartschoolDownload.cancel])
+  /// stops it and closes the connection. The client stops the transfer
+  /// itself: Dio would read a response to its end after its reader stopped
+  /// listening.
+  ///
+  /// A session that Smartschool refuses is handled as for every request: it
+  /// answers the download with its login chain (or `401`) instead of the
+  /// file, the client logs in again and retries the download once, and the
+  /// stream holds the answer to that retry. The login page is read by the
+  /// client, never handed over as the file: when the retry is refused too,
+  /// this throws a [SmartschoolSessionExpiredError], and when the login
+  /// fails, the error it failed with (see [SmartschoolAuthenticationError]).
+  ///
+  /// With [maxBytes], the download fails with a
+  /// [SmartschoolDownloadTooLargeError] as soon as the file turns out to be
+  /// larger than that many bytes. When Smartschool announces a larger size
+  /// (`Content-Length`), this throws it and nothing is read. Otherwise the
+  /// bytes are counted as they come in, and the stream ends with it once
+  /// more than [maxBytes] came in, after at most [maxBytes] bytes. Either way
+  /// the client stops the transfer. Must not be negative.
+  ///
+  /// Throws a [SmartschoolDownloadError] when Smartschool answers with
+  /// another status than `200` (such as `404` for an Intradesk file that
+  /// does not exist), and a [SmartschoolConnectionError] when it cannot be
+  /// reached; the stream ends with a [SmartschoolConnectionError] when the
+  /// connection fails halfway through the file.
+  Future<SmartschoolDownload> downloadStream(
+    String path, {
+    int? maxBytes,
+  }) async {
+    if (maxBytes != null && maxBytes < 0) {
+      throw ArgumentError.value(maxBytes, 'maxBytes', 'must not be negative');
+    }
+    // Stops the transfer: Dio closes the connection of a response it is
+    // reading only when its request is cancelled. The retry after a new
+    // login is sent with the same token.
+    final cancelToken = CancelToken();
     final resp = await _send(
-      () => _dio.get<List<int>>(
+      () => _dio.get<ResponseBody>(
         path,
-        options: Options(responseType: ResponseType.bytes),
+        cancelToken: cancelToken,
+        options: Options(responseType: ResponseType.stream),
       ),
     );
-    if ((resp.statusCode ?? 0) != 200) {
-      throw SmartschoolDownloadError(
-        'Download failed: $path',
-        resp.statusCode ?? 0,
+    final body = resp.data;
+    final status = resp.statusCode ?? 0;
+    if (status != 200 || body == null) {
+      cancelToken.cancel();
+      throw SmartschoolDownloadError('Download failed: $path', status);
+    }
+
+    int? announced;
+    final content = _DownloadContent(
+      body.stream,
+      cancelToken: cancelToken,
+      maxBytes: maxBytes,
+      tooLarge: () => SmartschoolDownloadTooLargeError(
+        'The download of $path is larger than the $maxBytes bytes allowed: '
+        'more than $maxBytes bytes came in',
+        maxBytes: maxBytes!,
+        contentLength: announced,
+      ),
+      failure: (error) => _transferFailure(error, resp.requestOptions),
+      cancelled: () => StateError('The download of $path was cancelled'),
+    );
+    final download = SmartschoolDownload(
+      stream: content.stream,
+      headers: resp.headers,
+      onCancel: content.cancel,
+    );
+
+    announced = download.contentLength;
+    if (maxBytes != null && announced != null && announced > maxBytes) {
+      content.cancel();
+      throw SmartschoolDownloadTooLargeError(
+        'The download of $path is larger than the $maxBytes bytes allowed: '
+        'Smartschool announced $announced bytes',
+        maxBytes: maxBytes,
+        contentLength: announced,
       );
     }
-    return Uint8List.fromList(resp.data!);
+    return download;
   }
 
   /// Performs an authenticated GET and returns the raw response body string.
@@ -758,19 +900,40 @@ class SmartschoolClient {
       if (inner is SmartschoolException) {
         Error.throwWithStackTrace(inner, e.stackTrace);
       }
-      final unreachable = _describeConnectionFailure(e);
+      final unreachable = _connectionError(e);
       if (unreachable != null) {
-        Error.throwWithStackTrace(
-          SmartschoolConnectionError(
-            'Unable to reach Smartschool at ${credentials.mainUrl}: '
-            '$unreachable',
-            cause: e,
-          ),
-          e.stackTrace,
-        );
+        Error.throwWithStackTrace(unreachable, e.stackTrace);
       }
       rethrow;
     }
+  }
+
+  /// The [SmartschoolConnectionError] that [e] means, with [e] as its
+  /// `cause`, or `null` when [e] does not mean that Smartschool could not be
+  /// reached (see [_describeConnectionFailure]).
+  SmartschoolConnectionError? _connectionError(DioException e) {
+    final unreachable = _describeConnectionFailure(e);
+    if (unreachable == null) return null;
+    return SmartschoolConnectionError(
+      'Unable to reach Smartschool at ${credentials.mainUrl}: $unreachable',
+      cause: e,
+    );
+  }
+
+  /// The error that the reader of a download gets for [error], a failure of
+  /// the transfer of its content (#41), as [_send] throws a failure of the
+  /// request: a [SmartschoolConnectionError] when the connection failed or
+  /// timed out, [error] itself otherwise.
+  ///
+  /// Dio hands on what the connection fails with halfway through a
+  /// response as it comes, such as the `HttpException` of a connection that
+  /// closed early, and a timeout as a [DioException] of [request].
+  Object _transferFailure(Object error, RequestOptions request) {
+    if (error is SmartschoolException) return error;
+    final dioError = error is DioException
+        ? error
+        : DioException(requestOptions: request, error: error);
+    return _connectionError(dioError) ?? error;
   }
 
   Future<int> _fetchPlatformId() async {
@@ -990,14 +1153,6 @@ class SmartschoolClient {
 
   static String get _noAuthKey => '_smartschool_noAuth';
 
-  static String _defaultCachePath(String username) {
-    final home =
-        Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        '.';
-    return p.join(home, '.cache', 'smartschool', username);
-  }
-
   /// Describes [e] when it means Smartschool could not be reached (the request
   /// got no complete answer), or returns `null` for any other failure.
   ///
@@ -1039,6 +1194,132 @@ class SmartschoolClient {
   static String _preview(String body, {int max = 180}) {
     if (body.length <= max) return body;
     return '${body.substring(0, max)}...';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Download content
+// ---------------------------------------------------------------------------
+
+/// Hands the content of a download to its reader, as the `stream` of a
+/// [SmartschoolDownload] (#41): counts the bytes against the `maxBytes` of
+/// the download, turns a failure of the connection into the error the
+/// client throws for it, and stops the transfer when the content is not
+/// read to its end.
+///
+/// Dio subscribes to the body of a response as soon as it comes in, and
+/// keeps reading it to its end when the reader of a `ResponseType.stream`
+/// body cancels its subscription; only cancelling the request (its
+/// [CancelToken]) closes the connection. So the transfer is stopped by
+/// cancelling the download's token: when the reader cancels its
+/// subscription before the end, when more than `maxBytes` bytes came in,
+/// on [cancel], and when the transfer fails.
+class _DownloadContent {
+  _DownloadContent(
+    this._source, {
+    required CancelToken cancelToken,
+    required int? maxBytes,
+    required Object Function() tooLarge,
+    required Object Function(Object error) failure,
+    required Object Function() cancelled,
+  }) : _cancelToken = cancelToken,
+       _maxBytes = maxBytes,
+       _tooLarge = tooLarge,
+       _failure = failure,
+       _cancelled = cancelled;
+
+  /// The body of the response, as Dio hands it on.
+  final Stream<Uint8List> _source;
+
+  /// The token of the download's request, and of its retry after a login.
+  final CancelToken _cancelToken;
+
+  final int? _maxBytes;
+
+  /// The error for content larger than [_maxBytes].
+  final Object Function() _tooLarge;
+
+  /// The error the reader gets for a failure of the transfer.
+  final Object Function(Object error) _failure;
+
+  /// The error the reader gets after [cancel].
+  final Object Function() _cancelled;
+
+  late final StreamController<List<int>> _reader = StreamController(
+    onListen: _listen,
+    onPause: () => _subscription?.pause(),
+    onResume: () => _subscription?.resume(),
+    onCancel: _readerCancelled,
+  );
+
+  StreamSubscription<List<int>>? _subscription;
+  int _received = 0;
+
+  /// Whether the content ended: it was read to its end, the transfer failed
+  /// or was stopped, or the reader cancelled.
+  bool _finished = false;
+
+  /// The content, for the reader.
+  Stream<List<int>> get stream => _reader.stream;
+
+  /// Stops the transfer; the reader gets the [_cancelled] error.
+  void cancel() => _stop(_cancelled());
+
+  void _listen() {
+    // Cancelled before it was read: the error is waiting for the reader.
+    if (_finished) return;
+    _subscription = _source.listen(
+      _onData,
+      onError: _onError,
+      onDone: _onDone,
+      cancelOnError: true,
+    );
+  }
+
+  void _onData(List<int> chunk) {
+    _received += chunk.length;
+    final maxBytes = _maxBytes;
+    if (maxBytes != null && _received > maxBytes) {
+      _stop(_tooLarge());
+      return;
+    }
+    _reader.add(chunk);
+  }
+
+  void _onError(Object error, StackTrace stackTrace) {
+    if (_finished) return;
+    _finished = true;
+    // Whatever is left of the connection is closed.
+    _cancelToken.cancel();
+    _reader
+      ..addError(_failure(error), stackTrace)
+      ..close();
+  }
+
+  void _onDone() {
+    if (_finished) return;
+    _finished = true;
+    _reader.close();
+  }
+
+  /// Stops the transfer and ends the content with [error].
+  void _stop(Object error) {
+    if (_finished) return;
+    _finished = true;
+    _cancelToken.cancel();
+    _subscription?.cancel();
+    _reader
+      ..addError(error)
+      ..close();
+  }
+
+  /// The reader cancelled its subscription (which it also does, done, at
+  /// the end of the content).
+  Future<void>? _readerCancelled() {
+    if (_finished) return null;
+    _finished = true;
+    _cancelToken.cancel();
+    return _subscription?.cancel();
   }
 }
 
@@ -1158,6 +1439,11 @@ class _SameSession {
 /// A retry that Smartschool refuses again, in any of these ways, is not
 /// retried again: it fails with a [SmartschoolSessionExpiredError] (#22), so
 /// the caller never gets a login page in place of the data.
+///
+/// The answer to a download comes as a stream, which Dio hands on before
+/// its body is read (#41). A refused one is read here: it is a page of the
+/// login chain (or an empty `401`), which the login may go on from, and not
+/// the file. A retry that is refused again is read to its end and dropped.
 ///
 /// A request sent with `retryAfterLogin: false` (see
 /// [SmartschoolClient.postMultipartResponse]) carries state of the session it
@@ -1368,6 +1654,12 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     final request =
         '${response.requestOptions.method} ${response.requestOptions.uri}';
 
+    // The answer to a download comes as a stream (#41). Refused, it is not
+    // the file but a page of the login chain (or an empty 401): read it here,
+    // so that the login can go on from it (an `/account-verification` page is
+    // filled in) and it never reaches the caller as the file.
+    await _readStreamedBody(response);
+
     // A request that carries state of the session it was prepared in (the
     // tokens of the compose form) is not retried in the new session, where
     // that state is stale: a retried message submit would send the message
@@ -1410,6 +1702,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       originalOptions.headers.remove(HttpHeaders.cookieHeader);
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
       if (_isUnauthorized(retried)) {
+        _discardStreamedBody(retried);
         throw SmartschoolSessionExpiredError(
           'Smartschool still answered 401 to $request after logging in again',
         );
@@ -1419,6 +1712,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       // not help either (#22).
       final stillOnLoginChain = _loginChainTarget(retried);
       if (stillOnLoginChain != null) {
+        _discardStreamedBody(retried);
         throw SmartschoolSessionExpiredError(
           'Smartschool still answered $request with its login chain '
           '(${stillOnLoginChain.path}) after logging in again',
@@ -1650,6 +1944,26 @@ class _SmartschoolAuthInterceptor extends Interceptor {
         'Authentication flow did not complete. Still on ${finalUri.path}',
       );
     }
+  }
+
+  /// Replaces the body of [response] with its text when it comes as a
+  /// stream (the answer to a download, #41), reading it to its end; leaves
+  /// any other body alone.
+  static Future<void> _readStreamedBody(Response<dynamic> response) async {
+    final data = response.data;
+    if (data is! ResponseBody) return;
+    response.data = await const Utf8Decoder(
+      allowMalformed: true,
+    ).bind(data.stream).join();
+  }
+
+  /// Reads the body of [response] to its end and drops it when it comes as a
+  /// stream (the answer to a download, #41), so that its connection is
+  /// released; the response is not handed on.
+  static void _discardStreamedBody(Response<dynamic> response) {
+    final data = response.data;
+    if (data is! ResponseBody) return;
+    unawaited(data.stream.drain<void>().then((_) {}, onError: (_) {}));
   }
 
   String _bodyAsString(Response<dynamic> response) {

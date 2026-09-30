@@ -202,7 +202,27 @@ class IntradeskFolder {
   final bool isFavourite;
   final bool inConfidentialFolder;
   final IntradeskFolderCapabilities capabilities;
+
+  /// Whether the folder holds subfolders: Smartschool's `hasChildren`, which
+  /// counts folders only, not files or weblinks (#37).
+  ///
+  /// The listings come from Smartschool's folder tree (`forTreeOnlyFolders`),
+  /// whose web client uses `hasChildren` to tell whether a folder can be
+  /// expanded in that tree. A folder with `hasChildren` false can still hold
+  /// files and weblinks: do not skip it, list it with
+  /// `IntradeskService.getFolderListing` to find them.
+  ///
+  /// [hasSubfolders] is the same value, under a name that says what it
+  /// counts.
   final bool hasChildren;
+
+  /// Whether the folder holds subfolders (#37); the same value as
+  /// [hasChildren].
+  ///
+  /// It says nothing about files and weblinks: a folder without subfolders
+  /// can still hold them, so list it with `IntradeskService.getFolderListing`
+  /// to find them.
+  bool get hasSubfolders => hasChildren;
 
   const IntradeskFolder({
     required this.id,
@@ -335,6 +355,107 @@ class IntradeskFile {
   String toString() => 'IntradeskFile(id: "$id", name: "$name")';
 }
 
+/// Capabilities attached to a weblink.
+class IntradeskWeblinkCapabilities {
+  final bool canManage;
+  final bool canMove;
+  final bool canSeeHistory;
+  final bool canSeeViewHistory;
+
+  const IntradeskWeblinkCapabilities({
+    required this.canManage,
+    required this.canMove,
+    required this.canSeeHistory,
+    required this.canSeeViewHistory,
+  });
+
+  factory IntradeskWeblinkCapabilities.fromJson(Map<String, dynamic> json) =>
+      IntradeskWeblinkCapabilities(
+        canManage: _bool(json, 'canManage'),
+        canMove: _bool(json, 'canMove'),
+        canSeeHistory: _bool(json, 'canSeeHistory'),
+        canSeeViewHistory: _bool(json, 'canSeeViewHistory'),
+      );
+}
+
+/// A weblink in the Intradesk document repository: a named link to a web
+/// page, kept in a folder next to its files (#37).
+class IntradeskWeblink {
+  final String id;
+  final IntradeskPlatform platform;
+  final String name;
+
+  /// The address of the web page the weblink opens.
+  final String url;
+
+  /// The name of the icon Smartschool shows for the weblink, such as
+  /// `folder_orange`.
+  final String icon;
+
+  final String state;
+
+  /// Empty string at root level; parent folder UUID otherwise.
+  final String parentFolderId;
+
+  final DateTime dateCreated;
+  final DateTime dateStateChanged;
+  final DateTime dateChanged;
+  final bool isFavourite;
+  final bool confidential;
+  final String ownerId;
+  final IntradeskWeblinkCapabilities capabilities;
+
+  const IntradeskWeblink({
+    required this.id,
+    required this.platform,
+    required this.name,
+    required this.url,
+    required this.icon,
+    required this.state,
+    required this.parentFolderId,
+    required this.dateCreated,
+    required this.dateStateChanged,
+    required this.dateChanged,
+    required this.isFavourite,
+    required this.confidential,
+    required this.ownerId,
+    required this.capabilities,
+  });
+
+  factory IntradeskWeblink.fromJson(Map<String, dynamic> json) {
+    final platJson = json['platform'];
+    final capJson = json['capabilities'];
+    return IntradeskWeblink(
+      id: _str(json, 'id'),
+      platform: platJson is Map<String, dynamic>
+          ? IntradeskPlatform.fromJson(platJson)
+          : const IntradeskPlatform(id: 0, name: ''),
+      name: _str(json, 'name'),
+      url: _str(json, 'url'),
+      icon: _str(json, 'icon'),
+      state: _str(json, 'state'),
+      parentFolderId: _str(json, 'parentFolderId'),
+      dateCreated: _dateTime(json, 'dateCreated'),
+      dateStateChanged: _dateTime(json, 'dateStateChanged'),
+      dateChanged: _dateTime(json, 'dateChanged'),
+      isFavourite: _bool(json, 'isFavourite'),
+      confidential: _bool(json, 'confidential'),
+      ownerId: _str(json, 'ownerId'),
+      capabilities: capJson is Map<String, dynamic>
+          ? IntradeskWeblinkCapabilities.fromJson(capJson)
+          : const IntradeskWeblinkCapabilities(
+              canManage: false,
+              canMove: false,
+              canSeeHistory: false,
+              canSeeViewHistory: false,
+            ),
+    );
+  }
+
+  @override
+  String toString() => 'IntradeskWeblink(id: "$id", name: "$name")';
+}
+
 /// The combined result of a directory-listing API call.
 ///
 /// Returned by both the root listing (`forTreeOnlyFolders`) and per-folder
@@ -343,10 +464,8 @@ class IntradeskListing {
   final List<IntradeskFolder> folders;
   final List<IntradeskFile> files;
 
-  /// Raw weblink entries.  The API returns an array that is always empty in
-  /// current observation; typed as dynamic maps to avoid breakage if fields
-  /// are added later.
-  final List<Map<String, dynamic>> weblinks;
+  /// The weblinks in the listed folder (#37).
+  final List<IntradeskWeblink> weblinks;
 
   const IntradeskListing({
     required this.folders,
@@ -373,7 +492,10 @@ class IntradeskListing {
                 .toList()
           : const [],
       weblinks: weblinksRaw is List
-          ? weblinksRaw.whereType<Map<String, dynamic>>().toList()
+          ? weblinksRaw
+                .whereType<Map<String, dynamic>>()
+                .map(IntradeskWeblink.fromJson)
+                .toList()
           : const [],
     );
   }

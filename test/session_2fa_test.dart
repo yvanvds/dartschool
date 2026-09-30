@@ -15,6 +15,9 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+import 'support/temp_cache_dir.dart';
+
 /// Credentials with a valid base32 TOTP secret so `do2fa()` can generate a code.
 class _TwoFaCredentials extends Credentials {
   @override
@@ -99,9 +102,14 @@ class _FakeAdapter implements HttpClientAdapter {
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('_SmartschoolAuthInterceptor 2FA handling', () {
     test('accepted 2FA code does NOT throw (issue #1 regression)', () async {
-      final client = await SmartschoolClient.create(_TwoFaCredentials());
+      final client = await SmartschoolClient.create(
+        _TwoFaCredentials(),
+        cacheDir: tempCacheDir(),
+      );
       client.dio.httpClientAdapter = _FakeAdapter(
         // Exactly what Smartschool returns for a correct code.
         twoFaResultBody: '{"success":true,"redirectTo":"/"}',
@@ -115,7 +123,10 @@ void main() {
     });
 
     test('rejected 2FA code throws SmartschoolAuthenticationError', () async {
-      final client = await SmartschoolClient.create(_TwoFaCredentials());
+      final client = await SmartschoolClient.create(
+        _TwoFaCredentials(),
+        cacheDir: tempCacheDir(),
+      );
       client.dio.httpClientAdapter = _FakeAdapter(
         twoFaResultBody:
             '{"success":false,"error":"authentication.google2fa_not_valid"}',
@@ -142,7 +153,10 @@ void main() {
     late SmartschoolClient client;
 
     setUp(() async {
-      client = await SmartschoolClient.create(_TwoFaCredentials());
+      client = await SmartschoolClient.create(
+        _TwoFaCredentials(),
+        cacheDir: tempCacheDir(),
+      );
     });
 
     tearDown(() async {

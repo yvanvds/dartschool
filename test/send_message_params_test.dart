@@ -1,7 +1,11 @@
 import 'package:test/test.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   group('SendMessageParams', () {
     test('constructor assigns all fields', () {
       final user = MessageSearchUser(

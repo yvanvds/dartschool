@@ -17,9 +17,13 @@ import 'dart:convert';
 import 'package:flutter_smartschool/src/models/intradesk_models.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 Map<String, dynamic> _j(String src) => jsonDecode(src) as Map<String, dynamic>;
 
 void main() {
+  forbidRealNetwork();
+
   // -------------------------------------------------------------------------
   // IntradeskPlatform
   // -------------------------------------------------------------------------

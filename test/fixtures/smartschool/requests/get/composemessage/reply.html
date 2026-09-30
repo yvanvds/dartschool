@@ -15,6 +15,10 @@
   unnamed msgIDVal input, composeAction 2 and composeTypeVal 1 (the reply-all
   form differs only in composeTypeVal 2). The form's action is empty: the page
   submits to its own URL. Names, IDs, subject, text and tokens are made up.
+  Its own options are those of the new-message form (checked live, #47): the
+  copyToLVS select, with the same options and labels, and the empty sendDate
+  field, with scheduled messages enabled in SMSC.vars (trimmed to the
+  scheduled-message settings).
 -->
 <form name="form" id="msgForm" action="" method="post" enctype="multipart/form-data">
 <input type="hidden" id="msgEncryptedSender" name="encryptedSender" value="0123456789abcdef0123456789abcdef">
@@ -73,10 +77,10 @@
 <div class="compose_subject">
     <input tabindex="4" type="text" id="subjectInput" class="subjectInput" name="subject" value="Re: Schoolreis" size="90" maxlength="150">
 </div>
-<select name="copyToLVS">
-    <option value="dontCopyToLVS" selected>Niet kopiëren</option>
-    <option value="copyToLVS">Kopiëren</option>
-    <option value="copyToLVSAndMarkAsPrivate">Kopiëren als privé</option>
+<select class="copyComposeToLVS__select" name="copyToLVS">
+    <option value="dontCopyToLVS" selected>Bericht niet bewaren in het LVS</option>
+    <option value="copyToLVS">Bericht bewaren in het LVS</option>
+    <option value="copyToLVSAndMarkAsPrivate">Bericht bewaren in het LVS en markeren als vertrouwelijk</option>
 </select>
 <textarea id="message" name="message" rows="23" cols="30" style="width: 100%;" class="mceEditor" mce_editable="true">&lt;p&gt;&lt;/p&gt;&lt;blockquote&gt;&lt;p&gt;Beste collega, de schoolreis gaat door op vrijdag.&lt;/p&gt;&lt;/blockquote&gt;</textarea>
 </div>
@@ -94,5 +98,6 @@
     };
     window.tinyMcePromise = tinymce.init(window.tinymceInitConfig);
 </script>
+<script type="text/javascript">$.extend(true, SMSC, { vars : {"isScheduledMessagesEnabled":true,"scheduledMessageOptions":{"timeLimits":[{"type":"weekday","isEnabled":true,"startTime":"18:00","endTime":"07:30"},{"type":"weekend","isEnabled":true,"startTime":"18:00","endTime":"07:30"}],"laterToday":"16:00"},"composeType":1,"showTabID":"tab1Container"}});</script>
 </body>
 </html>

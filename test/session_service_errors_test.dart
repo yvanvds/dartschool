@@ -31,6 +31,8 @@ import 'package:flutter_smartschool/src/services/presence_service.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -201,9 +203,13 @@ final _calls = <String, Future<Object?> Function(SmartschoolClient)>{
   ),
   'postJson': (c) => c.postJson('/api/v1/endpoint', data: '{}'),
   'download': (c) => c.download('/files/document.pdf'),
+  // The answer to it comes as a stream (#41).
+  'downloadStream': (c) => c.downloadStream('/files/document.pdf'),
 };
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
 

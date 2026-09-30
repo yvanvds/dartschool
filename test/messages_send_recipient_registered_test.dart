@@ -31,6 +31,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/add_recipient_answer.dart';
+import 'support/no_network.dart';
 
 class _Credentials extends Credentials {
   @override
@@ -222,6 +223,8 @@ Matcher _notRegistered(String operation, String recipient) => allOf(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory tempDir;
   late SmartschoolClient client;
   late MessagesService messages;

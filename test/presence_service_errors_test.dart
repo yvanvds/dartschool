@@ -35,6 +35,8 @@ import 'package:flutter_smartschool/src/services/presence_service.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -261,6 +263,8 @@ Matcher _presenceRefusal({Object? message = anything}) => allOf(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
 

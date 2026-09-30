@@ -208,9 +208,70 @@ class SmartschoolDownloadError extends SmartschoolException {
   String toString() => '$runtimeType($statusCode): $message';
 }
 
+/// Thrown when a download is larger than the `maxBytes` its caller allows
+/// (#41), by `SmartschoolClient.download` and `downloadStream`, and so by
+/// `IntradeskService.downloadFile` and `downloadFileStream` and by
+/// `MessageAttachment.download` and `downloadStream`.
+///
+/// When Smartschool announces the size of the file (`Content-Length`) and it
+/// is larger than [maxBytes], the download fails before any of the content
+/// is read, and [contentLength] holds that size. Otherwise the bytes are
+/// counted as they come in, and the download fails as soon as more than
+/// [maxBytes] came in: `download` throws this error, and the stream of
+/// `downloadStream` ends with it, after at most [maxBytes] bytes.
+///
+/// Either way the client stops the transfer: it closes the connection
+/// rather than reading the rest of the file.
+///
+/// Not a [SmartschoolDownloadError]: Smartschool answered with the file
+/// (HTTP `200`); the caller's limit is what stopped it.
+class SmartschoolDownloadTooLargeError extends SmartschoolException {
+  /// The largest size, in bytes, that the caller allowed.
+  final int maxBytes;
+
+  /// The size of the file in bytes as Smartschool announced it
+  /// (`Content-Length`), or `null` when it announced none. When it is not
+  /// larger than [maxBytes] (or `null`), the download failed on the bytes
+  /// that came in: more than [maxBytes] of them.
+  final int? contentLength;
+
+  const SmartschoolDownloadTooLargeError(
+    super.message, {
+    required this.maxBytes,
+    this.contentLength,
+  });
+}
+
 /// Thrown when JSON decoding of a response body fails.
 class SmartschoolJsonError extends SmartschoolDownloadError {
   SmartschoolJsonError(super.message, super.statusCode);
+}
+
+/// Thrown by `IntradeskService.getFolderListing` when Smartschool knows no
+/// Intradesk folder with the given ID: an unknown ID, or the ID of a file or
+/// a weblink (#37).
+///
+/// Smartschool answers the listing of such an ID with HTTP `500` and a bare
+/// `Internal Server Error` problem, the same answer as for a failure of its
+/// own, so the answer alone does not tell them apart. When a listing fails
+/// with `500`, `getFolderListing` therefore asks Smartschool for the parents
+/// of the folder (`folders/{id}/parents`), which it answers with `404` for an
+/// ID that is not a folder, and with the parents for a folder. Only that
+/// `404` makes this error; any other answer keeps the plain
+/// [SmartschoolDownloadError] of the listing.
+///
+/// It is a [SmartschoolDownloadError] with the [statusCode] of the listing
+/// (`500`), so a `catch` of that type still catches it.
+class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
+  /// The ID that was asked for.
+  final String folderId;
+
+  SmartschoolIntradeskFolderNotFoundError(this.folderId)
+    : super(
+        'Intradesk has no folder with ID "$folderId": the ID is unknown, or '
+        'it is the ID of a file or a weblink.',
+        500,
+      );
 }
 
 /// Thrown when uploading a message attachment fails.
@@ -226,7 +287,10 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 /// Smartschool does not answer with the reply form of the message (#26), or
 /// does not take a recipient that the reply form names and the params leave
 /// out off the form (its answer to `deleteUsersFromSelected` does not list
-/// the recipient; the message names it, #42).
+/// the recipient; the message names it, #42). Both throw it too when the
+/// form does not offer an option that the send asks for: the LVS copy of
+/// `MessageSendOptions.lvsCopy`, or the delayed send of
+/// `MessageSendOptions.sendAt` (#47).
 ///
 /// `MessagesService.sendMessage` and `sendReply` throw it before the message
 /// is submitted, so nothing was sent. A submitted message that Smartschool
@@ -242,7 +306,9 @@ class SmartschoolComposeError extends SmartschoolException {
 ///
 /// **The message may or may not have been sent.** Do not send it again
 /// blindly: check the sent box first (e.g. `getHeaders(boxType:
-/// BoxType.sent)`), or tell the user to.
+/// BoxType.sent)`), or tell the user to. A message sent with a delayed send
+/// (`MessageSendOptions.sendAt`, #47) waits in the scheduled box
+/// (`BoxType.scheduled`) until its time; the message of the error says so.
 ///
 /// Smartschool confirms a sent message by answering the submit with HTTP
 /// `200` and a page that closes the compose window (`window.close()`). This

@@ -1,7 +1,11 @@
 import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   group('AppCredentials', () {
     test('throws if username is empty', () {
       expect(

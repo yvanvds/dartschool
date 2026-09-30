@@ -15,6 +15,9 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+import 'support/temp_cache_dir.dart';
+
 class _TwoFaCredentials extends Credentials {
   @override
   String get username => 'user';
@@ -140,11 +143,16 @@ class _FakeSmartschool implements HttpClientAdapter {
 }
 
 void main() {
+  forbidRealNetwork();
+
   group('login POST answered with a redirect the client did not follow', () {
     test(
       '302 after the password is followed into 2FA (issue #6 regression)',
       () async {
-        final client = await SmartschoolClient.create(_TwoFaCredentials());
+        final client = await SmartschoolClient.create(
+          _TwoFaCredentials(),
+          cacheDir: tempCacheDir(),
+        );
         final server = _FakeSmartschool(loginPostStatus: 302);
         client.dio.httpClientAdapter = server;
 
@@ -169,7 +177,10 @@ void main() {
     );
 
     test('301 is followed the same way', () async {
-      final client = await SmartschoolClient.create(_TwoFaCredentials());
+      final client = await SmartschoolClient.create(
+        _TwoFaCredentials(),
+        cacheDir: tempCacheDir(),
+      );
       client.dio.httpClientAdapter = _FakeSmartschool(loginPostStatus: 301);
 
       await expectLater(client.getRaw('/index'), completes);
@@ -178,7 +189,10 @@ void main() {
     });
 
     test('a wrong password still reads as a failed login', () async {
-      final client = await SmartschoolClient.create(_TwoFaCredentials());
+      final client = await SmartschoolClient.create(
+        _TwoFaCredentials(),
+        cacheDir: tempCacheDir(),
+      );
       client.dio.httpClientAdapter = _FakeSmartschool(
         loginPostStatus: 302,
         passwordAccepted: false,

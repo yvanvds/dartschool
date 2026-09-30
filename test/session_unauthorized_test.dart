@@ -17,6 +17,8 @@ import 'package:flutter_smartschool/src/services/messages_service.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 class _Credentials extends Credentials {
   @override
   String get username => 'user';
@@ -157,6 +159,8 @@ ResponseBody _response(
 );
 
 void main() {
+  forbidRealNetwork();
+
   late Directory cacheDir;
   late SmartschoolClient client;
 

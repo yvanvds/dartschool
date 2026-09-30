@@ -133,7 +133,9 @@ await client.ensureAuthenticated();
 
 | Method / getter | Description |
 |---|---|
-| `SmartschoolClient.create(credentials, {cacheDir, loginCooldown, clock})` | Factory — creates the Dio client, configures cookie jar, returns ready instance. `loginCooldown` (default 5 minutes) and `clock` (default `DateTime.now`): see *Logging in again* below |
+| `SmartschoolClient.create(credentials, {cacheDir, loginCooldown, clock})` | Factory — creates the Dio client, configures cookie jar, returns ready instance. `cacheDir`: see *Cache folder* below. `loginCooldown` (default 5 minutes) and `clock` (default `DateTime.now`): see *Logging in again* below |
+| `cacheDir` | The folder this client keeps its per-user data in (see *Cache folder* below) |
+| `SmartschoolClient.defaultCacheDir(username)` | Static — the folder `create` uses for `username` when it is given no `cacheDir` (see *Cache folder* below) |
 | `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly. Throws a `SmartschoolAuthenticationError` subtype when the login fails, a `SmartschoolConnectionError` when Smartschool is unreachable |
 | `clearCookies()` | Deletes persisted cookies (use this for explicit logout/session reset). |
 | `resetLoginAttempts()` | Lets a client that stopped logging in on its own log in again at once (see *Logging in again* below) |
@@ -146,11 +148,30 @@ await client.ensureAuthenticated();
 | `postMultipartRaw(path, formData, {retryAfterLogin, sameSessionAs})` | `multipart/form-data` POST → `String` |
 | `postMultipartResponse(path, formData, {retryAfterLogin, sameSessionAs})` | Same POST → the whole `Response<String>` |
 | `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
+| `download(path, {maxBytes})` | Authenticated GET → the whole file as `Uint8List`. With `maxBytes`, throws `SmartschoolDownloadTooLargeError` as soon as the file turns out larger (see *Downloads* below) |
+| `downloadStream(path, {maxBytes})` | Same GET → a `SmartschoolDownload` as soon as the headers are in: `contentLength`, `fileName`, `contentType`, and the content as a `stream` (see *Downloads* below) |
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
 | `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false` if the stream is already closed |
 | `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
 | `dispose({force})` | Closes the notification stream and the underlying Dio client |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
+
+### Cache folder
+
+A client keeps its per-user data, such as the saved session cookies (in `.cookies`), in a cache folder, so a new client for the same user carries on in the saved session. Pass `cacheDir` to `create` to choose the folder; without it, the client uses `.cache/smartschool/<username>` in the user's home folder: the `HOME` environment variable, or `USERPROFILE` when `HOME` is not set (as on Windows, where that is typically `C:\Users\<name>\.cache\smartschool\<username>`), or the current directory when neither is set. `create` makes the folder when it does not exist yet.
+
+`client.cacheDir` is the folder a client uses, default or given. `SmartschoolClient.defaultCacheDir(username)` is the default folder for a username, without a client; it only works out the path, and does not create the folder. Use these rather than building the path yourself, so an app keeps finding the folder if the library's default changes.
+
+```dart
+final client = await SmartschoolClient.create(credentials);
+final myCache = Directory(p.join(client.cacheDir, 'my_app')); // next to the library's data
+
+// Without a client, for example to clean up after a user signs out:
+final dir = Directory(SmartschoolClient.defaultCacheDir('john.doe'));
+if (dir.existsSync()) dir.deleteSync(recursive: true);
+```
+
+An app can keep its own per-user data in the folder, so it is found and cleaned up together with the library's: put it in a subfolder of its own and leave the library's files alone (call `clearCookies()` to delete the session).
 
 ### Logging in again
 
@@ -159,6 +180,28 @@ When Smartschool refuses the session for a request (it expired, or was never the
 Pass `retryAfterLogin: false` to `postFormRaw`, `postFormResponse`, `postMultipartRaw` or `postMultipartResponse` for a request that carries state of the session it was prepared in, such as the tokens of Smartschool's compose form: a retry would send that state in a session it does not belong to. When Smartschool refuses the session for such a request, it is neither retried nor used to log in again: it throws `SmartschoolSessionExpiredError` at once, and the next refused request logs in. `MessagesService.sendMessage` sends its steps after loading the compose form this way.
 
 That covers the request being refused. A login replaces the client's session whichever request it runs for, and Smartschool then accepts such a request in the new session, stale state and all. Pass `sameSessionAs` too, the earlier answer the state comes from (for instance the page, loaded with `getResponse`), for a request that must go out only in that answer's session: when a login started on the client since that answer's request went out, or one runs, the request is not sent and throws `SmartschoolSessionExpiredError` at once. A login that runs or failed counts as well as one that completed: the login replaces the session cookie as soon as it loads its login form, and a login that failed after Smartschool accepted it (the connection dropped on its last answer) leaves the new session behind. `MessagesService.sendMessage` and `sendReply` send their steps after loading the compose form this way too.
+
+### Downloads
+
+`download(path)` (and `IntradeskService.downloadFile`, `MessageAttachment.download`) returns the whole file in memory. `downloadStream(path)` (and `IntradeskService.downloadFileStream`, `MessageAttachment.downloadStream`) returns a `SmartschoolDownload` as soon as the headers of Smartschool's answer are in, before the file is read:
+
+- `contentLength`: the size Smartschool announces (`Content-Length`), or `null` when it announces none (or the content comes in encoded, such as gzip);
+- `fileName`: the name in `Content-Disposition` (`filename*` in UTF-8 or ISO-8859-1 when there is one, else `filename`), as Smartschool sends it: check it before using it as a path;
+- `contentType`: as Smartschool gives it. Intradesk answers `application/x-www-form-urlencoded` for every file, so tell the type from the name;
+- `stream`: the content, as it comes in. Pausing the subscription pauses the transfer; cancelling it, or calling `cancel()` on the download, stops the transfer and closes the connection (Dio alone would read the answer to its end). Listen to it right away: until then, what comes in is held in memory.
+
+Pass `maxBytes` to any of them to refuse a larger file: the download fails with a `SmartschoolDownloadTooLargeError` (carrying `maxBytes` and the announced `contentLength`) as soon as the file turns out larger. When Smartschool announces a larger size, that happens before any of it is read (`downloadStream` throws it); otherwise the bytes are counted as they come in, and the download fails once more than `maxBytes` came in (`stream` ends with the error, after at most `maxBytes` bytes). Either way the client stops the transfer. The size in an Intradesk listing may be out of date; `maxBytes` checks the file itself.
+
+```dart
+final download = await IntradeskService(client).downloadFileStream(
+  file.id,
+  maxBytes: 25 * 1024 * 1024,
+);
+print('${download.fileName}: ${download.contentLength} bytes');
+await download.stream.pipe(File('out.bin').openWrite());
+```
+
+A download on a session that Smartschool refuses is handled as every request (see *Logging in again* above): the client reads the login page it gets instead of the file, logs in and retries, and the stream holds the answer to the retry; when the retry is refused too, it throws `SmartschoolSessionExpiredError` and hands nothing over. Another status than `200` (such as `404` for an Intradesk file that does not exist) throws a `SmartschoolDownloadError`, and a connection that fails, also halfway through the file, a `SmartschoolConnectionError`.
 
 ---
 
@@ -219,7 +262,7 @@ for (final attachment in attachments) {
 | `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. |
 | `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. |
 | `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. |
-| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash. |
+| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it. Not for a message already in the trash (Smartschool's web client deletes that one for good). |
 | `moveToArchive(msgIds)` | `Future<List<MessageChanged>>` | Archives one or more messages (REST endpoint). |
 
 ### Composing & searching
@@ -242,7 +285,31 @@ for (final attachment in attachments) {
 | `subject` | `String` | required | The subject. |
 | `bodyHtml` | `String` | required | The body, as HTML. |
 | `attachmentPaths` | `List<String>` | `[]` | Paths of local files to attach; each is uploaded before the submit. |
-| `options` | `MessageSendOptions` | `MessageSendOptions()` | Leave it at its default. Its fields `requestReadReceipt`, `highPriority` (both `false`) and `extra` are deprecated: Smartschool's compose form has no read receipt or priority, and the submit already holds every field of the form, so none of them can be sent. A send that sets one (`true`, or a non-empty `extra`) throws an `ArgumentError` before any request, and sends nothing, instead of sending the message without it (#43). The form's own options, storing the message in the LVS and a delayed send, are submitted with its defaults: not stored, sent now (#47). |
+| `options` | `MessageSendOptions` | `MessageSendOptions()` | The compose form's own options (see below). The default sends the message as the compose form does by default: not stored in the LVS, sent now. |
+
+`MessageSendOptions` holds the options of Smartschool's compose form (#47), each submitted in its own field of the form:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `lvsCopy` | `LvsCopy` | `LvsCopy.none` | Whether Smartschool stores the message in the LVS: the form's `copyToLVS` select. `none` (`dontCopyToLVS`, the option the form selects), `store` (`copyToLVS`, "Bericht bewaren in het LVS") or `storeConfidential` (`copyToLVSAndMarkAsPrivate`, "… en markeren als vertrouwelijk"). An option other than `none` is sent only when the loaded form offers it: Smartschool leaves the select out for an account that may not store messages in the LVS, and the send then throws a `SmartschoolComposeError` before registering any recipient (nothing was sent). |
+| `sendAt` | `DateTime?` | `null` (send now) | A delayed send, as the "Uitgesteld versturen" dialog of Smartschool's web client schedules it: Smartschool sends the message at that time, and until then the web client counts it in the scheduled box (`BoxType.scheduled`). It must be after now and at most a year ahead (until the end of the same day next year, the last day the dialog offers), or the send throws an `ArgumentError` before any request. It goes in the form's `sendDate` field as the dialog writes it: ISO 8601 in the local time of the machine, to the second, with its UTC offset (`2026-10-02T07:30:00+02:00`, or `…Z` on a machine that runs on UTC); the instant is the same whatever the time zone of the `DateTime`. When the loaded form offers no delayed send (scheduled messages not enabled for the account), the send throws a `SmartschoolComposeError` before registering any recipient. |
+| `requestReadReceipt`, `highPriority`, `extra` | `bool`, `bool`, `Map<String, dynamic>?` | `false`, `false`, `null` | Deprecated: Smartschool's compose form has no read receipt or priority, and the submit already holds every field of the form, so none of them can be sent. A send that sets one (`true`, or a non-empty `extra`) throws an `ArgumentError` before any request, and sends nothing, instead of sending the message without it (#43). |
+
+Not verified with a real send (the library's tests never send one): Smartschool's answer to the submit of a scheduled message, which `sendMessage` and `sendReply` take as a sent one only when it is the answer to a sent message (another answer is a `SmartschoolSendUnconfirmedError`, which for a delayed send says to check the scheduled box); whether Smartschool reads the offset of a time outside Belgium's time zone (a browser in Belgium always sends `+01:00` or `+02:00`); and what Smartschool does with an LVS copy, for instance of a message to recipients who are not pupils.
+
+```dart
+await messages.sendMessage(
+  SendMessageParams(
+    to: [pupil],
+    subject: 'Remediëring',
+    bodyHtml: '<p>Tot maandag.</p>',
+    options: MessageSendOptions(
+      lvsCopy: LvsCopy.store,
+      sendAt: DateTime(2026, 10, 5, 7, 30), // Monday morning, local time
+    ),
+  ),
+);
+```
 
 Get the recipients from `searchRecipientsForCompose`, `getCurrentUserAsRecipient`, or for a reply from `getReplyRecipients` / `getReplyAllRecipients`:
 
@@ -259,7 +326,7 @@ final params = SendMessageParams(
 await messages.sendMessage(params);
 ```
 
-`sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
+`sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box (for a delayed send, the scheduled box) before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
 
 ```dart
 try {
@@ -411,15 +478,27 @@ final intradesk = IntradeskService(client);
 // Root listing
 final root = await intradesk.getRootListing();
 for (final folder in root.folders) {
-  print('${folder.name}  hasChildren: ${folder.hasChildren}');
+  print('${folder.name}  hasSubfolders: ${folder.hasSubfolders}');
 }
 
-// Drill into a sub-folder
+// Drill into a sub-folder (also one without subfolders: it can still hold
+// files and weblinks)
 final sub = await intradesk.getFolderListing(root.folders.first.id);
+for (final link in sub.weblinks) {
+  print('${link.name}: ${link.url}');
+}
 
 // Download a file
 final bytes = await intradesk.downloadFile(sub.files.first.id);
 await File('output.docx').writeAsBytes(bytes);
+
+// Or stream it to disk, refusing anything above 25 MB
+final download = await intradesk.downloadFileStream(
+  sub.files.first.id,
+  maxBytes: 25 * 1024 * 1024,
+);
+print('${download.fileName}: ${download.contentLength} bytes');
+await download.stream.pipe(File('output.docx').openWrite());
 ```
 
 ### Methods
@@ -427,8 +506,9 @@ await File('output.docx').writeAsBytes(bytes);
 | Method | Returns | Description |
 |---|---|---|
 | `getRootListing()` | `Future<IntradeskListing>` | Root-level folders, files, and weblinks. |
-| `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. |
-| `downloadFile(fileId)` | `Future<Uint8List>` | Raw bytes of the identified file. |
+| `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. Throws a `SmartschoolIntradeskFolderNotFoundError` when Smartschool knows no folder with that ID (an unknown ID, or the ID of a file or a weblink). |
+| `downloadFile(fileId, {maxBytes})` | `Future<Uint8List>` | Raw bytes of the identified file. With `maxBytes`, throws a `SmartschoolDownloadTooLargeError` as soon as the file turns out larger (see *Downloads* above). A `SmartschoolDownloadError` with status `404` when there is no such file. |
+| `downloadFileStream(fileId, {maxBytes})` | `Future<SmartschoolDownload>` | The same file as a stream, with its size and name, as soon as the headers are in (see *Downloads* above). |
 
 > **Not yet implemented**: file upload — the server-side endpoint and required form fields have not been captured safely.  
 > **Not scoped**: the `/recent` endpoint returns an SPA HTML shell, not a JSON listing.
@@ -542,7 +622,10 @@ A recipient in `FullMessage.toRecipients` / `ccRecipients` / `bccRecipients`. Fi
 ### `MessageAttachment`
 Returned by `getAttachments`. Fields: `fileId`, `name`, `mime`, `size`, `icon`, `wopiAllowed`, `order`.
 
-Use `attachment.download(client)` to fetch raw bytes for a specific attachment.
+Use `attachment.download(client)` to fetch raw bytes for a specific attachment, or `attachment.downloadStream(client)` for a `SmartschoolDownload`; both take `maxBytes` (see *Downloads* under `SmartschoolClient`).
+
+### `SmartschoolDownload`
+Returned by `SmartschoolClient.downloadStream`, `IntradeskService.downloadFileStream` and `MessageAttachment.downloadStream` as soon as the headers of the answer are in. Fields: `contentLength` (`int?`), `fileName` (`String?`), `contentType` (`String?`), `headers`, `stream` (`Stream<List<int>>`, the content as it comes in, to be read once), and `cancel()`. See *Downloads* under `SmartschoolClient`.
 
 ### `MessageSearchUser` / `MessageSearchGroup`
 Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompose`; users also by `getCurrentUserAsRecipient`, `getReplyRecipients`, `getReplyAllRecipients` and `getSentMessageRecipients`. Key fields: `userId`/`groupId`, `ssId`, `userLt` (users only), `displayName`.
@@ -551,7 +634,7 @@ Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompo
 Returned by `SmartschoolClient.getCurrentUser()`. Fields: `id` (int — server-assigned numeric user ID), `displayName` (String), `avatarUrl` (String? — profile picture URL).
 
 ### `MessageChanged` / `MessageDeletionStatus`
-Returned by mutation operations. Carry the `id` of the affected message and a `newValue` / status field.
+Returned by mutation operations. `MessageChanged` carries the `id` of the affected message and its `newValue`. `MessageDeletionStatus` (from `moveToTrash`) carries the `msgId`, the `boxType` it was in, `isDeleted` (`true` when Smartschool confirms the deletion) and `unread`, the read state of the message.
 
 ### `NotificationCounterUpdate`
 Transport-agnostic event produced by any notification source (WebSocket, polling bridge, or manual emit).
@@ -576,13 +659,18 @@ Produced by `MessagesService` after deduplication and emitted on `messageCounter
 | `timestamp` | `DateTime` | When the event was created. |
 
 ### `IntradeskListing`
-Returned by `getRootListing` / `getFolderListing`. Fields: `folders` (`List<IntradeskFolder>`), `files` (`List<IntradeskFile>`), `weblinks` (raw maps).
+Returned by `getRootListing` / `getFolderListing`. Fields: `folders` (`List<IntradeskFolder>`), `files` (`List<IntradeskFile>`), `weblinks` (`List<IntradeskWeblink>`).
 
 ### `IntradeskFolder`
 Fields: `id`, `name`, `color`, `state`, `visible`, `confidential`, `parentFolderId` (empty at root), `hasChildren`, `isFavourite`, `capabilities` (`IntradeskFolderCapabilities`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
 
+`hasChildren` is Smartschool's own flag for its folder tree and counts **subfolders only**: a folder with `hasChildren` false can still hold files and weblinks, so list it anyway to find them. `hasSubfolders` is the same value under a name that says what it counts.
+
 ### `IntradeskFile`
 Fields: `id`, `name`, `state`, `parentFolderId`, `ownerId`, `confidential`, `isFavourite`, `currentRevision` (`IntradeskFileRevision?`), `capabilities` (`IntradeskFileCapabilities`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
+
+### `IntradeskWeblink`
+A link to a web page, kept in a folder next to its files. Fields: `id`, `name`, `url`, `icon` (Smartschool's icon name, e.g. `folder_orange`), `state`, `parentFolderId`, `ownerId`, `confidential`, `isFavourite`, `capabilities` (`IntradeskWeblinkCapabilities`: `canManage`, `canMove`, `canSeeHistory`, `canSeeViewHistory`), `platform`, `dateCreated`, `dateChanged`, `dateStateChanged`.
 
 ### `IntradeskFileRevision`
 Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCreated`, `owner` (`IntradeskFileOwner`).
@@ -609,6 +697,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SortField` | `date`, `from`, `readUnread`, `attachment`, `flag` |
 | `SortOrder` | `asc`, `desc` |
 | `RecipientType` | `to`, `cc`, `bcc` |
+| `LvsCopy` | `none` (`dontCopyToLVS`), `store` (`copyToLVS`), `storeConfidential` (`copyToLVSAndMarkAsPrivate`) |
 | `MessageLabel` | `noFlag`, `greenFlag`, `yellowFlag`, `redFlag`, `blueFlag` |
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 
@@ -627,10 +716,12 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
 | `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`), or a request sent with `retryAfterLogin: false` (such as a step of `sendMessage`) is refused, or a request sent with `sameSessionAs` (such as a step of `sendMessage`) is not sent because the client logged in again since that answer was loaded. The request was not carried out: sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
-| `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient) |
-| `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box before sending it again. Not a `SmartschoolComposeError` |
+| `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient). Both throw it too when the form does not offer the LVS copy or the delayed send that `params.options` asks for (#47) |
+| `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
+| `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
+| `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |
 
 The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. They are thrown directly, by `ensureAuthenticated()` and also by a service call (or any `SmartschoolClient` request method) that finds the session cold or expired and fails to log in again, so the same `on` clauses work around either. Only a request made on `client.dio` itself gets them wrapped in a `DioException`, as its `error`.
 

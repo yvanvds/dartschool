@@ -22,6 +22,7 @@ library;
 
 // Core session + credentials
 export 'src/credentials.dart';
+export 'src/download.dart' show SmartschoolDownload;
 export 'src/session.dart';
 
 // Exceptions

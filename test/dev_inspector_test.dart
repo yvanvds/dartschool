@@ -1,7 +1,11 @@
 import 'package:flutter_smartschool/src/dev/dev_inspector.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   group('DevInspector', () {
     test('parseQueryString returns correct map', () {
       final result = DevInspector.parseQueryString('a=1&b=2&c=');

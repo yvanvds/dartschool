@@ -1,7 +1,11 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:test/test.dart';
 
+import 'support/no_network.dart';
+
 void main() {
+  forbidRealNetwork();
+
   group('SmartschoolParsingError', () {
     test('toString returns message', () {
       final err = SmartschoolParsingError('fail');

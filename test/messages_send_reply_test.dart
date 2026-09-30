@@ -37,6 +37,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/add_recipient_answer.dart';
+import 'support/no_network.dart';
 import 'support/remove_recipient_answer.dart';
 
 const _host = 'school.smartschool.be';
@@ -416,6 +417,8 @@ Matcher _composeError(List<String> texts) => isA<SmartschoolComposeError>()
     .having((e) => e.message, 'message', stringContainsInOrder(texts));
 
 void main() {
+  forbidRealNetwork();
+
   late Directory tempDir;
   late SmartschoolClient client;
   late MessagesService messages;

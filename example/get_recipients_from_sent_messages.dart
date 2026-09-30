@@ -24,8 +24,9 @@ Future<void> main() async {
   // ── Fetch sent headers ────────────────────────────────────────────────────
 
   print('Fetching 20 most recent sent messages …');
-  final headers =
-      (await messages.getHeaders(boxType: BoxType.sent)).take(20).toList();
+  final headers = (await messages.getHeaders(
+    boxType: BoxType.sent,
+  )).take(20).toList();
   print('  → ${headers.length} messages retrieved.\n');
 
   if (headers.isEmpty) {

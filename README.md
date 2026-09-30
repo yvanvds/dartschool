@@ -393,7 +393,7 @@ Status codes are **not hard-coded** — their numeric IDs are per-school/per-str
 An expired session and a missing access right need opposite actions, so they arrive as different types:
 
 - `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help.
-- `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again where it could. The request was not carried out: sign in again and retry.
+- `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again and retried the request once. The request was not carried out: sign in again and retry.
 
 ```dart
 try {
@@ -511,7 +511,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
-| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: a request is still answered with `401` after logging in again, or (`PresenceService`) the login chain answers a request. Sign in again and retry |
+| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`). Sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |

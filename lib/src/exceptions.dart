@@ -125,14 +125,16 @@ class SmartschoolAccountVerificationRejectedError
 ///
 /// Smartschool signals this in two ways: it answers an XHR or form POST with
 /// `401`, or it redirects the request to the login chain (`/login`, `/2fa`,
-/// `/account-verification`). Where the client recognises it, it logs in again
-/// and retries the request once on its own, so this error means the session
-/// has expired, or the new one was not taken into account. The request was
-/// not carried out, so it is safe to sign in again (for instance with a new
+/// `/account-verification`; a POST sent without `X-Requested-With` gets a
+/// `302` to `/login`). The client then logs in again and retries the request
+/// once on its own, so this error means Smartschool refused the retry too:
+/// the new session was not taken into account either. The request was not
+/// carried out, so it is safe to sign in again (for instance with a new
 /// `SmartschoolClient`, after `clearCookies()`) and retry.
 ///
-/// Thrown when a request is still answered with `401` after logging in again,
-/// and by `PresenceService` when the login chain answers one of its requests.
+/// Thrown by the request methods of `SmartschoolClient`, and so by every
+/// service, when that retry is still answered with `401` or by the login
+/// chain.
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own

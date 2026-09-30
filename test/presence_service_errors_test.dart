@@ -12,8 +12,10 @@
 // - A POST that is redirected to `/login` instead (what Smartschool does with
 //   a POST sent without `X-Requested-With`) gets `302 Location: /login` and a
 //   "Redirecting to /login" HTML page, which the HTTP client does not follow
-//   for a POST. A retry can also land on the login page itself. Both are the
-//   login chain answering: `SmartschoolSessionExpiredError`.
+//   for a POST. Since #22 the client logs in again for it too and retries
+//   once. A retry that is redirected to the login chain again, or lands on
+//   the login page itself, is the login chain answering:
+//   `SmartschoolSessionExpiredError`.
 // - With the session accepted, a request the module cannot handle (an
 //   invalid request, such as `getClass` with `includePupils=0`, or an unknown
 //   action) gets HTTP `500` with Smartschool's generic "Oeps, er ging iets
@@ -109,6 +111,9 @@ ResponseBody _json(String body) =>
 /// The Presence module refusing the request.
 ResponseBody _refused() => _response(_errorPage, status: 500);
 
+/// Smartschool refusing the session for an XHR/form POST (#8).
+ResponseBody _unauthorized() => _response('', status: 401);
+
 /// A redirect the HTTP client leaves unfollowed, as it does for a POST, with
 /// the page Smartschool (Symfony) sends along with it.
 ResponseBody _redirect(String location) => ResponseBody.fromString(
@@ -150,16 +155,23 @@ ResponseBody _response(
 
 /// A Smartschool whose Presence endpoints answer from [answers].
 ///
-/// With [sessionAccepted] false, the Presence endpoints answer a bare `401`
-/// (as Smartschool does for an XHR/form POST on an expired session) until the
-/// client has gone through password and 2FA again; they then answer with
-/// [afterLogin] when given, or else from [answers].
+/// With [sessionAccepted] false, the Presence endpoints answer with [refusal]
+/// (by default a bare `401`, as Smartschool does for an XHR/form POST on an
+/// expired session) until the client has gone through password and 2FA
+/// again; they then answer with [afterLogin] when given, or else from
+/// [answers].
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(this.answers, {this.sessionAccepted = true, this.afterLogin});
+  _Smartschool(
+    this.answers, {
+    this.sessionAccepted = true,
+    this.afterLogin,
+    this.refusal = _unauthorized,
+  });
 
   final Map<String, _Answer> answers;
   final bool sessionAccepted;
   final _Answer? afterLogin;
+  final _Answer refusal;
 
   bool _passwordDone = false;
   bool _twoFaDone = false;
@@ -194,7 +206,7 @@ class _Smartschool implements HttpClientAdapter {
 
     if (path.startsWith('/Presence/')) {
       final loggedIn = _passwordDone && _twoFaDone;
-      if (!sessionAccepted && !loggedIn) return _response('', status: 401);
+      if (!sessionAccepted && !loggedIn) return refusal();
       if (loggedIn && afterLogin != null) return afterLogin!();
       final answer = answers[path];
       return answer == null ? _response('', status: 404) : answer();
@@ -256,11 +268,13 @@ void main() {
     Map<String, _Answer> answers, {
     bool sessionAccepted = true,
     _Answer? afterLogin,
+    _Answer refusal = _unauthorized,
   }) async {
     final server = _Smartschool(
       answers,
       sessionAccepted: sessionAccepted,
       afterLogin: afterLogin,
+      refusal: refusal,
     );
     client = await SmartschoolClient.create(
       _Credentials(),
@@ -329,35 +343,61 @@ void main() {
     });
   });
 
-  group('the login chain answers a Presence request (#5)', () {
-    test('a redirect to /login is a SmartschoolSessionExpiredError', () async {
-      // Before the fix: SmartschoolPresenceError ("The session may have
-      // expired, or the account lacks Presence access").
-      await serve({_getConfig: () => _redirect('/login')});
+  group('the login chain answers a Presence request (#5, #22)', () {
+    test('a redirect to /login is a SmartschoolSessionExpiredError, after '
+        'logging in again and retrying once', () async {
+      // Before #5: SmartschoolPresenceError ("The session may have expired,
+      // or the account lacks Presence access"). Before #22: the same error
+      // type, but thrown by PresenceService itself, without logging in again.
+      final server = await serve({_getConfig: () => _redirect('/login')});
 
       await expectLater(
         PresenceService(client).getConfig(),
         throwsA(_sessionExpired(message: contains('/login'))),
       );
+      expect(server.posts(_getConfig), 2, reason: 'retried once');
+      expect(server.posts('/login'), 1, reason: 'logged in once');
     });
 
-    test('a redirect to /2fa is a SmartschoolSessionExpiredError', () async {
-      await serve({_getAllCodes: () => _redirect('/2fa')});
+    test('a redirect to /2fa is a SmartschoolSessionExpiredError, after '
+        'logging in again and retrying once', () async {
+      final server = await serve({_getAllCodes: () => _redirect('/2fa')});
 
       await expectLater(
         PresenceService(client).getAllCodes(311),
-        throwsA(_sessionExpired()),
+        throwsA(_sessionExpired(message: contains('/2fa'))),
       );
+      expect(server.posts(_getAllCodes), 2, reason: 'retried once');
+      expect(server.posts('/login'), 1, reason: 'logged in once');
     });
 
     test('setLate: a save redirected to /login is a '
-        'SmartschoolSessionExpiredError', () async {
-      await serve(_recordable(save: () => _redirect('/login')));
+        'SmartschoolSessionExpiredError, after logging in again and retrying '
+        'once', () async {
+      final server = await serve(_recordable(save: () => _redirect('/login')));
 
       await expectLater(
         _setLate(PresenceService(client)),
         throwsA(_sessionExpired()),
       );
+      expect(server.posts(_save), 2, reason: 'retried once');
+    });
+
+    test('a redirect to /login that the retry after logging in again no '
+        'longer gets returns the data (#22)', () async {
+      // Before the fix: SmartschoolSessionExpiredError, without logging in
+      // again.
+      final server = await serve(
+        {_getConfig: () => _json(_configJson)},
+        sessionAccepted: false,
+        refusal: () => _redirect('/login'),
+      );
+
+      final config = await PresenceService(client).getConfig();
+
+      expect(config.classForGroup(298)?.structId, 311);
+      expect(server.posts(_getConfig), 2, reason: 'redirect, then the retry');
+      expect(server.posts('/2fa/api/v1/google-authenticator'), 1);
     });
 
     test('a retry that lands on the login page again is a '

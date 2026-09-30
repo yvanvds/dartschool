@@ -255,9 +255,10 @@ class SmartschoolClient {
   /// [Response]: the status code, the headers and the final URL
   /// (`realUri`) as well as the body.
   ///
-  /// Used when the body alone cannot tell what answered: an HTML page can be
-  /// the login chain (the session was not accepted) or an error page of the
-  /// module itself.
+  /// Used when the body alone is not enough, such as for the HTTP status of
+  /// an error page. (An answer of the login chain never arrives here: the
+  /// client logs in again and retries the request once, and throws a
+  /// [SmartschoolSessionExpiredError] when the retry is refused too.)
   Future<Response<String>> postFormResponse(
     String path,
     Map<String, String> fields, {
@@ -867,12 +868,20 @@ class SmartschoolClient {
 /// authenticated, drives the authentication flow transparently, then retries
 /// the original request once.
 ///
-/// Smartschool signals an unauthenticated session in two ways:
+/// Smartschool signals an unauthenticated session in three ways:
 /// - a page request (GET) is redirected to the login chain (`/login`, `/2fa`,
 ///   `/account-verification`), so the response lands on an auth page;
 /// - an XHR or form POST (the XML dispatcher, for instance) is answered with a
 ///   bare `401` and an empty body (#8). The chain is then started by fetching
-///   `/login`.
+///   `/login`;
+/// - a POST sent without `X-Requested-With` (a multipart or JSON POST) is
+///   answered with `302 Location: /login` and a "Redirecting to /login" page,
+///   a redirect the HTTP client does not follow after a POST (#22). The chain
+///   is then started by fetching the `Location`, as a browser would.
+///
+/// A retry that Smartschool refuses again, in any of these ways, is not
+/// retried again: it fails with a [SmartschoolSessionExpiredError] (#22), so
+/// the caller never gets a login page in place of the data.
 ///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
@@ -900,8 +909,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     }
 
     final realUri = response.realUri;
-    final onLoginChain = _client.isAuthUri(realUri);
-    if (!onLoginChain && !_isUnauthorized(response)) {
+    final loginChain = _loginChainTarget(response);
+    if (loginChain == null && !_isUnauthorized(response)) {
       _resetAttempts(realUri);
       handler.next(response);
       return;
@@ -923,17 +932,25 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     _loginAttempts++;
 
     try {
-      if (onLoginChain) {
+      if (_client.isAuthUri(realUri)) {
+        // Redirected onto the login chain: the response is its first page.
         await _driveAuthChain(realUri, response);
       } else {
-        // A 401 does not say where the login chain starts: open it ourselves.
-        final loginPage = await _client._rawGet('/login');
+        // A 401 does not say where the login chain starts, and a redirect the
+        // HTTP client left unfollowed only points at it: open it ourselves.
+        final loginPage = await _client._rawGet(
+          loginChain?.toString() ?? '/login',
+        );
         await _driveAuthChain(loginPage.realUri, loginPage);
       }
 
       // Re-issue the original request now that we are authenticated
+      final data = response.requestOptions.data;
       final originalOptions = response.requestOptions.copyWith(
         extra: {...response.requestOptions.extra, _retryKey: true},
+        // A FormData body is consumed by sending it: a multipart POST (the
+        // message send, an attachment upload) is retried with a copy (#22).
+        data: data is FormData ? data.clone() : data,
       );
       // The copied headers include the `Cookie` header CookieManager put on
       // the original request, with the session id that was just refused.
@@ -942,10 +959,20 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       // retry gets its cookies from the jar, which holds the new session.
       originalOptions.headers.remove(HttpHeaders.cookieHeader);
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
+      final request = '${originalOptions.method} ${originalOptions.uri}';
       if (_isUnauthorized(retried)) {
         throw SmartschoolSessionExpiredError(
-          'Smartschool still answered 401 to ${originalOptions.method} '
-          '${originalOptions.uri} after logging in again',
+          'Smartschool still answered 401 to $request after logging in again',
+        );
+      }
+      // Only one retry: a retry that lands on the login chain again (or is
+      // redirected there) is not the data, and logging in once more would
+      // not help either (#22).
+      final stillOnLoginChain = _loginChainTarget(retried);
+      if (stillOnLoginChain != null) {
+        throw SmartschoolSessionExpiredError(
+          'Smartschool still answered $request with its login chain '
+          '(${stillOnLoginChain.path}) after logging in again',
         );
       }
       handler.resolve(retried);
@@ -962,6 +989,28 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// to the login chain.
   static bool _isUnauthorized(Response<dynamic> response) =>
       response.statusCode == HttpStatus.unauthorized;
+
+  /// The page of the login chain (`/login`, `/2fa`, `/account-verification`)
+  /// that [response] comes from or redirects to, or `null` when it is not an
+  /// answer of the login chain.
+  ///
+  /// The HTTP client follows a redirect after a GET itself, so the final URL
+  /// (`realUri`) is on the login chain. It does not follow one after a POST
+  /// (only a `303`): Smartschool answers a POST sent without
+  /// `X-Requested-With` on an expired session with `302 Location: /login`, so
+  /// the response keeps the requested URL and only its `Location` points at
+  /// the login chain (#22).
+  Uri? _loginChainTarget(Response<dynamic> response) {
+    final realUri = response.realUri;
+    if (_client.isAuthUri(realUri)) return realUri;
+
+    final status = response.statusCode ?? 0;
+    if (status < 300 || status >= 400) return null;
+    final location = response.headers.value(HttpHeaders.locationHeader);
+    if (location == null || location.isEmpty) return null;
+    final target = realUri.resolve(location);
+    return _client.isAuthUri(target) ? target : null;
+  }
 
   Future<void> _driveAuthChain(Uri uri, Response<dynamic> response) async {
     final path = uri.path;

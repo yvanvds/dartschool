@@ -133,7 +133,9 @@ await client.ensureAuthenticated();
 
 | Method / getter | Description |
 |---|---|
-| `SmartschoolClient.create(credentials, {cacheDir, loginCooldown, clock})` | Factory — creates the Dio client, configures cookie jar, returns ready instance. `loginCooldown` (default 5 minutes) and `clock` (default `DateTime.now`): see *Logging in again* below |
+| `SmartschoolClient.create(credentials, {cacheDir, loginCooldown, clock})` | Factory — creates the Dio client, configures cookie jar, returns ready instance. `cacheDir`: see *Cache folder* below. `loginCooldown` (default 5 minutes) and `clock` (default `DateTime.now`): see *Logging in again* below |
+| `cacheDir` | The folder this client keeps its per-user data in (see *Cache folder* below) |
+| `SmartschoolClient.defaultCacheDir(username)` | Static — the folder `create` uses for `username` when it is given no `cacheDir` (see *Cache folder* below) |
 | `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly. Throws a `SmartschoolAuthenticationError` subtype when the login fails, a `SmartschoolConnectionError` when Smartschool is unreachable |
 | `clearCookies()` | Deletes persisted cookies (use this for explicit logout/session reset). |
 | `resetLoginAttempts()` | Lets a client that stopped logging in on its own log in again at once (see *Logging in again* below) |
@@ -151,6 +153,23 @@ await client.ensureAuthenticated();
 | `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
 | `dispose({force})` | Closes the notification stream and the underlying Dio client |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
+
+### Cache folder
+
+A client keeps its per-user data, such as the saved session cookies (in `.cookies`), in a cache folder, so a new client for the same user carries on in the saved session. Pass `cacheDir` to `create` to choose the folder; without it, the client uses `.cache/smartschool/<username>` in the user's home folder: the `HOME` environment variable, or `USERPROFILE` when `HOME` is not set (as on Windows, where that is typically `C:\Users\<name>\.cache\smartschool\<username>`), or the current directory when neither is set. `create` makes the folder when it does not exist yet.
+
+`client.cacheDir` is the folder a client uses, default or given. `SmartschoolClient.defaultCacheDir(username)` is the default folder for a username, without a client; it only works out the path, and does not create the folder. Use these rather than building the path yourself, so an app keeps finding the folder if the library's default changes.
+
+```dart
+final client = await SmartschoolClient.create(credentials);
+final myCache = Directory(p.join(client.cacheDir, 'my_app')); // next to the library's data
+
+// Without a client, for example to clean up after a user signs out:
+final dir = Directory(SmartschoolClient.defaultCacheDir('john.doe'));
+if (dir.existsSync()) dir.deleteSync(recursive: true);
+```
+
+An app can keep its own per-user data in the folder, so it is found and cleaned up together with the library's: put it in a subfolder of its own and leave the library's files alone (call `clearCookies()` to delete the session).
 
 ### Logging in again
 

@@ -11,6 +11,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:otp/otp.dart';
 import 'package:path/path.dart' as p;
 
+import 'cache_dir.dart';
 import 'credentials.dart';
 import 'exceptions.dart';
 import 'models/notification_models.dart';
@@ -44,6 +45,21 @@ const String kAccountVerificationPath = '/account-verification';
 /// ```
 class SmartschoolClient {
   final Credentials credentials;
+
+  /// The folder this client keeps its per-user data in, such as the saved
+  /// session cookies (in `.cookies`), which let a new client for the same user
+  /// carry on in that session (#30).
+  ///
+  /// It is the `cacheDir` given to [create], exactly as given, or
+  /// [defaultCacheDir] for the username of [credentials] when none was given.
+  /// [create] makes the folder when it does not exist yet.
+  ///
+  /// An app can keep its own per-user data here too, so that it is found and
+  /// cleaned up together with the library's: put it in a subfolder of its own
+  /// and leave the library's files alone (call [clearCookies] to delete the
+  /// session).
+  final String cacheDir;
+
   final Dio _dio;
   final StreamController<NotificationCounterUpdate>
   _notificationCounterController =
@@ -66,10 +82,28 @@ class SmartschoolClient {
 
   SmartschoolClient._({
     required this.credentials,
+    required this.cacheDir,
     required Dio dio,
     required PersistCookieJar cookieJar,
   }) : _dio = dio,
        _cookieJar = cookieJar;
+
+  /// The folder that [create] keeps the per-user data of [username] in when
+  /// it is given no `cacheDir` (#30).
+  ///
+  /// That is `.cache/smartschool/<username>` in the user's home folder: the
+  /// `HOME` environment variable, or `USERPROFILE` when `HOME` is not set (as
+  /// on Windows, where it is typically `C:\Users\<name>`), or the current
+  /// directory when neither is set (the path is then relative). Call this
+  /// rather than building the path yourself, so it keeps matching [create]
+  /// if the library's default ever changes.
+  ///
+  /// It only works out the path: it does not create the folder, and does not
+  /// tell whether it exists. Use it to find a user's folder without a client,
+  /// for example to clean it up; a client reports the folder it actually
+  /// uses, default or given, as [cacheDir].
+  static String defaultCacheDir(String username) =>
+      defaultCacheDirFor(username, Platform.environment);
 
   /// Exposes the underlying [Dio] instance for low-level / dev-tool use.
   ///
@@ -94,6 +128,11 @@ class SmartschoolClient {
   /// Creates and configures a [SmartschoolClient].
   ///
   /// Call this factory instead of the private constructor.
+  ///
+  /// [cacheDir] is the folder the client keeps its per-user data in, such as
+  /// the saved session cookies; it defaults to [defaultCacheDir] for the
+  /// username of [credentials], and is made when it does not exist yet. The
+  /// client reports it as [SmartschoolClient.cacheDir].
   ///
   /// When Smartschool refuses the session for a request, the client logs in
   /// again and retries it. Requests share that login: one that Smartschool
@@ -122,7 +161,7 @@ class SmartschoolClient {
       );
     }
 
-    final cachePath = cacheDir ?? _defaultCachePath(credentials.username);
+    final cachePath = cacheDir ?? defaultCacheDir(credentials.username);
     await Directory(cachePath).create(recursive: true);
 
     final cookieJar = PersistCookieJar(
@@ -146,6 +185,7 @@ class SmartschoolClient {
 
     final client = SmartschoolClient._(
       credentials: credentials,
+      cacheDir: cachePath,
       dio: dio,
       cookieJar: cookieJar,
     );
@@ -989,14 +1029,6 @@ class SmartschoolClient {
   }
 
   static String get _noAuthKey => '_smartschool_noAuth';
-
-  static String _defaultCachePath(String username) {
-    final home =
-        Platform.environment['HOME'] ??
-        Platform.environment['USERPROFILE'] ??
-        '.';
-    return p.join(home, '.cache', 'smartschool', username);
-  }
 
   /// Describes [e] when it means Smartschool could not be reached (the request
   /// got no complete answer), or returns `null` for any other failure.

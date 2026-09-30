@@ -876,6 +876,12 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       final originalOptions = response.requestOptions.copyWith(
         extra: {...response.requestOptions.extra, _retryKey: true},
       );
+      // The copied headers include the `Cookie` header CookieManager put on
+      // the original request, with the session id that was just refused.
+      // CookieManager would merge it with the jar and list it first, so
+      // Smartschool would read the stale session again (#9). Drop it: the
+      // retry gets its cookies from the jar, which holds the new session.
+      originalOptions.headers.remove(HttpHeaders.cookieHeader);
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
       if (_isUnauthorized(retried)) {
         throw SmartschoolAuthenticationError(

@@ -6,7 +6,7 @@
 //
 // The fake Smartschool below keeps the session state itself and ignores the
 // cookies the client sends: it tests what the interceptor does with a 401,
-// not the cookie handling of the retry.
+// not the cookie handling of the retry (see session_retry_cookie_test.dart).
 import 'dart:io';
 import 'dart:typed_data';
 

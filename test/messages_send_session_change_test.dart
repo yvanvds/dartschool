@@ -37,6 +37,7 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 import 'support/add_recipient_answer.dart';
+import 'support/remove_recipient_answer.dart';
 
 const _host = 'school.smartschool.be';
 const _sessionCookie = 'PHPSESSID';
@@ -92,7 +93,9 @@ const _loginPage = '''
 ''';
 
 // The requests, as the fake logs them: `METHOD path`, plus `?file=` for the
-// Messages module, which is addressed by query on `/`.
+// Messages module, which is addressed by query on `/`. Taking a recipient off
+// the compose form (`deleteUsersFromSelected`, #42) and registering one
+// (`addUserToSelected`) are both `_addRecipient`.
 const _form = 'GET /?file=composeMessage';
 const _addRecipient = 'POST /?file=searchUsers';
 const _upload = 'POST /Upload/Upload/Index';
@@ -125,6 +128,10 @@ class _Smartschool implements HttpClientAdapter {
 
   /// The recipients registered, as `<session>: <uniqueUsc> <id>`.
   final List<String> registered = <String>[];
+
+  /// The recipients taken off a compose form, as
+  /// `<session>: <uniqueUsc> <xml>`.
+  final List<String> removed = <String>[];
 
   /// The attachments uploaded, as `<session>: <uploadDir>`.
   final List<String> uploads = <String>[];
@@ -229,6 +236,14 @@ class _Smartschool implements HttpClientAdapter {
         return _response(_withTokensOf(form, sid!));
       case _addRecipient:
         final fields = options.data as Map;
+        final function = options.uri.queryParameters['function'];
+        if (function == 'deleteUsersFromSelected') {
+          removed.add('$sid: ${fields['uniqueUsc']} ${fields['xml']}');
+          return _response(
+            removedRecipientsAnswer('${fields['xml']}'),
+            contentType: removedRecipientContentType,
+          );
+        }
         registered.add('$sid: ${fields['uniqueUsc']} ${fields['id']}');
         return _response(
           registeredRecipientAnswer(fields),
@@ -344,6 +359,11 @@ const _sender = MessageSearchUser(
   displayName: 'Piet Peeters',
   ssId: 100,
 );
+
+/// The `xml` that takes [_sender]'s entry off the reply form (#42).
+const _senderEntry =
+    '<users><user><type>0</type><userid>U201</userid><ssid>100</ssid>'
+    '<userlt>0</userlt></user></users>';
 
 SendMessageParams _message({
   List<MessageSearchUser> to = const [_alice],
@@ -610,6 +630,42 @@ void main() {
         'form was loaded in', () async {
       await messages.sendReply(900030, _reply(to: [_sender, _alice]));
 
+      expect(server.registered, ['session-0: usc-of-session-0 11111']);
+      expect(server.submits, ['session-0: usc-of-session-0 Re: Schoolreis']);
+    });
+
+    test('before taking a recipient off the form: neither that nor the next '
+        'steps are sent (#42)', () async {
+      anotherRequestLogsInAfter(_form);
+
+      await expectLater(
+        messages.sendReply(900030, _reply(to: [_alice])),
+        throwsA(_sessionChanged),
+      );
+      expect(server.log.where((r) => r.contains('?file=')), [_form]);
+      expect(server.removed, isEmpty);
+      expect(server.registered, isEmpty);
+      expect(server.submits, isEmpty);
+    });
+
+    test('after taking a recipient off the form: the next steps are not sent '
+        '(#42)', () async {
+      anotherRequestLogsInAfter(_addRecipient);
+
+      await expectLater(
+        messages.sendReply(900030, _reply(to: [_alice])),
+        throwsA(_sessionChanged),
+      );
+      expect(server.removed, ['session-0: usc-of-session-0 $_senderEntry']);
+      expect(server.registered, isEmpty);
+      expect(server.submits, isEmpty);
+    });
+
+    test('without a login meanwhile, the recipient is taken off the form in '
+        'the session it was loaded in (#42)', () async {
+      await messages.sendReply(900030, _reply(to: [_alice]));
+
+      expect(server.removed, ['session-0: usc-of-session-0 $_senderEntry']);
       expect(server.registered, ['session-0: usc-of-session-0 11111']);
       expect(server.submits, ['session-0: usc-of-session-0 Re: Schoolreis']);
     });

@@ -44,9 +44,11 @@ Future<void> main() async {
     print('');
 
     print('Resolving recipient IDs via sent reply-all compose page …');
-    final (toList, ccList) = await messages.getSentMessageRecipients(header.id);
+    final (toList, ccList, bccList) = await messages.getSentMessageRecipients(
+      header.id,
+    );
 
-    if (toList.isEmpty && ccList.isEmpty) {
+    if (toList.isEmpty && ccList.isEmpty && bccList.isEmpty) {
       print('  (no recipients extracted — compose page may be restricted)');
     }
 
@@ -62,6 +64,15 @@ Future<void> main() async {
     if (ccList.isNotEmpty) {
       print('  CC (${ccList.length}):');
       for (final u in ccList) {
+        print(
+          '    • ${u.displayName.padRight(35)} userId=${u.userId}  ssId=${u.ssId}',
+        );
+      }
+    }
+
+    if (bccList.isNotEmpty) {
+      print('  BCC (${bccList.length}):');
+      for (final u in bccList) {
         print(
           '    • ${u.displayName.padRight(35)} userId=${u.userId}  ssId=${u.ssId}',
         );

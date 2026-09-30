@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <title>Springfield Academy - Smartschool</title>
+    <meta charset="utf-8">
+</head>
+<body>
+<!--
+  Reply-all compose page of a SENT message whose recipients were all in BCC
+  (GET /?module=Messages&file=composeMessage&boxType=outbox&composeType=2&msgID=…),
+  with the structure of a live page, trimmed (#33). Each recipient field is its own
+  container, and a recipient's `typeatt` is the `droppedtype` of its field:
+  To 0, CC 2, BCC 3, and the co-account fields To 1, CC 4, BCC 5. The BCC
+  recipients are in the BCC field (typeatt 3, name receiverPart3). The user
+  (the sender) is in the To field, once, also when they were one of the BCC
+  recipients themselves. Names, IDs and tokens are made up.
+-->
+<form id="composeForm" method="post" action="/?module=Messages&amp;file=composeMessage">
+<input type="hidden" id="msgEncryptedSender" name="encryptedSender" value="0123456789abcdef0123456789abcdef">
+<input type="hidden" id="msgFormsend" name="send" value="refresh">
+<input type="hidden" id="msgFormorigMsgID" name="origMsgID" value="900020">
+<input type="hidden" id="msgFormcomposeAction" name="composeAction" value="2">
+<input type="hidden" id="msgFormrandomDir" name="randomDir" value="fakeRandomDir0000000000000000000000000000">
+<input type="hidden" id="msgFormuniqueUsc" name="uniqueUsc" value="100fakeUniqueUsc00000000000000000000000100">
+<input type="hidden" id="composeTypeVal" value="2">
+<input type="hidden" id="msgIDVal" value="900020">
+
+<div id="tomain">
+    <div id='comp_to'>
+        <div class="compose_title"><label for="searchField0">Aan:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="toInput" name="to" droppedtype="0">
+                <div oncontextmenu="disableContext(event); return false;" typeidatt="users" realuserid="777" idatt="U777" userltatt="0" typeatt="0" ssidatt="100" selected="no" unselectable="on" name="receiverPart0" id="receiverPart0_100_U777_0" class="receiverSpan user"><div class='receiverSpanName userm'>Jan Janssens</div><div class='receiverSpanDelete' onclick='oSearchUsers.deleteReceiverSpan(this);' title='Verwijder'></div></div>
+                <div class="insertSearchField" name="insertSearchFieldContainer0" id="insertSearchFieldContainer_0_0" data-tabindex="1">
+                    &nbsp;
+                    <input tabindex="1" class="searchInputField" autocomplete="off" type="text" name="searchField0" id="searchField0">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_tocc'>
+        <div class="compose_title"><label for="searchField2">Kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="toccInput" name="tocc" droppedtype="2">
+                <div class="insertSearchField" name="insertSearchFieldContainer2" id="insertSearchFieldContainer_2_0" data-tabindex="2">
+                    &nbsp;
+                    <input tabindex="2" class="searchInputField" autocomplete="off" type="text" name="searchField2" id="searchField2">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_tobcc'>
+        <div class="compose_title"><label for="searchField3">Blinde kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="tobccInput" name="tobcc" droppedtype="3">
+                <div oncontextmenu="disableContext(event); return false;" typeidatt="users" realuserid="201" idatt="U201" userltatt="0" typeatt="3" ssidatt="100" selected="no" unselectable="on" name="receiverPart3" id="receiverPart3_100_U201_0" class="receiverSpan user"><div class='receiverSpanName userm'>Piet Peeters</div><div class='receiverSpanDelete' onclick='oSearchUsers.deleteReceiverSpan(this);' title='Verwijder'></div></div>
+                <div oncontextmenu="disableContext(event); return false;" typeidatt="users" realuserid="202" idatt="U202" userltatt="0" typeatt="3" ssidatt="100" selected="no" unselectable="on" name="receiverPart3" id="receiverPart3_100_U202_0" class="receiverSpan user"><div class='receiverSpanName userf'>An Claes</div><div class='receiverSpanDelete' onclick='oSearchUsers.deleteReceiverSpan(this);' title='Verwijder'></div></div>
+                <div oncontextmenu="disableContext(event); return false;" typeidatt="users" realuserid="203" idatt="U203" userltatt="0" typeatt="3" ssidatt="100" selected="no" unselectable="on" name="receiverPart3" id="receiverPart3_100_U203_0" class="receiverSpan user"><div class='receiverSpanName userf'>Els Maes</div><div class='receiverSpanDelete' onclick='oSearchUsers.deleteReceiverSpan(this);' title='Verwijder'></div></div>
+                <div class="insertSearchField" name="insertSearchFieldContainer3" id="insertSearchFieldContainer_3_0" data-tabindex="3">
+                    &nbsp;
+                    <input tabindex="3" class="searchInputField" autocomplete="off" type="text" name="searchField3" id="searchField3">
+                </div>
+                &nbsp;
+            </div>
+        </div>
+    </div>
+    <div id='comp_toco'>
+        <div class="compose_title"><label for="searchField1">Aan:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="tocoInput" name="toco" droppedtype="1">
+            </div>
+        </div>
+    </div>
+    <div id='comp_toccco'>
+        <div class="compose_title"><label for="searchField4">Kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="tocccoInput" name="toccco" droppedtype="4">
+            </div>
+        </div>
+    </div>
+    <div id='comp_tobccco'>
+        <div class="compose_title"><label for="searchField5">Blinde kopie:</label></div>
+        <div class="compose_value">
+            <div class="composeUsers pointer composeUsers--max-height-limited" id="tobcccoInput" name="tobccco" droppedtype="5">
+            </div>
+        </div>
+    </div>
+</div>
+</form>
+<script type="text/javascript"><!-- tinyMCE -->
+    window.tinymceInitConfig = {
+        toolbar_mode: 'wrap',
+        icons: 'smsc',
+        selector: '.mceEditor',
+        language : 'nl',
+        userID 	: '777',
+        userLT 	: '0',
+        ssID	: '100',
+    };
+    window.tinyMcePromise = tinymce.init(window.tinymceInitConfig);
+</script>
+</body>
+</html>

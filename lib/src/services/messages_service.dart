@@ -761,11 +761,22 @@ class MessagesService {
   /// resolved `realuserid` and `ssID`, and extracts that data via
   /// [parseReplyAllRecipients].
   ///
-  /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
-  /// instances ready to be passed directly to [sendMessage].  The sender of
-  /// the original message is placed in the `to` list following Smartschool's
-  /// standard reply-all logic.  The authenticated user is excluded.
-  Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
+  /// Returns a record `(to, cc, bcc)` where each list contains
+  /// [MessageSearchUser] instances ready to be passed directly to
+  /// [sendMessage], one list per field of the page (see
+  /// [parseReplyAllRecipients]).  The sender of the original message is
+  /// placed in the `to` list following Smartschool's standard reply-all
+  /// logic.  The authenticated user is excluded.
+  ///
+  /// For a message in the sent box, the page also lists the authenticated
+  /// user, as the sender, in To, and the message's BCC recipients in BCC,
+  /// which are returned in `bcc` (#33); [getSentMessageRecipients] returns
+  /// that message's recipients. The reply-all page of a received message is
+  /// not expected to name BCC recipients, which its recipients do not see;
+  /// `bcc` is then empty.
+  Future<
+    (List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)
+  >
   getReplyAllRecipients(int msgId, {BoxType boxType = BoxType.inbox}) async {
     final html = await _client.getRaw(
       _composeUrl(boxType: boxType, composeType: 2, msgId: '$msgId'),
@@ -777,15 +788,25 @@ class MessagesService {
   /// recipients with their numeric user IDs.
   ///
   /// Each recipient `<div class="receiverSpan">` carries `realuserid`,
-  /// `ssidatt`, `userltatt`, and `typeatt` attributes.  `typeatt=2` indicates
-  /// CC; everything else is treated as a To recipient.
+  /// `ssidatt`, `userltatt`, and `typeatt` attributes.  `typeatt` is the
+  /// field the recipient is in: the `droppedtype` of the field's container,
+  /// which is also the `type` [sendMessage] adds a recipient with
+  /// ([RecipientType]). `2` is CC and `3` is BCC; `4` and `5` are the CC and
+  /// BCC fields for co-accounts (`1` is their To field), read from the
+  /// page's layout (#33). Everything else, and an entry without `typeatt`,
+  /// is treated as a To recipient.
   ///
-  /// Returns `(toList, ccList)`.
-  static (List<MessageSearchUser>, List<MessageSearchUser>)
+  /// Returns `(toList, ccList, bccList)`.
+  static (
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+  )
   parseReplyAllRecipients(String htmlBody) {
     final doc = html_parser.parse(htmlBody);
     final to = <MessageSearchUser>[];
     final cc = <MessageSearchUser>[];
+    final bcc = <MessageSearchUser>[];
 
     for (final span in doc.querySelectorAll('div.receiverSpan')) {
       final userIdStr = span.attributes['realuserid'];
@@ -807,14 +828,17 @@ class MessagesService {
         userLt: int.tryParse(userLtStr) ?? 0,
       );
 
-      if (typeStr == '2') {
-        cc.add(user);
-      } else {
-        to.add(user);
+      switch (typeStr) {
+        case '2' || '4':
+          cc.add(user);
+        case '3' || '5':
+          bcc.add(user);
+        default:
+          to.add(user);
       }
     }
 
-    return (to, cc);
+    return (to, cc, bcc);
   }
 
   /// Returns the original recipients of a sent message identified by [msgId].
@@ -832,9 +856,14 @@ class MessagesService {
   /// only where its recipient names include them: a message the user sent
   /// to themselves returns the user (#27). See [parseSentMessageRecipients].
   ///
-  /// Returns a record `(to, cc)` where each list contains [MessageSearchUser]
-  /// instances ready to be passed directly to [sendMessage].
-  Future<(List<MessageSearchUser>, List<MessageSearchUser>)>
+  /// Returns a record `(to, cc, bcc)` where each list contains
+  /// [MessageSearchUser] instances ready to be passed directly to
+  /// [sendMessage]: the recipients of the message's To, CC and BCC fields.
+  /// A reply-all built from `to` and `cc` does not reveal the BCC
+  /// recipients (#33).
+  Future<
+    (List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)
+  >
   getSentMessageRecipients(int msgId) async {
     final html = await _client.getRaw(
       _composeUrl(boxType: BoxType.sent, composeType: 2, msgId: '$msgId'),
@@ -851,53 +880,57 @@ class MessagesService {
   /// original recipients.
   ///
   /// The sent-folder reply-all compose page places the sender (the
-  /// authenticated user) alongside the original recipients in the To field.
+  /// authenticated user) alongside the original recipients in the To field;
+  /// the original CC and BCC recipients are in the CC and BCC fields.
   /// This method combines [parseComposeCurrentUserIds] to identify the sender
   /// and [parseReplyAllRecipients] to extract all pre-populated recipient
   /// spans, then removes any entry whose `userId` matches the sender.
   ///
-  /// The page has a single entry for the sender, also when they were a
-  /// recipient of the message too (a message sent to themselves, or with
-  /// themselves among the recipients), so the page alone cannot tell the
-  /// two apart. Pass the sent [message] (from [getMessage] with
-  /// `boxType: BoxType.sent` and `includeAllRecipients: true`) to keep the
-  /// sender where its recipients list them: in the To list when
-  /// [FullMessage.toRecipients] or [FullMessage.bccRecipients] name them
-  /// (BCC entries of the page are returned in the To list as well), in the
-  /// CC list when [FullMessage.ccRecipients] do. Their
-  /// [MessageRecipient.name]s are compared, without the read marker
-  /// Smartschool puts before each name in the sent box (#34); a name counts
-  /// only as far as no other entry of the page with that name accounts for
-  /// it. Without [message], the sender is always removed.
+  /// The page has a single entry for the sender, in the To field, also when
+  /// they were a recipient of the message too (a message sent to
+  /// themselves, or with themselves among the recipients, in any field), so
+  /// the page alone cannot tell the two apart. Pass the sent [message] (from
+  /// [getMessage] with `boxType: BoxType.sent` and
+  /// `includeAllRecipients: true`) to keep the sender where its recipients
+  /// list them: in the To list when [FullMessage.toRecipients] name them, in
+  /// the CC list when [FullMessage.ccRecipients] do, in the BCC list when
+  /// [FullMessage.bccRecipients] do. Their [MessageRecipient.name]s are
+  /// compared, without the read marker Smartschool puts before each name in
+  /// the sent box (#34); a name counts only as far as no other entry of the
+  /// page in that field with that name accounts for it. Without [message],
+  /// the sender is always removed.
   ///
-  /// Returns `(toList, ccList)`.
-  static (List<MessageSearchUser>, List<MessageSearchUser>)
+  /// Returns `(toList, ccList, bccList)`.
+  static (
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+    List<MessageSearchUser>,
+  )
   parseSentMessageRecipients(String htmlBody, {FullMessage? message}) {
     final ids = parseComposeCurrentUserIds(htmlBody);
     final currentUserId = ids?.$1;
 
-    final (to, cc) = parseReplyAllRecipients(htmlBody);
+    final (to, cc, bcc) = parseReplyAllRecipients(htmlBody);
 
-    if (currentUserId == null) return (to, cc);
+    if (currentUserId == null) return (to, cc, bcc);
 
     bool isSender(MessageSearchUser u) => u.userId == currentUserId;
-    final sender = [...to, ...cc].where(isSender).firstOrNull;
+    final sender = [...to, ...cc, ...bcc].where(isSender).firstOrNull;
     final toOthers = to.where((u) => !isSender(u)).toList();
     final ccOthers = cc.where((u) => !isSender(u)).toList();
+    final bccOthers = bcc.where((u) => !isSender(u)).toList();
 
     if (sender != null && message != null) {
-      if (_namesSender(sender, [
-        ...message.toRecipients,
-        ...message.bccRecipients,
-      ], toOthers)) {
-        toOthers.add(sender);
-      }
-      if (_namesSender(sender, message.ccRecipients, ccOthers)) {
-        ccOthers.add(sender);
+      for (final (recipients, others) in [
+        (message.toRecipients, toOthers),
+        (message.ccRecipients, ccOthers),
+        (message.bccRecipients, bccOthers),
+      ]) {
+        if (_namesSender(sender, recipients, others)) others.add(sender);
       }
     }
 
-    return (toOthers, ccOthers);
+    return (toOthers, ccOthers, bccOthers);
   }
 
   /// Whether [recipients], recipients of a sent message, name [sender] more

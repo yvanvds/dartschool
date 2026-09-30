@@ -85,7 +85,9 @@ Future<void> main() async {
     print('');
 
     print('  Resolving recipient IDs via reply-all compose page …');
-    final (toList, ccList) = await messages.getReplyAllRecipients(msg.id);
+    // The third list holds BCC recipients, which the reply-all page of a
+    // sent message names; a received message's page is not expected to.
+    final (toList, ccList, _) = await messages.getReplyAllRecipients(msg.id);
 
     if (toList.isEmpty && ccList.isEmpty) {
       print('  (no recipients extracted — compose page may be restricted)');

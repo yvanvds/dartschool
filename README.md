@@ -482,10 +482,30 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 
 | Exception | Thrown when |
 |---|---|
-| `SmartschoolAuthenticationError` | Login fails or session has expired |
+| `SmartschoolAuthenticationError` | Login fails or session has expired (base class of the login failures below, and thrown itself for other authentication failures) |
+| `SmartschoolInvalidCredentialsError` | Smartschool rejects the username or password (also SSO-only accounts) |
+| `SmartschoolTwoFactorRequiredError` | Smartschool asks for a 2FA code, but `mfa` holds no TOTP secret |
+| `SmartschoolTwoFactorRejectedError` | Smartschool rejects the 2FA code (wrong TOTP secret, or the device clock is off) |
+| `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
+| `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
+| `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), or a class/code/pupil cannot be resolved |
+
+The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. `ensureAuthenticated()` throws them directly; when a login is triggered by a regular request (a service call on a cold or expired session), the error arrives wrapped in a `DioException`, as its `error`:
+
+```dart
+try {
+  await client.ensureAuthenticated();
+} on SmartschoolInvalidCredentialsError {
+  // Ask the user to check their username and password.
+} on SmartschoolTwoFactorRejectedError {
+  // Ask the user to check their TOTP secret and device clock.
+} on SmartschoolAuthenticationError catch (e) {
+  // Any other authentication failure.
+}
+```
 
 ---
 

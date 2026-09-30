@@ -1,3 +1,16 @@
+## 0.2.11 - Unreleased
+
+### Added
+- Auth: typed login failures (#11). Each login failure is now thrown as its own subclass of `SmartschoolAuthenticationError`, so callers can match on the type instead of on the message text:
+  - `SmartschoolInvalidCredentialsError` — the username or password is rejected (also SSO-only accounts);
+  - `SmartschoolTwoFactorRequiredError` — Smartschool asks for a 2FA code, but `mfa` holds no TOTP secret;
+  - `SmartschoolTwoFactorRejectedError` — the 2FA code is rejected;
+  - `SmartschoolUnsupportedTwoFactorMethodError` — the account's 2FA does not offer an authenticator app; `availableMethods` lists what it does offer;
+  - `SmartschoolAccountVerificationRequiredError` — Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date;
+  - `SmartschoolAccountVerificationRejectedError` — the account verification answer is rejected.
+
+  Backwards compatible: they extend `SmartschoolAuthenticationError` and keep the previous messages, so existing `catch` clauses and message checks keep working. The base class is still thrown for the other authentication failures (maximum login attempts, an unrecognised login step, HTML where data was expected).
+
 ## 0.2.10 - 2026-09-15
 
 ### Fixed

@@ -337,6 +337,10 @@ class SmartschoolClient {
   }
 
   /// Forces a lightweight authenticated request and throws if session is invalid.
+  ///
+  /// A login failure is thrown as the matching [SmartschoolAuthenticationError]
+  /// subclass (e.g. [SmartschoolInvalidCredentialsError]), unwrapped from the
+  /// `DioException` it travels in.
   Future<void> ensureAuthenticated() async {
     try {
       await platformId;
@@ -429,9 +433,7 @@ class SmartschoolClient {
 
     final mfa = credentials.mfa;
     if (mfa == null || mfa.trim().isEmpty) {
-      throw const SmartschoolAuthenticationError(
-        'account-verification requires mfa (birthday date) in credentials',
-      );
+      throw const SmartschoolAccountVerificationRequiredError();
     }
 
     final doc = html_parser.parse(htmlBody);
@@ -441,7 +443,7 @@ class SmartschoolClient {
     final expectsDate = answerInput?.attributes['type'] == 'date';
     final dateLike = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(mfa.trim());
     if (expectsDate && !dateLike) {
-      throw const SmartschoolAuthenticationError(
+      throw const SmartschoolAccountVerificationRequiredError(
         'Account verification expects a date (yyyy-mm-dd), but mfa looks like '
         'a TOTP secret. Set credentials.yml mfa to the requested date answer.',
       );
@@ -464,9 +466,7 @@ class SmartschoolClient {
   Future<Response<String>> do2fa() async {
     final mfa = credentials.mfa;
     if (mfa == null || mfa.trim().isEmpty) {
-      throw const SmartschoolAuthenticationError(
-        '2FA requires a TOTP secret in the mfa field of credentials',
-      );
+      throw const SmartschoolTwoFactorRequiredError();
     }
 
     // Verify TOTP is configured on this account
@@ -476,8 +476,8 @@ class SmartschoolClient {
         (config['possibleAuthenticationMechanisms'] as List?)?.cast<String>() ??
         [];
     if (!mechanisms.contains('googleAuthenticator')) {
-      throw const SmartschoolAuthenticationError(
-        'Only googleAuthenticator 2FA is supported',
+      throw SmartschoolUnsupportedTwoFactorMethodError(
+        List.unmodifiable(mechanisms),
       );
     }
 
@@ -860,10 +860,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
         return;
       }
       if (success == false) {
-        throw const SmartschoolAuthenticationError(
-          '2FA verification failed. Check your TOTP secret (mfa) and '
-          'ensure your device time is synchronized.',
-        );
+        throw const SmartschoolTwoFactorRejectedError();
       }
       // Unrecognised response shape — fall through to the URL-based checks
       // below (e.g. genuinely still on the HTML /2fa page).
@@ -873,21 +870,13 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     final finalUri = nextResponse?.realUri ?? uri;
     if (_client.isAuthUri(finalUri)) {
       if (finalUri.path.endsWith('/login')) {
-        throw const SmartschoolAuthenticationError(
-          'Login failed. Check username/password or SSO-only account setup.',
-        );
+        throw const SmartschoolInvalidCredentialsError();
       }
-      if (finalUri.path.endsWith('/account-verification')) {
-        throw const SmartschoolAuthenticationError(
-          'Account verification is still pending. Check the verification '
-          'answer format in credentials.yml (often yyyy-mm-dd).',
-        );
+      if (finalUri.path.endsWith(kAccountVerificationPath)) {
+        throw const SmartschoolAccountVerificationRejectedError();
       }
       if (finalUri.path.endsWith('/2fa') || finalUri.path.contains('/2fa/')) {
-        throw const SmartschoolAuthenticationError(
-          '2FA verification failed. Check your TOTP secret (mfa) and '
-          'ensure your device time is synchronized.',
-        );
+        throw const SmartschoolTwoFactorRejectedError();
       }
 
       throw SmartschoolAuthenticationError(

@@ -261,7 +261,31 @@ for (final attachment in attachments) {
 | `subject` | `String` | required | The subject. |
 | `bodyHtml` | `String` | required | The body, as HTML. |
 | `attachmentPaths` | `List<String>` | `[]` | Paths of local files to attach; each is uploaded before the submit. |
-| `options` | `MessageSendOptions` | `MessageSendOptions()` | Leave it at its default. Its fields `requestReadReceipt`, `highPriority` (both `false`) and `extra` are deprecated: Smartschool's compose form has no read receipt or priority, and the submit already holds every field of the form, so none of them can be sent. A send that sets one (`true`, or a non-empty `extra`) throws an `ArgumentError` before any request, and sends nothing, instead of sending the message without it (#43). The form's own options, storing the message in the LVS and a delayed send, are submitted with its defaults: not stored, sent now (#47). |
+| `options` | `MessageSendOptions` | `MessageSendOptions()` | The compose form's own options (see below). The default sends the message as the compose form does by default: not stored in the LVS, sent now. |
+
+`MessageSendOptions` holds the options of Smartschool's compose form (#47), each submitted in its own field of the form:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `lvsCopy` | `LvsCopy` | `LvsCopy.none` | Whether Smartschool stores the message in the LVS: the form's `copyToLVS` select. `none` (`dontCopyToLVS`, the option the form selects), `store` (`copyToLVS`, "Bericht bewaren in het LVS") or `storeConfidential` (`copyToLVSAndMarkAsPrivate`, "… en markeren als vertrouwelijk"). An option other than `none` is sent only when the loaded form offers it: Smartschool leaves the select out for an account that may not store messages in the LVS, and the send then throws a `SmartschoolComposeError` before registering any recipient (nothing was sent). |
+| `sendAt` | `DateTime?` | `null` (send now) | A delayed send, as the "Uitgesteld versturen" dialog of Smartschool's web client schedules it: Smartschool sends the message at that time, and until then the web client counts it in the scheduled box (`BoxType.scheduled`). It must be after now and at most a year ahead (until the end of the same day next year, the last day the dialog offers), or the send throws an `ArgumentError` before any request. It goes in the form's `sendDate` field as the dialog writes it: ISO 8601 in the local time of the machine, to the second, with its UTC offset (`2026-10-02T07:30:00+02:00`, or `…Z` on a machine that runs on UTC); the instant is the same whatever the time zone of the `DateTime`. When the loaded form offers no delayed send (scheduled messages not enabled for the account), the send throws a `SmartschoolComposeError` before registering any recipient. |
+| `requestReadReceipt`, `highPriority`, `extra` | `bool`, `bool`, `Map<String, dynamic>?` | `false`, `false`, `null` | Deprecated: Smartschool's compose form has no read receipt or priority, and the submit already holds every field of the form, so none of them can be sent. A send that sets one (`true`, or a non-empty `extra`) throws an `ArgumentError` before any request, and sends nothing, instead of sending the message without it (#43). |
+
+Not verified with a real send (the library's tests never send one): Smartschool's answer to the submit of a scheduled message, which `sendMessage` and `sendReply` take as a sent one only when it is the answer to a sent message (another answer is a `SmartschoolSendUnconfirmedError`, which for a delayed send says to check the scheduled box); whether Smartschool reads the offset of a time outside Belgium's time zone (a browser in Belgium always sends `+01:00` or `+02:00`); and what Smartschool does with an LVS copy, for instance of a message to recipients who are not pupils.
+
+```dart
+await messages.sendMessage(
+  SendMessageParams(
+    to: [pupil],
+    subject: 'Remediëring',
+    bodyHtml: '<p>Tot maandag.</p>',
+    options: MessageSendOptions(
+      lvsCopy: LvsCopy.store,
+      sendAt: DateTime(2026, 10, 5, 7, 30), // Monday morning, local time
+    ),
+  ),
+);
+```
 
 Get the recipients from `searchRecipientsForCompose`, `getCurrentUserAsRecipient`, or for a reply from `getReplyRecipients` / `getReplyAllRecipients`:
 
@@ -278,7 +302,7 @@ final params = SendMessageParams(
 await messages.sendMessage(params);
 ```
 
-`sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
+`sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box (for a delayed send, the scheduled box) before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
 
 ```dart
 try {
@@ -628,6 +652,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SortField` | `date`, `from`, `readUnread`, `attachment`, `flag` |
 | `SortOrder` | `asc`, `desc` |
 | `RecipientType` | `to`, `cc`, `bcc` |
+| `LvsCopy` | `none` (`dontCopyToLVS`), `store` (`copyToLVS`), `storeConfidential` (`copyToLVSAndMarkAsPrivate`) |
 | `MessageLabel` | `noFlag`, `greenFlag`, `yellowFlag`, `redFlag`, `blueFlag` |
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 
@@ -646,8 +671,8 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
 | `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`), or a request sent with `retryAfterLogin: false` (such as a step of `sendMessage`) is refused, or a request sent with `sameSessionAs` (such as a step of `sendMessage`) is not sent because the client logged in again since that answer was loaded. The request was not carried out: sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
-| `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient) |
-| `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box before sending it again. Not a `SmartschoolComposeError` |
+| `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient). Both throw it too when the form does not offer the LVS copy or the delayed send that `params.options` asks for (#47) |
+| `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 

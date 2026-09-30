@@ -1123,12 +1123,26 @@ class MessagesService {
   ///   before the submit (#38). A new call loads a new compose form in the
   ///   new session.
   ///
+  /// [SendMessageParams.options] sets the compose form's own options (#47):
+  /// [MessageSendOptions.lvsCopy] stores the message in the LVS (the form's
+  /// `copyToLVS` select), and [MessageSendOptions.sendAt] schedules it for
+  /// later, as the delayed-send dialog of Smartschool's web client does (the
+  /// form's `sendDate` field). The default options send the message as the
+  /// compose form does by default: not stored in the LVS, sent now. A
+  /// scheduled message is confirmed as a sent one; when the confirmation
+  /// does not come, the [SmartschoolSendUnconfirmedError] says to check the
+  /// scheduled box.
+  ///
   /// Throws an [ArgumentError], before any request, when
   /// [SendMessageParams.options] sets an option that Smartschool's compose
   /// form has no field for (a read receipt, a high priority, or `extra`
   /// fields; see [MessageSendOptions]), rather than send the message without
-  /// it (#43). Nothing was sent; the default options send the message as the
-  /// compose form does.
+  /// it (#43), or a [MessageSendOptions.sendAt] that is not after now or more
+  /// than a year ahead (#47). Nothing was sent. It throws a
+  /// [SmartschoolComposeError] after loading the compose form, before
+  /// registering any recipient, when the form does not offer the
+  /// [MessageSendOptions.lvsCopy] or the delayed send asked for (#47);
+  /// nothing was sent either.
   Future<void> sendMessage(SendMessageParams params) =>
       _send(params, operation: 'sendMessage');
 
@@ -1146,10 +1160,11 @@ class MessagesService {
   /// method submits it the same way, with the form's own hidden fields.
   /// Everything else works as in [sendMessage]: the recipients are
   /// registered with the form's `uniqueUsc`, the attachments uploaded to its
-  /// `randomDir`, the options of [SendMessageParams.options] refused as there
-  /// (#43), and the outcome and each failure mean what they mean there. In
-  /// particular, a [SmartschoolSendUnconfirmedError] means that the
-  /// reply may have been sent: check the sent box before sending it again;
+  /// `randomDir`, the options of [SendMessageParams.options] submitted (#47)
+  /// or refused (#43) as there, and the outcome and each failure mean what
+  /// they mean there. In particular, a [SmartschoolSendUnconfirmedError]
+  /// means that the reply may have been sent: check the sent box (for a
+  /// delayed send, the scheduled box) before sending it again;
   /// and when the client logs in again (for another request) after the reply
   /// form was loaded, the send stops with a [SmartschoolSessionExpiredError]
   /// before the submit, and nothing was sent (#38).
@@ -1206,8 +1221,10 @@ class MessagesService {
     // there leaves nothing sent.
 
     // Before any request, refuse an option that the compose form has no field
-    // for, rather than send the message without it (#43).
-    _checkOptions(params.options, operation);
+    // for, rather than send the message without it (#43), and a delayed send
+    // at a time that the form's delayed-send dialog does not offer (#47).
+    final options = params.options;
+    _checkOptions(options, operation);
 
     // Step 1: load a fresh compose form (the new-message form, or the reply
     // form) and extract all hidden token fields.
@@ -1242,6 +1259,10 @@ class MessagesService {
         'Check that the account has permission to send messages.',
       );
     }
+
+    // The form must offer the options the params ask for, or the message
+    // would go out without them (#47).
+    _checkFormOptions(html, hidden, options, operation);
 
     // Step 2: make the form's recipients those of the params. A reply form
     // names recipients, registered with it already; the new-message form
@@ -1320,9 +1341,12 @@ class MessagesService {
     // Step 4: build multipart payload matching the observed browser request.
     // The form is submitted to the URL it was loaded from, whose query the
     // payload repeats; a reply form's origMsgID and composeAction (2) are
-    // those of the message it answers. The form's own options, copyToLVS and
-    // sendDate (a delayed send), keep its defaults: no parameter sets them
-    // (#43, #47).
+    // those of the message it answers. The form's own options are those of
+    // the params (#47): copyToLVS, the option of its select (by default the
+    // one the form selects, dontCopyToLVS), and sendDate, the time of a
+    // delayed send as the form's delayed-send dialog writes it (by default
+    // the form's own value, empty: send now).
+    final sendAt = options.sendAt;
     final payload = <String, dynamic>{
       'module': 'Messages',
       'file': 'composeMessage',
@@ -1338,13 +1362,15 @@ class MessagesService {
       'showTab': hidden['showTab'] ?? 'tab1Container',
       'delFile': hidden['delFile'] ?? '0',
       'msgFormSelectedTab': hidden['msgFormSelectedTab'] ?? '',
-      'sendDate': hidden['sendDate'] ?? '',
+      'sendDate': sendAt == null
+          ? hidden['sendDate'] ?? ''
+          : _formatSendDate(sendAt),
       'searchField3': '',
       'searchField1': '',
       'searchField4': '',
       'searchField5': '',
       'subject': params.subject,
-      'copyToLVS': 'dontCopyToLVS',
+      'copyToLVS': options.lvsCopy.value,
       'message': params.bodyHtml,
       'bcc': '0',
     };
@@ -1354,6 +1380,7 @@ class MessagesService {
       payload,
       operation: operation,
       form: form,
+      delayed: sendAt != null,
     );
   }
 
@@ -1377,6 +1404,10 @@ class MessagesService {
   /// Checked live and in Smartschool's compose scripts: the new-message and
   /// reply forms have no read receipt or priority, and every one of their
   /// fields is in the submit already (see [_send]).
+  ///
+  /// Throws an [ArgumentError] too when [MessageSendOptions.sendAt] is a time
+  /// that the delayed-send dialog of Smartschool's web client does not offer
+  /// (#47): not after now, or after [_latestSendDate].
   static void _checkOptions(MessageSendOptions options, String operation) {
     final extra = options.extra;
     final unsupported = [
@@ -1388,16 +1419,124 @@ class MessagesService {
         'extra (${extra.keys.join(', ')}; the submit already holds every '
             'field of the compose form)',
     ];
-    if (unsupported.isEmpty) return;
-    throw ArgumentError.value(
-      options,
-      'params.options',
-      '$operation: Smartschool\'s compose form has no field for '
-          '${unsupported.join(', ')}. Nothing was sent; to send the message '
-          'without them, leave the options at their defaults '
-          '(MessageSendOptions())',
-    );
+    if (unsupported.isNotEmpty) {
+      throw ArgumentError.value(
+        options,
+        'params.options',
+        '$operation: Smartschool\'s compose form has no field for '
+            '${unsupported.join(', ')}. Nothing was sent; to send the message '
+            'without them, leave the options at their defaults '
+            '(MessageSendOptions())',
+      );
+    }
+
+    final sendAt = options.sendAt;
+    if (sendAt == null) return;
+    final now = DateTime.now();
+    if (!sendAt.isAfter(now)) {
+      throw ArgumentError.value(
+        sendAt,
+        'params.options.sendAt',
+        '$operation: the time of a delayed send must be after now '
+            '(${_formatSendDate(now)}), and ${_formatSendDate(sendAt)} is '
+            'not. Nothing was sent; to send the message now, leave sendAt '
+            'null',
+      );
+    }
+    final latest = _latestSendDate(now);
+    if (sendAt.isAfter(latest)) {
+      throw ArgumentError.value(
+        sendAt,
+        'params.options.sendAt',
+        '$operation: the time of a delayed send can be at most a year ahead, '
+            'until ${_formatSendDate(latest)} (the last day that the '
+            'delayed-send dialog of Smartschool\'s web client offers), and '
+            '${_formatSendDate(sendAt)} is later. Nothing was sent',
+      );
+    }
   }
+
+  /// The latest time of a delayed send at [now]: the end of the same day a
+  /// year later, in local time (the last day of the month when that day does
+  /// not exist, as for 29 February). The date picker of the delayed-send
+  /// dialog of Smartschool's web client offers no later day
+  /// (`max: addYears(endOfDay(now), 1)` in its script, #47).
+  static DateTime _latestSendDate(DateTime now) {
+    final today = now.toLocal();
+    final year = today.year + 1;
+    final lastDay = DateTime(year, today.month + 1, 0).day;
+    final day = today.day <= lastDay ? today.day : lastDay;
+    return DateTime(year, today.month, day, 23, 59, 59, 999);
+  }
+
+  /// [time] as the delayed-send dialog of Smartschool's web client writes it
+  /// into the compose form's `sendDate` field (date-fns `formatISO`, #47):
+  /// ISO 8601 in the local time of the machine, to the second, with its
+  /// offset from UTC, or `Z` for none (`2026-10-02T07:30:00+02:00`).
+  static String _formatSendDate(DateTime time) {
+    final local = time.toLocal();
+    String pad(int n, [int width = 2]) => '$n'.padLeft(width, '0');
+    final offset = local.timeZoneOffset;
+    final minutes = offset.inMinutes.abs();
+    final zone = minutes == 0
+        ? 'Z'
+        : '${offset.isNegative ? '-' : '+'}${pad(minutes ~/ 60)}:'
+              '${pad(minutes % 60)}';
+    return '${pad(local.year, 4)}-${pad(local.month)}-${pad(local.day)}'
+        'T${pad(local.hour)}:${pad(local.minute)}:${pad(local.second)}$zone';
+  }
+
+  /// Throws a [SmartschoolComposeError] when the compose form [html] (with
+  /// the [hidden] fields) does not offer an option that [options] asks for
+  /// (#47), so that the message does not go out without it. [operation]
+  /// names the calling method in the message.
+  ///
+  /// - [MessageSendOptions.lvsCopy] other than [LvsCopy.none] needs the
+  ///   form's `copyToLVS` select with that option; the form leaves the
+  ///   select out for an account that may not store messages in the LVS.
+  /// - [MessageSendOptions.sendAt] needs the form's `sendDate` field, and
+  ///   Smartschool's scheduled messages enabled for the account
+  ///   (`isScheduledMessagesEnabled` in the form's `SMSC.vars`): without
+  ///   it, the web client's send button does not fill `sendDate`.
+  static void _checkFormOptions(
+    String html,
+    Map<String, String> hidden,
+    MessageSendOptions options,
+    String operation,
+  ) {
+    final lvsCopy = options.lvsCopy;
+    if (lvsCopy != LvsCopy.none) {
+      final select = html_parser
+          .parse(html)
+          .querySelector('select[name="copyToLVS"]');
+      final offered = {
+        for (final option
+            in select?.querySelectorAll('option') ?? const <Never>[])
+          option.attributes['value'],
+      };
+      if (!offered.contains(lvsCopy.value)) {
+        throw SmartschoolComposeError(
+          '$operation: the compose form does not offer to store the message '
+          'in the LVS as asked (lvsCopy ${lvsCopy.name}, copyToLVS option '
+          '${lvsCopy.value}); the account may not have the right to. Nothing '
+          'was sent.',
+        );
+      }
+    }
+    if (options.sendAt != null &&
+        (!hidden.containsKey('sendDate') ||
+            !_scheduledMessagesEnabled.hasMatch(html))) {
+      throw SmartschoolComposeError(
+        '$operation: the compose form does not offer a delayed send '
+        '(sendAt): Smartschool\'s scheduled messages are not enabled for the '
+        'account. Nothing was sent.',
+      );
+    }
+  }
+
+  static final _scheduledMessagesEnabled = RegExp(
+    r'"isScheduledMessagesEnabled"\s*:\s*true\b',
+  );
 
   /// Submits the compose form to [url] with [payload]: the request that
   /// sends the message.
@@ -1410,13 +1549,22 @@ class MessagesService {
   /// message was not sent, and the submit is not retried with the compose
   /// state of the refused session. So is a submit that the client does not
   /// send because it logged in again since [form], the compose form, was
-  /// loaded (#38). [operation] names the calling method in error messages.
+  /// loaded (#38). [operation] names the calling method in error messages;
+  /// [delayed] says that [payload] schedules the message (a `sendDate`,
+  /// #47), which the [SmartschoolSendUnconfirmedError] then says: a
+  /// scheduled message waits in the scheduled box.
   Future<void> _submitComposeForm(
     String url,
     Map<String, dynamic> payload, {
     required String operation,
     required Response<String> form,
+    bool delayed = false,
   }) async {
+    final unconfirmed = delayed
+        ? 'It may or may not have been scheduled: check the scheduled box '
+              '(and the sent box) before sending it again.'
+        : 'It may or may not have been sent: check the sent box before '
+              'sending it again.';
     final Response<String> response;
     try {
       response = await _client.postMultipartResponse(
@@ -1431,8 +1579,7 @@ class MessagesService {
       Error.throwWithStackTrace(
         SmartschoolSendUnconfirmedError(
           '$operation: the message was submitted, but no answer from '
-          'Smartschool came in ($e). It may or may not have been sent: check '
-          'the sent box before sending it again.',
+          'Smartschool came in ($e). $unconfirmed',
           cause: e,
         ),
         stackTrace,
@@ -1443,8 +1590,7 @@ class MessagesService {
       final status = response.statusCode;
       throw SmartschoolSendUnconfirmedError(
         "$operation: the message was submitted, but Smartschool's answer "
-        '(HTTP $status) does not confirm that it was sent. It may or may not '
-        'have been sent: check the sent box before sending it again. '
+        '(HTTP $status) does not confirm that it was sent. $unconfirmed '
         'Answer: ${_answerPreview(response.data ?? '')}',
         statusCode: status,
       );

@@ -226,7 +226,10 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 /// Smartschool does not answer with the reply form of the message (#26), or
 /// does not take a recipient that the reply form names and the params leave
 /// out off the form (its answer to `deleteUsersFromSelected` does not list
-/// the recipient; the message names it, #42).
+/// the recipient; the message names it, #42). Both throw it too when the
+/// form does not offer an option that the send asks for: the LVS copy of
+/// `MessageSendOptions.lvsCopy`, or the delayed send of
+/// `MessageSendOptions.sendAt` (#47).
 ///
 /// `MessagesService.sendMessage` and `sendReply` throw it before the message
 /// is submitted, so nothing was sent. A submitted message that Smartschool
@@ -242,7 +245,9 @@ class SmartschoolComposeError extends SmartschoolException {
 ///
 /// **The message may or may not have been sent.** Do not send it again
 /// blindly: check the sent box first (e.g. `getHeaders(boxType:
-/// BoxType.sent)`), or tell the user to.
+/// BoxType.sent)`), or tell the user to. A message sent with a delayed send
+/// (`MessageSendOptions.sendAt`, #47) waits in the scheduled box
+/// (`BoxType.scheduled`) until its time; the message of the error says so.
 ///
 /// Smartschool confirms a sent message by answering the submit with HTTP
 /// `200` and a page that closes the compose window (`window.close()`). This

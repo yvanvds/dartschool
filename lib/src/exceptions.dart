@@ -220,7 +220,9 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 
 /// Thrown when Smartschool's message compose form cannot be used: its hidden
 /// fields (`uniqueUsc`, `randomDir`) or the IDs of the current user are
-/// missing from it. `MessagesService.sendReply` also throws it when
+/// missing from it, or Smartschool does not register a recipient on it (its
+/// answer to `addUserToSelected` does not name the recipient; the message
+/// names it, #39). `MessagesService.sendReply` also throws it when
 /// Smartschool does not answer with the reply form of the message, or when
 /// the reply would go to a recipient that the reply form names and the
 /// params leave out (#26).

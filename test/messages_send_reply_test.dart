@@ -32,6 +32,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/add_recipient_answer.dart';
+
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
@@ -63,11 +65,6 @@ final _newMessageForm = _fixture('get/composemessage/new-message.html');
 /// The recorded answer to a sent message: `200` and a page whose script
 /// calls `checkOpenerActions(); window.close();`.
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
-
-/// The recorded answer to `addUserToSelected`.
-final _addRecipientAnswer = _fixture(
-  'post/composemessage/add-users-to-selected.xml',
-);
 
 /// The To entry of the sender in [_replyForm].
 const _senderSpan =
@@ -215,8 +212,12 @@ class _Smartschool implements HttpClientAdapter {
       case _Step.form:
         return _response(form(uri.queryParameters));
       case _Step.addRecipient:
-        registered.add(Map<String, String>.from(options.data as Map));
-        return _response(_addRecipientAnswer, contentType: 'text/xml');
+        final fields = Map<String, String>.from(options.data as Map);
+        registered.add(fields);
+        return _response(
+          registeredRecipientAnswer(fields),
+          contentType: registeredRecipientContentType,
+        );
       case _Step.upload:
         uploads.add(_fields(options)['uploadDir']);
         return _response('true');

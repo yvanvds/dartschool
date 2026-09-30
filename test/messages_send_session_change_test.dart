@@ -36,6 +36,8 @@ import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import 'support/add_recipient_answer.dart';
+
 const _host = 'school.smartschool.be';
 const _sessionCookie = 'PHPSESSID';
 
@@ -66,11 +68,6 @@ final _replyForm = _fixture('get/composemessage/reply.html');
 /// The recorded answer to a sent message: `200` and a page whose script
 /// calls `checkOpenerActions(); window.close();`.
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
-
-/// The recorded answer to `addUserToSelected`.
-final _addRecipientAnswer = _fixture(
-  'post/composemessage/add-users-to-selected.xml',
-);
 
 /// [form] with the tokens of session [sid].
 String _withTokensOf(String form, String sid) => form
@@ -233,7 +230,10 @@ class _Smartschool implements HttpClientAdapter {
       case _addRecipient:
         final fields = options.data as Map;
         registered.add('$sid: ${fields['uniqueUsc']} ${fields['id']}');
-        return _response(_addRecipientAnswer, contentType: 'text/xml');
+        return _response(
+          registeredRecipientAnswer(fields),
+          contentType: registeredRecipientContentType,
+        );
       case _upload:
         uploads.add('$sid: ${_field(options, 'uploadDir')}');
         return _response('true');

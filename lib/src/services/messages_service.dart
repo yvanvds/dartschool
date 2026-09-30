@@ -1024,7 +1024,8 @@ class MessagesService {
   /// 1. Fetch the compose page and extract hidden form tokens
   ///    (`uniqueUsc`, `randomDir`, `encryptedSender`, …).
   /// 2. Register each recipient via `addUserToSelected` for every
-  ///    to / cc / bcc slot.
+  ///    to / cc / bcc slot, and check that Smartschool's answer registers
+  ///    it (#39). A recipient listed twice in one field is registered once.
   /// 3. Optionally upload files from [SendMessageParams.attachmentPaths].
   /// 4. Submit the completed form as `multipart/form-data`: the request that
   ///    sends the message.
@@ -1046,7 +1047,11 @@ class MessagesService {
   ///
   /// Every other failure means the message was not sent, and calling
   /// [sendMessage] again is safe:
-  /// - [SmartschoolComposeError] if the compose form cannot be used;
+  /// - [SmartschoolComposeError] if the compose form cannot be used, or if
+  ///   Smartschool does not register a recipient on it (it answers without
+  ///   the recipient, for instance for a wrong `userId` or `ssId`); the
+  ///   message names the recipient, and the send stops there, before the
+  ///   attachments and the submit (#39);
   /// - [SmartschoolAttachmentUploadError] if an attachment fails to upload;
   /// - [SmartschoolConnectionError] if Smartschool cannot be reached before
   ///   the submit, and the [SmartschoolAuthenticationError] subtypes if a
@@ -1101,7 +1106,9 @@ class MessagesService {
   /// [getReplyAllRecipients] with [all]) as they are, with more recipients
   /// if needed. A recipient that the form names is not registered again,
   /// since the form has it registered already; the others are registered as
-  /// [sendMessage] registers them. The recipients the form names cannot be
+  /// [sendMessage] registers them, and one that Smartschool does not
+  /// register stops the send with a [SmartschoolComposeError] before the
+  /// submit (#39). The recipients the form names cannot be
   /// taken off: when [params] leave one of them out of its field, this
   /// method throws a [SmartschoolComposeError] before it registers any
   /// recipient, and nothing is sent. Recipients are compared by
@@ -1167,8 +1174,12 @@ class MessagesService {
       );
     }
 
-    // Step 2: register all recipients on the server-side form state. The
-    // recipients a reply form names are registered with it already.
+    // Step 2: register all recipients on the server-side form state, each
+    // checked against Smartschool's answer: a recipient it does not register
+    // stops the send here (#39). A recipient is registered once per field:
+    // the recipients a reply form names are registered with it already, and
+    // Smartschool answers a second registration in the same field without
+    // the recipient (verified live, #39).
     final (onFormTo, onFormCc, onFormBcc) = reply == null
         ? const (
             <MessageSearchUser>[],
@@ -1185,18 +1196,20 @@ class MessagesService {
     for (final (type, users, onForm) in fields) {
       final registered = onForm.map(_recipientKey).toSet();
       for (final user in users) {
-        if (registered.contains(_recipientKey(user))) continue;
-        await _addUserToForm(user, type, uniqueUsc, form);
+        if (!registered.add(_recipientKey(user))) continue;
+        await _addUserToForm(user, type, uniqueUsc, form, operation);
       }
     }
-    for (final group in params.toGroups) {
-      await _addGroupToForm(group, RecipientType.to, uniqueUsc, form);
-    }
-    for (final group in params.ccGroups) {
-      await _addGroupToForm(group, RecipientType.cc, uniqueUsc, form);
-    }
-    for (final group in params.bccGroups) {
-      await _addGroupToForm(group, RecipientType.bcc, uniqueUsc, form);
+    for (final (type, groups) in [
+      (RecipientType.to, params.toGroups),
+      (RecipientType.cc, params.ccGroups),
+      (RecipientType.bcc, params.bccGroups),
+    ]) {
+      final registered = <(int, int)>{};
+      for (final group in groups) {
+        if (!registered.add((group.groupId, group.ssId))) continue;
+        await _addGroupToForm(group, type, uniqueUsc, form, operation);
+      }
     }
 
     // Step 3: upload attachments.
@@ -1264,12 +1277,9 @@ class MessagesService {
       final requested = users.map(_recipientKey).toSet();
       for (final user in onForm) {
         if (requested.contains(_recipientKey(user))) continue;
-        final field = switch (type) {
-          RecipientType.to => 'To',
-          RecipientType.cc => 'CC',
-          RecipientType.bcc => 'BCC',
-        };
-        missing.add('${user.displayName} (user ${user.userId}, $field)');
+        missing.add(
+          '${user.displayName} (user ${user.userId}, ${_fieldName(type)})',
+        );
       }
     }
     if (missing.isEmpty) return;
@@ -1287,6 +1297,13 @@ class MessagesService {
   /// What identifies [user] as a recipient of the compose form.
   static (int, int, int) _recipientKey(MessageSearchUser user) =>
       (user.userId, user.ssId, user.userLt);
+
+  /// The name of the compose form field [type] in error messages.
+  static String _fieldName(RecipientType type) => switch (type) {
+    RecipientType.to => 'To',
+    RecipientType.cc => 'CC',
+    RecipientType.bcc => 'BCC',
+  };
 
   /// Submits the compose form to [url] with [payload]: the request that
   /// sends the message.
@@ -1557,48 +1574,119 @@ class MessagesService {
   /// it is not retried after logging in again, and goes out only in the
   /// session [form] was loaded in: `uniqueUsc` belongs to that session (#25,
   /// #38).
+  ///
+  /// Throws a [SmartschoolComposeError] naming [user] when Smartschool's
+  /// answer does not register it (see [_registers]); [operation] names the
+  /// calling method in the message.
   Future<void> _addUserToForm(
     MessageSearchUser user,
     RecipientType recipientType,
     String uniqueUsc,
     Response<String> form,
-  ) => _client.postFormRaw(
-    '/?module=Messages&file=searchUsers&function=addUserToSelected',
-    {
-      'id': '${user.userId}',
-      'typeId': 'users',
-      'type': recipientType.requestType,
-      'parentNodeId': recipientType.parentNodeId,
-      'ssid': '${user.ssId}',
-      'userlt': '${user.userLt}',
-      'uniqueUsc': uniqueUsc,
-    },
-    retryAfterLogin: false,
-    sameSessionAs: form,
-  );
+    String operation,
+  ) async {
+    final answer = await _client.postFormResponse(
+      _addToSelectedUrl,
+      {
+        'id': '${user.userId}',
+        'typeId': 'users',
+        'type': recipientType.requestType,
+        'parentNodeId': recipientType.parentNodeId,
+        'ssid': '${user.ssId}',
+        'userlt': '${user.userLt}',
+        'uniqueUsc': uniqueUsc,
+      },
+      retryAfterLogin: false,
+      sameSessionAs: form,
+    );
+    if (_registers(answer, 'users', user.userId)) return;
+    throw _notRegistered(
+      operation,
+      '${user.displayName} (user ${user.userId}, '
+      '${_fieldName(recipientType)})',
+      answer,
+    );
+  }
 
   /// Registers a single group recipient on the server-side compose form state
-  /// (not retried after logging in again, and only in the session of [form],
-  /// see [_addUserToForm]).
+  /// (not retried after logging in again, only in the session of [form], and
+  /// checked against Smartschool's answer, see [_addUserToForm]).
   Future<void> _addGroupToForm(
     MessageSearchGroup group,
     RecipientType recipientType,
     String uniqueUsc,
     Response<String> form,
-  ) => _client.postFormRaw(
-    '/?module=Messages&file=searchUsers&function=addUserToSelected',
-    {
-      'id': '${group.groupId}',
-      'typeId': 'groups',
-      'type': recipientType.requestType,
-      'parentNodeId': recipientType.parentNodeId,
-      'ssid': '${group.ssId}',
-      'userlt': '0',
-      'uniqueUsc': uniqueUsc,
-    },
-    retryAfterLogin: false,
-    sameSessionAs: form,
-  );
+    String operation,
+  ) async {
+    final answer = await _client.postFormResponse(
+      _addToSelectedUrl,
+      {
+        'id': '${group.groupId}',
+        'typeId': 'groups',
+        'type': recipientType.requestType,
+        'parentNodeId': recipientType.parentNodeId,
+        'ssid': '${group.ssId}',
+        'userlt': '0',
+        'uniqueUsc': uniqueUsc,
+      },
+      retryAfterLogin: false,
+      sameSessionAs: form,
+    );
+    if (_registers(answer, 'groups', group.groupId)) return;
+    throw _notRegistered(
+      operation,
+      '${group.displayName} (group ${group.groupId}, '
+      '${_fieldName(recipientType)})',
+      answer,
+    );
+  }
+
+  static const _addToSelectedUrl =
+      '/?module=Messages&file=searchUsers&function=addUserToSelected';
+
+  /// Whether [answer], Smartschool's answer to `addUserToSelected`, registers
+  /// the recipient with [typeId] (`users` or `groups`) and [id] (#39).
+  ///
+  /// Smartschool answers a recipient it registers with HTTP `200` and XML
+  /// that describes it, which its compose script turns into the recipient's
+  /// entry on the form: `<users><user>` with the `typeId` and the ID
+  /// (`realUserId`) that were asked for, also for a group (`userType` `G`,
+  /// `userID` `G<id>`). It answers `200` with an empty body for a user it
+  /// does not know and for a second registration in the same field, and
+  /// `500` with its error page for an unknown `ssid` (all verified live, on
+  /// a compose form that was then abandoned). It answers a group ID it does
+  /// not know (`0`) as registered, so that is not caught here.
+  static bool _registers(Response<String> answer, String typeId, int id) {
+    if (answer.statusCode != HttpStatus.ok) return false;
+    final List<Map<String, dynamic>> entries;
+    try {
+      entries = XmlInterface.parseResponse(answer.data ?? '', './/users/user');
+    } on FormatException {
+      return false;
+    }
+    return entries.any(
+      (entry) =>
+          '${entry['typeId']}'.trim() == typeId &&
+          '${entry['realUserId']}'.trim() == '$id',
+    );
+  }
+
+  /// The error for [recipient], a recipient that Smartschool's [answer] to
+  /// `addUserToSelected` does not register: the send stops before the
+  /// submit (#39).
+  static SmartschoolComposeError _notRegistered(
+    String operation,
+    String recipient,
+    Response<String> answer,
+  ) {
+    final body = answer.data ?? '';
+    final shown = body.trim().isEmpty ? 'empty' : _answerPreview(body);
+    return SmartschoolComposeError(
+      '$operation: Smartschool did not register the recipient $recipient on '
+      'the compose form (HTTP ${answer.statusCode}, answer: $shown). Check '
+      'its IDs, and that the account may send it messages. Nothing was sent.',
+    );
+  }
 
   /// Uploads a single attachment file to `/Upload/Upload/Index`.
   ///

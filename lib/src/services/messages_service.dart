@@ -1057,6 +1057,15 @@ class MessagesService {
   ///   they were issued in, so they are not retried after logging in again
   ///   (see [SmartschoolClient.postMultipartResponse]); a new call loads a
   ///   new compose form, logging in first.
+  /// - [SmartschoolSessionExpiredError] too, without sending the step, if
+  ///   the client logged in again since it loaded the compose form, or is
+  ///   logging in: another request on the same [SmartschoolClient] found the
+  ///   session expired, and its login replaced the session. Smartschool
+  ///   would accept the steps in the new session, with the tokens of the old
+  ///   one, so each step goes out only in the session the form was loaded in,
+  ///   and the send stops before the first step that cannot, at the latest
+  ///   before the submit (#38). A new call loads a new compose form in the
+  ///   new session.
   Future<void> sendMessage(SendMessageParams params) =>
       _send(params, operation: 'sendMessage');
 
@@ -1076,7 +1085,10 @@ class MessagesService {
   /// registered with the form's `uniqueUsc`, the attachments uploaded to its
   /// `randomDir`, and the outcome and each failure mean what they mean
   /// there. In particular, a [SmartschoolSendUnconfirmedError] means that the
-  /// reply may have been sent: check the sent box before sending it again.
+  /// reply may have been sent: check the sent box before sending it again;
+  /// and when the client logs in again (for another request) after the reply
+  /// form was loaded, the send stops with a [SmartschoolSessionExpiredError]
+  /// before the submit, and nothing was sent (#38).
   ///
   /// [params] is the whole reply: its [SendMessageParams.subject] (see
   /// [ensureReplySubject]) and [SendMessageParams.bodyHtml] are sent as they
@@ -1123,10 +1135,18 @@ class MessagesService {
 
     // Step 1: load a fresh compose form (the new-message form, or the reply
     // form) and extract all hidden token fields.
+    //
+    // Every step after this one carries the form's tokens, which belong to
+    // the session the form was loaded in, so each goes out only in that
+    // session (`sameSessionAs: form`): when the client logged in again since
+    // the form's request went out, for another request, or is logging in,
+    // the step is not sent and the send stops there with a
+    // SmartschoolSessionExpiredError, before the submit (#38).
     final formUrl = reply == null
         ? _composeUrl()
         : _replyComposeUrl(reply.msgId, reply.boxType, all: reply.all);
-    final html = await _client.getRaw(formUrl);
+    final form = await _client.getResponse(formUrl);
+    final html = form.data ?? '';
     final hidden = parseHiddenFields(html);
 
     if (reply != null && hidden['origMsgID'] != '${reply.msgId}') {
@@ -1166,17 +1186,17 @@ class MessagesService {
       final registered = onForm.map(_recipientKey).toSet();
       for (final user in users) {
         if (registered.contains(_recipientKey(user))) continue;
-        await _addUserToForm(user, type, uniqueUsc);
+        await _addUserToForm(user, type, uniqueUsc, form);
       }
     }
     for (final group in params.toGroups) {
-      await _addGroupToForm(group, RecipientType.to, uniqueUsc);
+      await _addGroupToForm(group, RecipientType.to, uniqueUsc, form);
     }
     for (final group in params.ccGroups) {
-      await _addGroupToForm(group, RecipientType.cc, uniqueUsc);
+      await _addGroupToForm(group, RecipientType.cc, uniqueUsc, form);
     }
     for (final group in params.bccGroups) {
-      await _addGroupToForm(group, RecipientType.bcc, uniqueUsc);
+      await _addGroupToForm(group, RecipientType.bcc, uniqueUsc, form);
     }
 
     // Step 3: upload attachments.
@@ -1187,7 +1207,7 @@ class MessagesService {
       );
     }
     for (final path in params.attachmentPaths) {
-      await _uploadAttachment(path, randomDir);
+      await _uploadAttachment(path, randomDir, form);
     }
 
     // Step 4: build multipart payload matching the observed browser request.
@@ -1220,7 +1240,12 @@ class MessagesService {
       'bcc': '0',
     };
 
-    await _submitComposeForm(formUrl, payload, operation: operation);
+    await _submitComposeForm(
+      formUrl,
+      payload,
+      operation: operation,
+      form: form,
+    );
   }
 
   /// Throws a [SmartschoolComposeError] when [fields], the recipients of
@@ -1272,12 +1297,14 @@ class MessagesService {
   /// been sent (#25). A session that Smartschool refuses for the submit is a
   /// [SmartschoolSessionExpiredError]: refused before being handled, the
   /// message was not sent, and the submit is not retried with the compose
-  /// state of the refused session. [operation] names the calling method in
-  /// error messages.
+  /// state of the refused session. So is a submit that the client does not
+  /// send because it logged in again since [form], the compose form, was
+  /// loaded (#38). [operation] names the calling method in error messages.
   Future<void> _submitComposeForm(
     String url,
     Map<String, dynamic> payload, {
     required String operation,
+    required Response<String> form,
   }) async {
     final Response<String> response;
     try {
@@ -1285,6 +1312,7 @@ class MessagesService {
         url,
         FormData.fromMap(payload),
         retryAfterLogin: false,
+        sameSessionAs: form,
       );
     } on SmartschoolSessionExpiredError {
       rethrow;
@@ -1525,13 +1553,15 @@ class MessagesService {
 
   /// Registers a single user recipient on the server-side compose form state.
   ///
-  /// Like every step of [sendMessage] after loading the compose form, it is
-  /// not retried after logging in again: `uniqueUsc` belongs to the session
-  /// the form was loaded in (#25).
+  /// Like every step of [sendMessage] after loading the compose form, [form],
+  /// it is not retried after logging in again, and goes out only in the
+  /// session [form] was loaded in: `uniqueUsc` belongs to that session (#25,
+  /// #38).
   Future<void> _addUserToForm(
     MessageSearchUser user,
     RecipientType recipientType,
     String uniqueUsc,
+    Response<String> form,
   ) => _client.postFormRaw(
     '/?module=Messages&file=searchUsers&function=addUserToSelected',
     {
@@ -1544,14 +1574,17 @@ class MessagesService {
       'uniqueUsc': uniqueUsc,
     },
     retryAfterLogin: false,
+    sameSessionAs: form,
   );
 
   /// Registers a single group recipient on the server-side compose form state
-  /// (not retried after logging in again, see [_addUserToForm]).
+  /// (not retried after logging in again, and only in the session of [form],
+  /// see [_addUserToForm]).
   Future<void> _addGroupToForm(
     MessageSearchGroup group,
     RecipientType recipientType,
     String uniqueUsc,
+    Response<String> form,
   ) => _client.postFormRaw(
     '/?module=Messages&file=searchUsers&function=addUserToSelected',
     {
@@ -1564,14 +1597,20 @@ class MessagesService {
       'uniqueUsc': uniqueUsc,
     },
     retryAfterLogin: false,
+    sameSessionAs: form,
   );
 
   /// Uploads a single attachment file to `/Upload/Upload/Index`.
   ///
-  /// [uploadDir] should be the `randomDir` token from the compose form. It
-  /// belongs to the session the form was loaded in, so the upload is not
-  /// retried after logging in again (#25).
-  Future<void> _uploadAttachment(String filePath, String uploadDir) async {
+  /// [uploadDir] should be the `randomDir` token from the compose form,
+  /// [form]. It belongs to the session the form was loaded in, so the upload
+  /// is not retried after logging in again (#25), and goes out only in that
+  /// session (#38).
+  Future<void> _uploadAttachment(
+    String filePath,
+    String uploadDir,
+    Response<String> form,
+  ) async {
     final file = File(filePath);
     if (!file.existsSync()) {
       throw SmartschoolAttachmentUploadError(
@@ -1596,6 +1635,7 @@ class MessagesService {
       '/Upload/Upload/Index',
       formData,
       retryAfterLogin: false,
+      sameSessionAs: form,
     );
 
     final result = response.trim().toLowerCase();

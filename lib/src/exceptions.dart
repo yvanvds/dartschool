@@ -154,6 +154,15 @@ class SmartschoolAccountVerificationRejectedError
 /// after loading the compose form that way (#25): the message was not sent,
 /// and calling `sendMessage` again logs in and starts from a new compose form.
 ///
+/// Also thrown, without sending the request, for a request that must go out
+/// in the session of an earlier answer (`sameSessionAs` on the POST methods
+/// of `SmartschoolClient`) when the client logged in again since that
+/// answer's request went out, or is logging in, for instance for another
+/// request on the same client (#38). `MessagesService.sendMessage` and
+/// `sendReply` send every step after loading the compose form that way too:
+/// the send stops before the submit, nothing was sent, and calling the method
+/// again starts from a new compose form in the new session.
+///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
 /// error type (e.g. [SmartschoolPresenceError]).
@@ -247,7 +256,8 @@ class SmartschoolComposeError extends SmartschoolException {
 /// as a [SmartschoolComposeError], a [SmartschoolAttachmentUploadError], a
 /// [SmartschoolConnectionError] or a login failure), or Smartschool refusing
 /// the session for a step of the send, the submit included, before handling
-/// it ([SmartschoolSessionExpiredError]).
+/// it, or the client not sending a step because it logged in again since it
+/// loaded the compose form (both a [SmartschoolSessionExpiredError], #38).
 ///
 /// Deliberately not a [SmartschoolComposeError], so a `catch` meant for the
 /// failures that are safe to retry does not catch it.

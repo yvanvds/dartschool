@@ -247,7 +247,23 @@ class SmartschoolClient {
     Map<String, String> fields, {
     Map<String, dynamic>? query,
   }) async {
-    final resp = await _send(
+    final resp = await postFormResponse(path, fields, query: query);
+    return resp.data ?? '';
+  }
+
+  /// Performs the same POST as [postFormRaw], but returns the whole
+  /// [Response]: the status code, the headers and the final URL
+  /// (`realUri`) as well as the body.
+  ///
+  /// Used when the body alone cannot tell what answered: an HTML page can be
+  /// the login chain (the session was not accepted) or an error page of the
+  /// module itself.
+  Future<Response<String>> postFormResponse(
+    String path,
+    Map<String, String> fields, {
+    Map<String, dynamic>? query,
+  }) {
+    return _send(
       () => _dio.post<String>(
         path,
         data: fields,
@@ -258,7 +274,6 @@ class SmartschoolClient {
         ),
       ),
     );
-    return resp.data ?? '';
   }
 
   /// Performs an authenticated `multipart/form-data` POST and returns the raw
@@ -928,7 +943,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       originalOptions.headers.remove(HttpHeaders.cookieHeader);
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
       if (_isUnauthorized(retried)) {
-        throw SmartschoolAuthenticationError(
+        throw SmartschoolSessionExpiredError(
           'Smartschool still answered 401 to ${originalOptions.method} '
           '${originalOptions.uri} after logging in again',
         );

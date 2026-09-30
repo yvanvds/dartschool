@@ -136,6 +136,7 @@ await client.ensureAuthenticated();
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
 | `postFormRaw(path, fields)` | `application/x-www-form-urlencoded` POST → `String` |
+| `postFormResponse(path, fields)` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
 | `postMultipartRaw(path, formData)` | `multipart/form-data` POST → `String` |
 | `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
@@ -341,7 +342,7 @@ Controls:
 
 Writes a pupil's absence/presence code for a specific half-day via Smartschool's **internal** Presence module. Smartschool's official (public) API cannot write presences — only this internal endpoint can. The primary use case is marking a pupil **Te laat** ("late"), optionally **Te laat zonder geldige reden** ("late without a valid reason").
 
-> **Access requirement:** this only works when the signed-in account has **Presence-handling access** for the class (`userCanRecord` is true in the module config). Without that right, the server rejects the save and a `SmartschoolPresenceError` is thrown.
+> **Access requirement:** this only works when the signed-in account has **Presence-handling access** for the class (`userCanRecord` is true in the module config). Without that right, the server rejects the request and a `SmartschoolPresenceError` is thrown.
 
 > **Identity note:** the Presence module speaks Smartschool's **internal `userID`** (e.g. `11110`), which is *not* the public API's `AccountID` / `RegisterID` / `UID`. You supply the internal `userId` and the class `groupID` (classes map to the public API by `adminNumber`).
 
@@ -386,6 +387,27 @@ await presence.setPresent(
 | `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<List<PresencePupil>>` | Pupils and their am/pm half-day cells for a single day. |
 
 Status codes are **not hard-coded** — their numeric IDs are per-school/per-structure, so they are resolved dynamically by name (`Te laat`, `Te laat zonder geldige reden`, `Aanwezig`). The service handles both updating an existing half-day cell and creating one where none exists, and surfaces a non-empty server `errors[]` as a `SmartschoolPresenceError`.
+
+### Errors
+
+An expired session and a missing access right need opposite actions, so they arrive as different types:
+
+- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help.
+- `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again where it could. The request was not carried out: sign in again and retry.
+
+```dart
+try {
+  await presence.setLate(/* … */);
+} on SmartschoolSessionExpiredError {
+  // Sign in again (e.g. a new SmartschoolClient) and retry.
+} on SmartschoolAuthenticationError {
+  // Logging in failed: check the credentials.
+} on SmartschoolPresenceError catch (e) {
+  // Permanent: show e.message (and e.errors) to the operator.
+} on SmartschoolConnectionError {
+  // Smartschool is unreachable: retry later.
+}
+```
 
 ### Example
 
@@ -489,10 +511,11 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
+| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: a request is still answered with `401` after logging in again, or (`PresenceService`) the login chain answers a request. Sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
-| `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), or a class/code/pupil cannot be resolved |
+| `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 
 The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. They are thrown directly, by `ensureAuthenticated()` and also by a service call (or any `SmartschoolClient` request method) that finds the session cold or expired and fails to log in again, so the same `on` clauses work around either. Only a request made on `client.dio` itself gets them wrapped in a `DioException`, as its `error`.
 

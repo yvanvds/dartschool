@@ -25,13 +25,13 @@ class SmartschoolException implements Exception {
 ///   usable answer.
 /// - [SmartschoolAccountVerificationRejectedError]: the account verification
 ///   answer was rejected.
+/// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session
+///   for a request, also after logging in again.
 ///
 /// This class itself is still thrown for the remaining authentication
 /// failures, such as reaching the maximum number of login attempts, an
-/// unrecognised step in the login chain, an HTML page where data was
-/// expected, or a request that Smartschool still answers with `401` after
-/// logging in again. Catching [SmartschoolAuthenticationError] catches all of
-/// them.
+/// unrecognised step in the login chain, or an HTML page where data was
+/// expected. Catching [SmartschoolAuthenticationError] catches all of them.
 ///
 /// It is thrown as itself also when the login is triggered by a regular
 /// request (e.g. a service call on a cold or expired session): the request
@@ -120,6 +120,29 @@ class SmartschoolAccountVerificationRejectedError
   ]);
 }
 
+/// Thrown when Smartschool does not accept the session for a request: it
+/// answers with its login chain instead of the data.
+///
+/// Smartschool signals this in two ways: it answers an XHR or form POST with
+/// `401`, or it redirects the request to the login chain (`/login`, `/2fa`,
+/// `/account-verification`). Where the client recognises it, it logs in again
+/// and retries the request once on its own, so this error means the session
+/// has expired, or the new one was not taken into account. The request was
+/// not carried out, so it is safe to sign in again (for instance with a new
+/// `SmartschoolClient`, after `clearCookies()`) and retry.
+///
+/// Thrown when a request is still answered with `401` after logging in again,
+/// and by `PresenceService` when the login chain answers one of its requests.
+///
+/// It is not a missing access right: when the session is accepted but the
+/// account may not make the request, the service reports that in its own
+/// error type (e.g. [SmartschoolPresenceError]).
+class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
+  const SmartschoolSessionExpiredError([
+    super.message = 'Smartschool did not accept the session.',
+  ]);
+}
+
 /// Thrown when Smartschool cannot be reached: the host does not resolve, the
 /// connection is refused or drops, a request times out, or the TLS handshake
 /// fails.
@@ -174,9 +197,17 @@ class SmartschoolComposeError extends SmartschoolException {
 
 /// Thrown when a Presence (attendance) operation fails.
 ///
-/// This covers both a rejected save (the server returns a non-empty `errors[]`
-/// array, exposed via [errors]) and precondition failures such as an unknown
-/// class, an unresolvable status code, or a pupil not present in the class.
+/// This covers a rejected save (the server returns a non-empty `errors[]`
+/// array, exposed via [errors]), a request the Presence module refuses or
+/// cannot handle (it answers with an HTML page instead of JSON, such as its
+/// generic `500` error page: the request is invalid, or the account may lack
+/// Presence access), and precondition failures such as an unknown class, an
+/// unresolvable status code, or a pupil not present in the class. The session
+/// was accepted for all of them, so signing in again does not help.
+///
+/// A session that Smartschool does not accept is not reported with this type
+/// but as a [SmartschoolSessionExpiredError] (a
+/// [SmartschoolAuthenticationError]), like any other authentication failure.
 class SmartschoolPresenceError extends SmartschoolException {
   /// The server-reported error strings, when the failure originated from a
   /// non-empty `errors[]` in the save response. Empty for precondition

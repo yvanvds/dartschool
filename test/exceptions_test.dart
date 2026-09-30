@@ -79,4 +79,19 @@ void main() {
       expect(error.toString(), 'SmartschoolConnectionError: unreachable');
     });
   });
+
+  group('SmartschoolSessionExpiredError (#5)', () {
+    test('is a SmartschoolAuthenticationError, not a '
+        'SmartschoolPresenceError', () {
+      // "Sign in again" and "give up" must not share a type.
+      const error = SmartschoolSessionExpiredError();
+      expect(error, isA<SmartschoolAuthenticationError>());
+      expect(error, isNot(isA<SmartschoolPresenceError>()));
+      expect(
+        error.toString(),
+        'SmartschoolSessionExpiredError: '
+        'Smartschool did not accept the session.',
+      );
+    });
+  });
 }

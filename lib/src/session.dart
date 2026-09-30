@@ -71,7 +71,9 @@ class SmartschoolClient {
   /// reverse-engineering helpers.
   ///
   /// A request made on it directly still gets a login failure wrapped in a
-  /// [DioException] (as its `error`); the typed methods throw it as itself.
+  /// [DioException] (as its `error`), and a network failure as the plain
+  /// [DioException]; the typed methods throw the login failure as itself and
+  /// the network failure as a [SmartschoolConnectionError].
   Dio get dio => _dio;
 
   /// Stream of normalized module counter updates.
@@ -134,7 +136,9 @@ class SmartschoolClient {
   // A request that finds the session unauthenticated logs in first. When that
   // login fails, these methods throw the SmartschoolException (typically a
   // SmartschoolAuthenticationError subtype) itself, not the DioException that
-  // carries it (see _send, #20).
+  // carries it (see _send, #20). When Smartschool cannot be reached, they
+  // throw a SmartschoolConnectionError with the DioException as its cause
+  // (#21).
   // -------------------------------------------------------------------------
 
   /// Performs a GET request and returns the decoded JSON body.
@@ -362,20 +366,12 @@ class SmartschoolClient {
   ///
   /// When Smartschool cannot be reached (the host does not resolve, the
   /// connection fails or times out), a [SmartschoolConnectionError] is thrown
-  /// instead, with the `DioException` as its `cause`: a network problem is not
-  /// reported as a failed login.
+  /// instead, with the `DioException` as its `cause`, as every request helper
+  /// throws it: a network problem is not reported as a failed login.
   Future<void> ensureAuthenticated() async {
     try {
       await platformId;
     } on DioException catch (e) {
-      final unreachable = _describeConnectionFailure(e);
-      if (unreachable != null) {
-        throw SmartschoolConnectionError(
-          'Unable to reach Smartschool at ${credentials.mainUrl}: '
-          '$unreachable',
-          cause: e,
-        );
-      }
       throw SmartschoolAuthenticationError(
         'Unable to validate Smartschool session: ${e.message ?? e.toString()}',
       );
@@ -555,15 +551,17 @@ class SmartschoolClient {
   // Private helpers
   // -------------------------------------------------------------------------
 
-  /// Runs [request], a request on [_dio], and throws a [SmartschoolException]
-  /// that it failed with as itself rather than wrapped in a [DioException].
+  /// Runs [request], a request on [_dio], and throws the [SmartschoolException]
+  /// that its failure means rather than the [DioException] it arrives in.
   ///
   /// Dio delivers every failure of a request as a [DioException]: when the
   /// auth interceptor logs in for a regular request and the login fails, the
-  /// [SmartschoolAuthenticationError] (subtype) arrives as its `error`. The
-  /// public request helpers go through here so that a service call throws the
-  /// typed error its caller can catch (#20). Any other [DioException] (a
-  /// network failure, for one) is rethrown unchanged.
+  /// [SmartschoolAuthenticationError] (subtype) arrives as its `error`, and
+  /// that is thrown as itself (#20). When Smartschool cannot be reached (see
+  /// [_describeConnectionFailure]), a [SmartschoolConnectionError] is thrown
+  /// with the [DioException] as its `cause` (#21). The public request helpers
+  /// go through here so that a service call throws the typed error its caller
+  /// can catch. Any other [DioException] is rethrown unchanged.
   Future<Response<T>> _send<T>(Future<Response<T>> Function() request) async {
     try {
       return await request();
@@ -571,6 +569,17 @@ class SmartschoolClient {
       final inner = e.error;
       if (inner is SmartschoolException) {
         Error.throwWithStackTrace(inner, e.stackTrace);
+      }
+      final unreachable = _describeConnectionFailure(e);
+      if (unreachable != null) {
+        Error.throwWithStackTrace(
+          SmartschoolConnectionError(
+            'Unable to reach Smartschool at ${credentials.mainUrl}: '
+            '$unreachable',
+            cause: e,
+          ),
+          e.stackTrace,
+        );
       }
       rethrow;
     }

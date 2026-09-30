@@ -489,7 +489,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
-| `SmartschoolConnectionError` | `ensureAuthenticated()` cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
+| `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), or a class/code/pupil cannot be resolved |
@@ -511,7 +511,7 @@ try {
 }
 ```
 
-`SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem. Only `ensureAuthenticated()` reports an unreachable Smartschool this way; a service call still lets the network failure through as a `DioException`.
+`SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem. `ensureAuthenticated()` and every service call (or any `SmartschoolClient` request method) report an unreachable Smartschool this way, also when the network fails during a login the call triggered. Only a request made on `client.dio` itself gets the plain `DioException`.
 
 ---
 

@@ -40,7 +40,8 @@ class SmartschoolException implements Exception {
 /// `SmartschoolClient.dio` directly gets it wrapped (as the `error`).
 ///
 /// An unreachable Smartschool is not an authentication failure:
-/// `ensureAuthenticated()` throws a [SmartschoolConnectionError] for that.
+/// `ensureAuthenticated()` and the request methods (so every service) throw a
+/// [SmartschoolConnectionError] for that.
 class SmartschoolAuthenticationError extends SmartschoolException {
   const SmartschoolAuthenticationError(super.message);
 }
@@ -126,7 +127,12 @@ class SmartschoolAccountVerificationRejectedError
 /// A network problem, not a failed login: it is deliberately not a
 /// [SmartschoolAuthenticationError], so an app can tell the user to check
 /// their connection rather than their password.
-/// `SmartschoolClient.ensureAuthenticated()` throws it.
+///
+/// `SmartschoolClient.ensureAuthenticated()` throws it, and so do the request
+/// methods of `SmartschoolClient` (`getJson`, `postXml`, `getRaw`, …) and so
+/// every service call, also when the network fails halfway through a login
+/// the request triggered. Only a request made on `SmartschoolClient.dio`
+/// directly gets the plain `DioException` instead.
 class SmartschoolConnectionError extends SmartschoolException {
   /// The underlying error, typically the `DioException` the request failed
   /// with (its own `error` holds the `SocketException`, if any).

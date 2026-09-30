@@ -63,4 +63,20 @@ void main() {
       );
     });
   });
+
+  group('SmartschoolConnectionError (#10)', () {
+    test('is a SmartschoolException, not a SmartschoolAuthenticationError', () {
+      // A network problem must not be caught as a failed login.
+      const error = SmartschoolConnectionError('unreachable');
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+    });
+
+    test('carries its cause', () {
+      final cause = Exception('socket');
+      final error = SmartschoolConnectionError('unreachable', cause: cause);
+      expect(error.cause, same(cause));
+      expect(error.toString(), 'SmartschoolConnectionError: unreachable');
+    });
+  });
 }

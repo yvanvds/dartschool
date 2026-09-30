@@ -341,6 +341,11 @@ class SmartschoolClient {
   /// A login failure is thrown as the matching [SmartschoolAuthenticationError]
   /// subclass (e.g. [SmartschoolInvalidCredentialsError]), unwrapped from the
   /// `DioException` it travels in.
+  ///
+  /// When Smartschool cannot be reached (the host does not resolve, the
+  /// connection fails or times out), a [SmartschoolConnectionError] is thrown
+  /// instead, with the `DioException` as its `cause`: a network problem is not
+  /// reported as a failed login.
   Future<void> ensureAuthenticated() async {
     try {
       await platformId;
@@ -348,6 +353,14 @@ class SmartschoolClient {
       final inner = e.error;
       if (inner is SmartschoolException) {
         throw inner;
+      }
+      final unreachable = _describeConnectionFailure(e);
+      if (unreachable != null) {
+        throw SmartschoolConnectionError(
+          'Unable to reach Smartschool at ${credentials.mainUrl}: '
+          '$unreachable',
+          cause: e,
+        );
       }
       throw SmartschoolAuthenticationError(
         'Unable to validate Smartschool session: ${e.message ?? e.toString()}',
@@ -741,6 +754,39 @@ class SmartschoolClient {
         Platform.environment['USERPROFILE'] ??
         '.';
     return p.join(home, '.cache', 'smartschool', username);
+  }
+
+  /// Describes [e] when it means Smartschool could not be reached (the request
+  /// got no complete answer), or returns `null` for any other failure.
+  ///
+  /// `IOHttpClientAdapter` reports a DNS failure or refused connection as
+  /// [DioExceptionType.connectionError] and a timeout as the matching timeout
+  /// type; other socket, HTTP or TLS errors (a connection reset mid-request, a
+  /// failed TLS handshake) pass through unconverted and reach us as
+  /// [DioExceptionType.unknown].
+  static String? _describeConnectionFailure(DioException e) {
+    final error = e.error;
+    final String failure;
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+        failure = 'the connection failed';
+      case DioExceptionType.connectionTimeout:
+        failure = 'the connection timed out';
+      case DioExceptionType.sendTimeout:
+        failure = 'sending the request timed out';
+      case DioExceptionType.receiveTimeout:
+        failure = 'waiting for the response timed out';
+      case DioExceptionType.badCertificate:
+        failure = 'the server certificate was rejected';
+      case DioExceptionType.unknown
+          when error is SocketException ||
+              error is HttpException ||
+              error is TlsException:
+        failure = 'the connection failed';
+      default:
+        return null;
+    }
+    return error == null ? failure : '$failure ($error)';
   }
 
   static bool _isLikelyHtml(String body) {

@@ -35,6 +35,9 @@ class SmartschoolException implements Exception {
 /// cold session), the error reaches the caller wrapped in a `DioException`
 /// (as its `error`); `SmartschoolClient.ensureAuthenticated()` throws it
 /// unwrapped.
+///
+/// An unreachable Smartschool is not an authentication failure:
+/// `ensureAuthenticated()` throws a [SmartschoolConnectionError] for that.
 class SmartschoolAuthenticationError extends SmartschoolException {
   const SmartschoolAuthenticationError(super.message);
 }
@@ -111,6 +114,22 @@ class SmartschoolAccountVerificationRejectedError
         'Account verification is still pending. Check the verification '
         'answer format in credentials.yml (often yyyy-mm-dd).',
   ]);
+}
+
+/// Thrown when Smartschool cannot be reached: the host does not resolve, the
+/// connection is refused or drops, a request times out, or the TLS handshake
+/// fails.
+///
+/// A network problem, not a failed login: it is deliberately not a
+/// [SmartschoolAuthenticationError], so an app can tell the user to check
+/// their connection rather than their password.
+/// `SmartschoolClient.ensureAuthenticated()` throws it.
+class SmartschoolConnectionError extends SmartschoolException {
+  /// The underlying error, typically the `DioException` the request failed
+  /// with (its own `error` holds the `SocketException`, if any).
+  final Object? cause;
+
+  const SmartschoolConnectionError(super.message, {this.cause});
 }
 
 /// Thrown when parsing server response data fails.

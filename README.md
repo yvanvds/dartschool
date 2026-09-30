@@ -131,7 +131,7 @@ await client.ensureAuthenticated();
 | Method / getter | Description |
 |---|---|
 | `SmartschoolClient.create(credentials)` | Factory — creates the Dio client, configures cookie jar, returns ready instance |
-| `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly |
+| `ensureAuthenticated()` | Triggers login if not already done; safe to call repeatedly. Throws a `SmartschoolAuthenticationError` subtype when the login fails, a `SmartschoolConnectionError` when Smartschool is unreachable |
 | `clearCookies()` | Deletes persisted cookies (use this for explicit logout/session reset). |
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
@@ -489,6 +489,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
+| `SmartschoolConnectionError` | `ensureAuthenticated()` cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
 | `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), or a class/code/pupil cannot be resolved |
@@ -504,8 +505,12 @@ try {
   // Ask the user to check their TOTP secret and device clock.
 } on SmartschoolAuthenticationError catch (e) {
   // Any other authentication failure.
+} on SmartschoolConnectionError {
+  // Smartschool is unreachable: ask the user to check their network.
 }
 ```
+
+`SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem.
 
 ---
 

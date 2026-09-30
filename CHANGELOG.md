@@ -10,6 +10,10 @@
   - `SmartschoolAccountVerificationRejectedError` — the account verification answer is rejected.
 
   Backwards compatible: they extend `SmartschoolAuthenticationError` and keep the previous messages, so existing `catch` clauses and message checks keep working. The base class is still thrown for the other authentication failures (maximum login attempts, an unrecognised login step, HTML where data was expected).
+- `SmartschoolConnectionError` (extends `SmartschoolException`): Smartschool cannot be reached. Carries the underlying error as `cause`.
+
+### Fixed
+- Auth: `ensureAuthenticated()` no longer reports an unreachable Smartschool as a failed login (#10). A host that does not resolve, a refused or dropped connection, a timeout or a failed TLS handshake — also halfway through the login chain — used to surface as `SmartschoolAuthenticationError('Unable to validate Smartschool session: …')`, with the network error only in the message text, so an app could not tell the user whether to check their network or their password. It is now thrown as a `SmartschoolConnectionError` with the `DioException` as its `cause`. **Behaviour change:** `SmartschoolConnectionError` is deliberately not a `SmartschoolAuthenticationError`, so a `catch` of the authentication error no longer catches a network problem; catch `SmartschoolConnectionError` (or `SmartschoolException`) for that. Other failures of `ensureAuthenticated()` are unchanged.
 
 ## 0.2.10 - 2026-09-15
 

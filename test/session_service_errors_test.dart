@@ -203,6 +203,8 @@ final _calls = <String, Future<Object?> Function(SmartschoolClient)>{
   ),
   'postJson': (c) => c.postJson('/api/v1/endpoint', data: '{}'),
   'download': (c) => c.download('/files/document.pdf'),
+  // The answer to it comes as a stream (#41).
+  'downloadStream': (c) => c.downloadStream('/files/document.pdf'),
 };
 
 void main() {

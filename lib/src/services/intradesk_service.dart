@@ -125,7 +125,54 @@ class IntradeskService {
   /// final bytes = await intradesk.downloadFile(file.id);
   /// await File('output.docx').writeAsBytes(bytes);
   /// ```
-  Future<Uint8List> downloadFile(String fileId) async {
+  ///
+  /// The whole file is held in memory; [downloadFileStream] reads it as it
+  /// comes in instead. With [maxBytes], the download fails with a
+  /// [SmartschoolDownloadTooLargeError] as soon as the file turns out to be
+  /// larger than that many bytes, and stops the transfer (#41); see
+  /// [SmartschoolClient.download]. The size in a listing
+  /// (`IntradeskFile.currentRevision.fileSize`) may be out of date, so this
+  /// checks the file itself.
+  ///
+  /// Throws a [SmartschoolDownloadError] with status `404` when Smartschool
+  /// knows no file with [fileId].
+  Future<Uint8List> downloadFile(String fileId, {int? maxBytes}) async {
+    return _client.download(await _downloadPath(fileId), maxBytes: maxBytes);
+  }
+
+  /// Downloads the file identified by [fileId] as a stream, from the same
+  /// URL as [downloadFile] (#41).
+  ///
+  /// Returns as soon as the headers of Smartschool's answer are in, with the
+  /// size (`contentLength`) and name (`fileName`) Smartschool gives the file,
+  /// and the content to be read from `stream` as it comes in; cancelling the
+  /// subscription stops the transfer. [maxBytes] limits the download as for
+  /// [downloadFile]: a larger announced size throws a
+  /// [SmartschoolDownloadTooLargeError] here, otherwise the stream ends with
+  /// it. See [SmartschoolClient.downloadStream].
+  ///
+  /// ```dart
+  /// final download = await intradesk.downloadFileStream(
+  ///   file.id,
+  ///   maxBytes: 25 * 1024 * 1024,
+  /// );
+  /// await download.stream.pipe(File('download.bin').openWrite());
+  /// ```
+  ///
+  /// Smartschool's answer gives every file the `contentType`
+  /// `application/x-www-form-urlencoded`; tell the type from the name.
+  Future<SmartschoolDownload> downloadFileStream(
+    String fileId, {
+    int? maxBytes,
+  }) async {
+    return _client.downloadStream(
+      await _downloadPath(fileId),
+      maxBytes: maxBytes,
+    );
+  }
+
+  /// The download URL of the file identified by [fileId].
+  Future<String> _downloadPath(String fileId) async {
     if (fileId.isEmpty) {
       throw ArgumentError.value(
         fileId,
@@ -134,9 +181,7 @@ class IntradeskService {
       );
     }
     final platformId = await _client.platformId;
-    return _client.download(
-      '/intradesk/api/v1/$platformId/files/$fileId/download',
-    );
+    return '/intradesk/api/v1/$platformId/files/$fileId/download';
   }
 
   // -------------------------------------------------------------------------

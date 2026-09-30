@@ -418,11 +418,28 @@ class MessageAttachment {
   ///
   /// The Smartschool server returns the file as Base64-encoded content —
   /// this method decodes it automatically.
-  Future<Uint8List> download(SmartschoolClient client) {
-    return client.download(
-      '/?module=Messages&file=download&fileID=$fileId&target=0',
-    );
+  ///
+  /// With [maxBytes], the download fails with a
+  /// `SmartschoolDownloadTooLargeError` as soon as the attachment turns out
+  /// to be larger than that many bytes, and stops the transfer (#41); see
+  /// [SmartschoolClient.download].
+  Future<Uint8List> download(SmartschoolClient client, {int? maxBytes}) {
+    return client.download(_downloadPath, maxBytes: maxBytes);
   }
+
+  /// Downloads this attachment as a stream, from the same URL as [download]:
+  /// returns as soon as the headers of Smartschool's answer are in, with the
+  /// content to be read from its `stream` as it comes in (#41). See
+  /// [SmartschoolClient.downloadStream], also for [maxBytes].
+  Future<SmartschoolDownload> downloadStream(
+    SmartschoolClient client, {
+    int? maxBytes,
+  }) {
+    return client.downloadStream(_downloadPath, maxBytes: maxBytes);
+  }
+
+  String get _downloadPath =>
+      '/?module=Messages&file=download&fileID=$fileId&target=0';
 
   @override
   String toString() => 'MessageAttachment(fileId: $fileId, name: "$name")';

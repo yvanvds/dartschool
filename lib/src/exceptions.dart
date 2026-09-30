@@ -208,6 +208,40 @@ class SmartschoolDownloadError extends SmartschoolException {
   String toString() => '$runtimeType($statusCode): $message';
 }
 
+/// Thrown when a download is larger than the `maxBytes` its caller allows
+/// (#41), by `SmartschoolClient.download` and `downloadStream`, and so by
+/// `IntradeskService.downloadFile` and `downloadFileStream` and by
+/// `MessageAttachment.download` and `downloadStream`.
+///
+/// When Smartschool announces the size of the file (`Content-Length`) and it
+/// is larger than [maxBytes], the download fails before any of the content
+/// is read, and [contentLength] holds that size. Otherwise the bytes are
+/// counted as they come in, and the download fails as soon as more than
+/// [maxBytes] came in: `download` throws this error, and the stream of
+/// `downloadStream` ends with it, after at most [maxBytes] bytes.
+///
+/// Either way the client stops the transfer: it closes the connection
+/// rather than reading the rest of the file.
+///
+/// Not a [SmartschoolDownloadError]: Smartschool answered with the file
+/// (HTTP `200`); the caller's limit is what stopped it.
+class SmartschoolDownloadTooLargeError extends SmartschoolException {
+  /// The largest size, in bytes, that the caller allowed.
+  final int maxBytes;
+
+  /// The size of the file in bytes as Smartschool announced it
+  /// (`Content-Length`), or `null` when it announced none. When it is not
+  /// larger than [maxBytes] (or `null`), the download failed on the bytes
+  /// that came in: more than [maxBytes] of them.
+  final int? contentLength;
+
+  const SmartschoolDownloadTooLargeError(
+    super.message, {
+    required this.maxBytes,
+    this.contentLength,
+  });
+}
+
 /// Thrown when JSON decoding of a response body fails.
 class SmartschoolJsonError extends SmartschoolDownloadError {
   SmartschoolJsonError(super.message, super.statusCode);

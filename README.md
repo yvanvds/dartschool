@@ -238,7 +238,7 @@ for (final attachment in attachments) {
 | `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. |
 | `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. |
 | `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. |
-| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash. |
+| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it. Not for a message already in the trash (Smartschool's web client deletes that one for good). |
 | `moveToArchive(msgIds)` | `Future<List<MessageChanged>>` | Archives one or more messages (REST endpoint). |
 
 ### Composing & searching
@@ -570,7 +570,7 @@ Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompo
 Returned by `SmartschoolClient.getCurrentUser()`. Fields: `id` (int — server-assigned numeric user ID), `displayName` (String), `avatarUrl` (String? — profile picture URL).
 
 ### `MessageChanged` / `MessageDeletionStatus`
-Returned by mutation operations. Carry the `id` of the affected message and a `newValue` / status field.
+Returned by mutation operations. `MessageChanged` carries the `id` of the affected message and its `newValue`. `MessageDeletionStatus` (from `moveToTrash`) carries the `msgId`, the `boxType` it was in, `isDeleted` (`true` when Smartschool confirms the deletion) and `unread`, the read state of the message.
 
 ### `NotificationCounterUpdate`
 Transport-agnostic event produced by any notification source (WebSocket, polling bridge, or manual emit).

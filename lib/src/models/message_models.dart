@@ -451,23 +451,54 @@ class MessageChanged {
 ///
 /// Corresponds to Python's `MessageDeletionStatus` dataclass.
 class MessageDeletionStatus {
+  /// The ID of the message, as Smartschool's answer names it.
   final int msgId;
+
+  /// The type of box the message was in, as Smartschool's answer names it
+  /// (`inbox` for a message in the archive too, a folder of the inbox).
   final String boxType;
+
+  /// Whether Smartschool's answer confirms that the message was deleted.
   final bool isDeleted;
+
+  /// Whether the message was unread, from the `<status>` of Smartschool's
+  /// answer (`0` unread, `1` read, as in every message list); `null` when the
+  /// answer gives neither.
+  final bool? unread;
 
   const MessageDeletionStatus({
     required this.msgId,
     required this.boxType,
     required this.isDeleted,
+    this.unread,
   });
 
+  /// Reads the `<details>` of Smartschool's `finish quick delete` answer, the
+  /// answer to a `quick delete` of a message ([MessagesService.moveToTrash]).
+  ///
+  /// Smartschool's web client takes that answer as the message deleted: it
+  /// removes the message from the list whatever the details say. So
+  /// [isDeleted] is `true`. The details' `<status>` is not the outcome of the
+  /// deletion but the read state of the message ([unread]), which the web
+  /// client passes on to its unread counter (#19).
   factory MessageDeletionStatus.fromXml(Map<String, dynamic> xml) {
+    final status = _str(xml, 'status');
     return MessageDeletionStatus(
       msgId: _int(xml, 'msgID'),
       boxType: _str(xml, 'boxType'),
-      isDeleted: _bool(xml, 'status'),
+      isDeleted: true,
+      unread: switch (status) {
+        '0' => true,
+        '1' => false,
+        _ => null,
+      },
     );
   }
+
+  @override
+  String toString() =>
+      'MessageDeletionStatus(msgId: $msgId, boxType: "$boxType", '
+      'isDeleted: $isDeleted, unread: $unread)';
 }
 
 /// A user or group returned by the recipient search endpoint.

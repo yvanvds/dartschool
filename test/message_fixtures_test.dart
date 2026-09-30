@@ -125,6 +125,18 @@ void main() {
       expect(status.msgId, 123);
       expect(status.boxType, 'inbox');
       expect(status.isDeleted, isTrue);
+      // `<status>1</status>` is the read state, not the outcome (#19).
+      expect(status.unread, isFalse);
+    });
+
+    test('quick delete of an unread message is still deleted (#19)', () {
+      final xml = _readFixture('post/postboxes/quick delete unread.xml');
+
+      final entries = XmlInterface.parseResponse(xml, './/data/details');
+      final status = MessageDeletionStatus.fromXml(entries.single);
+
+      expect(status.isDeleted, isTrue);
+      expect(status.unread, isTrue);
     });
 
     test('archive messages fixture json shape stays compatible', () {

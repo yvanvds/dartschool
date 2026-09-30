@@ -682,19 +682,33 @@ class MessagesService {
 
   /// Moves message [msgId] to the trash.
   ///
-  /// Returns the deletion status from the server.
+  /// Sends Smartschool's `quick delete`, as the web client's delete button
+  /// does. For a message that is in the trash already, the web client asks to
+  /// confirm deleting it for good instead: do not call this on one.
+  ///
+  /// Returns the deletion status from Smartschool's `finish quick delete`
+  /// answer, which the web client takes as the message deleted
+  /// ([MessageDeletionStatus.isDeleted] is `true`; see
+  /// [MessageDeletionStatus.fromXml]), or `null` when the answer is not a
+  /// `finish quick delete`.
   Future<MessageDeletionStatus?> moveToTrash(int msgId) async {
-    final entries = await _client.postXml(
+    final actions = await _client.postXml(
       url: _messagesXmlUrl,
       subsystem: 'postboxes',
       action: 'quick delete',
       params: {'msgID': '$msgId'},
-      xpath: './/data/details',
+      xpath: './/actions/action',
     );
 
-    return entries.isEmpty
-        ? null
-        : MessageDeletionStatus.fromXml(entries.first);
+    for (final action in actions) {
+      if (action['command'] != 'finish quick delete') continue;
+      final data = action['data'];
+      final details = data is Map<String, dynamic> ? data['details'] : null;
+      if (details is Map<String, dynamic>) {
+        return MessageDeletionStatus.fromXml(details);
+      }
+    }
+    return null;
   }
 
   /// Archives one or more messages identified by [msgIds].

@@ -136,10 +136,11 @@ await client.ensureAuthenticated();
 | `resetLoginAttempts()` | Lets a client that stopped logging in on its own log in again at once (see *Logging in again* below) |
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
-| `postFormRaw(path, fields)` | `application/x-www-form-urlencoded` POST → `String` |
-| `postFormResponse(path, fields)` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
+| `postFormRaw(path, fields, {query, retryAfterLogin})` | `application/x-www-form-urlencoded` POST → `String` |
+| `postFormResponse(path, fields, {query, retryAfterLogin})` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
-| `postMultipartRaw(path, formData)` | `multipart/form-data` POST → `String` |
+| `postMultipartRaw(path, formData, {retryAfterLogin})` | `multipart/form-data` POST → `String` |
+| `postMultipartResponse(path, formData, {retryAfterLogin})` | Same POST → the whole `Response<String>` |
 | `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
 | `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false` if the stream is already closed |
@@ -150,6 +151,8 @@ await client.ensureAuthenticated();
 ### Logging in again
 
 When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
+
+Pass `retryAfterLogin: false` to `postFormRaw`, `postFormResponse`, `postMultipartRaw` or `postMultipartResponse` for a request that carries state of the session it was prepared in, such as the tokens of Smartschool's compose form: a retry would send that state in a session it does not belong to. When Smartschool refuses the session for such a request, it is neither retried nor used to log in again: it throws `SmartschoolSessionExpiredError` at once, and the next refused request logs in. `MessagesService.sendMessage` sends its steps after loading the compose form this way.
 
 ---
 
@@ -219,7 +222,23 @@ for (final attachment in attachments) {
 | `getCurrentUserAsRecipient()` | `Future<MessageSearchUser>` | Returns the currently-logged-in user as a compose recipient (reads IDs from compose page JS — safe and reliable). |
 | `searchRecipients(query)` | `Future<List<MessageSearchResult>>` | JSON-based recipient search; results lack `ssId` — use `searchRecipientsForCompose` when sending. |
 | `searchRecipientsForCompose(query)` | `Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>` | Compose-form XML search; results carry `ssId`/`userLt` required by `sendMessage`. |
-| `sendMessage({to, cc, bcc, toGroups, ..., subject, bodyHtml, attachmentPaths})` | `Future<void>` | Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. |
+| `sendMessage({to, cc, bcc, toGroups, ..., subject, bodyHtml, attachmentPaths})` | `Future<void>` | Full multi-step send: loads compose form, registers recipients, uploads attachments, submits. Returns normally only when Smartschool confirms the send; see below for what a failure means. |
+
+`sendMessage` returns normally only when Smartschool answers the submit as it does for a sent message: HTTP `200` with the page that closes the compose window (`window.close()`). A `SmartschoolSendUnconfirmedError` means the message was submitted, but that confirmation did not come (another answer, or the connection failed or timed out after the submit went out): the message may or may not have been sent, so check the sent box before sending it again. Every other failure means nothing was sent, and calling `sendMessage` again is safe:
+
+```dart
+try {
+  await messages.sendMessage(params);
+} on SmartschoolSendUnconfirmedError {
+  // Submitted, not confirmed: it may have been sent. Check the sent box
+  // before sending it again.
+} on SmartschoolException {
+  // Not sent: the compose form, a recipient, an attachment, the network or
+  // the session failed before the message was sent. Safe to try again.
+}
+```
+
+The steps after loading the compose form carry its tokens, which belong to the session it was loaded in, so they are not retried after logging in again: when Smartschool refuses the session for one of them (the submit included), `sendMessage` throws `SmartschoolSessionExpiredError` and nothing was sent. Calling it again loads a new compose form, logging in first.
 
 ### Thread subject helpers
 
@@ -538,9 +557,10 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
-| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`). Sign in again and retry |
+| `SmartschoolSessionExpiredError` | Smartschool does not accept the session: after logging in again, the retry of a request is still answered with `401` or by the login chain (redirected to `/login`, `/2fa` or `/account-verification`), or a request sent with `retryAfterLogin: false` (such as a step of `sendMessage`) is refused. The request was not carried out: sign in again and retry |
 | `SmartschoolConnectionError` | `ensureAuthenticated()` or a service call cannot reach Smartschool: the host does not resolve, the connection fails or times out (carries the `cause`). A network problem, so not an authentication error |
-| `SmartschoolComposeError` | The compose form cannot be parsed, or the server rejects the message |
+| `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing). From `sendMessage`, before the message is submitted: nothing was sent |
+| `SmartschoolSendUnconfirmedError` | `sendMessage` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 

@@ -985,18 +985,42 @@ class MessagesService {
   ///    (`uniqueUsc`, `randomDir`, `encryptedSender`, …).
   /// 2. Register each recipient via `addUserToSelected` for every
   ///    to / cc / bcc slot.
-  /// 3. Optionally upload files from [attachmentPaths].
-  /// 4. POST the completed payload as `multipart/form-data`.
+  /// 3. Optionally upload files from [SendMessageParams.attachmentPaths].
+  /// 4. Submit the completed form as `multipart/form-data`: the request that
+  ///    sends the message.
   ///
   /// Obtain [MessageSearchUser] / [MessageSearchGroup] objects from
   /// [searchRecipientsForCompose], or build them directly when you already
   /// know the recipient's `userId`/`groupId` and `ssId`
   /// (e.g. from [SmartschoolClient.authenticatedUser]).
   ///
-  /// Throws [SmartschoolComposeError] if the compose form cannot be parsed or
-  /// the server rejects the submission.
-  /// Throws [SmartschoolAttachmentUploadError] if an attachment fails to upload.
+  /// Returns normally only when Smartschool confirms that the message was
+  /// sent: it answers the submit with HTTP `200` and the page that closes the
+  /// compose window (`window.close()`).
+  ///
+  /// Throws [SmartschoolSendUnconfirmedError] when the message was submitted
+  /// but that confirmation did not come: another answer, or the connection
+  /// failed or timed out after the submit went out. The message may or may
+  /// not have been sent, so do not send it again without checking the sent
+  /// box (#25).
+  ///
+  /// Every other failure means the message was not sent, and calling
+  /// [sendMessage] again is safe:
+  /// - [SmartschoolComposeError] if the compose form cannot be used;
+  /// - [SmartschoolAttachmentUploadError] if an attachment fails to upload;
+  /// - [SmartschoolConnectionError] if Smartschool cannot be reached before
+  ///   the submit, and the [SmartschoolAuthenticationError] subtypes if a
+  ///   login fails;
+  /// - [SmartschoolSessionExpiredError] if Smartschool refuses the session
+  ///   for a step, the submit included, before handling it. The steps after
+  ///   loading the compose form carry its tokens, which belong to the session
+  ///   they were issued in, so they are not retried after logging in again
+  ///   (see [SmartschoolClient.postMultipartResponse]); a new call loads a
+  ///   new compose form, logging in first.
   Future<void> sendMessage(SendMessageParams params) async {
+    // Everything up to the submit only prepares the compose form: a failure
+    // there leaves nothing sent.
+
     // Step 1: load a fresh compose form and extract all hidden token fields.
     final hidden = await _loadComposeFields();
 
@@ -1042,7 +1066,6 @@ class MessagesService {
     }
 
     // Step 4: build multipart payload matching the observed browser request.
-    final url = _composeUrl();
     final payload = <String, dynamic>{
       'module': 'Messages',
       'file': 'composeMessage',
@@ -1069,20 +1092,91 @@ class MessagesService {
       'bcc': '0',
     };
 
-    final formData = FormData.fromMap(payload);
-    final responseHtml = await _client.postMultipartRaw(url, formData);
+    await _submitComposeForm(_composeUrl(), payload);
+  }
 
-    // The success response is an HTML window-close page.  An error page
-    // typically contains a JS `var error` assignment or an error element.
-    if (responseHtml.contains('var error') ||
-        responseHtml.contains('type=\'error\'') ||
-        responseHtml.contains('type="error"')) {
-      throw SmartschoolComposeError(
-        'sendMessage: server returned an error page. '
-        'Response preview: '
-        '${responseHtml.substring(0, responseHtml.length.clamp(0, 300))}',
+  /// Submits the compose form to [url] with [payload]: the request that
+  /// sends the message.
+  ///
+  /// Returns normally only when Smartschool's answer confirms the send (see
+  /// [_confirmsSend]). Any other outcome after the submit went out is a
+  /// [SmartschoolSendUnconfirmedError], never retried: the message may have
+  /// been sent (#25). A session that Smartschool refuses for the submit is a
+  /// [SmartschoolSessionExpiredError]: refused before being handled, the
+  /// message was not sent, and the submit is not retried with the compose
+  /// state of the refused session.
+  Future<void> _submitComposeForm(
+    String url,
+    Map<String, dynamic> payload,
+  ) async {
+    final Response<String> response;
+    try {
+      response = await _client.postMultipartResponse(
+        url,
+        FormData.fromMap(payload),
+        retryAfterLogin: false,
+      );
+    } on SmartschoolSessionExpiredError {
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolSendUnconfirmedError(
+          'sendMessage: the message was submitted, but no answer from '
+          'Smartschool came in ($e). It may or may not have been sent: check '
+          'the sent box before sending it again.',
+          cause: e,
+        ),
+        stackTrace,
       );
     }
+
+    if (!_confirmsSend(response)) {
+      final status = response.statusCode;
+      throw SmartschoolSendUnconfirmedError(
+        "sendMessage: the message was submitted, but Smartschool's answer "
+        '(HTTP $status) does not confirm that it was sent. It may or may not '
+        'have been sent: check the sent box before sending it again. '
+        'Answer: ${_answerPreview(response.data ?? '')}',
+        statusCode: status,
+      );
+    }
+  }
+
+  /// Whether [response], Smartschool's answer to the compose form's submit,
+  /// confirms that the message was sent.
+  ///
+  /// Smartschool answers a sent message with HTTP `200` and a page whose
+  /// script closes the compose window (`checkOpenerActions(); window.close();`
+  /// in the recorded answer, `post/composemessage/on_send.html`; the
+  /// `window.close()` confirmed live, see #25). The compose form itself does
+  /// not close the window. A page that closes it but carries an error marker
+  /// (`var error`, `type='error'`, which the library has always read as an
+  /// error page) does not count: it could be an error popup that closes
+  /// itself.
+  static bool _confirmsSend(Response<String> response) {
+    if (response.statusCode != HttpStatus.ok) return false;
+    final body = response.data ?? '';
+    if (_sendErrorMarkers.any(body.contains)) return false;
+    return html_parser
+        .parse(body)
+        .querySelectorAll('script')
+        .any((script) => _windowClose.hasMatch(script.text));
+  }
+
+  static final _windowClose = RegExp(r'\bwindow\.close\s*\(\s*\)');
+  static const _sendErrorMarkers = [
+    'var error',
+    "type='error'",
+    'type="error"',
+  ];
+
+  /// The visible text of [html], shortened for an error message.
+  static String _answerPreview(String html) {
+    final text = (html_parser.parse(html).body?.text ?? html)
+        .replaceAll(_spaces, ' ')
+        .trim();
+    if (text.isEmpty) return '(no text)';
+    return text.length <= 200 ? text : '${text.substring(0, 200)}…';
   }
 
   // -------------------------------------------------------------------------
@@ -1244,6 +1338,10 @@ class MessagesService {
   }
 
   /// Registers a single user recipient on the server-side compose form state.
+  ///
+  /// Like every step of [sendMessage] after loading the compose form, it is
+  /// not retried after logging in again: `uniqueUsc` belongs to the session
+  /// the form was loaded in (#25).
   Future<void> _addUserToForm(
     MessageSearchUser user,
     RecipientType recipientType,
@@ -1259,9 +1357,11 @@ class MessagesService {
       'userlt': '${user.userLt}',
       'uniqueUsc': uniqueUsc,
     },
+    retryAfterLogin: false,
   );
 
-  /// Registers a single group recipient on the server-side compose form state.
+  /// Registers a single group recipient on the server-side compose form state
+  /// (not retried after logging in again, see [_addUserToForm]).
   Future<void> _addGroupToForm(
     MessageSearchGroup group,
     RecipientType recipientType,
@@ -1277,11 +1377,14 @@ class MessagesService {
       'userlt': '0',
       'uniqueUsc': uniqueUsc,
     },
+    retryAfterLogin: false,
   );
 
   /// Uploads a single attachment file to `/Upload/Upload/Index`.
   ///
-  /// [uploadDir] should be the `randomDir` token from the compose form.
+  /// [uploadDir] should be the `randomDir` token from the compose form. It
+  /// belongs to the session the form was loaded in, so the upload is not
+  /// retried after logging in again (#25).
   Future<void> _uploadAttachment(String filePath, String uploadDir) async {
     final file = File(filePath);
     if (!file.existsSync()) {
@@ -1306,6 +1409,7 @@ class MessagesService {
     final response = await _client.postMultipartRaw(
       '/Upload/Upload/Index',
       formData,
+      retryAfterLogin: false,
     );
 
     final result = response.trim().toLowerCase();

@@ -17,6 +17,12 @@
 // without `X-Requested-With` gets `302`, `Location: /login` and a 270-byte
 // "Redirecting to /login" page; with the header, it gets a bare `401`.
 //
+// Since #25, `MessagesService.sendMessage` no longer lets its steps after
+// loading the compose form be retried after logging in again (they carry the
+// compose state of the refused session; see messages_send_outcome_test.dart),
+// so the retry of a multipart POST and of an XHR/form POST is tested on the
+// client's request methods here, as is `retryAfterLogin: false`.
+//
 // Like the fake in session_unauthorized_test.dart, the fake Smartschool below
 // keeps the session state itself and ignores the cookies the client sends.
 import 'dart:convert';
@@ -26,10 +32,8 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:flutter_smartschool/src/exceptions.dart';
-import 'package:flutter_smartschool/src/models/message_models.dart';
 import 'package:flutter_smartschool/src/services/intradesk_service.dart';
 import 'package:flutter_smartschool/src/services/messages_service.dart';
-import 'package:flutter_smartschool/src/services/send_message_params.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -260,19 +264,19 @@ ResponseBody _response(
   },
 );
 
-const _recipient = MessageSearchUser(
-  userId: 11111,
-  displayName: 'Test Recipient',
-  ssId: 4069,
-);
+/// The path of the message send (the compose form's submit).
+const _sendPath = '/?module=Messages&file=composeMessage';
 
-SendMessageParams _message({List<String> attachments = const []}) =>
-    SendMessageParams(
-      to: const [_recipient],
-      subject: 'Test',
-      bodyHtml: '<p>Test</p>',
-      attachmentPaths: attachments,
-    );
+/// The path that registers a recipient on the compose form.
+const _addRecipientPath =
+    '/?module=Messages&file=searchUsers&function=addUserToSelected';
+
+/// A message send, as `MessagesService.sendMessage` submits it.
+FormData _messageForm() => FormData.fromMap({
+  'uniqueUsc': 'fake-unique-usc',
+  'subject': 'Test',
+  'message': '<p>Test</p>',
+});
 
 /// A [SmartschoolSessionExpiredError] that names the login chain.
 Matcher _sessionExpired() => isA<SmartschoolSessionExpiredError>().having(
@@ -305,14 +309,16 @@ void main() {
 
   group('a POST redirected to /login (no X-Requested-With) logs in again and '
       'is retried once (#22)', () {
-    test('sendMessage: the message is sent after logging in again', () async {
+    test('postMultipartRaw: the form is sent after logging in again', () async {
       final server = await serve(
         _Smartschool(loggedIn: true, expiresBefore: _send),
       );
 
-      // Before the fix: sendMessage returned normally, and nothing was sent.
-      await MessagesService(client).sendMessage(_message());
+      // Before the fix: the "Redirecting to /login" page was returned, and
+      // nothing was sent (sendMessage returned normally).
+      final body = await client.postMultipartRaw(_sendPath, _messageForm());
 
+      expect(body, _sentPage);
       expect(server.logSinceExpiry, [_send, ..._login, _send]);
       // The retry sends the whole form again, not an empty body.
       expect(server.sent, [
@@ -321,26 +327,31 @@ void main() {
     });
 
     test(
-      'sendMessage: an attachment is uploaded after logging in again',
+      'postMultipartRaw: a file is uploaded after logging in again',
       () async {
-        final attachment = File(p.join(tempDir.path, 'note.txt'))
-          ..writeAsStringSync('attachment');
         final server = await serve(
           _Smartschool(loggedIn: true, expiresBefore: _upload),
         );
 
-        // Before the fix: SmartschoolAttachmentUploadError ("unexpected
-        // response"), with the "Redirecting to /login" page in its message.
-        await MessagesService(
-          client,
-        ).sendMessage(_message(attachments: [attachment.path]));
+        // Before the fix: the "Redirecting to /login" page was returned (the
+        // attachment upload of sendMessage failed with "unexpected response").
+        final body = await client.postMultipartRaw(
+          '/Upload/Upload/Index',
+          FormData.fromMap({
+            'file': MultipartFile.fromBytes(
+              utf8.encode('attachment'),
+              filename: 'note.txt',
+            ),
+            'uploadDir': 'fake-random-dir',
+          }),
+        );
 
-        expect(server.logSinceExpiry, [_upload, ..._login, _upload, _send]);
+        expect(body, 'true');
+        expect(server.logSinceExpiry, [_upload, ..._login, _upload]);
         // The retry sends the file again, not an empty body.
         expect(server.uploads, [
           allOf(contains('filename="note.txt"'), contains('attachment')),
         ]);
-        expect(server.sent, hasLength(1));
       },
     );
 
@@ -360,15 +371,10 @@ void main() {
         _Smartschool(loggedIn: true, expiresBefore: _addRecipient),
       );
 
-      await MessagesService(client).sendMessage(_message());
+      final body = await client.postFormRaw(_addRecipientPath, {'id': '1'});
 
-      expect(server.logSinceExpiry, [
-        _addRecipient,
-        ..._login,
-        _addRecipient,
-        _send,
-      ]);
-      expect(server.sent, hasLength(1));
+      expect(body, 'ok');
+      expect(server.logSinceExpiry, [_addRecipient, ..._login, _addRecipient]);
     });
 
     test('a redirect off the login chain is passed through, without a '
@@ -414,7 +420,7 @@ void main() {
       expect(server.log, [_compose, ..._password, _compose]);
     });
 
-    test('a POST redirected to /login again: sendMessage', () async {
+    test('a POST redirected to /login again: postMultipartRaw', () async {
       final server = await serve(
         _Smartschool(
           loggedIn: true,
@@ -424,7 +430,7 @@ void main() {
       );
 
       await expectLater(
-        MessagesService(client).sendMessage(_message()),
+        client.postMultipartRaw(_sendPath, _messageForm()),
         throwsA(_sessionExpired()),
       );
       expect(server.logSinceExpiry, [_send, ..._login, _send]);
@@ -452,6 +458,81 @@ void main() {
       }
 
       expect(caught, isA<SmartschoolSessionExpiredError>());
+    });
+  });
+
+  group('retryAfterLogin: false: a refused request is neither retried nor '
+      'used to log in again (#25)', () {
+    /// A [SmartschoolSessionExpiredError] for a request that is not retried.
+    Matcher notRetried() => isA<SmartschoolSessionExpiredError>().having(
+      (e) => e.message,
+      'message',
+      contains('not retried after logging in again'),
+    );
+
+    test('a multipart POST redirected to /login', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _send),
+      );
+
+      await expectLater(
+        client.postMultipartRaw(
+          _sendPath,
+          _messageForm(),
+          retryAfterLogin: false,
+        ),
+        throwsA(notRetried()),
+      );
+      expect(server.log, [_send]);
+      expect(server.sent, isEmpty);
+    });
+
+    test('an XHR/form POST answered 401', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _addRecipient),
+      );
+
+      await expectLater(
+        client.postFormRaw(_addRecipientPath, {
+          'id': '1',
+        }, retryAfterLogin: false),
+        throwsA(notRetried()),
+      );
+      expect(server.log, [_addRecipient]);
+    });
+
+    test('the next refused request logs in as usual', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _send),
+      );
+      await expectLater(
+        client.postMultipartRaw(
+          _sendPath,
+          _messageForm(),
+          retryAfterLogin: false,
+        ),
+        throwsA(isA<SmartschoolSessionExpiredError>()),
+      );
+
+      await client.postFormRaw(_addRecipientPath, {'id': '1'});
+
+      expect(server.log, [_send, _addRecipient, ..._login, _addRecipient]);
+    });
+
+    test('an accepted request is answered as usual; postMultipartResponse '
+        'gives the whole response', () async {
+      final server = await serve(_Smartschool(loggedIn: true));
+
+      final response = await client.postMultipartResponse(
+        _sendPath,
+        _messageForm(),
+        retryAfterLogin: false,
+      );
+
+      expect(response.statusCode, 200);
+      expect(response.data, _sentPage);
+      expect(server.log, [_send]);
+      expect(server.sent, hasLength(1));
     });
   });
 }

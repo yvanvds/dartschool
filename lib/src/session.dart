@@ -274,12 +274,20 @@ class SmartschoolClient {
   ///
   /// Used for Smartschool operations that submit legacy HTML forms (such as
   /// recipient search) whose responses are XML or plain text instead of JSON.
+  ///
+  /// [retryAfterLogin]: see [postMultipartResponse].
   Future<String> postFormRaw(
     String path,
     Map<String, String> fields, {
     Map<String, dynamic>? query,
+    bool retryAfterLogin = true,
   }) async {
-    final resp = await postFormResponse(path, fields, query: query);
+    final resp = await postFormResponse(
+      path,
+      fields,
+      query: query,
+      retryAfterLogin: retryAfterLogin,
+    );
     return resp.data ?? '';
   }
 
@@ -291,10 +299,13 @@ class SmartschoolClient {
   /// an error page. (An answer of the login chain never arrives here: the
   /// client logs in again and retries the request once, and throws a
   /// [SmartschoolSessionExpiredError] when the retry is refused too.)
+  ///
+  /// [retryAfterLogin]: see [postMultipartResponse].
   Future<Response<String>> postFormResponse(
     String path,
     Map<String, String> fields, {
     Map<String, dynamic>? query,
+    bool retryAfterLogin = true,
   }) {
     return _send(
       () => _dio.post<String>(
@@ -304,6 +315,7 @@ class SmartschoolClient {
         options: Options(
           contentType: Headers.formUrlEncodedContentType,
           headers: {kXRequestedWith: 'XMLHttpRequest'},
+          extra: _retryExtra(retryAfterLogin),
         ),
       ),
     );
@@ -314,10 +326,53 @@ class SmartschoolClient {
   ///
   /// Used for the Smartschool message send endpoint and file upload endpoint,
   /// both of which require multipart rather than JSON or URL-encoded bodies.
-  Future<String> postMultipartRaw(String path, FormData formData) async {
-    final resp = await _send(() => _dio.post<String>(path, data: formData));
+  ///
+  /// [retryAfterLogin]: see [postMultipartResponse].
+  Future<String> postMultipartRaw(
+    String path,
+    FormData formData, {
+    bool retryAfterLogin = true,
+  }) async {
+    final resp = await postMultipartResponse(
+      path,
+      formData,
+      retryAfterLogin: retryAfterLogin,
+    );
     return resp.data ?? '';
   }
+
+  /// Performs the same POST as [postMultipartRaw], but returns the whole
+  /// [Response]: the status code, the headers and the final URL (`realUri`)
+  /// as well as the body.
+  ///
+  /// When Smartschool refuses the session for a request, the client logs in
+  /// again and retries the request once (a multipart request with a copy of
+  /// its [FormData]). Pass `retryAfterLogin: false` for a request that
+  /// carries state of the session it was prepared in, such as the tokens of
+  /// Smartschool's compose form (`uniqueUsc`, `randomDir`): a retry would
+  /// send that state stale, in a session it does not belong to. Such a
+  /// request is neither retried nor used to log in again: when Smartschool
+  /// refuses its session, it fails at once with a
+  /// [SmartschoolSessionExpiredError], and the next request that Smartschool
+  /// refuses logs in (#25).
+  Future<Response<String>> postMultipartResponse(
+    String path,
+    FormData formData, {
+    bool retryAfterLogin = true,
+  }) {
+    return _send(
+      () => _dio.post<String>(
+        path,
+        data: formData,
+        options: Options(extra: _retryExtra(retryAfterLogin)),
+      ),
+    );
+  }
+
+  /// The request `extra` that keeps the auth interceptor from retrying a
+  /// request in a new session, or `null` when it may.
+  static Map<String, dynamic>? _retryExtra(bool retryAfterLogin) =>
+      retryAfterLogin ? null : {_SmartschoolAuthInterceptor._noRetryKey: true};
 
   /// Performs an authenticated `application/x-www-form-urlencoded` POST with
   /// a raw body string and returns the raw response body string.
@@ -939,6 +994,12 @@ class SmartschoolClient {
 /// retried again: it fails with a [SmartschoolSessionExpiredError] (#22), so
 /// the caller never gets a login page in place of the data.
 ///
+/// A request sent with `retryAfterLogin: false` (see
+/// [SmartschoolClient.postMultipartResponse]) carries state of the session it
+/// was prepared in, such as the tokens of the compose form, so it is not
+/// retried in a new session: when refused, it fails with a
+/// [SmartschoolSessionExpiredError] at once, without a login (#25).
+///
 /// The client does not keep logging in when that does not help: after
 /// [_maxLoginAttempts] logins in a row that did not get Smartschool to accept
 /// the session (the login failed, or the retry was refused again), a refused
@@ -973,6 +1034,10 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   static const _maxLoginAttempts = 3;
   static const _noAuthKey = '_smartschool_noAuth';
   static const _retryKey = '_smartschool_retry';
+
+  /// Marks a request that is not retried after logging in again (see
+  /// [SmartschoolClient.postMultipartResponse]).
+  static const _noRetryKey = '_smartschool_noRetry';
 
   /// When the last login started; `null` when none did since the count was
   /// last cleared. The cooldown runs from here, so a request refused while a
@@ -1022,10 +1087,33 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       return;
     }
 
+    final request =
+        '${response.requestOptions.method} ${response.requestOptions.uri}';
+
+    // A request that carries state of the session it was prepared in (the
+    // tokens of the compose form) is not retried in the new session, where
+    // that state is stale: a retried message submit would send the message
+    // with the compose state of the refused session (its recipients and
+    // attachments), and what Smartschool makes of that was never checked.
+    // Smartschool refused it before handling it, so it fails as not carried
+    // out, without a login: the next refused request logs in (#25).
+    if (extra[_noRetryKey] == true) {
+      handler.reject(
+        DioException(
+          requestOptions: response.requestOptions,
+          error: SmartschoolSessionExpiredError(
+            'Smartschool did not accept the session for $request. It is not '
+            'retried after logging in again, because it carries state of the '
+            'refused session',
+          ),
+        ),
+        true,
+      );
+      return;
+    }
+
     final notLoggingIn = _whyNotLogIn();
     if (notLoggingIn != null) {
-      final request =
-          '${response.requestOptions.method} ${response.requestOptions.uri}';
       handler.reject(
         DioException(
           requestOptions: response.requestOptions,
@@ -1061,8 +1149,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       final data = response.requestOptions.data;
       final originalOptions = response.requestOptions.copyWith(
         extra: {...response.requestOptions.extra, _retryKey: true},
-        // A FormData body is consumed by sending it: a multipart POST (the
-        // message send, an attachment upload) is retried with a copy (#22).
+        // A FormData body is consumed by sending it: a multipart POST is
+        // retried with a copy (#22).
         data: data is FormData ? data.clone() : data,
       );
       // The copied headers include the `Cookie` header CookieManager put on
@@ -1072,7 +1160,6 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       // retry gets its cookies from the jar, which holds the new session.
       originalOptions.headers.remove(HttpHeaders.cookieHeader);
       final retried = await _client._dio.fetch<dynamic>(originalOptions);
-      final request = '${originalOptions.method} ${originalOptions.uri}';
       if (_isUnauthorized(retried)) {
         throw SmartschoolSessionExpiredError(
           'Smartschool still answered 401 to $request after logging in again',

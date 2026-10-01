@@ -1,4 +1,24 @@
-## 0.2.11 - Unreleased
+## 0.3.0 - 2026-10-01
+
+### Breaking changes
+This release changes what several calls throw or return. It is 0.3.0 rather than 0.2.11 so that a `^0.2.x` constraint does not pick it up unnoticed. The entries below give the details; when upgrading, check:
+- **Errors from requests.**
+  - Smartschool being unreachable is a `SmartschoolConnectionError`: from `ensureAuthenticated()` instead of a `SmartschoolAuthenticationError` (#10), and from every service call instead of a raw `DioException` (#21).
+  - A login failure during a service call is thrown as itself instead of wrapped in a `DioException` (#20).
+  - Reaching the login-attempt limit is a `SmartschoolSessionExpiredError` (#31, #32).
+  - `PresenceService` tells an expired session (`SmartschoolSessionExpiredError`) apart from a refused Presence request (#5).
+  - A client used after `dispose()` throws a `StateError`, which an `on SmartschoolException` clause does not catch (#54).
+- **`sendMessage` / `sendReply` outcome.**
+  - A submit that Smartschool does not confirm throws `SmartschoolSendUnconfirmedError` instead of returning normally. The message may have been sent, so don't resend it blindly (#25).
+  - The steps of a send are no longer retried after a new login, and a step in another session fails before it is sent (#25, #38).
+  - A recipient Smartschool does not register stops the send with a `SmartschoolComposeError` (#39).
+  - Setting a deprecated `MessageSendOptions` field throws an `ArgumentError` (#43).
+- **Record shapes.** `getReplyAllRecipients`, `parseReplyAllRecipients`, `getSentMessageRecipients` and `parseSentMessageRecipients` return `(to, cc, bcc)` instead of `(to, cc)` (#33).
+- **Types.** `IntradeskListing.weblinks` is a `List<IntradeskWeblink>` instead of a list of maps (#37).
+- **Values.**
+  - Recipient names of a sent-box message no longer start with `+`/`-`; see `FullMessage.toRecipients` and the other recipient lists for the read state (#34).
+  - `getMessage` returns `null` for an ID the box does not hold (#16).
+  - `moveToTrash` reports a moved message as deleted, and returns `null` when nothing was deleted (#19, #59). Prefer the new `moveToTrashFrom` (#60, #61).
 
 ### Added
 - Auth: typed login failures (#11). Each login failure is now thrown as its own subclass of `SmartschoolAuthenticationError`, so callers can match on the type instead of on the message text:

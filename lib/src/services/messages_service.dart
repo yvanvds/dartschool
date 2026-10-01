@@ -221,6 +221,11 @@ class MessagesService {
   /// Returns one page: at most the first 50 headers in the given order (the
   /// newest 50 by default). Use [getHeaderPages] or [getAllHeaders] to get
   /// the older ones too.
+  ///
+  /// It never waits for a paging of the box. But it restarts Smartschool's
+  /// paging position of the box, so a paging of the box that runs on the same
+  /// client (on any [MessagesService] of it) fails at its next page with a
+  /// [SmartschoolPagingRestartedError] (#80); see [getHeaderPages].
   Future<List<ShortMessage>> getHeaders({
     BoxType boxType = BoxType.inbox,
     int boxId = 0,
@@ -228,21 +233,23 @@ class MessagesService {
     SortOrder sortOrder = SortOrder.desc,
     List<int> alreadySeenIds = const [],
   }) async {
-    final entries = await _client.postXml(
-      url: _messagesXmlUrl,
-      subsystem: 'postboxes',
-      action: 'message list',
-      params: _messageListParams(
-        boxType: boxType,
-        boxId: boxId,
-        sortBy: sortBy,
-        sortOrder: sortOrder,
-        alreadySeenIds: alreadySeenIds,
+    final sent = await _BoxListings.of(_client, boxType, boxId).send(
+      () => _client.postXml(
+        url: _messagesXmlUrl,
+        subsystem: 'postboxes',
+        action: 'message list',
+        params: _messageListParams(
+          boxType: boxType,
+          boxId: boxId,
+          sortBy: sortBy,
+          sortOrder: sortOrder,
+          alreadySeenIds: alreadySeenIds,
+        ),
+        xpath: './/messages/message',
       ),
-      xpath: './/messages/message',
     );
 
-    return entries.map(ShortMessage.fromXml).toList();
+    return sent.answer.map(ShortMessage.fromXml).toList();
   }
 
   /// Returns the message headers in [boxType] page by page, not only the
@@ -258,19 +265,57 @@ class MessagesService {
   /// the listener is ready for it, so `take`, `takeWhile` or cancelling the
   /// subscription stops the paging without fetching the rest of the box.
   ///
-  /// The stream closes after the last page of the box, and also at a page
-  /// that brings no header the stream has not emitted yet, so a server that
-  /// repeats a page cannot keep it going. A header already emitted is left
-  /// out of later pages, and a page is never empty: an empty box gives a
-  /// stream without events. Pages are about 50 headers each but may be
-  /// shorter before the last.
+  /// The stream closes after the last page of the box, and also at an answer
+  /// without headers, even one that announces more. A header already emitted
+  /// is left out of later pages, and a page is never empty: an empty box
+  /// gives a stream without events. Pages are about 50 headers each but may
+  /// be shorter before the last.
   ///
-  /// Smartschool keeps the paging position in the session, one per box, and
-  /// restarts it on every `message list` of that box: a [getHeaders] (also in
-  /// poll mode, which [refreshHeadersIncremental] uses) or another paging of
-  /// the same box while this stream is paging makes the next page one that
-  /// was already emitted, which ends the stream early. Paging different boxes
-  /// at the same time is fine.
+  /// Smartschool keeps the paging position per user and box, not in the
+  /// session (#76): every `message list` of the box restarts it, in any
+  /// session of the account, and every `continue_messages` moves it on,
+  /// whichever paging sent it. So a `continue_messages` only gets the next
+  /// page when no other listing of the box reached Smartschool since the
+  /// paging's previous request. When one may have, the stream fails with a
+  /// [SmartschoolPagingRestartedError] after the pages it emitted: they are
+  /// correct, but not the whole box, so list it again.
+  ///
+  /// On this client, the library sees the listings of the box coming, on any
+  /// [MessagesService] of the client (#80):
+  /// - [getAllHeaders] and [getAllArchiveHeaders] of a box run one at a
+  ///   time, and this stream waits for them too before its first request.
+  ///   They read their pages themselves, so they always end.
+  /// - A paging of the box started after this stream waits for its first
+  ///   page only, not for its end: its listener decides when, and whether,
+  ///   it asks for the next page, and a listener that waits for another
+  ///   paging of the box, or stops without cancelling, would hold the box
+  ///   for ever. The later paging goes ahead, and this stream fails at its
+  ///   next page.
+  /// - A [getHeaders] of the box (also in poll mode, which
+  ///   [refreshHeadersIncremental] uses) never waits, and makes a paging of
+  ///   the box that runs fail at its next page.
+  ///
+  /// Such a paging fails before it asks Smartschool for its next page; when
+  /// the other listing went out while that page was being asked for, it
+  /// fails without emitting the page. Before its `message list`, a paging
+  /// also waits until Smartschool has answered the requests of the box that
+  /// are on their way, so that none of them reaches Smartschool after it.
+  ///
+  /// A listing of the box elsewhere (by another client or app, or the user
+  /// opening the box in Smartschool's web client) cannot be seen coming. Its
+  /// effect can: the next `continue_messages` answers with the second page
+  /// again. The stream recognises that answer, a page that holds headers
+  /// which were all emitted already, and fails with the same error. A server
+  /// that repeats a page fails the same way, so it cannot keep the stream
+  /// going. A new login between two pages does not restart the paging:
+  /// Smartschool goes on with the next page in the new session.
+  ///
+  /// Two pagings of the same box at the same time in different clients or
+  /// apps can still skip each other's pages: once both sent their `message
+  /// list`, each `continue_messages` moves the position on for both, and
+  /// every header a paging gets is new to it, so nothing shows the gap and
+  /// no error is thrown. Do not page a box in two places at once. Paging
+  /// different boxes at the same time is fine.
   ///
   /// [boxId], [sortBy] and [sortOrder] are those of [getHeaders]; for the
   /// archive, use [getArchiveHeaderPages].
@@ -279,30 +324,91 @@ class MessagesService {
     int boxId = 0,
     SortField sortBy = SortField.date,
     SortOrder sortOrder = SortOrder.desc,
+  }) => _headerPages(
+    boxType: boxType,
+    boxId: boxId,
+    sortBy: sortBy,
+    sortOrder: sortOrder,
+    holdBox: false,
+  );
+
+  /// [getHeaderPages], which keeps the pagings of the box that start after it
+  /// waiting until it ends when [holdBox] (#80). Only a paging that reads its
+  /// pages itself, and so always ends, may hold the box: [getAllHeaders] and
+  /// [getAllArchiveHeaders].
+  Stream<List<ShortMessage>> _headerPages({
+    required BoxType boxType,
+    required int boxId,
+    required SortField sortBy,
+    required SortOrder sortOrder,
+    required bool holdBox,
   }) async* {
-    final emitted = <int>{};
-    var page = await _fetchHeaderPage(
-      'message list',
-      _messageListParams(
-        boxType: boxType,
-        boxId: boxId,
-        sortBy: sortBy,
-        sortOrder: sortOrder,
-      ),
-    );
-    while (true) {
-      final fresh = [
-        for (final header in page.headers)
-          if (emitted.add(header.id)) header,
-      ];
-      if (fresh.isEmpty) return;
-      yield fresh;
-      if (!page.hasMore) return;
-      page = await _fetchHeaderPage('continue_messages', {
-        'boxID': '$boxId',
-        'boxType': boxType.value,
-        'layout': 'new',
-      });
+    final box = _BoxListings.of(_client, boxType, boxId);
+    final letNextGo = await box.takeTurn();
+    try {
+      var sent = await box.start(
+        () => _fetchHeaderPage(
+          'message list',
+          _messageListParams(
+            boxType: boxType,
+            boxId: boxId,
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+          ),
+        ),
+      );
+      if (!holdBox) letNextGo();
+      final emitted = <int>{};
+      while (true) {
+        final page = sent.answer;
+        final fresh = [
+          for (final header in page.headers)
+            if (emitted.add(header.id)) header,
+        ];
+        if (fresh.isEmpty) {
+          // An answer without headers ends the paging, as `rebuildfinish`
+          // does: the last `continue_messages` of a box may get no more than
+          // that.
+          if (page.headers.isEmpty) return;
+          // Headers, all emitted already, after an answer that announced more
+          // (the first page cannot be one): the second page again, which is
+          // how Smartschool answers once the box was listed again (#76).
+          throw SmartschoolPagingRestartedError(
+            'Smartschool restarted the paging of the box (boxType '
+            '${boxType.value}, boxID $boxId) after ${emitted.length} '
+            'headers: the box was listed again while it was being paged, in '
+            'this or another session of the account. The headers so far are '
+            'not the whole box. List the box again.',
+          );
+        }
+        yield fresh;
+        if (!page.hasMore) return;
+        // Another listing of the box on this client since this paging's
+        // previous request, or one about to go out, moves or restarts the
+        // paging position (#80): the next page would not be this paging's.
+        if (box.mayContinue(sent.ticket)) {
+          sent = await box.send(
+            () => _fetchHeaderPage('continue_messages', {
+              'boxID': '$boxId',
+              'boxType': boxType.value,
+              'layout': 'new',
+            }),
+          );
+          // One that went out while the page was being asked for may have
+          // reached Smartschool first.
+          if (sent.alone) continue;
+        }
+        throw SmartschoolPagingRestartedError(
+          'The box (boxType ${boxType.value}, boxID $boxId) was listed again '
+          'on this client while it was being paged, after ${emitted.length} '
+          'headers: by a getHeaders or another paging of the box. '
+          'Smartschool keeps one paging position per box, so the next page '
+          'would not be this paging\'s. The headers so far are not the whole '
+          'box. List the box again.',
+        );
+      }
+    } finally {
+      letNextGo();
     }
   }
 
@@ -314,8 +420,18 @@ class MessagesService {
   /// further page is requested once they are in, and at most [limit] headers
   /// are returned, the first ones in the given order.
   ///
-  /// The paging ends early when the box is listed again in the same session
-  /// while it runs; see [getHeaderPages].
+  /// On one client, the [getAllHeaders] and [getAllArchiveHeaders] calls of a
+  /// box run one at a time (#80): one that starts while another of the box
+  /// runs waits for it, so two calls at the same time both get the whole
+  /// box. A [getHeaderPages] of the box started meanwhile waits for it too.
+  ///
+  /// When the box is listed again while this runs, Smartschool restarts the
+  /// paging, and this fails with a [SmartschoolPagingRestartedError] rather
+  /// than return part of the box: call it again then. Such a listing is a
+  /// [getHeaders] of the box on this client (also in poll mode), or one
+  /// elsewhere: by another client or app, or in the web client. Two pagings
+  /// of the same box in different clients can skip each other's pages
+  /// without an error; see [getHeaderPages].
   Future<List<ShortMessage>> getAllHeaders({
     BoxType boxType = BoxType.inbox,
     int boxId = 0,
@@ -323,11 +439,12 @@ class MessagesService {
     SortOrder sortOrder = SortOrder.desc,
     int? limit,
   }) => _collectHeaders(
-    getHeaderPages(
+    _headerPages(
       boxType: boxType,
       boxId: boxId,
       sortBy: sortBy,
       sortOrder: sortOrder,
+      holdBox: true,
     ),
     limit,
   );
@@ -364,18 +481,33 @@ class MessagesService {
   ///
   /// This is [getHeaderPages] with `boxType = BoxType.inbox` and the archive
   /// folder's box ID, resolved as [getArchiveHeaders] does when [boxId] is
-  /// omitted.
+  /// omitted. It waits for the same pagings, and fails the same way.
   Stream<List<ShortMessage>> getArchiveHeaderPages({
     int? boxId,
     SortField sortBy = SortField.date,
     SortOrder sortOrder = SortOrder.desc,
+  }) => _archiveHeaderPages(
+    boxId: boxId,
+    sortBy: sortBy,
+    sortOrder: sortOrder,
+    holdBox: false,
+  );
+
+  /// [getArchiveHeaderPages], holding the box as [_headerPages] does when
+  /// [holdBox]. The box is the archive folder's, once resolved.
+  Stream<List<ShortMessage>> _archiveHeaderPages({
+    required int? boxId,
+    required SortField sortBy,
+    required SortOrder sortOrder,
+    required bool holdBox,
   }) async* {
     final resolvedBoxId = boxId ?? await _resolveArchiveBoxId();
-    yield* getHeaderPages(
+    yield* _headerPages(
       boxType: BoxType.inbox,
       boxId: resolvedBoxId,
       sortBy: sortBy,
       sortOrder: sortOrder,
+      holdBox: holdBox,
     );
   }
 
@@ -383,14 +515,22 @@ class MessagesService {
   /// 50 that [getArchiveHeaders] returns, by collecting
   /// [getArchiveHeaderPages].
   ///
-  /// [limit] works as for [getAllHeaders].
+  /// [limit] works as for [getAllHeaders], and so do running one at a time
+  /// with the [getAllHeaders] and [getAllArchiveHeaders] calls of the same
+  /// box (#80) and the [SmartschoolPagingRestartedError] when the paging is
+  /// restarted.
   Future<List<ShortMessage>> getAllArchiveHeaders({
     int? boxId,
     SortField sortBy = SortField.date,
     SortOrder sortOrder = SortOrder.desc,
     int? limit,
   }) => _collectHeaders(
-    getArchiveHeaderPages(boxId: boxId, sortBy: sortBy, sortOrder: sortOrder),
+    _archiveHeaderPages(
+      boxId: boxId,
+      sortBy: sortBy,
+      sortOrder: sortOrder,
+      holdBox: true,
+    ),
     limit,
   );
 
@@ -2276,4 +2416,116 @@ class MessagesService {
     SortField sortBy,
     SortOrder sortOrder,
   ) => '${boxType.value}|$boxId|${sortBy.value}|${sortOrder.value}';
+}
+
+/// The listings of one message box on one [SmartschoolClient]: its `message
+/// list` and `continue_messages` requests, and the pagings of the box taking
+/// turns (#80).
+///
+/// Smartschool keeps one paging position per user and box (#76): every
+/// `message list` of the box restarts it, and every `continue_messages`
+/// moves it on, whichever paging sent it. A paging's `continue_messages`
+/// gets its next page only when no other request of the box reached
+/// Smartschool since its previous one. Of the requests sent on this client,
+/// that is sure when none was sent from the moment the paging's previous
+/// request went out until the answer to its `continue_messages` came in,
+/// and none was on its way when its `message list` went out. This keeps the
+/// count to tell.
+///
+/// It is kept with the client ([of]), not with a [MessagesService]: all
+/// services of a client share its account. A box is a [BoxType] and box ID,
+/// as `continue_messages` names it.
+class _BoxListings {
+  _BoxListings._();
+
+  static final Expando<Map<String, _BoxListings>> _ofClient = Expando(
+    'message box listings',
+  );
+
+  /// The listings of the box [boxType] / [boxId] on [client].
+  static _BoxListings of(
+    SmartschoolClient client,
+    BoxType boxType,
+    int boxId,
+  ) => (_ofClient[client] ??= {}).putIfAbsent(
+    '${boxType.value}/$boxId',
+    _BoxListings._,
+  );
+
+  /// The number of requests of the box sent so far; the last one's ticket.
+  int _sent = 0;
+
+  /// The requests of the box sent and not answered yet.
+  int _onTheirWay = 0;
+
+  /// Completes once [_onTheirWay] is down to 0.
+  Completer<void>? _allAnswered;
+
+  /// Whether a paging that has its turn waits to send its `message list`
+  /// ([start]): no running paging may send a `continue_messages` meanwhile.
+  bool _starting = false;
+
+  /// Completes when the paging that took the last turn lets the next one go.
+  Future<void> _lastTurn = Future.value();
+
+  /// Waits until the pagings of the box that took a turn before let the next
+  /// one go, and returns the function that lets the next one go after this
+  /// one (calling it again does nothing).
+  ///
+  /// A paging must not hold its turn while its listener runs: the listener
+  /// might wait for a paging that waits for the turn. One that holds it until
+  /// it ends must read its pages itself.
+  Future<void Function()> takeTurn() async {
+    final previous = _lastTurn;
+    final done = Completer<void>();
+    _lastTurn = done.future;
+    await previous;
+    return () {
+      if (!done.isCompleted) done.complete();
+    };
+  }
+
+  /// Sends a paging's `message list` [request], once Smartschool has
+  /// answered every request of the box on its way, so that none of them
+  /// reaches it later. Meanwhile, no paging may send a `continue_messages`
+  /// ([mayContinue]): this one is going to restart the paging position.
+  ///
+  /// Only the paging that has the turn may call it.
+  Future<({T answer, int ticket, bool alone})> start<T>(
+    Future<T> Function() request,
+  ) async {
+    _starting = true;
+    while (_onTheirWay > 0) {
+      await (_allAnswered ??= Completer<void>()).future;
+    }
+    // No await from the check above until the request is counted.
+    _starting = false;
+    return send(request);
+  }
+
+  /// Sends [request], a `message list` or `continue_messages` of the box.
+  ///
+  /// Its answer comes with its [ticket] (for [mayContinue]), and with
+  /// whether it was [alone]: no other request of the box was sent from the
+  /// moment it went out until its answer came in.
+  Future<({T answer, int ticket, bool alone})> send<T>(
+    Future<T> Function() request,
+  ) async {
+    final ticket = ++_sent;
+    _onTheirWay++;
+    try {
+      final answer = await request();
+      return (answer: answer, ticket: ticket, alone: _sent == ticket);
+    } finally {
+      if (--_onTheirWay == 0) {
+        _allAnswered?.complete();
+        _allAnswered = null;
+      }
+    }
+  }
+
+  /// Whether a paging whose previous request had [ticket] may send a
+  /// `continue_messages`: no other request of the box was sent since, and
+  /// no paging waits to send its `message list`.
+  bool mayContinue(int ticket) => _sent == ticket && !_starting;
 }

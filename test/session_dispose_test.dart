@@ -14,6 +14,13 @@
 // when the client was disposed, and the stream of a download that was being
 // read, fail with it too. emitNotificationCounterUpdate returns `false`, and
 // dispose can be called again.
+//
+// Issue #73: that StateError could only be told apart from any other
+// StateError (such as the "No element" of a `.first`) by its message. It is
+// now a SmartschoolClientDisposedError, still a StateError, and the client
+// tells whether it was disposed (isDisposed). The walk of the issue, which
+// skips a broken folder and stops for a disposed client, is in
+// intradesk_listing_test.dart.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -79,9 +86,10 @@ Future<SmartschoolClient> _clientOf(HttpClientAdapter server) async {
   return client;
 }
 
-/// The error of a disposed client: a [StateError] that says so, and not a
-/// [SmartschoolException] such as a [SmartschoolConnectionError].
-final _disposed = isA<StateError>().having(
+/// The error of a disposed client: a [SmartschoolClientDisposedError] (#73),
+/// a [StateError] that says so, and not a [SmartschoolException] such as a
+/// [SmartschoolConnectionError].
+final _disposed = isA<SmartschoolClientDisposedError>().having(
   (e) => e.message,
   'message',
   startsWith('SmartschoolClient was disposed'),
@@ -123,8 +131,8 @@ void main() {
 
   group('a disposed client', () {
     for (final MapEntry(key: name, value: call) in _calls.entries) {
-      test('$name throws a StateError saying so, without sending '
-          'anything', () async {
+      test('$name throws a SmartschoolClientDisposedError saying so, without '
+          'sending anything', () async {
         final server = _Smartschool();
         final client = await _clientOf(server);
 
@@ -199,9 +207,47 @@ void main() {
     });
   });
 
+  group('isDisposed (#73)', () {
+    test('is false until dispose is called, and true from that call on, '
+        'before its future completes', () async {
+      final client = await _clientOf(_Smartschool());
+      expect(client.isDisposed, isFalse);
+      await client.getRaw('/page');
+      expect(client.isDisposed, isFalse, reason: 'a request changes nothing');
+
+      final disposal = client.dispose();
+      expect(client.isDisposed, isTrue);
+      await disposal;
+      expect(client.isDisposed, isTrue);
+      await client.dispose();
+      expect(client.isDisposed, isTrue);
+    });
+
+    test('tells a disposed client apart in a catch of every error', () async {
+      final server = _Smartschool();
+      final client = await _clientOf(server);
+      server.onRequest = () => unawaited(client.dispose());
+
+      // The request goes out, the client is disposed while it runs, and the
+      // request after it is not sent.
+      await client.getRaw('/first');
+      Object? failure;
+      try {
+        await client.getRaw('/second');
+      } catch (e) {
+        failure = e;
+      }
+
+      expect(client.isDisposed, isTrue);
+      expect(failure, _disposed);
+      expect(server.requests, ['GET /first']);
+    });
+  });
+
   group('disposing a client', () {
     test('during a login that a request started makes the request fail with '
-        'the StateError, not as Smartschool unreachable', () async {
+        'the SmartschoolClientDisposedError, not as Smartschool '
+        'unreachable', () async {
       // Smartschool refuses the request, so the client logs in: the GET of
       // the login form is refused by the closed HTTP client with a
       // connection error, which is not Smartschool being unreachable.
@@ -247,8 +293,9 @@ void main() {
         });
       });
 
-      test('while a request runs makes it fail with the StateError, not as '
-          'Smartschool unreachable', () async {
+      test('while a request runs makes it fail with the '
+          'SmartschoolClientDisposedError, not as Smartschool '
+          'unreachable', () async {
         // The server never answers: the request runs until the client is
         // disposed, which drops the connection.
         handle = (_) {};
@@ -269,8 +316,9 @@ void main() {
         );
       });
 
-      test('while a download is read ends its stream with the StateError, '
-          'not as Smartschool unreachable', () async {
+      test('while a download is read ends its stream with the '
+          'SmartschoolClientDisposedError, not as Smartschool '
+          'unreachable', () async {
         // The server sends the first 64 KiB of the file and then holds the
         // connection open. (A few bytes would not do: they may not reach the
         // reader before the rest of the file.)

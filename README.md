@@ -154,7 +154,8 @@ await client.ensureAuthenticated();
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
 | `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false`, emitting nothing, when `moduleName` is empty or the client was disposed (the stream is closed) |
 | `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
-| `dispose({force})` | Closes the notification stream and the underlying Dio client (`force`, the default, cuts off the requests that run). The client cannot be used afterwards: every request method, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `StateError` ("SmartschoolClient was disposed") without sending anything (see *Exceptions*). Calling it again does nothing |
+| `dispose({force})` | Closes the notification stream and the underlying Dio client (`force`, the default, cuts off the requests that run). The client cannot be used afterwards: every request method, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `SmartschoolClientDisposedError` (a `StateError`, "SmartschoolClient was disposed") without sending anything (see *Exceptions*). Calling it again does nothing |
+| `isDisposed` | `true` from the moment `dispose()` is called (before its future completes): the client sends no more requests |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
 
 ### Cache folder
@@ -218,11 +219,11 @@ final messages = MessagesService(client);
 
 | Method | Returns | Description |
 |---|---|---|
-| `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box: one page, at most the first 50 (the newest 50 by default). Pass `alreadySeenIds` for lightweight polling. |
+| `getHeaders({boxType, boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | List message headers for any box: one page, at most the first 50 (the newest 50 by default). Pass `alreadySeenIds` for lightweight polling. Never waits, but makes a paging of the box on the same client fail at its next page (see below). |
 | `getArchiveHeaders({boxId, sortBy, sortOrder, alreadySeenIds})` | `List<ShortMessage>` | Convenience wrapper for the archive folder — resolves the box ID automatically. One page, like `getHeaders`. |
-| `getHeaderPages({boxType, boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | All headers of a box, page by page (about 50 each), as Smartschool's web client loads them while scrolling. The first page is what `getHeaders` returns; each next page is requested only when the listener wants it, so `take`/`takeWhile` or cancelling stops the paging. Ends after the last page, or at a page that brings no header not yet emitted. |
+| `getHeaderPages({boxType, boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | All headers of a box, page by page (about 50 each), as Smartschool's web client loads them while scrolling. The first page is what `getHeaders` returns; each next page is requested only when the listener wants it, so `take`/`takeWhile` or cancelling stops the paging. Ends after the last page. Fails with `SmartschoolPagingRestartedError` when Smartschool restarts the paging because the box was listed again (see below). |
 | `getArchiveHeaderPages({boxId, sortBy, sortOrder})` | `Stream<List<ShortMessage>>` | `getHeaderPages` for the archive folder. |
-| `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. |
+| `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. On one client, the `getAllHeaders` and `getAllArchiveHeaders` calls of a box run one at a time. Fails with `SmartschoolPagingRestartedError` rather than return part of the box when the paging is restarted. |
 | `getAllArchiveHeaders({boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | `getAllHeaders` for the archive folder. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
 | `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. For a message in the sent box, `toRecipients`/`ccRecipients`/`bccRecipients` also say whether each recipient has read it. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
@@ -231,11 +232,28 @@ final messages = MessagesService(client);
 | `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients, once, whether or not they were a recipient too; this method also fetches the message (`getMessage` with all recipients) and keeps the authenticated user only where its recipient names include them, so a message sent to yourself returns you. Returns `(to, cc, bcc)`: the BCC recipients are in `bcc`, so a reply-all built from `to` and `cc` does not reveal them (#33). Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
 | `getAttachments(msgId, {boxType})` | `Future<List<MessageAttachment>>` | Returns the attachment list for a message. |
 
-Smartschool keeps the paging position in the session, one per box, and restarts it whenever that box is listed again (`getHeaders`, also in poll mode, or another paging of the same box), which ends a paging of that box early. Paging different boxes at once is fine.
+Smartschool keeps the paging position per user and box, not in the session (#76): every listing of the box restarts it, in any session of the account, and every next page moves it on, whichever paging asked for it. So a paging only gets its next page when no other listing of the box reached Smartschool in between. When one may have, `getHeaderPages` fails with `SmartschoolPagingRestartedError` after the pages it emitted, and `getAllHeaders` fails with it rather than return part of the box. The pages emitted are correct, but not the whole box: list it again then.
+
+On one client (on any `MessagesService` of it), the library sees the listings of a box coming (#80):
+- `getAllHeaders` and `getAllArchiveHeaders` of a box run one at a time: one waits for the calls of that box that started before it, so two calls at the same time both get the whole box. `getHeaderPages` and `getArchiveHeaderPages` wait for them too before they start.
+- A paging of a box started after a `getHeaderPages` of that box waits only for its first page, not for its end: the stream's listener decides when, and whether, it goes on, so waiting for it could hang (a listener that waits for the other paging, or stops without cancelling). The later paging goes ahead, and the stream fails at its next page.
+- `getHeaders` of the box (also in poll mode, as `refreshHeadersIncremental` sends it) never waits, and makes a paging of the box that runs fail at its next page.
+
+Such a paging fails before it asks Smartschool for the next page; when the other listing went out while that page was being asked for, it fails without emitting the page. A paging also waits for the requests of the box that are on their way before it sends its first one.
+
+A listing of the box elsewhere (by another client or app, or the user opening the box in Smartschool's web client) cannot be seen coming, but its effect can: the next page of a paging that was running is the second page again. `getHeaderPages` recognises it, a page whose headers were all emitted already, and fails with the same error. A new login between two pages does not restart the paging: Smartschool goes on with the next page in the new session.
+
+Two pagings of the same box at the same time in different clients or apps can still skip each other's pages: once both have listed the box, each next page moves the position on for both, so one paging can skip the pages the other one got, without an error. Do not page a box in two places at once. Paging different boxes at once is fine.
 
 ```dart
-// Every message of the sent box, 50 per request.
-final sent = await messages.getAllHeaders(boxType: BoxType.sent);
+// Every message of the sent box, 50 per request; once more when the box
+// was listed again halfway.
+List<ShortMessage> sent;
+try {
+	sent = await messages.getAllHeaders(boxType: BoxType.sent);
+} on SmartschoolPagingRestartedError {
+	sent = await messages.getAllHeaders(boxType: BoxType.sent);
+}
 
 // Inbox headers of the last 30 days: stops requesting pages once past them.
 final since = DateTime.now().subtract(const Duration(days: 30));
@@ -848,6 +866,8 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |
+| `SmartschoolPagingRestartedError` | `getHeaderPages` / `getArchiveHeaderPages`, and so `getAllHeaders` / `getAllArchiveHeaders`: the box was listed again while it was being paged, so Smartschool restarted the paging halfway. A listing on the same client (`getHeaders`, or a later paging of the box) fails the paging before its next page (#80); one elsewhere shows as Smartschool sending the second page again (#76). The headers so far are correct but not the whole box: list it again. Not a session problem |
+| `SmartschoolClientDisposedError` | A request on a client that was disposed, or one that was running when it was disposed (also the stream of a download being read). A `StateError`, not a `SmartschoolException`: see below |
 
 The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. They are thrown directly, by `ensureAuthenticated()` and also by a service call (or any `SmartschoolClient` request method) that finds the session cold or expired and fails to log in again, so the same `on` clauses work around either. Only a request made on `client.dio` itself gets them wrapped in a `DioException`, as its `error`.
 
@@ -868,7 +888,19 @@ try {
 
 `SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem. `ensureAuthenticated()` and every service call (or any `SmartschoolClient` request method) report an unreachable Smartschool this way, also when the network fails during a login the call triggered. Only a request made on `client.dio` itself gets the plain `DioException`.
 
-A request on a client that was disposed (`client.dispose()`) is not a network problem, and is not reported as one: every request method, and so every service call, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `StateError` that says the client was disposed, before sending anything (also when they have the answer cached). A request that was running when the client was disposed, and the stream of a download that was being read, fail with it too. A `StateError` is not a `SmartschoolException`: it is a mistake in the app, which should not retry or show "offline" for it, but create a new client.
+A request on a client that was disposed (`client.dispose()`) is not a network problem, and is not reported as one: every request method, and so every service call, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `SmartschoolClientDisposedError` that says the client was disposed, before sending anything (also when they have the answer cached). A request that was running when the client was disposed, and the stream of a download that was being read, fail with it too. It is a `StateError`, so an `on StateError` clause still catches it, and not a `SmartschoolException`: it is a mistake in the app, which should not retry or show "offline" for it, but create a new client. Its own type tells it apart from any other `StateError` (such as the "No element" of a `.first`), and `client.isDisposed` tells whether the client was disposed:
+
+```dart
+for (final id in folderIds) {
+  try {
+    index.add(await intradesk.getFolderListing(id));
+  } on SmartschoolClientDisposedError {
+    break; // The app disposed the client: stop, do not save a partial index.
+  } on SmartschoolException {
+    // This folder failed: skip it.
+  }
+}
+```
 
 ---
 

@@ -232,8 +232,8 @@ class SmartschoolClient {
   // SmartschoolAuthenticationError subtype) itself, not the DioException that
   // carries it (see _send, #20). When Smartschool cannot be reached, they
   // throw a SmartschoolConnectionError with the DioException as its cause
-  // (#21). On a disposed client, they throw a StateError without sending
-  // anything (see dispose, #54).
+  // (#21). On a disposed client, they throw a SmartschoolClientDisposedError
+  // (a StateError) without sending anything (see dispose, #54, #73).
   // -------------------------------------------------------------------------
 
   /// Performs a GET request and returns the decoded JSON body.
@@ -630,8 +630,8 @@ class SmartschoolClient {
   ///
   /// Triggers a minimal API call to force login if not yet authenticated.
   ///
-  /// Throws a [StateError] on a disposed client, also when the user is
-  /// cached (see [dispose]).
+  /// Throws a [SmartschoolClientDisposedError] on a disposed client, also
+  /// when the user is cached (see [dispose]).
   Future<Map<String, dynamic>> get authenticatedUser async {
     _checkNotDisposed();
     if (_authenticatedUser == null) {
@@ -660,7 +660,8 @@ class SmartschoolClient {
   /// The integer [SmartschoolUser.id] is the server-assigned user ID, parsed
   /// from the `authenticatedUser.id` string (`{ssID}_{userId}_{coaccountIdx}`).
   ///
-  /// Throws a [StateError] on a disposed client (see [dispose]).
+  /// Throws a [SmartschoolClientDisposedError] on a disposed client (see
+  /// [dispose]).
   Future<SmartschoolUser> getCurrentUser() async {
     final user = await authenticatedUser;
 
@@ -693,8 +694,9 @@ class SmartschoolClient {
 
   /// Returns the platform ID for the authenticated user.
   ///
-  /// Lazily fetched and cached after the first call. Throws a [StateError] on
-  /// a disposed client, also when it is cached (see [dispose]).
+  /// Lazily fetched and cached after the first call. Throws a
+  /// [SmartschoolClientDisposedError] on a disposed client, also when it is
+  /// cached (see [dispose]).
   Future<int> get platformId async {
     _checkNotDisposed();
     _platformId ??= await _fetchPlatformId();
@@ -712,8 +714,9 @@ class SmartschoolClient {
   /// instead, with the `DioException` as its `cause`, as every request helper
   /// throws it: a network problem is not reported as a failed login.
   ///
-  /// On a disposed client, it throws a [StateError] without sending anything,
-  /// also when it validated the session before (see [dispose]).
+  /// On a disposed client, it throws a [SmartschoolClientDisposedError]
+  /// without sending anything, also when it validated the session before (see
+  /// [dispose]).
   Future<void> ensureAuthenticated() async {
     _checkNotDisposed();
     try {
@@ -725,9 +728,9 @@ class SmartschoolClient {
     } on SmartschoolException {
       rethrow;
     } catch (e) {
-      // Disposed while it ran: the StateError of a disposed client (#54),
+      // Disposed while it ran: the SmartschoolClientDisposedError (#54, #73),
       // which says more than a failed login would.
-      if (_isDisposed) rethrow;
+      if (isDisposed) rethrow;
       throw SmartschoolAuthenticationError(
         'Unable to validate Smartschool session: $e',
       );
@@ -804,18 +807,22 @@ class SmartschoolClient {
   /// request method ([getJson], [postJson], [postXml], [getRaw],
   /// [getResponse], [postFormRaw], [postFormResponse], [postMultipartRaw],
   /// [postMultipartResponse], [postFormEncodedRaw], [download],
-  /// [downloadStream]), and so every service call, throws a [StateError]
-  /// saying that the client was disposed, before it sends anything; so do
-  /// [ensureAuthenticated], [platformId], [authenticatedUser] and
-  /// [getCurrentUser], also when they have their answer cached. A request
-  /// that was running when the client was disposed fails with the same error
-  /// when it does not complete, and so does the stream of a download that was
-  /// being read; such a request may or may not have reached Smartschool (a
-  /// message submitted by `MessagesService.sendMessage` may have been sent).
-  /// Using a disposed client is a mistake of its caller, not a problem of
-  /// Smartschool or of the network: the error is not a [SmartschoolException],
+  /// [downloadStream]), and so every service call, throws a
+  /// [SmartschoolClientDisposedError] saying that the client was disposed,
+  /// before it sends anything; so do [ensureAuthenticated], [platformId],
+  /// [authenticatedUser] and [getCurrentUser], also when they have their
+  /// answer cached. A request that was running when the client was disposed
+  /// fails with the same error when it does not complete, and so does the
+  /// stream of a download that was being read; such a request may or may not
+  /// have reached Smartschool (a message submitted by
+  /// `MessagesService.sendMessage` may have been sent). Using a disposed
+  /// client is a mistake of its caller, not a problem of Smartschool or of
+  /// the network: the error is a [StateError], not a [SmartschoolException],
   /// so code that shows "offline" or retries on a [SmartschoolConnectionError]
-  /// does not take it for one. Create a new client to use Smartschool again.
+  /// does not take it for one. It has a type of its own, so that it can be
+  /// told apart from any other [StateError] (#73), and [isDisposed] tells
+  /// whether the client was disposed. Create a new client to use Smartschool
+  /// again.
   ///
   /// [emitNotificationCounterUpdate] returns `false` on a disposed client,
   /// and [clearCookies] still deletes the session saved in [cacheDir].
@@ -829,21 +836,30 @@ class SmartschoolClient {
     await _notificationCounterController.close();
   }
 
-  /// Whether [dispose] was called.
-  bool get _isDisposed => _disposal != null;
+  /// Whether [dispose] was called (#73).
+  ///
+  /// It is `true` from the moment [dispose] is called, before the future it
+  /// returns completes, and stays `true`: from then on the client sends no
+  /// more requests, and its request methods throw a
+  /// [SmartschoolClientDisposedError]. Code that catches every error of a
+  /// call can ask it to tell a client that was shut down from a call that
+  /// failed, as catching the [SmartschoolClientDisposedError] tells by type.
+  bool get isDisposed => _disposal != null;
 
-  /// Throws the [StateError] of a disposed client when [dispose] was called.
+  /// Throws the [SmartschoolClientDisposedError] when [dispose] was called.
   void _checkNotDisposed() {
-    if (_isDisposed) throw _disposedError();
+    if (isDisposed) throw _disposedError();
   }
 
-  /// The [StateError] that the client throws once it is disposed (#54), for a
-  /// request that it did not send, or [during] which it was disposed.
-  static StateError _disposedError([String? during]) => StateError(
-    during == null
-        ? 'SmartschoolClient was disposed: it sends no more requests'
-        : 'SmartschoolClient was disposed during $during',
-  );
+  /// The [SmartschoolClientDisposedError] that the client throws once it is
+  /// disposed (#54, #73), for a request that it did not send, or [during]
+  /// which it was disposed.
+  static SmartschoolClientDisposedError _disposedError([String? during]) =>
+      SmartschoolClientDisposedError(
+        during == null
+            ? 'SmartschoolClient was disposed: it sends no more requests'
+            : 'SmartschoolClient was disposed during $during',
+      );
 
   // -------------------------------------------------------------------------
   // Internal auth helpers — called by [_SmartschoolAuthInterceptor]
@@ -987,7 +1003,7 @@ class SmartschoolClient {
   /// can catch. Any other [DioException] is rethrown unchanged.
   ///
   /// On a disposed client, [request] is not made: this throws the
-  /// [StateError] of a disposed client instead (see [dispose], #54), and so
+  /// [SmartschoolClientDisposedError] instead (see [dispose], #54), and so
   /// does a request that fails once the client was disposed while it ran
   /// (see [_requestFailure]).
   Future<Response<T>> _send<T>(Future<Response<T>> Function() request) async {
@@ -1010,7 +1026,7 @@ class SmartschoolClient {
   /// What a request that failed with [e] throws instead of [e], or `null`
   /// when it throws [e] itself.
   ///
-  /// On a disposed client, that is the [StateError] of a disposed client
+  /// On a disposed client, that is the [SmartschoolClientDisposedError]
   /// (#54): the client closed its HTTP client, which refuses a new request
   /// (such as one of a login that the request started) with a connection
   /// error, and a forced [dispose] drops the connections of the requests that
@@ -1019,7 +1035,7 @@ class SmartschoolClient {
   /// Otherwise, it is the [SmartschoolConnectionError] that [e] means (#21),
   /// if any.
   Object? _requestFailure(DioException e) {
-    if (_isDisposed) {
+    if (isDisposed) {
       final request = e.requestOptions;
       return _disposedError('${request.method} ${request.uri}');
     }
@@ -1040,7 +1056,7 @@ class SmartschoolClient {
 
   /// The error that the reader of a download gets for [error], a failure of
   /// the transfer of its content (#41), as [_send] throws a failure of the
-  /// request: the [StateError] of a disposed client when the client was
+  /// request: the [SmartschoolClientDisposedError] when the client was
   /// disposed while it was read (#54), a [SmartschoolConnectionError] when the
   /// connection failed or timed out, [error] itself otherwise.
   ///

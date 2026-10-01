@@ -8,6 +8,14 @@
 // test file, or another program (a file that declares a top-level `main`),
 // that does not call it. The other tests here check that it does what it
 // says.
+//
+// One exemption, for the live suite (#57), which sends real messages to the
+// own account on purpose: a test file under `test/live/` that is tagged
+// `live` for the whole file (`@Tags(['live'])` on its `library;`).
+// dart_test.yaml skips such a file without loading it unless the `live`
+// preset is chosen (`dart test -P live test/live`), which a test below
+// checks. Any other file under `test/live/`, and a file tagged `live`
+// elsewhere, must call forbidRealNetwork() like every other.
 import 'dart:async';
 import 'dart:io';
 
@@ -16,6 +24,7 @@ import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
+import 'package:yaml/yaml.dart';
 
 import 'support/no_network.dart';
 import 'support/temp_cache_dir.dart';
@@ -26,13 +35,32 @@ final _mainDeclaration = RegExp(r'^[\w<>?, ]*\bmain\s*\(', multiLine: true);
 /// A line that calls [forbidRealNetwork] (not a `//` comment).
 final _forbidCall = RegExp(r'^\s*forbidRealNetwork\(\);', multiLine: true);
 
+/// The `live` tag on the whole file: `@Tags(['live'])` (alone) on its
+/// `library;` directive, at the start of a line.
+final _liveLibrary = RegExp(
+  r'''^@Tags\(\s*\[\s*(['"])live\1\s*,?\s*\]\s*\)\s*library\s*;''',
+  multiLine: true,
+);
+
 /// Whether [source], a Dart file at [path] under `test/`, is a program that
-/// does not call [forbidRealNetwork].
+/// does not call [forbidRealNetwork], other than a live suite (see
+/// [isLiveSuite]).
 bool leavesNetworkOpen(String path, String source) {
   final isProgram =
       path.endsWith('_test.dart') || _mainDeclaration.hasMatch(source);
-  return isProgram && !_forbidCall.hasMatch(source);
+  return isProgram &&
+      !_forbidCall.hasMatch(source) &&
+      !isLiveSuite(path, source);
 }
+
+/// Whether [source], a Dart file at [path] (relative to the package root),
+/// is a suite of the live tests (#57): a test file under `test/live/` tagged
+/// `live` for the whole file, which dart_test.yaml skips unless the `live`
+/// preset is chosen.
+bool isLiveSuite(String path, String source) =>
+    p.split(p.normalize(path)).join('/').startsWith('test/live/') &&
+    path.endsWith('_test.dart') &&
+    _liveLibrary.hasMatch(source);
 
 /// [path] relative to the package root, with `/` separators on every
 /// platform.
@@ -136,6 +164,116 @@ void main() {
         isFalse,
       );
     });
+
+    group('live suites (#57):', () {
+      const live = "@Tags(['live'])\nlibrary;\n\n";
+      const body = 'void main() {\n  test("x", () {});\n}\n';
+
+      test('passes a test file under test/live/ tagged live for the whole '
+          'file', () {
+        expect(
+          leavesNetworkOpen('test/live/x_test.dart', '$live$body'),
+          isFalse,
+        );
+        expect(
+          leavesNetworkOpen(
+            p.join('test', 'live', 'x_test.dart'),
+            '// Sends to the own account.\n'
+            '@Tags(["live"])\n'
+            'library;\n\n'
+            '$body',
+          ),
+          isFalse,
+        );
+      });
+
+      test('finds a test file under test/live/ without the live tag', () {
+        expect(leavesNetworkOpen('test/live/x_test.dart', body), isTrue);
+        expect(
+          leavesNetworkOpen(
+            'test/live/x_test.dart',
+            "@Tags(['slow'])\nlibrary;\n\n$body",
+          ),
+          isTrue,
+        );
+        expect(
+          leavesNetworkOpen(
+            'test/live/x_test.dart',
+            "@Tags(['live', 'slow'])\nlibrary;\n\n$body",
+          ),
+          isTrue,
+          reason: 'only the live tag alone is recognised',
+        );
+      });
+
+      test('finds a test file tagged live for a group or a test only', () {
+        expect(
+          leavesNetworkOpen(
+            'test/live/x_test.dart',
+            'void main() {\n'
+                "  group('x', tags: ['live'], () {});\n"
+                '}\n',
+          ),
+          isTrue,
+        );
+      });
+
+      test('does not count a live tag in a comment', () {
+        expect(
+          leavesNetworkOpen('test/live/x_test.dart', '// $live$body'),
+          isTrue,
+        );
+      });
+
+      test('finds a test file tagged live outside test/live/', () {
+        expect(leavesNetworkOpen('test/x_test.dart', '$live$body'), isTrue);
+        expect(
+          leavesNetworkOpen('test/support/live/x_test.dart', '$live$body'),
+          isTrue,
+        );
+      });
+
+      test('finds a program under test/live/ that is not a test file', () {
+        expect(
+          leavesNetworkOpen(
+            'test/live/support/tool.dart',
+            '${live}Future<void> main(List<String> args) async {}\n',
+          ),
+          isTrue,
+        );
+      });
+    });
+  });
+
+  test('dart_test.yaml skips the live suites unless the live preset is '
+      'chosen (#57)', () {
+    final config = loadYaml(File('dart_test.yaml').readAsStringSync()) as Map;
+    // `dart test` (CI, the pre-commit hook) skips them without loading them.
+    final skip = (config['tags'] as Map)['live']['skip'];
+    expect(skip, isA<String>().having((s) => s.trim(), 'reason', isNotEmpty));
+    // Nothing else may leave them out or run them: `exclude_tags` would keep
+    // the preset from running them, and a default that includes them would
+    // run them in `dart test`.
+    expect(config.keys, isNot(contains('exclude_tags')));
+    expect(config.keys, isNot(contains('include_tags')));
+    expect(config.keys, isNot(contains('add_presets')));
+    // `dart test -P live test/live` runs them, and only them.
+    final preset = (config['presets'] as Map)['live'] as Map;
+    expect(preset['include_tags'], 'live');
+    expect((preset['tags'] as Map)['live'], {'skip': false});
+    // A preset's paths replace those of the command line, so that
+    // `dart test -P live test/live/<file>` would run all of test/live/
+    // (#62).
+    expect(preset.keys, isNot(contains('paths')));
+    // One live file at a time, in the session they share (#62).
+    expect(preset['concurrency'], 1);
+
+    // And there is a live suite for that, under test/live/.
+    final suites = Directory(p.join('test', 'live'))
+        .listSync(recursive: true)
+        .whereType<File>()
+        .where((file) => isLiveSuite(file.path, file.readAsStringSync()));
+    expect(suites, isNotEmpty);
   });
 
   group('forbidRealNetwork', () {

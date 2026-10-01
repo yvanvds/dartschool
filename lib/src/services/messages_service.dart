@@ -680,17 +680,40 @@ class MessagesService {
     return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
   }
 
-  /// Moves message [msgId] to the trash.
+  /// Moves message [msgId] to the trash, or deletes it for good: prefer
+  /// [moveToTrashFrom], which names the box of the copy it moves.
   ///
-  /// Sends Smartschool's `quick delete`, as the web client's delete button
-  /// does. For a message that is in the trash already, the web client asks to
-  /// confirm deleting it for good instead: do not call this on one.
+  /// Sends Smartschool's `quick delete`, as the trash icon of a message in
+  /// the web client's list does. The request names the ID only, not a box
+  /// or a copy: Smartschool acts on whichever copy of the ID its own session
+  /// state points to, which the caller does not control. That can be a copy
+  /// in the trash, and a `quick delete` of a message in the trash deletes it
+  /// for good (#19; the web client asks to confirm that first). So this is
+  /// never a guaranteed no-op, not even for an ID that names no message:
+  /// Smartschool answered a `quick delete` of ID `0` with an empty body
+  /// twice, and later, in the same session, as one of a message in the
+  /// trash (a `finish quick delete` with `boxType` `trash`, #61). Do not call
+  /// this for an ID that is not a message of the account, nor for one that
+  /// may have a copy in the trash.
+  ///
+  /// A message the account sent to itself has the same ID in the inbox and
+  /// in the sent box: this moved its inbox copy to the trash and left the
+  /// sent-box copy (seen live, right after listing the inbox). Then the ID
+  /// is in the trash, so do not call this again for it. [moveToTrashFrom]
+  /// moves the copy of the box it names, never one in the trash (#60).
   ///
   /// Returns the deletion status from Smartschool's `finish quick delete`
   /// answer, which the web client takes as the message deleted
   /// ([MessageDeletionStatus.isDeleted] is `true`; see
-  /// [MessageDeletionStatus.fromXml]), or `null` when the answer is not a
-  /// `finish quick delete`.
+  /// [MessageDeletionStatus.fromXml]); its [MessageDeletionStatus.boxType]
+  /// is the box of the copy Smartschool acted on (`trash`: a copy in the
+  /// trash, which a `quick delete` deletes for good). Returns `null` when the
+  /// answer is not a `finish quick delete`, also when it is an empty body,
+  /// as Smartschool answered when it deleted nothing (seen for ID `0`, #59).
+  ///
+  /// An answer that is not XML and not empty still throws (as for every
+  /// command): a [SmartschoolAuthenticationError] for an HTML page, a
+  /// [SmartschoolParsingError] otherwise.
   Future<MessageDeletionStatus?> moveToTrash(int msgId) async {
     final actions = await _client.postXml(
       url: _messagesXmlUrl,
@@ -698,6 +721,7 @@ class MessagesService {
       action: 'quick delete',
       params: {'msgID': '$msgId'},
       xpath: './/actions/action',
+      allowEmptyAnswer: true,
     );
 
     for (final action in actions) {
@@ -709,6 +733,73 @@ class MessagesService {
       }
     }
     return null;
+  }
+
+  /// Moves the copy of message [msgId] in [boxType], the inbox or the sent
+  /// box, to the trash, and leaves any other copy of it where it is (#60).
+  ///
+  /// A message the account sent to itself has the same ID in the inbox and
+  /// in the sent box. [moveToTrash] names the ID only, and moves one of the
+  /// two copies (the inbox copy, seen live); this names the box, so it can
+  /// move the sent-box copy too.
+  ///
+  /// Sends Smartschool's `quickmove messages` from [boxType] to the trash
+  /// (`toBoxType` `trash`, `toBoxID` `0`), as the web client does when a
+  /// message of the inbox or the sent box is dragged onto the trash. It is a
+  /// move, not a deletion: it names its source box and its target, the
+  /// trash, and the source cannot be the trash. So, unlike [moveToTrash] (a
+  /// `quick delete` of a message in the trash deletes it for good, #19), it
+  /// may be called while another copy of [msgId] is in the trash. Seen live
+  /// (2026-10-01) on messages sent to oneself, with nothing of them in the
+  /// trash: moving the sent-box copy put it in the trash and left the inbox
+  /// copy in the inbox; moving the inbox copy then took it out of the inbox
+  /// and left the sent-box copy in the trash. The trash lists a message ID
+  /// once, so it shows one copy: for a message that had been replied to, it
+  /// still showed the sent-box copy (`hasReply` `false`; the inbox copy's
+  /// was `true`) after the inbox copy was moved.
+  ///
+  /// For a message in a folder of [boxType], such as the archive (folder
+  /// `208` of the inbox, see [getArchiveHeaders]), pass the [boxId] of the
+  /// folder, as the web client does; only `0` was tried live.
+  ///
+  /// Smartschool answers the same whether it moved a message or not: an
+  /// acknowledgement without details (a `silent` action), also for ID `0`,
+  /// which names no message (do not move ID `0` to the trash: see #61). So
+  /// this returns nothing; list the boxes to see where the message is. An
+  /// answer that is not XML throws, as for every command: a
+  /// [SmartschoolAuthenticationError] for an HTML page, a
+  /// [SmartschoolParsingError] otherwise.
+  ///
+  /// Throws an [ArgumentError], before any request, for a [boxType] other
+  /// than [BoxType.inbox] and [BoxType.sent]: the web client moves no
+  /// message of the drafts or the scheduled box this way, and a message in
+  /// the trash is there already.
+  Future<void> moveToTrashFrom(
+    int msgId, {
+    required BoxType boxType,
+    int boxId = 0,
+  }) async {
+    if (boxType != BoxType.inbox && boxType != BoxType.sent) {
+      throw ArgumentError.value(
+        boxType,
+        'boxType',
+        'only a message of the inbox or the sent box can be moved to the '
+            'trash',
+      );
+    }
+    await _client.postXml(
+      url: _messagesXmlUrl,
+      subsystem: 'postboxes',
+      action: 'quickmove messages',
+      params: {
+        'boxType': boxType.value,
+        'boxID': '$boxId',
+        'msgID': '$msgId',
+        'toBoxType': BoxType.trash.value,
+        'toBoxID': '0',
+      },
+      xpath: './/actions/action',
+    );
   }
 
   /// Archives one or more messages identified by [msgIds].

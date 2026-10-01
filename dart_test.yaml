@@ -1,0 +1,32 @@
+# Configuration of `dart test` (package:test).
+#
+# The live suite (test/live/, tagged `live`, #57) sends real messages to the
+# account of credentials.yml. It never runs by default: `dart test`, as CI
+# and the Lefthook pre-commit hook run it, skips every suite tagged `live`
+# without loading it. Run it on purpose, and only it, with the `live` preset,
+# naming test/live/ or one file in it:
+#
+#   dart test -P live test/live
+#   dart test -P live test/live/messages_live_test.dart
+#
+# The preset names no `paths` (#62): a preset's paths replace those given on
+# the command line, so naming one file ran all of test/live/. Without a path,
+# it loads every test file under test/ to find the live ones. It runs one
+# test file at a time (`concurrency`, which a `-j` on the command line does
+# not override), so that live files take turns in the session; a live run
+# also takes a lock on the session (test/live/support/live_lock.dart), which
+# keeps out a second run, in another terminal too.
+#
+# (`exclude_tags` cannot be used here: a preset or `--tags live` cannot undo
+# it. And do not pass `--run-skipped`: it runs the live suite too.)
+tags:
+  live:
+    skip: "Live: sends real messages to the own account. Run it on purpose with `dart test -P live test/live` (#57)."
+
+presets:
+  live:
+    include_tags: live
+    concurrency: 1
+    tags:
+      live:
+        skip: false

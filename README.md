@@ -85,7 +85,7 @@ Future<void> main() async {
 }
 ```
 
-See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow.
+See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow, on a message it sends to the own account only. It changes that account: it moves both copies of the message to the trash with `moveToTrashFrom`, the sent-box copy first and then the archived inbox copy (`boxType: BoxType.inbox`, with the archive folder's ID from `getArchiveBoxId()` as `boxId`), and checks the trash, archive, inbox and sent-box listings, since Smartschool's answer to a move says nothing about it. It never empties the trash.
 
 See [example/mark_read_toggle_example.dart](example/mark_read_toggle_example.dart) for toggling the read/unread status of a message.
 
@@ -147,7 +147,7 @@ await client.ensureAuthenticated();
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
 | `postMultipartRaw(path, formData, {retryAfterLogin, sameSessionAs})` | `multipart/form-data` POST → `String` |
 | `postMultipartResponse(path, formData, {retryAfterLogin, sameSessionAs})` | Same POST → the whole `Response<String>` |
-| `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
+| `postXml(..., {allowEmptyAnswer})` | Posts to the legacy XML dispatcher and returns parsed element maps. Throws for an answer that is not XML; with `allowEmptyAnswer`, an empty `200` answer returns no elements instead |
 | `download(path, {maxBytes})` | Authenticated GET → the whole file as `Uint8List`. With `maxBytes`, throws `SmartschoolDownloadTooLargeError` as soon as the file turns out larger (see *Downloads* below) |
 | `downloadStream(path, {maxBytes})` | Same GET → a `SmartschoolDownload` as soon as the headers are in: `contentLength`, `fileName`, `contentType`, and the content as a `stream` (see *Downloads* below) |
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
@@ -262,7 +262,8 @@ for (final attachment in attachments) {
 | `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. |
 | `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. |
 | `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. |
-| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it. Not for a message already in the trash (Smartschool's web client deletes that one for good). |
+| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash, or deletes it for good: prefer `moveToTrashFrom`. It sends Smartschool's `quick delete`, which names the ID only, not the box: Smartschool acts on whichever copy of the ID its own session state points to. That can be a copy in the trash, which a `quick delete` deletes for good, so this is never a guaranteed no-op, not even for an ID that names no message such as `0` (#61). For a message you sent to yourself (the same ID in the inbox and the sent box) it moved the inbox copy; `moveToTrashFrom` moves the sent-box copy. `null` when Smartschool does not confirm it, as when it deleted nothing (it then answered with an empty body). |
+| `moveToTrashFrom(msgId, {boxType, boxId})` | `Future<void>` | Moves the copy of a message in `boxType`, `BoxType.inbox` or `BoxType.sent`, to the trash, and leaves its other copy where it is, as dragging it onto the trash in Smartschool's web client does. A move, not a deletion: safe while another copy of the ID is in the trash. Smartschool's answer says nothing about the move, so list the boxes to check. Pass `boxId` for a folder of the box, such as the archive. Another `boxType` throws an `ArgumentError`. |
 | `moveToArchive(msgIds)` | `Future<List<MessageChanged>>` | Archives one or more messages (REST endpoint). |
 
 ### Composing & searching
@@ -769,6 +770,36 @@ The `pre-commit` hook runs the same checks as CI, in parallel:
 | `dart test` | Unit tests |
 
 `.lefthook.yml` sets `assert_lefthook_installed: true`: if the hook is installed but Lefthook is missing (e.g. `node_modules/` was deleted), the commit is aborted with `Can't find lefthook in PATH` instead of silently skipping the checks. Run `npm install` to fix it.
+
+The tests never use the network: they talk to fake Smartschools, and every test file calls `forbidRealNetwork()` (`test/support/no_network.dart`) and gives its clients a temporary cache folder (`tempCacheDir()`); `test/network_guard_test.dart` and `test/cache_dir_guard_test.dart` fail otherwise.
+
+### Live tests
+
+`test/live/` holds a live suite that **really sends messages** on the Smartschool of `credentials.yml`, to check that sending still works there (Smartschool can change its compose flow at any time). It is local and on demand only: `dart_test.yaml` skips the suites tagged `live` without loading them, so `dart test` (and so CI and the pre-commit hook) never runs it. Run it on purpose, with a `credentials.yml` in the package root (without one, it skips):
+
+```bash
+# The whole live suite: every live file in test/live/.
+dart test -P live test/live
+
+# One live file only.
+dart test -P live test/live/messages_live_test.dart
+```
+
+The `live` preset runs the tests tagged `live` only, in the paths named on the command line: it names no paths of its own, since a preset's paths replace those of the command line (#62). Without a path, `dart test -P live` loads every test file under `test/` to find the live ones. The preset runs one test file at a time (`concurrency: 1`, which a `-j` on the command line does not override), so that live files take turns in the session. Do not pass `--run-skipped` to a plain `dart test`: that runs the live suite too.
+
+What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; `moveToTrashFrom` out of the archive folder: a message moved to the archive with `moveToArchive` is listed by `getArchiveHeaders`, and after its sent-box copy, `moveToTrashFrom(id, boxType: BoxType.inbox, boxId: <getArchiveBoxId()>)` takes it out of the archive and leaves it in the trash (#64); and `moveToTrashFrom`, which cleans up: moving the sent-box copy of each message to the trash leaves its inbox copy in the inbox, and moving the inbox copy then takes it out of the inbox and leaves the message in the trash (#60).
+
+Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
+
+- Every message goes to the **own account only** (the account of `credentials.yml`, as `getCurrentUserAsRecipient()` and the session name it), in To, CC or BCC, never to a group. The guard refuses registering anyone else on a compose form, checks Smartschool's answer to every registration, and refuses a submit with anyone else registered (a reply form comes with its recipients registered already).
+- Replies go only to a message the same run sent to the own account only, after checking that its reply form names the own account alone.
+- Every subject starts with `[dartschool test]` and a tag of the run (a reply's with `Re: ` before it).
+- No LVS copy (`lvsCopy`) and no delayed send (`sendAt`: the library cannot cancel a scheduled message yet, #58).
+- At the end, also when a test failed, the run moves both copies of every message it sent to the trash (a message you send yourself has the same ID in the inbox and the sent box): first the sent-box copies, then the inbox copies (an archived one out of the archive folder, #64), once each, after checking the run's subject and that the own account sent it. It moves them with `moveToTrashFrom`, which names the box of the copy (#60). It never empties the trash: emptying it stays manual.
+- It moves to the archive (`moveToArchive`) only the inbox copy of a message it sent, one message per request and once, while the inbox lists it with the run's subject (#64).
+- It sends no `quick delete` (`moveToTrash`) at all, and moves no ID it did not send in the same run, `0` included (#61). A `quick delete` names the ID only, Smartschool acts on whichever copy of the ID its session state points to, and one of a copy in the trash deletes it for good: it is never a guaranteed no-op. The guard refuses every `quick delete`, a move of a copy that Smartschool did not list in its box (or in the archive folder that Smartschool's Messages page names, #64) with the run's subject or that the run did not check there, a move out of any other folder, and a second move of a copy; likewise a move to the archive of a message the inbox did not list with the run's subject, of more than one message at once, or a second one.
+- It logs in at most once per run, and usually not at all: it keeps its session in `.dart_tool/live_cache/<username>` (gitignored; not the user's `~/.cache/smartschool`, and only the live suite may use it). It never prints a credential or a cookie.
+- One live run at a time in that session (#62): the cleanup assumes it is the only run there. A run first takes a lock, `.dart_tool/live_cache/<username>/.lock` (`test/live/support/live_lock.dart`), created atomically and naming the run's tag, PID and host, and deletes it at the end. While another run holds it (a run in another terminal, say, or another live file of the same run if they ran side by side), a run refuses to start: its tests fail before any request, so it sends nothing and does not log in. A lock left behind by a run that was killed is taken over, but only when it is stale for certain: written on this machine by a process that no longer runs. If a run refuses while no other live run is going on (for instance, the system gave the killed run's PID to another process since), delete that file.
 
 ---
 

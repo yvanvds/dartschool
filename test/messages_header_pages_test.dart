@@ -1,6 +1,8 @@
 // Tests for issue #15: `MessagesService.getHeaders()` and
 // `getArchiveHeaders()` return at most 50 headers, the newest 50 of the box,
-// with no way to get the older ones.
+// with no way to get the older ones. And for #76: when Smartschool restarted
+// the paging halfway, `getHeaderPages` ended as after the last page, so that
+// `getAllHeaders` returned part of the box without telling.
 //
 // How Smartschool pages, verified live (read-only, `postboxes / message list`
 // and `continue_messages` on the inbox, the sent box, the archive, the drafts
@@ -19,16 +21,28 @@
 //   are more. The last page (and a box that fits in one page) ends with a
 //   `rebuildfinish` action instead (`<data><message/></data>`); a
 //   `continue_messages` after that gets only `rebuildfinish` again.
-// - The position is kept in the session, one per box: paging the inbox and
-//   the sent box in turns works, but any `message list` of a box (also in
-//   poll mode) restarts its paging at the second page.
+// - The position is kept per user and box, not in the session (#76, verified
+//   live with two clients, each with its own cookie cache, on an inbox of
+//   186 headers): paging the inbox and the sent box in turns works, and a
+//   new login between two pages (the cookies cleared, a `401`, a full login)
+//   goes on with the next page. But any `message list` of a box (also in
+//   poll mode), in any session of the account, restarts its paging at the
+//   second page: the next `continue_messages` answers with the second page
+//   again, all of it emitted already, and still announces more.
+// - The `message list` answer holds no total for the box (its `changetext`
+//   action holds only `postboxName`), so a listing cannot be checked against
+//   one.
 // - Pages are 50 headers, but some pages of the trash held 49, so a short
 //   page does not mean the end.
+// - Not checked: whether a box that is an exact multiple of the page size
+//   announces more on its last page. If it does, the `continue_messages`
+//   after it gets `rebuildfinish` only, which must end the paging normally.
 //
 // The fake Smartschool below answers from the anonymised fixtures `message
 // list more.xml`, `continue_messages.xml` and `continue_messages last.xml`
-// (the shape of the live answers, with made-up names), or from pages built
-// by `_page`.
+// (the shape of the live answers, with made-up names), from pages built by
+// `_page`, or from `_Account`, which keeps the paging position per box as
+// Smartschool does.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -97,11 +111,15 @@ typedef _Request = ({String action, Map<String, String> params});
 /// A Smartschool whose XML dispatcher answers `message list` and
 /// `continue_messages` with [answer], and whose Messages page (for the
 /// archive box ID) is [messagesPage].
+///
+/// [before], when given, runs before each request to the dispatcher is
+/// answered, so that a test can make something happen in between.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(this.answer, {this.messagesPage = ''});
+  _Smartschool(this.answer, {this.messagesPage = '', this.before});
 
   final String Function(_Request request) answer;
   final String messagesPage;
+  final Future<void> Function(_Request request)? before;
 
   /// Every request to the XML dispatcher, in order.
   final List<_Request> requests = [];
@@ -143,6 +161,7 @@ class _Smartschool implements HttpClientAdapter {
     // A paging that does not stop would run forever against a server that
     // keeps announcing more; fail instead.
     if (requests.length > 20) fail('more than 20 requests: paging loops');
+    await before?.call(request);
     return ResponseBody.fromString(
       answer(request),
       200,
@@ -175,6 +194,39 @@ String Function(_Request) _pages(
   };
 }
 
+/// A Smartschool account whose boxes hold the header IDs of [boxes] (by
+/// `boxType/boxID`, such as `inbox/0`), paged [pageSize] at a time (2, to
+/// keep the boxes small).
+///
+/// Like Smartschool (#76), it keeps one paging position per box for the
+/// account, whichever session asks: a `message list` of a box answers with
+/// its first page and sets the position of the box to the second page, and
+/// a `continue_messages` answers with the page at the position and moves it
+/// on. Past the last page it answers with `rebuildfinish` only. Clients that
+/// share an account have sessions of their own, but share its positions.
+class _Account {
+  _Account(this.boxes);
+
+  static const pageSize = 2;
+
+  final Map<String, List<int>> boxes;
+  final Map<String, int> _position = {};
+
+  String answer(_Request request) {
+    final box = '${request.params['boxType']}/${request.params['boxID']}';
+    final ids = boxes[box]!;
+    final first = request.action == 'message list';
+    final page = first ? 0 : _position[box]!;
+    _position[box] = page + 1;
+    final start = page * pageSize;
+    return _page(
+      ids.skip(start).take(pageSize).toList(),
+      more: start + pageSize < ids.length,
+      first: first,
+    );
+  }
+}
+
 List<int> _ids(Iterable<ShortMessage> headers) =>
     headers.map((h) => h.id).toList();
 
@@ -199,14 +251,38 @@ void main() {
   Future<_Smartschool> serve(
     String Function(_Request request) answer, {
     String messagesPage = '',
+    Future<void> Function(_Request request)? before,
   }) async {
-    final server = _Smartschool(answer, messagesPage: messagesPage);
+    final server = _Smartschool(
+      answer,
+      messagesPage: messagesPage,
+      before: before,
+    );
     client = await SmartschoolClient.create(
       _Credentials(),
       cacheDir: cacheDir.path,
     );
     client.dio.httpClientAdapter = server;
     return server;
+  }
+
+  /// A second client of the same account, with a cookie cache and so a
+  /// session of its own, served by [answer].
+  Future<(SmartschoolClient, _Smartschool)> otherSession(
+    String Function(_Request request) answer,
+  ) async {
+    final dir = Directory.systemTemp.createTempSync('smartschool_pages_');
+    final other = await SmartschoolClient.create(
+      _Credentials(),
+      cacheDir: dir.path,
+    );
+    final server = _Smartschool(answer);
+    other.dio.httpClientAdapter = server;
+    addTearDown(() async {
+      await other.dispose();
+      dir.deleteSync(recursive: true);
+    });
+    return (other, server);
   }
 
   /// The three fixture pages: 2 headers, 2 more, and the last one.
@@ -378,24 +454,21 @@ void main() {
     },
   );
 
-  group('getHeaderPages stops when the paging makes no progress (#15)', () {
-    test('a server that repeats the last page, announcing more', () async {
-      final last = _page([3, 4], more: true);
-      final server = await serve(
-        _pages([
-          _page([1, 2], more: true, first: true),
-          last,
-        ], afterLast: () => last),
-      );
+  /// The pages [stream] emits before it fails with [error].
+  Future<List<List<int>>> pagesBefore(
+    Stream<List<ShortMessage>> stream,
+    Matcher error,
+  ) async {
+    final pages = <List<int>>[];
+    await expectLater(
+      stream.forEach((page) => pages.add(_ids(page))),
+      throwsA(error),
+    );
+    return pages;
+  }
 
-      final pages = await MessagesService(client).getHeaderPages().toList();
-
-      expect(pages.map(_ids), [
-        [1, 2],
-        [3, 4],
-      ]);
-      expect(server.requests, hasLength(3));
-    });
+  group('getHeaderPages fails when Smartschool restarts the paging (#76)', () {
+    final restarted = isA<SmartschoolPagingRestartedError>();
 
     test('a server that restarts at the second page, as a new message list '
         'of the box makes Smartschool do', () async {
@@ -410,14 +483,110 @@ void main() {
         ]),
       );
 
-      final pages = await MessagesService(client).getHeaderPages().toList();
+      final pages = await pagesBefore(
+        MessagesService(client).getHeaderPages(),
+        restarted,
+      );
 
-      expect(pages.map(_ids), [
+      expect(pages, [
         [1, 2],
         [3, 4],
         [5, 6],
       ]);
       expect(server.requests, hasLength(4));
+    });
+
+    test(
+      'a second page that a new message shifted is recognised too',
+      () async {
+        // A message that arrived since the second page went out moves the box
+        // by one: the second page sent again starts with the last header of
+        // the first page.
+        await serve(
+          _pages([
+            _page([1, 2], more: true, first: true),
+            _page([3, 4], more: true),
+            _page([5, 6], more: true),
+            _page([2, 3], more: true),
+          ]),
+        );
+
+        final pages = await pagesBefore(
+          MessagesService(client).getHeaderPages(),
+          restarted,
+        );
+
+        expect(pages, [
+          [1, 2],
+          [3, 4],
+          [5, 6],
+        ]);
+      },
+    );
+
+    test('a server that repeats the last page, announcing more, cannot keep '
+        'the paging going', () async {
+      final last = _page([3, 4], more: true);
+      final server = await serve(
+        _pages([
+          _page([1, 2], more: true, first: true),
+          last,
+        ], afterLast: () => last),
+      );
+
+      final pages = await pagesBefore(
+        MessagesService(client).getHeaderPages(),
+        restarted,
+      );
+
+      expect(pages, [
+        [1, 2],
+        [3, 4],
+      ]);
+      expect(server.requests, hasLength(3));
+    });
+
+    test('says which box, and to list it again', () async {
+      await serve(
+        _pages([
+          _page([1, 2], more: true, first: true),
+          _page([1, 2], more: true),
+        ]),
+      );
+
+      await pagesBefore(
+        MessagesService(client).getHeaderPages(boxType: BoxType.sent),
+        isA<SmartschoolPagingRestartedError>().having(
+          (e) => e.message,
+          'message',
+          allOf(
+            contains('boxType outbox, boxID 0'),
+            contains('after 2 headers'),
+            contains('List the box again'),
+          ),
+        ),
+      );
+    });
+  });
+
+  group('getHeaderPages ends normally without a restart (#15, #76)', () {
+    test('a last continue_messages answered with rebuildfinish only', () async {
+      // What a box that is an exact multiple of the page size gets, if
+      // Smartschool announces more on its last page (not checked live).
+      final server = await serve(
+        _pages([
+          _page([1, 2], more: true, first: true),
+          _page([3, 4], more: true),
+        ]),
+      );
+
+      final pages = await MessagesService(client).getHeaderPages().toList();
+
+      expect(pages.map(_ids), [
+        [1, 2],
+        [3, 4],
+      ]);
+      expect(server.requests, hasLength(3));
     });
 
     test('an empty page that announces more', () async {
@@ -503,6 +672,35 @@ void main() {
       );
       expect(server.requests, isEmpty);
     });
+
+    test('fails, rather than return part of the box, when the box is listed '
+        'in another session halfway; listing it again gets all of it '
+        '(#76)', () async {
+      final box = [for (var id = 10; id > 0; id--) id];
+      final account = _Account({'inbox/0': box});
+      final (other, otherServer) = await otherSession(account.answer);
+      var continues = 0;
+      final server = await serve(
+        account.answer,
+        // Right before Smartschool answers the second continue_messages,
+        // after the first two pages, the box is listed in the other session,
+        // as another app or the web client would.
+        before: (request) async {
+          if (request.action != 'continue_messages') return;
+          if (++continues == 2) await MessagesService(other).getHeaders();
+        },
+      );
+      final messages = MessagesService(client);
+
+      await expectLater(
+        messages.getAllHeaders(),
+        throwsA(isA<SmartschoolPagingRestartedError>()),
+      );
+      expect(server.requests, hasLength(3));
+      expect(otherServer.requests.map((r) => r.action), ['message list']);
+
+      expect(_ids(await messages.getAllHeaders()), box);
+    });
   });
 
   group('archive (#15)', () {
@@ -573,6 +771,29 @@ void main() {
       expect(server.log, [
         ['message list', archiveList],
       ]);
+    });
+
+    test('getAllArchiveHeaders fails when the paging is restarted '
+        '(#76)', () async {
+      final second = _page([3, 4], more: true);
+      await serve(
+        _pages([
+          _page([1, 2], more: true, first: true),
+          second,
+          second,
+        ]),
+      );
+
+      await expectLater(
+        MessagesService(client).getAllArchiveHeaders(boxId: 208),
+        throwsA(
+          isA<SmartschoolPagingRestartedError>().having(
+            (e) => e.message,
+            'message',
+            contains('boxType inbox, boxID 208'),
+          ),
+        ),
+      );
     });
   });
 

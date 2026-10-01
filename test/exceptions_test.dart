@@ -68,6 +68,15 @@ void main() {
     });
   });
 
+  test('SmartschoolPagingRestartedError is a SmartschoolException, not a '
+      'session error (#76)', () {
+    // The session was accepted: a catch meant for signing in again must not
+    // catch a restarted paging.
+    const error = SmartschoolPagingRestartedError('restarted');
+    expect(error, isA<SmartschoolException>());
+    expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+  });
+
   group('SmartschoolConnectionError (#10)', () {
     test('is a SmartschoolException, not a SmartschoolAuthenticationError', () {
       // A network problem must not be caught as a failed login.

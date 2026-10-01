@@ -3,11 +3,11 @@
 // The live suite keeps its Smartschool session in a folder of its own
 // (live_client.dart), and its cleanup assumes that it is the only run in
 // that session: it finds the run's messages by their subjects and checks
-// each right before it moves it, and Smartschool keeps state of its own in
-// the session (such as a paging position per box, #15). Two live runs at
-// once, in two terminals, or two live files of one `dart test` run, which
-// package:test runs side by side unless told otherwise, would share that
-// session.
+// each right before it moves it, and Smartschool keeps state of its own
+// (such as a paging position per box, #15, which it keeps per user, not in
+// the session, #76). Two live runs at once, in two terminals, or two live
+// files of one `dart test` run, which package:test runs side by side unless
+// told otherwise, would share that session.
 //
 // So a live run takes this lock before its client loads the session, and
 // gives it back at the end:

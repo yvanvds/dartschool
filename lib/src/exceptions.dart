@@ -385,6 +385,33 @@ class SmartschoolSendUnconfirmedError extends SmartschoolException {
   });
 }
 
+/// Thrown by `MessagesService.getHeaderPages` and `getArchiveHeaderPages`,
+/// and so by `getAllHeaders` and `getAllArchiveHeaders`, when Smartschool
+/// restarted the paging of the box halfway: the box was listed again while
+/// it was being paged (#76).
+///
+/// Smartschool keeps the paging position per user and box, not in the
+/// session, and every `message list` of the box restarts it, in any session
+/// of the account: a `getHeaders` (also in poll mode) or another paging of
+/// the box on the same client, a listing by another client or app, or the
+/// user opening the box in Smartschool's web client. The next
+/// `continue_messages` then answers with the second page again. The paging
+/// recognises that answer, a page that holds headers which were all emitted
+/// already, and throws this error instead of ending as after the last page.
+///
+/// The pages emitted before it are correct, but they are not the whole box.
+/// List the box again (for instance call `getAllHeaders` again).
+///
+/// Not every clash of two listings of a box shows: two pagings of the same
+/// box at the same time can skip each other's pages without this error (see
+/// `MessagesService.getHeaderPages`).
+///
+/// The session was accepted, so this is not a
+/// [SmartschoolSessionExpiredError]: signing in again does not help.
+class SmartschoolPagingRestartedError extends SmartschoolException {
+  const SmartschoolPagingRestartedError(super.message);
+}
+
 /// Thrown when a Presence (attendance) operation fails.
 ///
 /// This covers a rejected save (the server returns a non-empty `errors[]`

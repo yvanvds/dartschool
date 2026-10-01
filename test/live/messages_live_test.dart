@@ -18,9 +18,12 @@
 // - the run moves both copies of every message it sent (a message sent to
 //   oneself has the same ID in the inbox and the sent box) to the trash at
 //   the end, also when a test failed: the sent-box copies first, then the
-//   inbox copies, once each, after checking the run's subject and that the
-//   own account sent it, with moveToTrashFrom, which names the box of the
-//   copy (#60); it never empties the trash;
+//   inbox copies (out of the archive folder for the one it archived, #64),
+//   once each, after checking the run's subject and that the own account
+//   sent it, with moveToTrashFrom, which names the box of the copy (#60); it
+//   never empties the trash;
+// - it archives (moveToArchive) only the inbox copy of a message it sent,
+//   once, while the inbox lists it with the run's subject (#64);
 // - it sends no quick delete (moveToTrash) at all: that names the ID only,
 //   Smartschool acts on whichever copy of the ID its session state points
 //   to, and one of a copy in the trash deletes it for good (#19), so it is
@@ -241,6 +244,101 @@ void main() {
           throwsArgumentError,
         );
         expect(run.guard.requestsSent, requests, reason: 'requests sent');
+      });
+
+      test('moveToTrashFrom moves an archived message out of the archive '
+          'folder (a boxId other than 0) to the trash, after its sent-box '
+          'copy (#64)', () async {
+        final subject = run.subject('archive');
+        final arrival = await run.send(
+          subject,
+          () => messages.sendMessage(
+            SendMessageParams(
+              to: [run.own],
+              subject: subject,
+              bodyHtml: run.body('archive'),
+            ),
+          ),
+        );
+        expect(arrival.inbox, hasLength(1), reason: 'copies in the inbox');
+        expect(arrival.sent, hasLength(1), reason: 'copies in the sent box');
+        final id = arrival.inbox.single.id;
+        expect(arrival.sent.single.id, id);
+
+        // Archives the inbox copy (resolving the archive folder first).
+        final archived = await run.archive(id, subject);
+        final archiveBoxId = await messages.getArchiveBoxId();
+        print(
+          'archive scenario: message $id, archive folder $archiveBoxId (the '
+          'guard read ${run.guard.archiveBoxId} on the Messages page); '
+          'Smartschool answered the move to the archive with '
+          '${run.guard.archiveAnswers[id]}',
+        );
+        expect(
+          run.guard.archiveBoxId,
+          archiveBoxId,
+          reason: 'the archive folder that the Messages page names',
+        );
+        expect(archived.map((c) => (c.id, c.newValue)), [
+          (id, 1),
+        ], reason: "Smartschool's answer to the move to the archive");
+
+        // The archive lists it (waiting up to half a minute), the inbox no
+        // longer does.
+        Future<List<int>> inArchive() async => [
+          for (final m in await messages.getArchiveHeaders(boxId: archiveBoxId))
+            if (m.subject == subject) m.id,
+        ];
+        var archivedIds = await inArchive();
+        final deadline = DateTime.now().add(const Duration(seconds: 30));
+        while (archivedIds.isEmpty && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(seconds: 2));
+          archivedIds = await inArchive();
+        }
+        expect(archivedIds, [id], reason: 'the archive');
+        expect(
+          await run.listed(BoxType.inbox, subject),
+          isEmpty,
+          reason: 'the inbox',
+        );
+
+        // The sent-box copy first, then the archived inbox copy, each while
+        // its box (folder) lists it with the run's subject.
+        final sentCopy = await run.trash(id, subject, BoxType.sent);
+        final archivedCopy = await run.trash(
+          id,
+          subject,
+          BoxType.inbox,
+          boxId: archiveBoxId,
+        );
+        print('archive scenario: $sentCopy');
+        print('archive scenario: $archivedCopy');
+        expect(sentCopy.leftAlone, isNull, reason: '$sentCopy');
+        expect(archivedCopy.leftAlone, isNull, reason: '$archivedCopy');
+        expect(
+          run.guard.trashMoveAnswers[(id, BoxType.inbox.value)],
+          contains('<command>silent</command>'),
+          reason: "Smartschool's answer to the move out of the archive",
+        );
+
+        // Neither the archive nor the sent box (nor the inbox) lists it, and
+        // the trash does.
+        expect(await inArchive(), isEmpty, reason: 'the archive, at the end');
+        expect(
+          (await messages.getHeaders(boxType: BoxType.sent)).map((m) => m.id),
+          isNot(contains(id)),
+          reason: 'the sent box, at the end',
+        );
+        expect(
+          (await messages.getHeaders()).map((m) => m.id),
+          isNot(contains(id)),
+          reason: 'the inbox, at the end',
+        );
+        expect(
+          (await messages.getHeaders(boxType: BoxType.trash)).map((m) => m.id),
+          contains(id),
+          reason: 'the trash, at the end',
+        );
       });
 
       test('moveToTrashFrom moves both copies of every message of the run to '

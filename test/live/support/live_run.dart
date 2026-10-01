@@ -1,6 +1,6 @@
 // A run of the live suite (#57): its client, its guard, the own account, and
-// the messages it sent, which it finds in the inbox and the sent box and
-// moves to the trash at the end.
+// the messages it sent, which it finds in the inbox (or its archive folder,
+// #64) and the sent box and moves to the trash at the end.
 import 'dart:io';
 import 'dart:math';
 
@@ -21,23 +21,40 @@ class Arrival {
   final List<ShortMessage> sent;
 }
 
-/// What the cleanup did with the copy of message [id] of the run in [box]:
-/// moved it to the trash, or left it alone ([leftAlone] says why).
+/// What the cleanup did with the copy of message [id] of the run in [box]
+/// (in its folder [boxId]): moved it to the trash, or left it alone
+/// ([leftAlone] says why).
 class Trashing {
-  Trashing.moved(this.id, this.subject, this.box) : leftAlone = null;
-  Trashing.leftAlone(this.id, this.subject, this.box, String this.leftAlone);
+  Trashing.moved(this.id, this.subject, this.box, {this.boxId = 0})
+    : leftAlone = null;
+  Trashing.leftAlone(
+    this.id,
+    this.subject,
+    this.box,
+    String this.leftAlone, {
+    this.boxId = 0,
+  });
 
   final int id;
   final String subject;
 
   /// The box of the copy: the box it was checked in, which the move names.
   final BoxType box;
+
+  /// The folder of [box] the copy was checked in, which the move names: `0`
+  /// for the box itself, the archive folder's ID for an archived inbox copy.
+  final int boxId;
   final String? leftAlone;
 
   @override
-  String toString() => leftAlone == null
-      ? 'message $id ("$subject"), ${box.value} copy: moved to the trash'
-      : 'message $id ("$subject"), ${box.value} copy: left alone, $leftAlone';
+  String toString() {
+    final copy = boxId == 0
+        ? '${box.value} copy'
+        : '${box.value} copy in folder $boxId';
+    return leftAlone == null
+        ? 'message $id ("$subject"), $copy: moved to the trash'
+        : 'message $id ("$subject"), $copy: left alone, $leftAlone';
+  }
 }
 
 class LiveRun {
@@ -72,8 +89,17 @@ class LiveRun {
   final List<String> _subjects = [];
 
   /// The copies of the run's messages, as (ID, box), that the run asked to
-  /// move to the trash. It never asks twice for one.
+  /// move to the trash, whichever folder of the box they were in. It never
+  /// asks twice for one.
   final Set<(int, BoxType)> _trashed = {};
+
+  /// The run's messages whose inbox copy the run asked to move to the
+  /// archive. It never asks twice for one.
+  final Set<int> _archived = {};
+
+  /// The archive folder of the inbox, once the run asked to move a message
+  /// there: the cleanup then looks for the run's inbox copies in it too.
+  int? _archiveBoxId;
 
   Future<Arrival>? _original;
 
@@ -248,11 +274,16 @@ class LiveRun {
     return Arrival(subject, inbox, sent);
   }
 
-  /// The headers of [box] with [subject], among its newest 50.
-  Future<List<ShortMessage>> listed(BoxType box, String subject) async =>
-      (await messages.getHeaders(
-        boxType: box,
-      )).where((message) => message.subject == subject).toList();
+  /// The headers of [box] (of its folder [boxId]: `0` for the box itself)
+  /// with [subject], among its newest 50.
+  Future<List<ShortMessage>> listed(
+    BoxType box,
+    String subject, {
+    int boxId = 0,
+  }) async => (await messages.getHeaders(
+    boxType: box,
+    boxId: boxId,
+  )).where((message) => message.subject == subject).toList();
 
   /// The header of message [id] in the inbox, or `null`.
   Future<ShortMessage?> inboxHeader(int id) async =>
@@ -275,48 +306,106 @@ class LiveRun {
   /// copy of the ID its session state points to, and one of a message in
   /// the trash deletes it for good (#19, #61).
   ///
-  /// It looks for the run's subjects in each box, and moves a copy only
-  /// when:
-  /// - the run did not ask to move that copy before;
-  /// - its reply form, in its box, names the own account alone as the
-  ///   sender;
-  /// - its box still lists it with the run's subject, right before the move.
+  /// It looks for the run's subjects in each box, and in the inbox also in
+  /// its archive folder once the run moved a message there (#64), and moves
+  /// a copy as [trash] does.
   Future<List<Trashing>> cleanUp({
     List<BoxType> boxes = const [BoxType.sent, BoxType.inbox],
   }) async {
     final done = <Trashing>[];
     for (final box in boxes) {
-      for (final subject in _subjects) {
-        for (final message in await listed(box, subject)) {
-          if (_trashed.contains((message.id, box))) continue;
-          done.add(await _trash(message.id, subject, box));
+      final archive = _archiveBoxId;
+      for (final folder in [
+        0,
+        if (box == BoxType.inbox && archive != null) archive,
+      ]) {
+        for (final subject in _subjects) {
+          for (final message in await listed(box, subject, boxId: folder)) {
+            if (_trashed.contains((message.id, box))) continue;
+            done.add(await trash(message.id, subject, box, boxId: folder));
+          }
         }
       }
     }
     return done;
   }
 
-  Future<Trashing> _trash(int id, String subject, BoxType box) async {
+  /// Moves the copy of message [id] of the run, with [subject], in [box] (in
+  /// its folder [boxId]: `0` for the box itself, the archive folder for an
+  /// archived inbox copy) to the trash with `moveToTrashFrom`, and returns
+  /// what it did with it.
+  ///
+  /// It moves the copy only when:
+  /// - the run did not ask to move that copy before (from any folder);
+  /// - its reply form, in its box, names the own account alone as the
+  ///   sender;
+  /// - its box (its folder) still lists it with the run's subject, right
+  ///   before the move.
+  Future<Trashing> trash(
+    int id,
+    String subject,
+    BoxType box, {
+    int boxId = 0,
+  }) async {
+    if (_trashed.contains((id, box))) {
+      return Trashing.leftAlone(
+        id,
+        subject,
+        box,
+        'the run moved it to the trash already',
+        boxId: boxId,
+      );
+    }
     if (!ownOnly(await messages.getReplyRecipients(id, boxType: box))) {
       return Trashing.leftAlone(
         id,
         subject,
         box,
         'its reply form does not name the own account alone as its sender',
+        boxId: boxId,
       );
     }
-    final listedNow = await listed(box, subject);
+    final listedNow = await listed(box, subject, boxId: boxId);
     if (!listedNow.any((message) => message.id == id)) {
+      final where = boxId == 0
+          ? 'the ${box.value}'
+          : 'folder $boxId of the ${box.value}';
       return Trashing.leftAlone(
         id,
         subject,
         box,
-        'the ${box.value} no longer lists it with the run\'s subject',
+        "$where no longer lists it with the run's subject",
+        boxId: boxId,
       );
     }
     _trashed.add((id, box));
-    guard.allowTrashFrom(id, box);
-    await messages.moveToTrashFrom(id, boxType: box);
-    return Trashing.moved(id, subject, box);
+    guard.allowTrashFrom(id, box, boxId: boxId);
+    await messages.moveToTrashFrom(id, boxType: box, boxId: boxId);
+    return Trashing.moved(id, subject, box, boxId: boxId);
+  }
+
+  /// Moves the inbox copy of message [id] of the run, with [subject], to the
+  /// archive folder with `moveToArchive` (#64), and returns Smartschool's
+  /// answer as the library reads it.
+  ///
+  /// It moves it only once, and only while the inbox lists it with the
+  /// run's subject, right before the move; it throws a [StateError]
+  /// otherwise. It resolves the archive folder first (`getArchiveBoxId`, which
+  /// loads the Messages page, where the guard reads it too), so that the
+  /// cleanup looks for the message there, also when the move fails.
+  Future<List<MessageChanged>> archive(int id, String subject) async {
+    if (!_archived.add(id)) {
+      throw StateError('the run moved message $id to the archive already');
+    }
+    final listedNow = await listed(BoxType.inbox, subject);
+    if (!listedNow.any((message) => message.id == id)) {
+      throw StateError(
+        "the inbox does not list message $id with the run's subject; the run "
+        'does not archive it',
+      );
+    }
+    _archiveBoxId = await messages.getArchiveBoxId();
+    guard.allowArchive(id);
+    return messages.moveToArchive([id]);
   }
 }

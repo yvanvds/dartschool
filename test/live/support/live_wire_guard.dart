@@ -23,11 +23,18 @@
 // - moving a copy of a message to the trash with `quickmove messages`
 //   (MessagesService.moveToTrashFrom, which names the box of the copy, #60)
 //   unless it is a copy of a message this run sent: one that Smartschool
-//   listed in that box (`message list`) with the run's subject, and that the
-//   run checked there; a second move of a copy; and a move out of another
-//   box than the inbox or the sent box (or a folder of one), or to another
-//   box than the trash. So the run moves no ID it did not send, 0 included
-//   (#61);
+//   listed in that box, or in the archive folder of the inbox
+//   (`message list`), with the run's subject, and that the run checked
+//   there; a second move of a copy, whichever folder it is in; and a move
+//   out of another box than the inbox or the sent box, out of a folder other
+//   than the archive folder that Smartschool's Messages page names (#64), or
+//   to another box than the trash. So the run moves no ID it did not send,
+//   0 included (#61);
+// - moving a message to the archive (MessagesService.moveToArchive) unless
+//   it is the inbox copy of a message this run sent, listed in the inbox
+//   with the run's subject and checked there, one per request; a second
+//   archive move of a message, and one of a copy the run moved to the trash
+//   (#64);
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -66,7 +73,9 @@ class LiveWireGuard extends Interceptor {
   LiveWireGuard({
     required this.host,
     required this.runTag,
-    this.maxSubmits = 6,
+    // One per message of messages_live_test.dart: six sends, and the
+    // read-receipt one, which throws before any request (#43).
+    this.maxSubmits = 7,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -113,18 +122,32 @@ class LiveWireGuard extends Interceptor {
   /// reply to.
   final Set<int> _replyTargets = {};
 
-  /// The copies of the run's messages that Smartschool listed, as (ID, box):
-  /// the headers with the run's subject in its answers to a `message list`
-  /// of the inbox or the sent box itself (not of a folder of it).
-  final Set<(int, String)> _listed = {};
+  /// The copies of the run's messages that Smartschool listed, as (ID, box,
+  /// folder): the headers with the run's subject in its answers to a
+  /// `message list` of the inbox or the sent box, by the folder listed (`0`
+  /// for the box itself). A move to the trash takes only the box itself or
+  /// the archive folder of the inbox.
+  final Set<(int, String, int)> _listed = {};
 
   /// The copies of messages the run may move to the trash out of their box
-  /// (`quickmove messages`, MessagesService.moveToTrashFrom), as (ID, box):
-  /// those it sent and checked in that box.
-  final Set<(int, String)> _movable = {};
+  /// (`quickmove messages`, MessagesService.moveToTrashFrom), as (ID, box,
+  /// folder): those it sent and checked there.
+  final Set<(int, String, int)> _movable = {};
 
-  /// The copies the run asked to move to the trash out of their box.
+  /// The copies the run asked to move to the trash, as (ID, box), whichever
+  /// folder of the box they were in: a copy goes once.
   final Set<(int, String)> _moveRequested = {};
+
+  /// The messages whose inbox copy the run may move to the archive: those it
+  /// sent and checked in the inbox.
+  final Set<int> _archivable = {};
+
+  /// The messages whose inbox copy the run asked to move to the archive.
+  final Set<int> _archiveRequested = {};
+
+  /// The archive folders that Smartschool's Messages page named (#64): one,
+  /// unless pages named different ones.
+  final Set<int> _archiveFolders = {};
 
   /// How often each step of a login went out.
   final Map<String, int> _loginSteps = {};
@@ -133,17 +156,38 @@ class LiveWireGuard extends Interceptor {
   /// (message ID, box), as they came in.
   final Map<(int, String), String> trashMoveAnswers = {};
 
+  /// Smartschool's answers to the moves to the archive, by message ID, as
+  /// they came in.
+  final Map<int, String> archiveAnswers = {};
+
+  /// The archive folder of the inbox, as Smartschool's Messages page names it
+  /// (MessagesService.getArchiveBoxId loads that page), or `null` while no
+  /// page named one, or when pages named different ones: then the guard
+  /// lets no move out of a folder go out.
+  int? get archiveBoxId =>
+      _archiveFolders.length == 1 ? _archiveFolders.single : null;
+
   /// Lets the run reply to message [msgId] of the inbox: a message it sent
   /// to the own account only.
   void allowReplyTo(int msgId) => _replyTargets.add(msgId);
 
   /// Lets the run move the copy of message [msgId] in [box] (the inbox or
-  /// the sent box) to the trash, once: a message it sent and checked there.
+  /// the sent box), or in its folder [boxId] (the archive folder of the
+  /// inbox, #64), to the trash, once: a message it sent and checked there.
+  ///
+  /// The guard lets the move out only for a copy that Smartschool listed
+  /// there with the run's subject too, whatever this allows (#61), and only
+  /// out of the box itself or the archive folder that the Messages page
+  /// names.
+  void allowTrashFrom(int msgId, BoxType box, {int boxId = 0}) =>
+      _movable.add((msgId, box.value, boxId));
+
+  /// Lets the run move the inbox copy of message [msgId] to the archive,
+  /// once: a message it sent and checked in the inbox (#64).
   ///
   /// The guard lets the move out only for a copy that Smartschool listed in
-  /// [box] with the run's subject too, whatever this allows (#61).
-  void allowTrashFrom(int msgId, BoxType box) =>
-      _movable.add((msgId, box.value));
+  /// the inbox with the run's subject too, whatever this allows.
+  void allowArchive(int msgId) => _archivable.add(msgId);
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
@@ -229,6 +273,7 @@ class LiveWireGuard extends Interceptor {
       return _loginStep('account verification');
     }
     if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
+    if (path == _archivePath) return _archiveRefusal(options.data);
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -286,14 +331,14 @@ class LiveWireGuard extends Interceptor {
 
   /// Why the `quickmove messages` command [xml] may not go out, or `null`.
   ///
-  /// It moves one copy of a message, the one in the box it names, as the
-  /// web client does when a message is dragged onto the trash (#60). The
-  /// live suite sends it only to move the inbox or sent-box copy of a
-  /// message it sent to the trash, once per copy: a copy that Smartschool
-  /// listed in that box with the run's subject, and that the run checked
-  /// there. It may do so while the other copy is in the trash: that the move
-  /// takes the copy of the box it names, and leaves the other one alone, was
-  /// seen live.
+  /// It moves one copy of a message, the one in the box (and folder) it
+  /// names, as the web client does when a message is dragged onto the trash
+  /// (#60). The live suite sends it only to move the inbox or sent-box copy
+  /// of a message it sent to the trash, once per copy: a copy that
+  /// Smartschool listed in that box, or in the archive folder of the inbox
+  /// (#64), with the run's subject, and that the run checked there. It may
+  /// do so while the other copy is in the trash: that the move takes the
+  /// copy of the box it names, and leaves the other one alone, was seen live.
   String? _moveRefusal(XmlDocument xml) {
     final id = int.tryParse(_param(xml, 'msgID') ?? '');
     if (id == null) return 'its move names no message';
@@ -310,21 +355,88 @@ class LiveWireGuard extends Interceptor {
       return 'it moves message $id out of the "$box": the live suite moves '
           'only copies in the inbox or the sent box to the trash';
     }
-    if (_param(xml, 'boxID') != '0') {
-      return 'it moves message $id out of a folder of the $box';
+    final archive = archiveBoxId;
+    final int folder;
+    switch (_param(xml, 'boxID')) {
+      case '0':
+        folder = 0;
+      case final named?
+          when archive != null &&
+              box == BoxType.inbox.value &&
+              named == '$archive':
+        folder = archive;
+      default:
+        return 'it moves message $id out of a folder of the $box that is not '
+            'the archive folder of the inbox, as a Messages page named it';
     }
-    if (!_listed.contains((id, box))) {
-      return 'Smartschool did not list message $id in the $box with the '
+    final where = folder == 0
+        ? 'the $box'
+        : 'the archive folder ($folder) of the inbox';
+    if (!_listed.contains((id, box, folder))) {
+      return 'Smartschool did not list message $id in $where with the '
           "run's subject: it is not a message this run sent (#61)";
     }
-    if (!_movable.contains((id, box))) {
+    if (!_movable.contains((id, box, folder))) {
       return 'the $box copy of message $id is not one this run sent and '
-          'checked there';
+          'checked in $where';
     }
     if (!_moveRequested.add((id, box))) {
       return 'the $box copy of message $id was moved to the trash already in '
           'this run';
     }
+    return null;
+  }
+
+  /// The path of MessagesService.moveToArchive's request.
+  static const _archivePath = '/Messages/Xhr/archivemessages';
+
+  /// Why the move to the archive with the form body [data] may not go out,
+  /// or `null` (#64).
+  ///
+  /// It names the messages only (`msgIDs[]`), not a box: the archive is a
+  /// folder of the inbox, and the live suite sends it only to move the inbox
+  /// copy of a message it sent there, one message per request, once: a copy
+  /// that Smartschool listed in the inbox with the run's subject, and that
+  /// the run checked there. The inbox no longer lists it then, so a move to
+  /// the trash out of the inbox needs a new listing there.
+  String? _archiveRefusal(Object? data) {
+    if (data is! String) return 'it carries no form body';
+    final fields = [
+      for (final pair in data.split('&'))
+        if (pair.isNotEmpty) pair.split('='),
+    ];
+    if (fields.length != 1) {
+      return 'it archives ${fields.length} messages at once: the live suite '
+          'archives one message per request';
+    }
+    final field = fields.single;
+    final id =
+        field.length == 2 && Uri.decodeQueryComponent(field[0]) == 'msgIDs[]'
+        ? int.tryParse(Uri.decodeQueryComponent(field[1]))
+        : null;
+    if (id == null) return 'its move to the archive names no message';
+    if (id <= 0) {
+      return 'it archives message $id, which names no message: the live '
+          'suite archives only messages it sent (#61)';
+    }
+    if (_archiveRequested.contains(id)) {
+      return 'message $id was moved to the archive already in this run';
+    }
+    final inbox = BoxType.inbox.value;
+    if (_moveRequested.contains((id, inbox))) {
+      return 'the inbox copy of message $id was moved to the trash already in '
+          'this run';
+    }
+    if (!_listed.contains((id, inbox, 0))) {
+      return 'Smartschool did not list message $id in the inbox with the '
+          "run's subject: it is not a message this run sent (#61)";
+    }
+    if (!_archivable.contains(id)) {
+      return 'message $id is not one this run sent and checked in the inbox '
+          'to archive';
+    }
+    _archiveRequested.add(id);
+    _listed.remove((id, inbox, 0));
     return null;
   }
 
@@ -450,9 +562,16 @@ class LiveWireGuard extends Interceptor {
     final options = response.requestOptions;
     final uri = options.uri;
     final query = uri.queryParameters;
-    if (uri.path != '/' || query['module'] != 'Messages') return null;
     final body = response.data is String ? response.data as String : '';
+    if (uri.path == _archivePath) {
+      _recordArchiveAnswer(options.data, body);
+      return null;
+    }
+    if (uri.path != '/' || query['module'] != 'Messages') return null;
     switch ((options.method.toUpperCase(), query['file'], query['function'])) {
+      case ('GET', 'index', 'main'):
+        final folder = MessagesService.parseArchiveBoxIdFromMessagesHtml(body);
+        if (folder != null && folder > 0) _archiveFolders.add(folder);
       case ('GET', 'composeMessage', _):
         _recordForm(uri, body);
       case ('POST', 'searchUsers', 'addUserToSelected'):
@@ -557,16 +676,25 @@ class LiveWireGuard extends Interceptor {
     }
   }
 
+  /// Keeps Smartschool's answer [body] to the move to the archive with the
+  /// form body [data], which the guard let out with one message ID.
+  void _recordArchiveAnswer(Object? data, String body) {
+    if (data is! String) return;
+    final id = int.tryParse(Uri.decodeQueryComponent(data.split('=').last));
+    if (id != null) archiveAnswers[id] = body;
+  }
+
   /// Keeps the copies of the run's messages that Smartschool's answer [body]
   /// to the `message list` [command] lists: the headers with the run's
   /// subject, read as MessagesService.getHeaders reads them, when the list
-  /// is of the inbox or the sent box itself (not of a folder of it). An
-  /// answer the guard cannot read lists none, so no move of what it lists
-  /// goes out.
+  /// is of the inbox or the sent box, by the folder listed (`0` for the box
+  /// itself). An answer the guard cannot read lists none, so no move of what
+  /// it lists goes out.
   void _recordListed(XmlDocument command, String body) {
     final box = _param(command, 'boxType') ?? '';
     if (box != BoxType.inbox.value && box != BoxType.sent.value) return;
-    if (_param(command, 'boxID') != '0') return;
+    final folder = int.tryParse(_param(command, 'boxID') ?? '');
+    if (folder == null || folder < 0) return;
     final List<ShortMessage> headers;
     try {
       headers = XmlInterface.parseResponse(
@@ -577,7 +705,7 @@ class LiveWireGuard extends Interceptor {
       return; // The library reports what it cannot read itself.
     }
     for (final header in headers) {
-      if (_isRunSubject(header.subject)) _listed.add((header.id, box));
+      if (_isRunSubject(header.subject)) _listed.add((header.id, box, folder));
     }
   }
 

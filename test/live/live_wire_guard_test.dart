@@ -87,17 +87,23 @@ String _messageList(List<(int, String)> headers) {
   );
 }
 
-/// A Smartschool that answers the steps of a send, a move to the trash and
-/// a message list, and records what reaches it.
+/// A Smartschool that answers the steps of a send, a move to the trash or
+/// to the archive, a message list and the Messages page, and records what
+/// reaches it.
 class _Smartschool implements HttpClientAdapter {
   _Smartschool({
     required this.replyForm,
     this.answerAdd,
     this.boxes = const {},
+    this.archiveFolder,
   });
 
   /// The reply form of message 900030.
   final String replyForm;
+
+  /// The archive folder of the inbox that the Messages page names, or
+  /// `null` for a page that names none.
+  int? archiveFolder;
 
   /// The headers, as (ID, subject), that a `message list` of each box lists,
   /// by `<boxType>/<boxID>` (such as `inbox/0`); other boxes list none.
@@ -119,8 +125,12 @@ class _Smartschool implements HttpClientAdapter {
   /// The `msgID` of each `quick delete` that reached it.
   final List<String> trashed = [];
 
-  /// Each `quickmove messages` that reached it, as `<boxType> <msgID>`.
+  /// Each `quickmove messages` that reached it, as `<boxType> <msgID>`, or
+  /// `<boxType>/<boxID> <msgID>` out of a folder.
   final List<String> moved = [];
+
+  /// The IDs of each move to the archive that reached it.
+  final List<List<int>> archived = [];
 
   @override
   Future<ResponseBody> fetch(
@@ -159,6 +169,27 @@ class _Smartschool implements HttpClientAdapter {
         );
       case (true, '/Upload/Upload/Index', _, _):
         return _answer('true');
+      case (false, '/', 'index', 'main'):
+        final folder = archiveFolder;
+        return _answer(
+          folder == null
+              ? '<html><body>Berichten</body></html>'
+              : '<div class="postboxsub" boxtype="inbox" boxid="$folder">'
+                    '<div class="postbox_ico_sub archive" boxtype="inbox" '
+                    'boxid="$folder"></div></div>',
+        );
+      case (true, '/Messages/Xhr/archivemessages', _, _):
+        final ids = [
+          for (final match in RegExp(
+            r'msgIDs%5B%5D=(\d+)',
+          ).allMatches(options.data as String))
+            int.parse(match.group(1)!),
+        ];
+        archived.add(ids);
+        return _answer(
+          '{"success":[${ids.join(',')}]}',
+          contentType: 'application/json',
+        );
       case (true, '/', 'dispatcher', _):
         final command = (options.data as Map)['command'] as String;
         final id = RegExp(r'name="msgID"><!\[CDATA\[(\d+)').firstMatch(command);
@@ -172,14 +203,15 @@ class _Smartschool implements HttpClientAdapter {
         final box = RegExp(
           r'name="boxType"><!\[CDATA\[(\w+)',
         ).firstMatch(command)?.group(1);
+        final folder = RegExp(
+          r'name="boxID"><!\[CDATA\[(\d+)',
+        ).firstMatch(command)?.group(1);
         if (command.contains('<action>quickmove messages</action>')) {
-          moved.add('$box ${id!.group(1)}');
+          final from = folder == '0' ? '$box' : '$box/$folder';
+          moved.add('$from ${id!.group(1)}');
           return _answer(_moveAnswer, contentType: 'text/xml');
         }
         if (command.contains('<action>message list</action>')) {
-          final folder = RegExp(
-            r'name="boxID"><!\[CDATA\[(\d+)',
-          ).firstMatch(command)!.group(1);
           return _answer(
             _messageList(boxes['$box/$folder'] ?? const []),
             contentType: 'text/xml',
@@ -381,6 +413,50 @@ void main() {
       expect(server.moved, ['outbox 4242', 'inbox 4242']);
       expect(guard.trashMoveAnswers.keys, [(4242, 'outbox'), (4242, 'inbox')]);
       expect(guard.trashMoveAnswers.values, everyElement(_moveAnswer));
+      expect(guard.violations, isEmpty);
+    });
+
+    test('a move to the archive of the inbox copy of a message the run sent, '
+        'listed and checked in the inbox; then a move to the trash of its '
+        'sent-box copy, and of its archived copy out of the archive folder '
+        'that the Messages page names, listed and checked there, once each '
+        '(#64)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        archiveFolder: 312,
+        boxes: {
+          'inbox/0': [(4242, _runSubject), (5555, 'Hello')],
+          'outbox/0': [(4242, _runSubject)],
+          'inbox/312': [(4242, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      await messages.getHeaders(boxType: BoxType.sent);
+      guard.allowArchive(4242);
+
+      final archiveBoxId = await messages.getArchiveBoxId();
+      final archived = await messages.moveToArchive([4242]);
+      await messages.getArchiveHeaders(boxId: archiveBoxId);
+      guard
+        ..allowTrashFrom(4242, BoxType.sent)
+        ..allowTrashFrom(4242, BoxType.inbox, boxId: archiveBoxId);
+      await messages.moveToTrashFrom(4242, boxType: BoxType.sent);
+      await messages.moveToTrashFrom(
+        4242,
+        boxType: BoxType.inbox,
+        boxId: archiveBoxId,
+      );
+
+      expect(archiveBoxId, 312);
+      expect(guard.archiveBoxId, 312);
+      expect(archived.map((c) => (c.id, c.newValue)), [(4242, 1)]);
+      expect(server.archived, [
+        [4242],
+      ]);
+      expect(guard.archiveAnswers, {4242: '{"success":[4242]}'});
+      expect(server.moved, ['outbox 4242', 'inbox/312 4242']);
+      expect(guard.trashMoveAnswers.keys, [(4242, 'outbox'), (4242, 'inbox')]);
       expect(guard.violations, isEmpty);
     });
 
@@ -748,7 +824,7 @@ void main() {
       expect(_violations(guard), [
         contains(
           'the inbox copy of message 4242 is not one this run sent and '
-          'checked there',
+          'checked in the inbox',
         ),
         contains('the outbox copy of message 1234 is not one this run sent'),
         contains(
@@ -802,12 +878,180 @@ void main() {
       ]);
     });
 
+    test('a move to the archive of ID 0, of a message that Smartschool did '
+        "not list in the inbox with the run's subject, of one the run did not "
+        'check there, of more than one message at once, of a copy the run '
+        'moved to the trash, and a second one (#64)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        boxes: {
+          'inbox/0': [
+            (0, _runSubject),
+            (4242, _runSubject),
+            (1234, _runSubject),
+            (5555, 'Hello'),
+            (9999, _runSubject),
+          ],
+          'outbox/0': [(6666, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      await messages.getHeaders(boxType: BoxType.sent);
+      for (final id in [0, 4242, 5555, 6666, 7777, 9999]) {
+        guard.allowArchive(id);
+      }
+      guard.allowTrashFrom(9999, BoxType.inbox);
+      await messages.moveToTrashFrom(9999, boxType: BoxType.inbox);
+
+      for (final ids in [
+        [0],
+        [5555], // Another subject.
+        [6666], // Listed in the sent box only.
+        [7777], // Listed nowhere.
+        [1234], // Listed, but the run did not check it.
+        [4242, 1234],
+        [9999], // Its inbox copy was moved to the trash.
+      ]) {
+        await expectLater(
+          messages.moveToArchive(ids),
+          throwsA(anything),
+          reason: '$ids',
+        );
+      }
+      await messages.moveToArchive([4242]);
+      // The inbox no longer lists it: a move to the trash out of the inbox
+      // needs a new listing there.
+      guard.allowTrashFrom(4242, BoxType.inbox);
+      await expectLater(
+        messages.moveToTrashFrom(4242, boxType: BoxType.inbox),
+        throwsA(anything),
+      );
+      await expectLater(messages.moveToArchive([4242]), throwsA(anything));
+
+      expect(server.archived, [
+        [4242],
+      ]);
+      expect(server.moved, ['inbox 9999']);
+      String notListed(int id) =>
+          "Smartschool did not list message $id in the inbox with the run's "
+          'subject';
+      expect(_violations(guard), [
+        contains('it archives message 0, which names no message'),
+        contains(notListed(5555)),
+        contains(notListed(6666)),
+        contains(notListed(7777)),
+        contains(
+          'message 1234 is not one this run sent and checked in the inbox',
+        ),
+        contains('it archives 2 messages at once'),
+        contains(
+          'the inbox copy of message 9999 was moved to the trash already',
+        ),
+        contains(notListed(4242)),
+        contains('message 4242 was moved to the archive already'),
+      ]);
+    });
+
+    test('a move to the trash out of the archive folder of a copy that '
+        "Smartschool did not list there with the run's subject, or that the "
+        'run did not check there; a second move of a copy, out of any folder; '
+        'and a move out of another folder, or out of the archive while no '
+        'Messages page names it (#64)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        archiveFolder: 312,
+        boxes: {
+          'inbox/0': [(4242, _runSubject), (6666, _runSubject)],
+          'inbox/312': [
+            (4242, _runSubject),
+            (3333, _runSubject),
+            (5555, 'Hello'),
+            (7777, _runSubject),
+          ],
+          'inbox/400': [(8888, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      await messages.getHeaders(boxId: 312);
+      await messages.getHeaders(boxId: 400);
+      guard
+        ..allowTrashFrom(4242, BoxType.inbox)
+        ..allowTrashFrom(4242, BoxType.inbox, boxId: 312)
+        ..allowTrashFrom(4242, BoxType.sent, boxId: 312)
+        ..allowTrashFrom(3333, BoxType.inbox, boxId: 312)
+        ..allowTrashFrom(5555, BoxType.inbox, boxId: 312)
+        ..allowTrashFrom(6666, BoxType.inbox, boxId: 312)
+        ..allowTrashFrom(7777, BoxType.inbox) // Out of the inbox itself only.
+        ..allowTrashFrom(8888, BoxType.inbox, boxId: 400);
+      Future<void> refused(int id, BoxType box, int boxId) => expectLater(
+        messages.moveToTrashFrom(id, boxType: box, boxId: boxId),
+        throwsA(anything),
+        reason: '$id, ${box.value}/$boxId',
+      );
+
+      await refused(4242, BoxType.inbox, 312); // No Messages page yet.
+      expect(await messages.getArchiveBoxId(), 312);
+      await refused(5555, BoxType.inbox, 312); // Another subject.
+      await refused(6666, BoxType.inbox, 312); // Listed in the inbox only.
+      await refused(7777, BoxType.inbox, 312); // Not checked in the archive.
+      await refused(8888, BoxType.inbox, 400); // Not the archive folder.
+      await refused(4242, BoxType.sent, 312); // A folder of the sent box.
+      await messages.moveToTrashFrom(4242, boxType: BoxType.inbox, boxId: 312);
+      await refused(4242, BoxType.inbox, 312);
+      await refused(4242, BoxType.inbox, 0); // The same copy.
+      // A page that names another archive folder: the guard trusts neither,
+      // and refuses a move it let out until then.
+      server.archiveFolder = 400;
+      await _dio(
+        server,
+        guard,
+      ).get<String>('/?module=Messages&file=index&function=main');
+      expect(guard.archiveBoxId, isNull);
+      await refused(3333, BoxType.inbox, 312);
+
+      expect(server.moved, ['inbox/312 4242']);
+      const notArchive = 'that is not the archive folder of the inbox';
+      expect(_violations(guard), [
+        contains(
+          'it moves message 4242 out of a folder of the inbox $notArchive',
+        ),
+        contains(
+          "Smartschool did not list message 5555 in the archive folder (312) "
+          "of the inbox with the run's subject",
+        ),
+        contains(
+          "Smartschool did not list message 6666 in the archive folder (312) "
+          "of the inbox with the run's subject",
+        ),
+        contains(
+          'the inbox copy of message 7777 is not one this run sent and '
+          'checked in the archive folder (312) of the inbox',
+        ),
+        contains(
+          'it moves message 8888 out of a folder of the inbox $notArchive',
+        ),
+        contains(
+          'it moves message 4242 out of a folder of the outbox $notArchive',
+        ),
+        contains(
+          'the inbox copy of message 4242 was moved to the trash already',
+        ),
+        contains(
+          'the inbox copy of message 4242 was moved to the trash already',
+        ),
+        contains(
+          'it moves message 3333 out of a folder of the inbox $notArchive',
+        ),
+      ]);
+    });
+
     test('any other request that changes something', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (messages, guard) = await _guarded(server);
 
       await expectLater(messages.markUnread(4242), throwsA(anything));
-      await expectLater(messages.moveToArchive([4242]), throwsA(anything));
       await expectLater(
         messages.searchRecipientsForCompose('Piet'),
         throwsA(anything),
@@ -820,7 +1064,6 @@ void main() {
       ]);
       expect(_violations(guard), [
         contains('no "mark message unread" command'),
-        contains('not a request the live suite sends'),
         contains('not a request the live suite sends'),
       ]);
     });

@@ -3,8 +3,9 @@
 //
 // It is local and on demand only. dart_test.yaml skips the suites tagged
 // `live` without loading them, so `dart test` (CI, the Lefthook pre-commit
-// hook) never runs it; `dart test -P live` does. Without a credentials.yml in
-// the package root, it skips.
+// hook) never runs it; `dart test -P live test/live` does (or, for this file
+// alone, `dart test -P live test/live/messages_live_test.dart`, #62).
+// Without a credentials.yml in the package root, it skips.
 //
 // The rules (the maintainer's, #57), which the tests and LiveWireGuard
 // (support/live_wire_guard.dart, on the wire) both keep:
@@ -27,7 +28,10 @@
 //   did not send in the same run, 0 included;
 // - it logs in at most once (usually not at all: the session is kept in
 //   `.dart_tool/live_cache`, support/live_client.dart), and never with wrong
-//   credentials; it prints no credential and no cookie.
+//   credentials; it prints no credential and no cookie;
+// - it is the only live run in that session: it takes the session's lock
+//   first, and refuses to start, before any request, while another live run
+//   holds it (support/live_lock.dart, #62).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose. network_guard_test.dart allows that only for a test file under

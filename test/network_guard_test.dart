@@ -13,9 +13,9 @@
 // own account on purpose: a test file under `test/live/` that is tagged
 // `live` for the whole file (`@Tags(['live'])` on its `library;`).
 // dart_test.yaml skips such a file without loading it unless the `live`
-// preset is chosen (`dart test -P live`), which a test below checks. Any
-// other file under `test/live/`, and a file tagged `live` elsewhere, must
-// call forbidRealNetwork() like every other.
+// preset is chosen (`dart test -P live test/live`), which a test below
+// checks. Any other file under `test/live/`, and a file tagged `live`
+// elsewhere, must call forbidRealNetwork() like every other.
 import 'dart:async';
 import 'dart:io';
 
@@ -257,11 +257,16 @@ void main() {
     expect(config.keys, isNot(contains('exclude_tags')));
     expect(config.keys, isNot(contains('include_tags')));
     expect(config.keys, isNot(contains('add_presets')));
-    // `dart test -P live` runs them, and only them.
+    // `dart test -P live test/live` runs them, and only them.
     final preset = (config['presets'] as Map)['live'] as Map;
     expect(preset['include_tags'], 'live');
-    expect(preset['paths'], ['test/live']);
     expect((preset['tags'] as Map)['live'], {'skip': false});
+    // A preset's paths replace those of the command line, so that
+    // `dart test -P live test/live/<file>` would run all of test/live/
+    // (#62).
+    expect(preset.keys, isNot(contains('paths')));
+    // One live file at a time, in the session they share (#62).
+    expect(preset['concurrency'], 1);
 
     // And there is a live suite for that, under test/live/.
     final suites = Directory(p.join('test', 'live'))

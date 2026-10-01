@@ -8,6 +8,7 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:path/path.dart' as p;
 
 import 'live_client.dart';
+import 'live_lock.dart';
 import 'live_wire_guard.dart';
 
 /// Where a message the run sent arrived: its headers with its subject in
@@ -47,6 +48,7 @@ class LiveRun {
     this.own,
     this.tag,
     this._files,
+    this._lock,
   );
 
   final SmartschoolClient client;
@@ -62,6 +64,9 @@ class LiveRun {
   /// A temporary folder for the run's attachments.
   final Directory _files;
 
+  /// The lock of the session: one live run at a time works in it (#62).
+  final LiveLock _lock;
+
   /// The subjects of the messages the run sent, or tried to: the cleanup
   /// looks for each of them.
   final List<String> _subjects = [];
@@ -72,23 +77,33 @@ class LiveRun {
 
   Future<Arrival>? _original;
 
-  /// Logs in (only when the session of the last run expired) with the
-  /// credentials in [credentialsFile], and finds the own account.
+  /// Takes the lock of the session, logs in (only when the session of the
+  /// last run expired) with the credentials in [credentialsFile], and finds
+  /// the own account.
+  ///
+  /// Throws a [LiveLockHeld], before any request, when another live run
+  /// works in the session (#62).
   static Future<LiveRun> start(File credentialsFile) async {
     final credentials = PathCredentials(filename: credentialsFile.path);
     final tag = _newTag();
-    final client = await createLiveClient(credentials);
-    final guard = LiveWireGuard(host: credentials.mainUrl, runTag: tag);
-    client.dio.interceptors.add(guard);
+    final lock = await lockLiveSession(credentials, tag);
+    SmartschoolClient? client;
     try {
+      client = await createLiveClient(credentials);
+      final guard = LiveWireGuard(host: credentials.mainUrl, runTag: tag);
+      client.dio.interceptors.add(guard);
       final messages = MessagesService(client);
       final own = await messages.getCurrentUserAsRecipient();
       await _checkOwn(client, own);
       guard.own = own;
       final files = await Directory.systemTemp.createTemp('dartschool_live_');
-      return LiveRun._(client, messages, guard, own, tag, files);
+      return LiveRun._(client, messages, guard, own, tag, files, lock);
     } catch (_) {
-      await client.dispose();
+      try {
+        await client?.dispose();
+      } finally {
+        await lock.release();
+      }
       rethrow;
     }
   }
@@ -123,10 +138,15 @@ class LiveRun {
   }
 
   /// Closes the client (its session stays in the live cache for the next
-  /// run) and deletes the run's attachments.
+  /// run), deletes the run's attachments, and gives the lock of the session
+  /// back.
   Future<void> close() async {
-    await client.dispose();
-    if (_files.existsSync()) await _files.delete(recursive: true);
+    try {
+      await client.dispose();
+      if (_files.existsSync()) await _files.delete(recursive: true);
+    } finally {
+      await _lock.release();
+    }
   }
 
   /// The subject of the message of [scenario].

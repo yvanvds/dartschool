@@ -263,12 +263,26 @@ class SmartschoolClient {
   ///
   /// Builds the `<request>` XML, POSTs it to the dispatcher URL, parses the
   /// response and returns each matched element as a [Map<String, dynamic>].
+  ///
+  /// Throws a [SmartschoolAuthenticationError] when Smartschool answers with
+  /// an HTML page, and a [SmartschoolParsingError] when it answers with
+  /// anything else that is not XML, an empty answer included.
+  ///
+  /// With [allowEmptyAnswer], an empty answer (no body, or white space only)
+  /// with status `200` returns no elements instead: Smartschool answers some
+  /// commands that way when they change nothing, such as a `quick delete` of
+  /// a message it does not delete (#59). An empty answer with another status
+  /// still throws. Nor is a refused session read as an empty answer: on an
+  /// expired session Smartschool answers the command with an empty `401`,
+  /// and the client logs in again and retries it (see [create]), or throws a
+  /// [SmartschoolSessionExpiredError] when it is refused again.
   Future<List<Map<String, dynamic>>> postXml({
     required String url,
     required String subsystem,
     required String action,
     required Map<String, String> params,
     required String xpath,
+    bool allowEmptyAnswer = false,
   }) async {
     final command = XmlInterface.buildCommand(subsystem, action, params);
 
@@ -285,6 +299,12 @@ class SmartschoolClient {
 
     final body = resp.data ?? '';
     final trimmed = body.trimLeft();
+
+    if (allowEmptyAnswer &&
+        trimmed.isEmpty &&
+        resp.statusCode == HttpStatus.ok) {
+      return <Map<String, dynamic>>[];
+    }
 
     if (_isLikelyHtml(trimmed)) {
       throw SmartschoolAuthenticationError(

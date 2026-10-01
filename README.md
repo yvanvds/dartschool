@@ -147,7 +147,7 @@ await client.ensureAuthenticated();
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
 | `postMultipartRaw(path, formData, {retryAfterLogin, sameSessionAs})` | `multipart/form-data` POST → `String` |
 | `postMultipartResponse(path, formData, {retryAfterLogin, sameSessionAs})` | Same POST → the whole `Response<String>` |
-| `postXml(...)` | Posts to the legacy XML dispatcher and returns parsed element maps |
+| `postXml(..., {allowEmptyAnswer})` | Posts to the legacy XML dispatcher and returns parsed element maps. Throws for an answer that is not XML; with `allowEmptyAnswer`, an empty `200` answer returns no elements instead |
 | `download(path, {maxBytes})` | Authenticated GET → the whole file as `Uint8List`. With `maxBytes`, throws `SmartschoolDownloadTooLargeError` as soon as the file turns out larger (see *Downloads* below) |
 | `downloadStream(path, {maxBytes})` | Same GET → a `SmartschoolDownload` as soon as the headers are in: `contentLength`, `fileName`, `contentType`, and the content as a `stream` (see *Downloads* below) |
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
@@ -262,7 +262,7 @@ for (final attachment in attachments) {
 | `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. |
 | `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. |
 | `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. |
-| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it. Not for a message already in the trash (Smartschool's web client deletes that one for good). |
+| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it, as when it deletes nothing (it then answers with an empty body). Not for a message already in the trash (Smartschool's web client deletes that one for good). |
 | `moveToArchive(msgIds)` | `Future<List<MessageChanged>>` | Archives one or more messages (REST endpoint). |
 
 ### Composing & searching
@@ -782,7 +782,7 @@ dart test -P live
 
 The `live` preset runs the live suite only. Do not pass `--run-skipped` to a plain `dart test`: that runs it too.
 
-What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; and `moveToTrash`, which cleans up, reports the messages deleted. It also checks what Smartschool answers to `moveToTrash(0)`, a move that deletes nothing: an empty body (which the library reports as a `SmartschoolParsingError`, #59).
+What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; and `moveToTrash`, which cleans up, reports the messages deleted. It also checks what Smartschool answers to `moveToTrash(0)`, a move that deletes nothing: an empty body, which `moveToTrash` returns as `null` (#59).
 
 Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
 

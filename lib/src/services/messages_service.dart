@@ -690,7 +690,14 @@ class MessagesService {
   /// answer, which the web client takes as the message deleted
   /// ([MessageDeletionStatus.isDeleted] is `true`; see
   /// [MessageDeletionStatus.fromXml]), or `null` when the answer is not a
-  /// `finish quick delete`.
+  /// `finish quick delete`. Smartschool answers with an empty body when it
+  /// deletes nothing, as seen for ID `0`, which names no message; that
+  /// returns `null` too (#59). Whether it answers the same for the ID of
+  /// another user's message was not checked.
+  ///
+  /// An answer that is not XML and not empty still throws (as for every
+  /// command): a [SmartschoolAuthenticationError] for an HTML page, a
+  /// [SmartschoolParsingError] otherwise.
   Future<MessageDeletionStatus?> moveToTrash(int msgId) async {
     final actions = await _client.postXml(
       url: _messagesXmlUrl,
@@ -698,6 +705,7 @@ class MessagesService {
       action: 'quick delete',
       params: {'msgID': '$msgId'},
       xpath: './/actions/action',
+      allowEmptyAnswer: true,
     );
 
     for (final action in actions) {

@@ -234,20 +234,15 @@ void main() {
       });
 
       test('moveToTrash(0): what Smartschool answers when it deletes nothing '
-          '(#19)', () async {
+          '(#19), and moveToTrash returns null (#59)', () async {
         // ID 0 names no message. Seen live on 2026-10-01: Smartschool answers
-        // with an empty body, which the library reports as a
-        // SmartschoolParsingError rather than as "nothing deleted" (#59).
-        Object? outcome;
-        try {
-          outcome = await messages.moveToTrash(0);
-        } on Object catch (e) {
-          outcome = e;
-        }
-        print('moveToTrash(0) returned: $outcome');
+        // with an empty body, which moveToTrash reports as nothing deleted
+        // (null) since #59; it threw a SmartschoolParsingError before.
+        final status = await messages.moveToTrash(0);
         final answer = run.guard.quickDeleteAnswers[0];
         print('Smartschool answered: "$answer"');
         expect(answer?.trim(), isEmpty, reason: "Smartschool's answer");
+        expect(status, isNull);
       });
 
       test('moveToTrash moves every message of the run to the trash and '

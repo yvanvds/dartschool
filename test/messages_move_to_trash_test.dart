@@ -17,12 +17,20 @@
 // `finish quick delete` by removing the message from the list whatever the
 // details say, and passes `0 === parseInt(status)` to its unread counter.
 //
+// And for issue #59: `moveToTrash` threw a `SmartschoolParsingError` ("a
+// non-XML response") when Smartschool deleted nothing, instead of returning
+// `null`. Seen live by the live suite of #57 (`moveToTrash(0)`, ID 0 names no
+// message): Smartschool answers such a `quick delete` with an empty body. An
+// empty body is also how Smartschool refuses the session of an XML POST, with
+// a `401` (#8), so only an empty `200` means that nothing was deleted.
+//
 // The fake Smartschool below answers `quick delete` from canned XML.
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/src/credentials.dart';
+import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/services/messages_service.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
@@ -53,18 +61,21 @@ String _answer(String action) =>
     '<server><response><status>ok</status><actions>$action</actions>'
     '</response></server>';
 
-/// A Smartschool whose XML dispatcher answers `quick delete` with [answer].
+/// A Smartschool whose XML dispatcher answers `quick delete` with [answer],
+/// with HTTP [status] and [contentType].
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(this.answer);
+  _Smartschool(
+    this.answer, {
+    this.status = 200,
+    this.contentType = 'application/xml',
+  });
 
   final String answer;
+  final int status;
+  final String contentType;
 
   /// The params of every `quick delete` request, in order.
   final List<Map<String, String>> requests = [];
-
-  static final _param = RegExp(
-    r'<param name="([^"]+)"><!\[CDATA\[(.*?)\]\]></param>',
-  );
 
   @override
   Future<ResponseBody> fetch(
@@ -72,19 +83,124 @@ class _Smartschool implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
-    final command = (options.data as Map)['command'] as String;
-    expect(command, contains('<subsystem>postboxes</subsystem>'));
-    expect(command, contains('<action>quick delete</action>'));
-    requests.add({
-      for (final m in _param.allMatches(command)) m.group(1)!: m.group(2)!,
-    });
-    return ResponseBody.fromString(
-      answer,
-      200,
-      headers: {
-        Headers.contentTypeHeader: ['application/xml'],
-      },
-    );
+    requests.add(_quickDeleteParams(options));
+    return _response(answer, status: status, contentType: contentType);
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+/// The params of the `quick delete` command that [options] posts.
+Map<String, String> _quickDeleteParams(RequestOptions options) {
+  final command = (options.data as Map)['command'] as String;
+  expect(command, contains('<subsystem>postboxes</subsystem>'));
+  expect(command, contains('<action>quick delete</action>'));
+  return {
+    for (final m in RegExp(
+      r'<param name="([^"]+)"><!\[CDATA\[(.*?)\]\]></param>',
+    ).allMatches(command))
+      m.group(1)!: m.group(2)!,
+  };
+}
+
+ResponseBody _response(
+  String body, {
+  int status = 200,
+  String contentType = 'text/html',
+}) => ResponseBody.fromString(
+  body,
+  status,
+  headers: {
+    Headers.contentTypeHeader: [contentType],
+  },
+);
+
+const _loginPage = '''
+<!DOCTYPE html>
+<html><body>
+<form class="form" name="login_form" method="post">
+<input type="text" name="login_form[_username]" />
+<input type="password" name="login_form[_password]" />
+<input type="hidden" name="login_form[_token]" value="csrf" />
+<button type="submit">Aanmelden</button>
+</form>
+</body></html>
+''';
+
+/// A Smartschool on which the session expired: it refuses the `quick delete`
+/// with a bare `401` and an empty body, as it refuses every XML POST on such
+/// a session (#8), until the client logged in again (password and 2FA). Then
+/// it answers it with [afterLogin], or refuses it again when that is `null`.
+class _ExpiredSession implements HttpClientAdapter {
+  _ExpiredSession({required this.afterLogin});
+
+  final String? afterLogin;
+
+  bool _passwordDone = false;
+  bool _twoFaDone = false;
+
+  /// Every request the client made, as `METHOD path`.
+  final List<String> log = [];
+
+  /// The params of every `quick delete` request, in order.
+  final List<Map<String, String>> requests = [];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    final path = options.uri.path;
+    log.add('${options.method} $path');
+
+    if (options.method == 'POST' && path == '/login') {
+      _passwordDone = true;
+      return ResponseBody.fromString(
+        '<html><body>Redirecting to /</body></html>',
+        302,
+        headers: {
+          Headers.contentTypeHeader: ['text/html'],
+          'location': ['/'],
+        },
+      );
+    }
+    if (path == '/2fa/api/v1/config') {
+      return _response(
+        '{"possibleAuthenticationMechanisms":["googleAuthenticator"]}',
+        contentType: Headers.jsonContentType,
+      );
+    }
+    if (path == '/2fa/api/v1/google-authenticator') {
+      _twoFaDone = true;
+      return _response(
+        '{"success":true,"redirectTo":"/"}',
+        contentType: Headers.jsonContentType,
+      );
+    }
+    if (options.method == 'POST') {
+      requests.add(_quickDeleteParams(options));
+      final answer = afterLogin;
+      if (!_passwordDone || !_twoFaDone || answer == null) {
+        return _response('', status: 401);
+      }
+      return _response(answer, contentType: 'application/xml');
+    }
+
+    // A page request: redirected to wherever the session is in the chain.
+    final (at, page) = !_passwordDone
+        ? ('/login', _loginPage)
+        : !_twoFaDone
+        ? ('/2fa', '<html><body>2fa</body></html>')
+        : (path, '<html><body>home</body></html>');
+    final response = _response(page);
+    if (at != path) {
+      response.redirects = [
+        RedirectRecord(302, 'GET', Uri.parse('https://$_host$at')),
+      ];
+    }
+    return response;
   }
 
   @override
@@ -96,8 +212,7 @@ void main() {
 
   late SmartschoolClient client;
 
-  Future<_Smartschool> serve(String answer) async {
-    final server = _Smartschool(answer);
+  Future<T> use<T extends HttpClientAdapter>(T server) async {
     client = await SmartschoolClient.create(
       _Credentials(),
       cacheDir: tempCacheDir(),
@@ -105,6 +220,12 @@ void main() {
     client.dio.httpClientAdapter = server;
     return server;
   }
+
+  Future<_Smartschool> serve(
+    String answer, {
+    int status = 200,
+    String contentType = 'application/xml',
+  }) => use(_Smartschool(answer, status: status, contentType: contentType));
 
   tearDown(() => client.dispose());
 
@@ -168,5 +289,106 @@ void main() {
 
       expect(await MessagesService(client).moveToTrash(123), isNull);
     });
+  });
+
+  group('moveToTrash returns null when Smartschool deletes nothing: an empty '
+      'answer (#59)', () {
+    test('an empty answer', () async {
+      final server = await serve('', contentType: 'text/html');
+
+      // Before the fix: SmartschoolParsingError ("non-XML response").
+      final status = await MessagesService(client).moveToTrash(0);
+
+      expect(status, isNull);
+      expect(server.requests.single, {'msgID': '0'});
+    });
+
+    test('an answer of white space only', () async {
+      await serve(' \r\n', contentType: 'text/html');
+
+      expect(await MessagesService(client).moveToTrash(0), isNull);
+    });
+
+    test('an empty answer to the retry after logging in again', () async {
+      final server = await use(_ExpiredSession(afterLogin: ''));
+
+      final status = await MessagesService(client).moveToTrash(0);
+
+      expect(status, isNull);
+      expect(server.requests, [
+        {'msgID': '0'},
+        {'msgID': '0'},
+      ]);
+      expect(server.log, contains('POST /2fa/api/v1/google-authenticator'));
+    });
+  });
+
+  group('moveToTrash still throws for an answer that does not say that '
+      'nothing was deleted (#59)', () {
+    test('an HTML page', () async {
+      await serve(_loginPage, contentType: 'text/html');
+
+      await expectLater(
+        MessagesService(client).moveToTrash(0),
+        throwsA(
+          isA<SmartschoolAuthenticationError>().having(
+            (e) => e.message,
+            'message',
+            contains('HTML instead of XML'),
+          ),
+        ),
+      );
+    });
+
+    test('text that is not XML', () async {
+      await serve('Fatal error', contentType: 'text/html');
+
+      await expectLater(
+        MessagesService(client).moveToTrash(0),
+        throwsA(isA<SmartschoolParsingError>()),
+      );
+    });
+
+    test('an empty answer with an error status', () async {
+      await serve('', status: 500, contentType: 'text/html');
+
+      await expectLater(
+        MessagesService(client).moveToTrash(0),
+        throwsA(isA<SmartschoolParsingError>()),
+      );
+    });
+
+    test('an empty 401 that Smartschool still answers after logging in '
+        'again: the session is refused, not nothing deleted', () async {
+      final server = await use(_ExpiredSession(afterLogin: null));
+
+      await expectLater(
+        MessagesService(client).moveToTrash(0),
+        throwsA(isA<SmartschoolSessionExpiredError>()),
+      );
+      expect(server.requests, hasLength(2));
+    });
+  });
+
+  test('postXml still throws for an empty answer to a command that does not '
+      'allow one, as every command but `quick delete` (#59)', () async {
+    await serve('', contentType: 'text/html');
+
+    await expectLater(
+      client.postXml(
+        url: '/?module=Messages&file=dispatcher',
+        subsystem: 'postboxes',
+        action: 'quick delete',
+        params: {'msgID': '0'},
+        xpath: './/actions/action',
+      ),
+      throwsA(
+        isA<SmartschoolParsingError>().having(
+          (e) => e.message,
+          'message',
+          contains('non-XML response'),
+        ),
+      ),
+    );
   });
 }

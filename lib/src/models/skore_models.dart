@@ -1,14 +1,17 @@
 /// Models for Smartschool's Skore module (grading and reports): the classes
 /// of its report models, the courses of a class with the teachers assigned to
-/// them, and the teachers that can be assigned.
+/// them, the teachers that can be assigned, and the gradebooks of a teacher
+/// with the teachers they are shared with.
 ///
 /// Skore is an **internal** Smartschool module, not part of the official
 /// (public) API. Its IDs are its own: a [SkoreClass.id] is a Skore class ID
 /// (not a Presence `groupID` or an `adminNumber`), and a [SkoreCourse.id] is a
 /// Skore course ID. A teacher ID ([SkoreTeacher.id],
-/// [SkoreAssignment.teacherId]) is the Smartschool user ID, the middle part of
-/// the ID that `SmartschoolClient.getCurrentUser()` reads (`4069_146_0` →
-/// `146`).
+/// [SkoreAssignment.teacherId], [SkoreGradebookShares.ownerId]) is the
+/// Smartschool user ID, the middle part of the ID that
+/// `SmartschoolClient.getCurrentUser()` reads (`4069_146_0` → `146`). A
+/// gradebook ID ([SkoreGradebookShares.gradebookId]) is the ID of the
+/// assignment that holds the gradebook ([SkoreAssignment.id]).
 library;
 
 /// A class in Skore, as listed under a report model:
@@ -148,4 +151,71 @@ class SkoreTeacher {
 
   @override
   String toString() => 'SkoreTeacher(id: $id, name: $name)';
+}
+
+/// The access a teacher gets to a gradebook shared with them.
+enum SkoreShareAccess {
+  /// May read the gradebook (Skore's `readers`).
+  read,
+
+  /// May read and change the gradebook (Skore's `writers`).
+  write,
+}
+
+/// A gradebook of a teacher in Skore, with the teachers it is shared with:
+/// one entry of Skore's "share gradebooks" manager (Puntenboeken > the share
+/// button next to a teacher).
+///
+/// A teacher is in at most one of [readerIds] and [writerIds], and the owner
+/// in neither.
+class SkoreGradebookShares {
+  /// The gradebook ID: the ID of the assignment that holds the gradebook
+  /// ([SkoreAssignment.id], Skore's `ownerID`).
+  final int gradebookId;
+
+  /// The Smartschool user ID of the teacher the gradebook belongs to: the
+  /// teacher of that assignment.
+  final int ownerId;
+
+  /// The name of the class (e.g. `"5WW1"`).
+  final String className;
+
+  /// The name of the course (e.g. `"Digitale vaardigheden"`).
+  final String courseName;
+
+  /// The icon Skore shows for the course (e.g. `"IconLib:laptop"`, or
+  /// `"palette2"`).
+  final String icon;
+
+  /// The Smartschool user IDs of the teachers who may read the gradebook, in
+  /// Skore's order.
+  final List<int> readerIds;
+
+  /// The Smartschool user IDs of the teachers who may read and change the
+  /// gradebook, in Skore's order.
+  final List<int> writerIds;
+
+  const SkoreGradebookShares({
+    required this.gradebookId,
+    required this.ownerId,
+    required this.className,
+    required this.courseName,
+    required this.icon,
+    this.readerIds = const [],
+    this.writerIds = const [],
+  });
+
+  /// The access teacher [teacherId] has to the gradebook through a share, or
+  /// `null` when it is not shared with them (always for the owner).
+  SkoreShareAccess? accessOf(int teacherId) {
+    if (writerIds.contains(teacherId)) return SkoreShareAccess.write;
+    if (readerIds.contains(teacherId)) return SkoreShareAccess.read;
+    return null;
+  }
+
+  @override
+  String toString() =>
+      'SkoreGradebookShares(gradebookId: $gradebookId, ownerId: $ownerId, '
+      'className: $className, courseName: $courseName, '
+      'readerIds: $readerIds, writerIds: $writerIds)';
 }

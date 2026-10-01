@@ -1,4 +1,4 @@
-## 0.3.1 - Unreleased
+## 0.3.1 - 2026-10-01
 
 ### Added
 - Skore: read the classes of the report models, the courses of a class with the teachers assigned to them, and the teacher list (#70). New `SkoreService(client)` for what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class):

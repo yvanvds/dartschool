@@ -16,6 +16,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
+- Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried.
 
 ---
 
@@ -609,6 +610,77 @@ dart run example/set_late_example.dart
 
 ---
 
+## `SkoreService`
+
+Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). And assigns a teacher to a course of a class there (`addTeacher`, `replaceTeacher`); nothing else changes Skore, and nothing deletes an assignment.
+
+> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen), as a Skore administrator has.
+
+> **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`).
+
+```dart
+final skore = SkoreService(client);
+
+final classes = await skore.getClasses();          // List<SkoreClass>
+final courses = await skore.getCourses(classes.first.id); // List<SkoreCourse>
+for (final course in courses.where((c) => !c.isGroupHeader)) {
+  final names = course.assignments.map((a) => a.teacherName).join('; ');
+  print('${'  ' * course.depth}${course.label}: $names');
+}
+final teachers = await skore.getTeachers();        // List<SkoreTeacher>
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `getClasses()` | `Future<List<SkoreClass>>` | The classes of all report models, with their model and group. |
+| `getCourses(classId)` | `Future<List<SkoreCourse>>` | The courses of a class, in Skore's order, each with its `assignments`. Empty for a class without a course structure, and for a class ID Skore does not know (Skore answers both the same way). |
+| `getTeachers()` | `Future<List<SkoreTeacher>>` | The teachers that can be assigned to a course. |
+| `addTeacher({classId, courseId, teacherId})` | `Future<SkoreAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it. |
+| `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it. |
+
+A course code is **not** unique within a class: a course and its sub-course can both end in the same `[CODE]`. Tell them apart by `id` (or `label`). Group headers (`isGroupHeader`) are headings for the courses under them and cannot get a teacher.
+
+### Assigning a teacher
+
+> **Warning:** Skore drives the school's grading and reports, and has no test instance. These calls change the live Skore.
+
+```dart
+// A new assignment on a course of a class.
+final added = await skore.addTeacher(classId: 2516, courseId: 1588, teacherId: 146);
+
+// Another teacher on an existing assignment: the assignment and its gradebook stay.
+final replaced = await skore.replaceTeacher(
+    classId: 2516, courseId: 1588, assignmentId: added.id, teacherId: 320);
+```
+
+Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreError`, saving nothing:
+
+- a course that is not in the class (also for a class ID Skore does not know), or that is a group header;
+- for `replaceTeacher`, an `assignmentId` that is not one of that course in that class;
+- a teacher who already has an assignment on the course (for `replaceTeacher`, the current teacher of the assignment too);
+- a teacher who is not in `getTeachers()`.
+
+`replaceTeacher` then asks Skore whether the current teacher works with "Mijn lesgroepen" for the course, as Skore's web client does, and refuses with a `SmartschoolSkoreMyGroupsError` when they do. Skore's web client offers to delete those groups, which cannot be undone; the service never does: handle them in Skore first.
+
+The save is sent **once**: it is never retried, not even after logging in again, since a repeated add adds a second assignment. Skore answers it with the assignment and its teacher; when the answer does not confirm the save (another teacher, for a replace another assignment, or no usable answer at all), the call throws a `SmartschoolSkoreSaveUnconfirmedError`: the change may or may not have been saved, so read the class again before trying again. Calling the method again is safe in itself: it reads the class first, and refuses a teacher who already has an assignment on the course. The checks and the save are separate requests, so do not change the same course from two places at once.
+
+The example asks for confirmation before it saves, and reads the class again afterwards:
+
+```bash
+dart run example/skore_assign_teacher_example.dart CLASS_ID COURSE_ID TEACHER_ID [ASSIGNMENT_ID]
+```
+
+### Errors
+
+- `SmartschoolSkoreError` — Skore answered with something the service cannot use: an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape. The session was accepted: signing in again does not help. `addTeacher` and `replaceTeacher` also throw it when a check before the save refuses the change; from them, it always means nothing was saved.
+- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+- `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again. Not a `SmartschoolSkoreError`.
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry. The save of `addTeacher` and `replaceTeacher` is not retried: it fails at once.
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -688,6 +760,15 @@ A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`a
 ### `PresencePupil` / `PresenceHalfDay`
 Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell.
 
+### `SkoreClass`
+Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `name`, `modelId`, `modelName`, `groupId` (`int?`), `groupName` (`String?`).
+
+### `SkoreCourse` / `SkoreAssignment`
+Returned by `SkoreService.getCourses()`. A course row (`id`, `classId`, `name`, `label` — as Skore shows it, code included, `code` (`String?`, the last `[...]` of the label), `isGroupHeader`, `depth` — `0` for a top-level row, `assignments`) and the teachers assigned to it (`id` — the assignment ID, `ownerID` in Skore, `teacherId`, `teacherName`).
+
+### `SkoreTeacher`
+Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID), `name` (`"Last, First"`).
+
 ---
 
 ## Enums
@@ -720,6 +801,9 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient). Both throw it too when the form does not offer the LVS copy or the delayed send that `params.options` asks for (#47) |
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
+| `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` refuses the change before the save: nothing was saved. Not a session problem |
+| `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
+| `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Not a `SmartschoolSkoreError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

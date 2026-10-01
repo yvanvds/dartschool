@@ -177,6 +177,10 @@ class SmartschoolAccountVerificationRejectedError
 /// the send stops before the submit, nothing was sent, and calling the method
 /// again starts from a new compose form in the new session.
 ///
+/// Also thrown, without logging in again and without a retry, by
+/// `SkoreService` when Smartschool's Skore module answers an RPC without a
+/// session (its web client reports that answer as an empty session).
+///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
 /// error type (e.g. [SmartschoolPresenceError]).
@@ -385,4 +389,80 @@ class SmartschoolPresenceError extends SmartschoolException {
   String toString() => errors.isEmpty
       ? '$runtimeType: $message'
       : '$runtimeType: $message (${errors.join('; ')})';
+}
+
+/// Thrown when Smartschool's Skore module (grading and reports) answers a
+/// request with something `SkoreService` cannot use: an HTML page instead of
+/// data, an answer that is not valid JSON, an RPC answer without its
+/// `result`, or data in a shape it does not recognise (such as an assignments
+/// page without its table of courses, or a non-numeric ID).
+///
+/// The session was accepted: signing in again does not help. A Skore RPC
+/// answer that carries no session is reported as a
+/// [SmartschoolSessionExpiredError] instead.
+///
+/// `SkoreService.addTeacher` and `replaceTeacher` also throw it when a check
+/// before the save refuses the change (#71): the course is not in the class
+/// or is a group header, the assignment is not one of that course, the
+/// teacher already has an assignment on that course or is not one Skore lets
+/// assign. From those two methods, this type (and its subtype
+/// [SmartschoolSkoreMyGroupsError]) always means that **nothing was saved**.
+/// A save that went out without Skore confirming it is a
+/// [SmartschoolSkoreSaveUnconfirmedError] instead.
+class SmartschoolSkoreError extends SmartschoolException {
+  const SmartschoolSkoreError(super.message);
+}
+
+/// Thrown by `SkoreService.replaceTeacher` when the current teacher of the
+/// assignment works with "Mijn lesgroepen" (their own groups of pupils) for
+/// the course (#71). Nothing was saved.
+///
+/// Skore's web client offers to delete those groups before it gives the
+/// course another teacher, which cannot be undone. The service never deletes
+/// them: handle the groups in Skore itself first.
+class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
+  /// The Skore class ID of the assignment.
+  final int classId;
+
+  /// The Skore course ID of the assignment.
+  final int courseId;
+
+  /// The Smartschool user ID of the current teacher, the one with the groups.
+  final int teacherId;
+
+  const SmartschoolSkoreMyGroupsError(
+    super.message, {
+    required this.classId,
+    required this.courseId,
+    required this.teacherId,
+  });
+}
+
+/// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save
+/// went out to Skore, but Skore's answer does not confirm it (#71).
+///
+/// **The change may or may not have been saved.** Read the class again
+/// (`SkoreService.getCourses`) before trying again. Calling the method again
+/// is safe in itself: it reads the class first and refuses a teacher who
+/// already has an assignment on the course, so a save that did go through is
+/// not made a second time. The service never retries the save itself: an add
+/// is not idempotent, so a repeated one would add a second assignment.
+///
+/// Thrown when Skore answers the save with anything other than the
+/// assignment it saved for the teacher asked for (another status, an HTML
+/// page, an answer without its `ownerID` and `userID`, another teacher, or,
+/// for a replace, another assignment), and when the save failed after it
+/// went out, before an answer came in ([cause] holds the failure, typically
+/// a [SmartschoolConnectionError]).
+///
+/// Deliberately not a [SmartschoolSkoreError], so a `catch` meant for the
+/// failures where nothing was saved does not catch it.
+class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
+  /// The failure of the save when no usable answer came in, such as a
+  /// [SmartschoolConnectionError] or a [SmartschoolSkoreError] about the
+  /// answer; `null` when Skore answered with a result that does not confirm
+  /// the save.
+  final Object? cause;
+
+  const SmartschoolSkoreSaveUnconfirmedError(super.message, {this.cause});
 }

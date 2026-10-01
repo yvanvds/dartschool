@@ -80,6 +80,7 @@
   - `dispose()` can be called again: a later call does nothing and returns what the first call returned (its `force` is ignored); it closed the Dio client again before.
 
   **Behaviour change:** a request on a disposed client throws a `StateError` instead of a `SmartschoolConnectionError`, and an `on SmartschoolException` clause does not catch it.
+- Auth: the doc of `SmartschoolInvalidCredentialsError` (and its row in the README's Exceptions table) now says that in rare cases it can also mean a rejected login form token (`login_form[_token]`) rather than wrong credentials (#46). Smartschool answers both with the same page (back on `/login`, the same "Ongeldige inloggegevens." error, the username kept), so the login cannot tell them apart; since #45 the login posts the token of a form it loaded itself in a new session, so this should be rare. Do not log in again automatically on this error: every rejected login brings the account closer to being locked. Documentation only, no behaviour change.
 
 ## 0.2.10 - 2026-09-15
 

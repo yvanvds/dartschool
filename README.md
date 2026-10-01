@@ -708,7 +708,7 @@ Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`,
 | Exception | Thrown when |
 |---|---|
 | `SmartschoolAuthenticationError` | Login fails or session has expired (base class of the login failures below, and thrown itself for other authentication failures) |
-| `SmartschoolInvalidCredentialsError` | Smartschool rejects the username or password (also SSO-only accounts) |
+| `SmartschoolInvalidCredentialsError` | Smartschool rejects the username or password (also SSO-only accounts). In rare cases a rejected login form token instead, which Smartschool answers with the same page (#46); do not log in again automatically |
 | `SmartschoolTwoFactorRequiredError` | Smartschool asks for a 2FA code, but `mfa` holds no TOTP secret |
 | `SmartschoolTwoFactorRejectedError` | Smartschool rejects the 2FA code (wrong TOTP secret, or the device clock is off) |
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |

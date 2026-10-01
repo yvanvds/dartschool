@@ -50,6 +50,20 @@ class SmartschoolAuthenticationError extends SmartschoolException {
 ///
 /// Accounts that can only sign in through single sign-on (Microsoft, Google)
 /// end up here too: Smartschool rejects their password login.
+///
+/// In rare cases it can also mean that Smartschool rejected the login form's
+/// token (`login_form[_token]`, its CSRF token) rather than the credentials
+/// (#46). Smartschool answers both with the same page: back on `/login`, with
+/// the same error ("Ongeldige inloggegevens.") and the username kept, so the
+/// login cannot tell them apart. Since #45 the login posts the token of a
+/// login form it loaded itself, in a new session that no other request uses,
+/// so a rejected token should be rare.
+///
+/// Do not log in again on this error automatically, also not to rule out a
+/// rejected token: every rejected login brings the account closer to being
+/// locked. For the same reason the client does not try one login again after
+/// its `loginCooldown` when the last login ended on this error (#32), but
+/// waits for `SmartschoolClient.resetLoginAttempts()`.
 class SmartschoolInvalidCredentialsError
     extends SmartschoolAuthenticationError {
   const SmartschoolInvalidCredentialsError([

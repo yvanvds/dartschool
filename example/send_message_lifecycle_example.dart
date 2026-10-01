@@ -42,10 +42,11 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 /// (#60). Smartschool's answer to it does not say what it moved, so step 8
 /// reads the listings instead.
 ///
-/// The move out of the archive folder (a `boxId` other than `0`) had not
-/// been tried live yet when this example was written (#63, #64). If step 8
-/// still finds the message in the archive, move it to the trash in
-/// Smartschool's web client.
+/// The move out of the archive folder (a `boxId` other than `0`) was tried
+/// live once, by the live suite (2026-10-01, #64): after the sent-box copy,
+/// it took the archived copy out of the archive, and the trash then listed
+/// the message. If step 8 still finds the message in the archive, move it
+/// to the trash in Smartschool's web client.
 ///
 /// Credentials are read from `credentials.yml` next to the workspace root
 /// (see [PathCredentials]).  Override with environment variables if preferred:

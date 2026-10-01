@@ -760,7 +760,13 @@ class MessagesService {
   ///
   /// For a message in a folder of [boxType], such as the archive (folder
   /// `208` of the inbox, see [getArchiveHeaders]), pass the [boxId] of the
-  /// folder, as the web client does; only `0` was tried live.
+  /// folder, as the web client does. Tried live once, by the live suite
+  /// (2026-10-01, #64), on a message sent to oneself whose inbox copy had
+  /// been moved to the archive with [moveToArchive]: its sent-box copy was
+  /// moved first, then the archived copy, with [BoxType.inbox] and the
+  /// archive's [boxId] (Smartschool answered with a `silent` action, as
+  /// below). Afterwards the trash listed the ID, and the archive, the inbox
+  /// and the sent box did not.
   ///
   /// Smartschool answers the same whether it moved a message or not: an
   /// acknowledgement without details (a `silent` action), also for ID `0`,

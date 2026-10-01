@@ -11,9 +11,10 @@
 // with the teachers' names and user IDs replaced by obvious fakes. Class,
 // model and course names and the other IDs are Skore's own.
 //
-// The service only reads: the fake Smartschool fails the test on any other
+// The reads must not write: the fake Smartschool fails the test on any other
 // RPC method than getTeachers (Skore drives the school's grading and reports,
-// and owners.php also holds write methods such as saveOwner).
+// and owners.php also holds write methods such as saveOwner). The writes
+// (#71) are tested in skore_service_assign_test.dart.
 import 'dart:convert';
 import 'dart:typed_data';
 

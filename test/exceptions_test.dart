@@ -98,4 +98,38 @@ void main() {
       );
     });
   });
+
+  group('Skore write errors (#71)', () {
+    test('SmartschoolSkoreMyGroupsError is a SmartschoolSkoreError: nothing '
+        'was saved', () {
+      const error = SmartschoolSkoreMyGroupsError(
+        'groups',
+        classId: 2516,
+        courseId: 1588,
+        teacherId: 1005,
+      );
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error.classId, 2516);
+      expect(error.courseId, 1588);
+      expect(error.teacherId, 1005);
+      expect(error.toString(), 'SmartschoolSkoreMyGroupsError: groups');
+    });
+
+    test('SmartschoolSkoreSaveUnconfirmedError is not a SmartschoolSkoreError '
+        'and carries its cause', () {
+      // "Nothing was saved" and "may have been saved" must not share a type.
+      const cause = SmartschoolConnectionError('dropped');
+      const error = SmartschoolSkoreSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+      );
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, same(cause));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreSaveUnconfirmedError: unconfirmed',
+      );
+    });
+  });
 }

@@ -12,10 +12,12 @@ export '../models/skore_models.dart';
 
 /// Reads Smartschool's **Skore** module (grading and reports): the classes of
 /// its report models, the courses of a class with the teachers assigned to
-/// them ("lesopdrachten"), and the teachers that can be assigned.
+/// them ("lesopdrachten"), and the teachers that can be assigned. And assigns
+/// a teacher to a course of a class: [addTeacher] and [replaceTeacher].
 ///
 /// This is what Skore shows under Rapporten > Modellen > (model) > Leden >
-/// (group) > (class). It only reads: nothing here changes Skore.
+/// (group) > (class). The reads change nothing; only [addTeacher] and
+/// [replaceTeacher] write to Skore, and they never delete an assignment.
 ///
 /// ```dart
 /// final skore = SkoreService(client);
@@ -37,14 +39,25 @@ export '../models/skore_models.dart';
 /// - [SmartschoolSkoreError]: Skore answered with something the service
 ///   cannot use (an HTML page instead of data, invalid JSON, a missing RPC
 ///   `result`, or data in an unknown shape). The session was accepted:
-///   signing in again does not help.
+///   signing in again does not help. [addTeacher] and [replaceTeacher] also
+///   throw it when a check before the save refuses the change; from them, it
+///   means nothing was saved.
+/// - [SmartschoolSkoreMyGroupsError] (a [SmartschoolSkoreError]):
+///   [replaceTeacher] found that the current teacher works with "Mijn
+///   lesgroepen" for the course. Nothing was saved.
+/// - [SmartschoolSkoreSaveUnconfirmedError]: [addTeacher] or
+///   [replaceTeacher] sent the save, but Skore's answer does not confirm it.
+///   It may or may not have been saved: read the class again.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered an RPC without a session. Sign in again and
-///   retry.
+///   retry. The save of [addTeacher] and [replaceTeacher] is never retried:
+///   when the session is refused for it, it fails at once.
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
-/// - [SmartschoolConnectionError]: Smartschool could not be reached.
+/// - [SmartschoolConnectionError]: Smartschool could not be reached. From
+///   [addTeacher] and [replaceTeacher], only before the save went out: a
+///   save that failed on the way is a [SmartschoolSkoreSaveUnconfirmedError].
 class SkoreService {
   final SmartschoolClient _client;
 
@@ -107,6 +120,288 @@ class SkoreService {
   }
 
   // ---------------------------------------------------------------------------
+  // Writes
+  // ---------------------------------------------------------------------------
+
+  /// Assigns teacher [teacherId] to course [courseId] of class [classId]: a
+  /// new assignment, as the green **+** on the class's assignments page adds.
+  /// Returns the new assignment.
+  ///
+  /// A new assignment holds all pupils of the class.
+  ///
+  /// Before it saves, it reads the class ([getCourses]) and the teachers
+  /// ([getTeachers]), and refuses with a [SmartschoolSkoreError], saving
+  /// nothing:
+  /// - a course that is not in the class (also for a class ID Skore does not
+  ///   know), or that is a group header;
+  /// - a teacher who already has an assignment on the course (Skore's web
+  ///   client leaves them out of its choice too);
+  /// - a teacher who is not in [getTeachers].
+  ///
+  /// The save (Skore's `saveOwner` without an `ownerID`) is sent once and
+  /// never retried, not even after logging in again: a repeated add would
+  /// add a second assignment. When Skore's answer does not confirm the save
+  /// (it names the new assignment and the teacher asked for), this throws a
+  /// [SmartschoolSkoreSaveUnconfirmedError]: read the class again before
+  /// trying again. Calling this again is safe in itself: when the earlier
+  /// save went through, the teacher has an assignment on the course, and the
+  /// call is refused.
+  ///
+  /// The checks and the save are separate requests: do not change the same
+  /// course from two places at once.
+  Future<SkoreAssignment> addTeacher({
+    required int classId,
+    required int courseId,
+    required int teacherId,
+  }) async {
+    const operation = 'addTeacher';
+    final course = await _courseToAssign(operation, classId, courseId);
+    _refuseAssignedTeacher(operation, course, teacherId);
+    final teacher = await _teacherToAssign(operation, teacherId);
+    return _saveOwner(
+      operation,
+      classId: classId,
+      courseId: courseId,
+      assignmentId: null,
+      teacher: teacher,
+    );
+  }
+
+  /// Gives assignment [assignmentId] of course [courseId] of class [classId]
+  /// another teacher, [teacherId], as choosing another name in the teacher
+  /// drop-down of the class's assignments page does. Returns the assignment,
+  /// which keeps its ID: the assignment, and its gradebook, stay; only the
+  /// teacher changes.
+  ///
+  /// Before it saves, it reads the class ([getCourses]) and the teachers
+  /// ([getTeachers]), and refuses with a [SmartschoolSkoreError], saving
+  /// nothing:
+  /// - a course that is not in the class (also for a class ID Skore does not
+  ///   know), or that is a group header;
+  /// - an [assignmentId] that is not one of that course in that class;
+  /// - a teacher who already has an assignment on the course, the current
+  ///   teacher of [assignmentId] included;
+  /// - a teacher who is not in [getTeachers].
+  ///
+  /// It then asks Skore whether the current teacher works with "Mijn
+  /// lesgroepen" (their own groups of pupils) for the course, as Skore's web
+  /// client does, and throws a [SmartschoolSkoreMyGroupsError] when they do,
+  /// saving nothing. The web client offers to delete those groups; this
+  /// never deletes them. An answer it does not recognise is refused with a
+  /// [SmartschoolSkoreError], also saving nothing.
+  ///
+  /// The save (Skore's `saveOwner` with the assignment's `ownerID`) is sent
+  /// once and never retried, not even after logging in again. When Skore's
+  /// answer does not confirm it (it names the same assignment and the teacher
+  /// asked for), this throws a [SmartschoolSkoreSaveUnconfirmedError]: read
+  /// the class again before trying again.
+  ///
+  /// The checks and the save are separate requests: do not change the same
+  /// course from two places at once.
+  Future<SkoreAssignment> replaceTeacher({
+    required int classId,
+    required int courseId,
+    required int assignmentId,
+    required int teacherId,
+  }) async {
+    const operation = 'replaceTeacher';
+    final course = await _courseToAssign(operation, classId, courseId);
+    final assignment = course.assignments
+        .where((a) => a.id == assignmentId)
+        .firstOrNull;
+    if (assignment == null) {
+      throw SmartschoolSkoreError(
+        '$operation: assignment $assignmentId is not one of course $courseId '
+        'of class $classId. Nothing was saved.',
+      );
+    }
+    _refuseAssignedTeacher(operation, course, teacherId);
+    final teacher = await _teacherToAssign(operation, teacherId);
+    await _refuseMyGroups(
+      operation,
+      classId: classId,
+      courseId: courseId,
+      teacherId: assignment.teacherId,
+    );
+    return _saveOwner(
+      operation,
+      classId: classId,
+      courseId: courseId,
+      assignmentId: assignmentId,
+      teacher: teacher,
+    );
+  }
+
+  /// Reads class [classId] again and returns its course [courseId]; refuses
+  /// a course that is not in the class, or that is a group header.
+  Future<SkoreCourse> _courseToAssign(
+    String operation,
+    int classId,
+    int courseId,
+  ) async {
+    final courses = await getCourses(classId);
+    final course = courses
+        .where((c) => c.id == courseId && c.classId == classId)
+        .firstOrNull;
+    if (course == null) {
+      throw SmartschoolSkoreError(
+        '$operation: course $courseId is not in class $classId (Skore lists '
+        '${courses.length} courses for it). Nothing was saved.',
+      );
+    }
+    if (course.isGroupHeader) {
+      throw SmartschoolSkoreError(
+        '$operation: course $courseId of class $classId ("${course.label}") '
+        'is a group header, which cannot get a teacher. Nothing was saved.',
+      );
+    }
+    return course;
+  }
+
+  /// Refuses [teacherId] when they already have an assignment on [course].
+  static void _refuseAssignedTeacher(
+    String operation,
+    SkoreCourse course,
+    int teacherId,
+  ) {
+    final assigned = course.assignments
+        .where((a) => a.teacherId == teacherId)
+        .firstOrNull;
+    if (assigned != null) {
+      throw SmartschoolSkoreError(
+        '$operation: teacher $teacherId (${assigned.teacherName}) already has '
+        'assignment ${assigned.id} on course ${course.id} of class '
+        '${course.classId} ("${course.label}"). Nothing was saved.',
+      );
+    }
+  }
+
+  /// Returns teacher [teacherId] from [getTeachers]; refuses one that is not
+  /// in it.
+  Future<SkoreTeacher> _teacherToAssign(String operation, int teacherId) async {
+    final teacher = (await getTeachers())
+        .where((t) => t.id == teacherId)
+        .firstOrNull;
+    if (teacher == null) {
+      throw SmartschoolSkoreError(
+        '$operation: teacher $teacherId is not one Skore lets assign to a '
+        'course (not in getTeachers). Nothing was saved.',
+      );
+    }
+    return teacher;
+  }
+
+  /// Asks Skore (`getMyGroups`) whether teacher [teacherId] works with "Mijn
+  /// lesgroepen" for course [courseId] of class [classId], and refuses when
+  /// they do, or when the answer is not one it recognises.
+  ///
+  /// Skore answers `{"mygroups": null}` when the teacher has none. The answer
+  /// when they have some has not been seen; Skore's web client takes a
+  /// non-empty `mygroups` for groups (`r.mygroups && r.mygroups.length`), so
+  /// a non-empty list or object counts as groups. Anything else but `null`
+  /// or an empty list is refused as unknown.
+  Future<void> _refuseMyGroups(
+    String operation, {
+    required int classId,
+    required int courseId,
+    required int teacherId,
+  }) async {
+    final result = await _ownersRpc('getMyGroups', [
+      '$teacherId',
+      '$classId',
+      '$courseId',
+    ]);
+    final groups = result is Map ? result['mygroups'] : null;
+    final known = result is Map && result.containsKey('mygroups');
+    if (known && (groups == null || groups is List && groups.isEmpty)) return;
+    if (known && (groups is List || groups is Map && groups.isNotEmpty)) {
+      throw SmartschoolSkoreMyGroupsError(
+        '$operation: the current teacher ($teacherId) works with "Mijn '
+        'lesgroepen" for course $courseId of class $classId. Handle those '
+        'groups in Skore first; this does not delete them. Nothing was saved.',
+        classId: classId,
+        courseId: courseId,
+        teacherId: teacherId,
+      );
+    }
+    throw SmartschoolSkoreError(
+      '$operation: Skore answered getMyGroups with ${_jsonPreview(result)}, '
+      'which does not say whether the current teacher ($teacherId) works '
+      'with "Mijn lesgroepen" for the course. Nothing was saved.',
+    );
+  }
+
+  /// Saves the assignment: Skore's `saveOwner(classID, courseID, ownerID,
+  /// userID)`, with an empty `ownerID` for a new assignment
+  /// ([assignmentId] `null`). Sent once, never retried (not even after
+  /// logging in again); returns the assignment once Skore's answer confirms
+  /// it.
+  ///
+  /// Skore answers `{"ownerID": 34826, "userID": 146}`: the assignment
+  /// (new, or the same for a replace) and its teacher.
+  Future<SkoreAssignment> _saveOwner(
+    String operation, {
+    required int classId,
+    required int courseId,
+    required int? assignmentId,
+    required SkoreTeacher teacher,
+  }) async {
+    const unconfirmed =
+        'It may or may not have been saved: read the class again '
+        '(getCourses) before trying again.';
+    final change = assignmentId == null
+        ? 'adding teacher ${teacher.id} to course $courseId of class $classId'
+        : 'giving assignment $assignmentId (course $courseId of class '
+              '$classId) teacher ${teacher.id}';
+    final dynamic result;
+    try {
+      result = await _ownersRpc('saveOwner', [
+        '$classId',
+        '$courseId',
+        assignmentId == null ? '' : '$assignmentId',
+        '${teacher.id}',
+      ], retryAfterLogin: false);
+    } on SmartschoolSessionExpiredError {
+      // Refused before Skore handled it (or answered without a session):
+      // not retried, and calling again reads the class first.
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolSkoreSaveUnconfirmedError(
+          '$operation: the save ($change) was sent, but no usable answer '
+          'came in ($e). $unconfirmed',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+
+    final ownerId = result is Map ? _tryId(result['ownerID']) : null;
+    final userId = result is Map ? _tryId(result['userID']) : null;
+    final String? problem;
+    if (ownerId == null || ownerId <= 0 || userId == null || userId <= 0) {
+      problem = 'does not name the assignment and its teacher';
+    } else if (userId != teacher.id) {
+      problem = 'names teacher $userId instead';
+    } else if (assignmentId != null && ownerId != assignmentId) {
+      problem = 'names assignment $ownerId instead';
+    } else {
+      problem = null;
+    }
+    if (problem != null) {
+      throw SmartschoolSkoreSaveUnconfirmedError(
+        '$operation: the save ($change) was sent, but Skore\'s answer '
+        '${_jsonPreview(result)} $problem. $unconfirmed',
+      );
+    }
+    return SkoreAssignment(
+      id: ownerId!,
+      teacherId: userId!,
+      teacherName: teacher.name,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // RPC
   // ---------------------------------------------------------------------------
 
@@ -116,10 +411,20 @@ class SkoreService {
   /// Sends the form Skore's web client sends: `rpc_sessionobj`,
   /// `rpc_requestType` (`requestData`), `rpc_method` and `rpc_params` (the
   /// arguments as a JSON array; the web client sends IDs as strings).
-  Future<dynamic> _ownersRpc(String method, List<Object?> params) async {
+  ///
+  /// Pass `retryAfterLogin: false` for a call that must not be sent twice:
+  /// when Smartschool refuses the session for it, it then fails at once with
+  /// a [SmartschoolSessionExpiredError], instead of being sent again after
+  /// logging in (see [SmartschoolClient.postFormResponse]).
+  Future<dynamic> _ownersRpc(
+    String method,
+    List<Object?> params, {
+    bool retryAfterLogin = true,
+  }) async {
     final response = await _client.postFormResponse(
       _ownersRpcPath,
       _rpcFields(method, params, DateTime.now()),
+      retryAfterLogin: retryAfterLogin,
     );
     return _rpcResult(_body(response, 'the RPC call $method'), method);
   }
@@ -358,13 +663,21 @@ class SkoreService {
 
   /// A Skore ID: an int, or a string of digits as Skore mostly sends them.
   static int _id(Object? value, String what) {
-    if (value is int) return value;
-    final id = value is String ? int.tryParse(value.trim()) : null;
+    final id = _tryId(value);
     if (id == null) {
       throw SmartschoolSkoreError('Skore gave $what the ID "$value".');
     }
     return id;
   }
+
+  /// [value] as a Skore ID (see [_id]), or `null` when it is none.
+  static int? _tryId(Object? value) {
+    if (value is int) return value;
+    return value is String ? int.tryParse(value.trim()) : null;
+  }
+
+  /// [value], a decoded JSON answer, as a short JSON text for a message.
+  static String _jsonPreview(Object? value) => _preview(jsonEncode(value));
 
   /// The text of a tree node's `content`: an icon, `&nbsp;` and the name.
   static String _contentText(Object? content) {

@@ -9,6 +9,12 @@
 # Workspace tooling not needed by package consumers
 /tool/
 
+# Lefthook git hooks, installed with npm (pub reads this file instead of
+# .gitignore, so node_modules/ must be listed here too)
+/node_modules/
+/package.json
+/package-lock.json
+
 # Python reference project (separate codebase)
 /smartschool/
 

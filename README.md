@@ -262,7 +262,8 @@ for (final attachment in attachments) {
 | `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. |
 | `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. |
 | `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. |
-| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it, as when it deletes nothing (it then answers with an empty body). Not for a message already in the trash (Smartschool's web client deletes that one for good). |
+| `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash; `null` when Smartschool does not confirm it, as when it deletes nothing (it then answers with an empty body). Not for a message already in the trash (Smartschool's web client deletes that one for good). It names the ID only, not the box: for a message you sent to yourself (the same ID in the inbox and the sent box) it moves the inbox copy; use `moveToTrashFrom` for the sent-box copy. |
+| `moveToTrashFrom(msgId, {boxType, boxId})` | `Future<void>` | Moves the copy of a message in `boxType`, `BoxType.inbox` or `BoxType.sent`, to the trash, and leaves its other copy where it is, as dragging it onto the trash in Smartschool's web client does. A move, not a deletion: safe while another copy of the ID is in the trash. Smartschool's answer says nothing about the move, so list the boxes to check. Pass `boxId` for a folder of the box, such as the archive. Another `boxType` throws an `ArgumentError`. |
 | `moveToArchive(msgIds)` | `Future<List<MessageChanged>>` | Archives one or more messages (REST endpoint). |
 
 ### Composing & searching
@@ -782,7 +783,7 @@ dart test -P live
 
 The `live` preset runs the live suite only. Do not pass `--run-skipped` to a plain `dart test`: that runs it too.
 
-What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; and `moveToTrash`, which cleans up, reports the messages deleted. It also checks what Smartschool answers to `moveToTrash(0)`, a move that deletes nothing: an empty body, which `moveToTrash` returns as `null` (#59).
+What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; and `moveToTrashFrom`, which cleans up: moving the sent-box copy of each message to the trash leaves its inbox copy in the inbox, and moving the inbox copy then takes it out of the inbox and leaves the message in the trash (#60). It also checks what Smartschool answers to `moveToTrash(0)`, a move that deletes nothing: an empty body, which `moveToTrash` returns as `null` (#59).
 
 Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
 
@@ -790,7 +791,7 @@ Its rules, kept by the tests and, on the wire, by a guard on the live client (`t
 - Replies go only to a message the same run sent to the own account only, after checking that its reply form names the own account alone.
 - Every subject starts with `[dartschool test]` and a tag of the run (a reply's with `Re: ` before it).
 - No LVS copy (`lvsCopy`) and no delayed send (`sendAt`: the library cannot cancel a scheduled message yet, #58).
-- At the end, also when a test failed, the run moves every message it sent to the trash, once each, after checking the run's subject and that the own account sent it. It never moves a message that is in the trash already (that deletes it for good) and never empties the trash: emptying it stays manual. A message you send yourself has the same ID in the inbox and the sent box, and `moveToTrash` takes the ID only: it moves the inbox copy, and the sent box keeps its copy (#60).
+- At the end, also when a test failed, the run moves both copies of every message it sent to the trash (a message you send yourself has the same ID in the inbox and the sent box): first the sent-box copies, then the inbox copies, once each, after checking the run's subject and that the own account sent it. It moves them with `moveToTrashFrom`, which names the box of the copy (#60), and never with `moveToTrash`, which names the ID only (Smartschool's `quick delete`; one of a message in the trash deletes it for good). It never empties the trash: emptying it stays manual.
 - It logs in at most once per run, and usually not at all: it keeps its session in `.dart_tool/live_cache/<username>` (gitignored; not the user's `~/.cache/smartschool`, and only the live suite may use it). It never prints a credential or a cookie.
 
 ---

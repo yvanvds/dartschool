@@ -20,27 +20,23 @@ class Arrival {
   final List<ShortMessage> sent;
 }
 
-/// What the cleanup did with message [id] of the run: moved it to the trash
-/// ([status] is Smartschool's answer), or left it alone ([leftAlone] says
-/// why).
+/// What the cleanup did with the copy of message [id] of the run in [box]:
+/// moved it to the trash, or left it alone ([leftAlone] says why).
 class Trashing {
-  Trashing.moved(this.id, this.subject, this.box, this.status)
-    : leftAlone = null;
-  Trashing.leftAlone(this.id, this.subject, this.box, String this.leftAlone)
-    : status = null;
+  Trashing.moved(this.id, this.subject, this.box) : leftAlone = null;
+  Trashing.leftAlone(this.id, this.subject, this.box, String this.leftAlone);
 
   final int id;
   final String subject;
 
-  /// The box the message was checked in before the move.
+  /// The box of the copy: the box it was checked in, which the move names.
   final BoxType box;
-  final MessageDeletionStatus? status;
   final String? leftAlone;
 
   @override
   String toString() => leftAlone == null
-      ? 'message $id ("$subject", ${box.value}): moved, $status'
-      : 'message $id ("$subject", ${box.value}): left alone, $leftAlone';
+      ? 'message $id ("$subject"), ${box.value} copy: moved to the trash'
+      : 'message $id ("$subject"), ${box.value} copy: left alone, $leftAlone';
 }
 
 class LiveRun {
@@ -70,9 +66,9 @@ class LiveRun {
   /// looks for each of them.
   final List<String> _subjects = [];
 
-  /// The messages the run asked to move to the trash. It never asks twice
-  /// for one: a second `quick delete` could delete it for good (#19).
-  final Set<int> _trashed = {};
+  /// The copies of the run's messages, as (ID, box), that the run asked to
+  /// move to the trash. It never asks twice for one.
+  final Set<(int, BoxType)> _trashed = {};
 
   Future<Arrival>? _original;
 
@@ -242,43 +238,44 @@ class LiveRun {
   Future<ShortMessage?> inboxHeader(int id) async =>
       (await messages.getHeaders()).where((m) => m.id == id).firstOrNull;
 
-  /// Moves every message of the run that is not in the trash yet to the
-  /// trash, once, and returns what it did with each.
+  /// Moves every copy of the run's messages that is still in [boxes] to the
+  /// trash, once each, box by box in the order given, and returns what it
+  /// did with each.
   ///
-  /// It looks for the run's subjects in the inbox and the sent box, and moves
-  /// a message only when:
-  /// - the run did not ask to move it before, and it is not in the trash:
-  ///   a `quick delete` of a message in the trash deletes it for good (#19);
-  /// - its reply form names the own account alone as its sender;
-  /// - the box it was found in still lists it with the run's subject, right
-  ///   before the move (Smartschool's `quick delete` names the message only,
-  ///   and a message the account sent to itself has the same ID in the inbox
-  ///   and the sent box).
+  /// A message the account sends to itself has the same ID in the inbox and
+  /// in the sent box. The cleanup moves each copy with `moveToTrashFrom`,
+  /// which names the box of the copy (Smartschool's `quickmove messages`
+  /// to the trash): by default first the sent-box copies, while the inbox
+  /// copies are in the inbox and nothing of the run's messages is in the
+  /// trash, and then the inbox copies. It does so only because that request
+  /// names its box, in Smartschool's web client too, and was seen live to
+  /// take the copy of that box and leave the other copy alone, also with
+  /// the other copy in the trash (#60). It never sends a `quick delete`
+  /// (`moveToTrash`) for a message of the run: that names the ID only, and
+  /// one of a message in the trash deletes it for good (#19).
   ///
-  /// It moves the inbox copy of such a message (seen live); the sent box
-  /// keeps its copy, which the library cannot move yet (#60).
-  Future<List<Trashing>> cleanUp() async {
+  /// It looks for the run's subjects in each box, and moves a copy only
+  /// when:
+  /// - the run did not ask to move that copy before;
+  /// - its reply form, in its box, names the own account alone as the
+  ///   sender;
+  /// - its box still lists it with the run's subject, right before the move.
+  Future<List<Trashing>> cleanUp({
+    List<BoxType> boxes = const [BoxType.sent, BoxType.inbox],
+  }) async {
     final done = <Trashing>[];
-    for (final subject in _subjects) {
-      final inbox = await listed(BoxType.inbox, subject);
-      final sent = await listed(BoxType.sent, subject);
-      final boxes = <int, BoxType>{
-        for (final message in sent) message.id: BoxType.sent,
-        for (final message in inbox) message.id: BoxType.inbox,
-      };
-      for (final MapEntry(key: id, value: box) in boxes.entries) {
-        if (_trashed.contains(id)) continue;
-        done.add(await _trash(id, subject, box));
+    for (final box in boxes) {
+      for (final subject in _subjects) {
+        for (final message in await listed(box, subject)) {
+          if (_trashed.contains((message.id, box))) continue;
+          done.add(await _trash(message.id, subject, box));
+        }
       }
     }
     return done;
   }
 
   Future<Trashing> _trash(int id, String subject, BoxType box) async {
-    final trash = await messages.getHeaders(boxType: BoxType.trash);
-    if (trash.any((message) => message.id == id)) {
-      return Trashing.leftAlone(id, subject, box, 'it is in the trash already');
-    }
     if (!ownOnly(await messages.getReplyRecipients(id, boxType: box))) {
       return Trashing.leftAlone(
         id,
@@ -296,8 +293,9 @@ class LiveRun {
         'the ${box.value} no longer lists it with the run\'s subject',
       );
     }
-    _trashed.add(id);
-    guard.allowTrash(id);
-    return Trashing.moved(id, subject, box, await messages.moveToTrash(id));
+    _trashed.add((id, box));
+    guard.allowTrashFrom(id, box);
+    await messages.moveToTrashFrom(id, boxType: box);
+    return Trashing.moved(id, subject, box);
   }
 }

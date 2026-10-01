@@ -1,0 +1,2 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<server><response><status>ok</status><actions><action><subsystem>message list</subsystem><command>silent</command><data><message /></data></action></actions></response></server>

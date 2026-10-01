@@ -14,11 +14,14 @@
 //   account alone;
 // - every subject starts with `[dartschool test]` and the run's tag;
 // - no LVS copy (`lvsCopy`) and no delayed send (`sendAt`, #58);
-// - the run moves every message it sent to the trash at the end, also when
-//   a test failed, once each, after checking the run's subject and that the
-//   own account sent it; it never moves a message that is in the trash
-//   already (that deletes it for good, #19), and never empties the trash
-//   (the sent box keeps its copy of each message, #60);
+// - the run moves both copies of every message it sent (a message sent to
+//   oneself has the same ID in the inbox and the sent box) to the trash at
+//   the end, also when a test failed: the sent-box copies first, then the
+//   inbox copies, once each, after checking the run's subject and that the
+//   own account sent it, with moveToTrashFrom, which names the box of the
+//   copy (#60); it never sends a quick delete (moveToTrash) for a message
+//   of the run, which names the ID only (one of a message in the trash
+//   deletes it for good, #19), and never empties the trash;
 // - it logs in at most once (usually not at all: the session is kept in
 //   `.dart_tool/live_cache`, support/live_client.dart), and never with wrong
 //   credentials; it prints no credential and no cookie.
@@ -245,13 +248,30 @@ void main() {
         expect(status, isNull);
       });
 
-      test('moveToTrash moves every message of the run to the trash and '
-          'reports it deleted (#19)', () async {
-        final done = await run.cleanUp();
-        if (done.isEmpty) {
+      test('moveToTrashFrom moves both copies of every message of the run to '
+          'the trash, the sent-box copy first, and each move leaves the other '
+          'copy alone (#60)', () async {
+        // Where the run's messages are: the IDs that each box lists, and the
+        // trash's header of each (the trash lists an ID once).
+        Future<(Map<int, ShortMessage>, Set<int>, Set<int>)> boxes() async => (
+          {
+            for (final m in await messages.getHeaders(boxType: BoxType.trash))
+              m.id: m,
+          },
+          (await messages.getHeaders()).map((m) => m.id).toSet(),
+          (await messages.getHeaders(
+            boxType: BoxType.sent,
+          )).map((m) => m.id).toSet(),
+        );
+
+        final sentCopies = await run.cleanUp(boxes: const [BoxType.sent]);
+        if (sentCopies.isEmpty) {
           markTestSkipped('this run sent no message');
           return;
         }
+        final (trashAfterSent, inboxAfterSent, sentAfterSent) = await boxes();
+        final inboxCopies = await run.cleanUp();
+        final done = [...sentCopies, ...inboxCopies];
         for (final trashing in done) {
           print('cleanup: $trashing');
         }
@@ -259,29 +279,43 @@ void main() {
         expect(
           done.where((t) => t.leftAlone != null),
           isEmpty,
-          reason: 'messages the cleanup left alone',
+          reason: 'copies the cleanup left alone',
         );
-        for (final trashing in done) {
-          expect(trashing.status, isNotNull, reason: '${trashing.id}');
-          expect(trashing.status!.isDeleted, isTrue, reason: '${trashing.id}');
-          expect(trashing.status!.msgId, trashing.id);
+        final ids = sentCopies.map((t) => t.id).toSet();
+        expect(sentCopies.map((t) => t.box), everyElement(BoxType.sent));
+        expect(inboxCopies.map((t) => t.box), everyElement(BoxType.inbox));
+        expect(inboxCopies.map((t) => t.id).toSet(), ids);
+        for (final t in done) {
+          // Smartschool's answer, as recorded: an acknowledgement without
+          // details, the same whether it moved anything or not.
+          expect(
+            run.guard.trashMoveAnswers[(t.id, t.box.value)],
+            contains('<command>silent</command>'),
+            reason: "Smartschool's answer to the move of $t",
+          );
         }
-        final trash = (await messages.getHeaders(
-          boxType: BoxType.trash,
-        )).map((m) => m.id).toSet();
-        final inbox = (await messages.getHeaders()).map((m) => m.id).toSet();
-        final sent = (await messages.getHeaders(
-          boxType: BoxType.sent,
-        )).map((m) => m.id).toSet();
-        for (final trashing in done) {
-          final id = trashing.id;
-          expect(trash, contains(id), reason: 'message $id in the trash');
-          if (trashing.box == BoxType.inbox) {
-            expect(inbox, isNot(contains(id)), reason: 'message $id in inbox');
-          }
+        final (trash, inbox, sent) = await boxes();
+        for (final id in ids) {
+          // The move of the sent-box copy left the inbox copy in the inbox.
+          expect(trashAfterSent.keys, contains(id), reason: '$id: trash');
+          expect(inboxAfterSent, contains(id), reason: '$id: inbox');
+          expect(sentAfterSent, isNot(contains(id)), reason: '$id: sent box');
+          // The move of the inbox copy left the message in the trash.
+          expect(trash.keys, contains(id), reason: '$id: trash, at the end');
+          expect(inbox, isNot(contains(id)), reason: '$id: inbox, at the end');
+          expect(sent, isNot(contains(id)), reason: '$id: sent, at the end');
+          // A reply marks the inbox copy of the message it answers
+          // (hasReply), not its sent-box copy: the trash's header shows which
+          // copy the trash lists.
           print(
-            'message $id: in the trash ${trash.contains(id)}, in the inbox '
-            '${inbox.contains(id)}, in the sent box ${sent.contains(id)}',
+            'message $id: after the sent-box copies, in the trash '
+            '${trashAfterSent.containsKey(id)} (hasReply '
+            '${trashAfterSent[id]?.hasReply}), in the inbox '
+            '${inboxAfterSent.contains(id)}, in the sent box '
+            '${sentAfterSent.contains(id)}; at the end, in the trash '
+            '${trash.containsKey(id)} (hasReply ${trash[id]?.hasReply}), in '
+            'the inbox ${inbox.contains(id)}, in the sent box '
+            '${sent.contains(id)}',
           );
         }
       });

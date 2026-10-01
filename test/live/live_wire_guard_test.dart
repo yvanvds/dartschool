@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
+import 'package:flutter_smartschool/src/xml_interface.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
@@ -39,6 +40,7 @@ String _fixture(String name) =>
 final _newMessageForm = _fixture('get/composemessage/new-message.html');
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
 final _quickDeleteAnswer = _fixture('post/postboxes/quick delete.xml');
+final _moveAnswer = _fixture('post/postboxes/quickmove messages.xml');
 
 /// The reply form of received message 900030, from [_other].
 final _replyFormFromOther = _fixture('get/composemessage/reply.html');
@@ -80,6 +82,9 @@ class _Smartschool implements HttpClientAdapter {
 
   /// The `msgID` of each `quick delete` that reached it.
   final List<String> trashed = [];
+
+  /// Each `quickmove messages` that reached it, as `<boxType> <msgID>`.
+  final List<String> moved = [];
 
   @override
   Future<ResponseBody> fetch(
@@ -127,6 +132,13 @@ class _Smartschool implements HttpClientAdapter {
             _quickDeleteAnswer.replaceFirst('123', id.group(1)!),
             contentType: 'text/xml',
           );
+        }
+        if (command.contains('<action>quickmove messages</action>')) {
+          final box = RegExp(
+            r'name="boxType"><!\[CDATA\[(\w+)',
+          ).firstMatch(command)!.group(1);
+          moved.add('$box ${id!.group(1)}');
+          return _answer(_moveAnswer, contentType: 'text/xml');
         }
         return _answer(
           '<server><response><status>ok</status><actions><action><data>'
@@ -287,6 +299,26 @@ void main() {
       expect(status?.msgId, 4242);
       expect(server.trashed, ['4242', '0']);
       expect(guard.quickDeleteAnswers.keys, [4242, 0]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('a move to the trash of the sent-box copy, and then of the inbox '
+        'copy, of a message the run checked in each box, once each '
+        '(#60)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+      guard
+        ..allowTrashFrom(4242, BoxType.sent)
+        ..allowTrashFrom(4242, BoxType.inbox);
+
+      // The second move goes out with the sent-box copy in the trash: it
+      // names its box, the inbox.
+      await messages.moveToTrashFrom(4242, boxType: BoxType.sent);
+      await messages.moveToTrashFrom(4242, boxType: BoxType.inbox);
+
+      expect(server.moved, ['outbox 4242', 'inbox 4242']);
+      expect(guard.trashMoveAnswers.keys, [(4242, 'outbox'), (4242, 'inbox')]);
+      expect(guard.trashMoveAnswers.values, everyElement(_moveAnswer));
       expect(guard.violations, isEmpty);
     });
 
@@ -515,6 +547,114 @@ void main() {
         contains('message 1234 is not one this run sent and checked'),
         contains('message 4242 was moved to the trash already'),
         contains('message 0 was moved to the trash already'),
+      ]);
+    });
+
+    test('a move to the trash of a copy the run did not check in its box, '
+        'or a second one of a copy (#60)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+      guard.allowTrashFrom(4242, BoxType.sent);
+
+      await expectLater(
+        messages.moveToTrashFrom(4242, boxType: BoxType.inbox),
+        throwsA(anything),
+      );
+      await expectLater(
+        messages.moveToTrashFrom(1234, boxType: BoxType.sent),
+        throwsA(anything),
+      );
+      await messages.moveToTrashFrom(4242, boxType: BoxType.sent);
+      await expectLater(
+        messages.moveToTrashFrom(4242, boxType: BoxType.sent),
+        throwsA(anything),
+      );
+
+      expect(server.moved, ['outbox 4242']);
+      expect(_violations(guard), [
+        contains(
+          'the inbox copy of message 4242 is not one this run sent and '
+          'checked there',
+        ),
+        contains('the outbox copy of message 1234 is not one this run sent'),
+        contains(
+          'the outbox copy of message 4242 was moved to the trash '
+          'already',
+        ),
+      ]);
+    });
+
+    test('a quick delete of a message with a copy moved to the trash, and a '
+        'move of a copy of a message moved with a quick delete: a quick '
+        'delete names no box (#60)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+      guard
+        ..allowTrash(4242)
+        ..allowTrashFrom(4242, BoxType.sent)
+        ..allowTrash(5555)
+        ..allowTrashFrom(5555, BoxType.sent);
+
+      await messages.moveToTrashFrom(4242, boxType: BoxType.sent);
+      await expectLater(messages.moveToTrash(4242), throwsA(anything));
+      await messages.moveToTrash(5555);
+      await expectLater(
+        messages.moveToTrashFrom(5555, boxType: BoxType.sent),
+        throwsA(anything),
+      );
+
+      expect(server.moved, ['outbox 4242']);
+      expect(server.trashed, ['5555']);
+      expect(_violations(guard), [
+        contains('a copy of message 4242 was moved to the trash already'),
+        contains(
+          'message 5555 was moved to the trash with a quick delete '
+          'already',
+        ),
+      ]);
+    });
+
+    test('a move elsewhere than to the trash, or out of the trash or of a '
+        'folder (#60)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guarded(server);
+      guard
+        ..allowTrashFrom(4242, BoxType.sent)
+        ..allowTrashFrom(4242, BoxType.inbox);
+      final dio = _dio(server, guard);
+      Future<void> move(Map<String, String> params) => expectLater(
+        dio.post<String>(
+          '/?module=Messages&file=dispatcher',
+          data: {
+            'command': XmlInterface.buildCommand(
+              'postboxes',
+              'quickmove messages',
+              params,
+            ),
+          },
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
+      );
+      const fromSent = {
+        'boxType': 'outbox',
+        'boxID': '0',
+        'msgID': '4242',
+        'toBoxType': 'trash',
+        'toBoxID': '0',
+      };
+
+      await move({...fromSent, 'toBoxType': 'inbox'});
+      await move({...fromSent, 'toBoxID': '208'});
+      await move({...fromSent, 'boxType': 'trash'});
+      await move({...fromSent, 'boxType': 'inbox', 'boxID': '208'});
+
+      expect(server.moved, isEmpty);
+      expect(_violations(guard), [
+        contains('it moves message 4242 elsewhere than to the trash'),
+        contains('it moves message 4242 elsewhere than to the trash'),
+        contains('it moves message 4242 out of the "trash"'),
+        contains('it moves message 4242 out of a folder of the inbox'),
       ]);
     });
 

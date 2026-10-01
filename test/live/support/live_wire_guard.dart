@@ -17,7 +17,12 @@
 //   send to the own account only;
 // - moving a message to the trash that the run did not send and check, or
 //   one it moved there already (a second `quick delete` could delete it for
-//   good, #19);
+//   good, #19); with `quickmove messages`, which names the box of the copy
+//   it moves (#60): moving a copy the run did not check in that box, a copy
+//   it moved already, a copy out of another box than the inbox or the sent
+//   box (or a folder of one), or to another box than the trash; and a
+//   `quick delete` of a message of which a copy was moved, or a move of a
+//   copy of one that had a `quick delete` (that names no box);
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -106,14 +111,26 @@ class LiveWireGuard extends Interceptor {
   /// and `0`, which names no message.
   final Set<int> _trashable = {0};
 
-  /// The messages the run asked to move to the trash.
+  /// The messages the run asked to move to the trash with a `quick delete`.
   final Set<int> _trashRequested = {};
+
+  /// The copies of messages the run may move to the trash out of their box
+  /// (`quickmove messages`, MessagesService.moveToTrashFrom), as (ID, box):
+  /// those it sent and checked in that box.
+  final Set<(int, String)> _movable = {};
+
+  /// The copies the run asked to move to the trash out of their box.
+  final Set<(int, String)> _moveRequested = {};
 
   /// How often each step of a login went out.
   final Map<String, int> _loginSteps = {};
 
   /// Smartschool's answers to `quick delete`, by message ID, as they came in.
   final Map<int, String> quickDeleteAnswers = {};
+
+  /// Smartschool's answers to the moves to the trash out of a box, by
+  /// (message ID, box), as they came in.
+  final Map<(int, String), String> trashMoveAnswers = {};
 
   /// Lets the run reply to message [msgId] of the inbox: a message it sent
   /// to the own account only.
@@ -122,6 +139,11 @@ class LiveWireGuard extends Interceptor {
   /// Lets the run move message [msgId] to the trash, once: a message it sent
   /// and checked.
   void allowTrash(int msgId) => _trashable.add(msgId);
+
+  /// Lets the run move the copy of message [msgId] in [box] (the inbox or
+  /// the sent box) to the trash, once: a message it sent and checked there.
+  void allowTrashFrom(int msgId, BoxType box) =>
+      _movable.add((msgId, box.value));
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
@@ -252,6 +274,7 @@ class LiveWireGuard extends Interceptor {
       return 'the live suite sends no "$subsystem" command';
     }
     if (_readActions.contains(action)) return null;
+    if (action == 'quickmove messages') return _moveRefusal(xml);
     if (action != 'quick delete') {
       return 'the live suite sends no "$action" command';
     }
@@ -261,9 +284,52 @@ class LiveWireGuard extends Interceptor {
       return 'message $id is not one this run sent and checked: the run '
           'moves only those to the trash (and 0, which names no message)';
     }
+    if (_moveRequested.any((copy) => copy.$1 == id)) {
+      return 'a copy of message $id was moved to the trash already in this '
+          'run: a quick delete names no box, and one of a message in the '
+          'trash could delete it for good (#19, #60)';
+    }
     if (!_trashRequested.add(id)) {
       return 'message $id was moved to the trash already in this run: a '
           'second quick delete could delete it for good (#19)';
+    }
+    return null;
+  }
+
+  /// Why the `quickmove messages` command [xml] may not go out, or `null`.
+  ///
+  /// It moves one copy of a message, the one in the box it names, as the
+  /// web client does when a message is dragged onto the trash (#60). The
+  /// live suite sends it only to move the inbox or sent-box copy of a
+  /// message it sent and checked to the trash, once per copy. It may do so
+  /// while the other copy is in the trash: that the move takes the copy of
+  /// the box it names, and leaves the other one alone, was seen live.
+  String? _moveRefusal(XmlDocument xml) {
+    final id = int.tryParse(_param(xml, 'msgID') ?? '');
+    if (id == null) return 'its move names no message';
+    if (_param(xml, 'toBoxType') != BoxType.trash.value ||
+        _param(xml, 'toBoxID') != '0') {
+      return 'it moves message $id elsewhere than to the trash';
+    }
+    final box = _param(xml, 'boxType') ?? '';
+    if (box != BoxType.inbox.value && box != BoxType.sent.value) {
+      return 'it moves message $id out of the "$box": the live suite moves '
+          'only copies in the inbox or the sent box to the trash';
+    }
+    if (_param(xml, 'boxID') != '0') {
+      return 'it moves message $id out of a folder of the $box';
+    }
+    if (!_movable.contains((id, box))) {
+      return 'the $box copy of message $id is not one this run sent and '
+          'checked there';
+    }
+    if (_trashRequested.contains(id)) {
+      return 'message $id was moved to the trash with a quick delete already '
+          'in this run, which names no box';
+    }
+    if (!_moveRequested.add((id, box))) {
+      return 'the $box copy of message $id was moved to the trash already in '
+          'this run';
     }
     return null;
   }
@@ -489,9 +555,14 @@ class LiveWireGuard extends Interceptor {
     final command = data is Map ? data['command'] : null;
     if (command is! String) return;
     final xml = XmlDocument.parse(command);
-    if (_text(xml, 'action') != 'quick delete') return;
     final id = int.tryParse(_param(xml, 'msgID') ?? '');
-    if (id != null) quickDeleteAnswers[id] = body;
+    if (id == null) return;
+    switch (_text(xml, 'action')) {
+      case 'quick delete':
+        quickDeleteAnswers[id] = body;
+      case 'quickmove messages':
+        trashMoveAnswers[(id, _param(xml, 'boxType') ?? '')] = body;
+    }
   }
 
   // -------------------------------------------------------------------------

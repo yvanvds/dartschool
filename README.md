@@ -85,7 +85,7 @@ Future<void> main() async {
 }
 ```
 
-See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow.
+See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow, on a message it sends to the own account only. It changes that account: it moves both copies of the message to the trash with `moveToTrashFrom`, the sent-box copy first and then the archived inbox copy (`boxType: BoxType.inbox`, with the archive folder's ID from `getArchiveBoxId()` as `boxId`), and checks the trash, archive, inbox and sent-box listings, since Smartschool's answer to a move says nothing about it. It never empties the trash.
 
 See [example/mark_read_toggle_example.dart](example/mark_read_toggle_example.dart) for toggling the read/unread status of a message.
 

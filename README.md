@@ -154,7 +154,8 @@ await client.ensureAuthenticated();
 | `notificationCounterUpdates` | `Stream<NotificationCounterUpdate>` — broadcast stream of counter events emitted by any notification source |
 | `emitNotificationCounterUpdate({moduleName, counter, isNew, source, timestamp})` | Push a `NotificationCounterUpdate` into the stream; returns `false`, emitting nothing, when `moduleName` is empty or the client was disposed (the stream is closed) |
 | `getCurrentUser()` | `Future<SmartschoolUser>` — returns the logged-in user (`id`, `displayName`, `avatarUrl`). Uses cached page data; no extra HTTP requests after the first authenticated call. |
-| `dispose({force})` | Closes the notification stream and the underlying Dio client (`force`, the default, cuts off the requests that run). The client cannot be used afterwards: every request method, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `StateError` ("SmartschoolClient was disposed") without sending anything (see *Exceptions*). Calling it again does nothing |
+| `dispose({force})` | Closes the notification stream and the underlying Dio client (`force`, the default, cuts off the requests that run). The client cannot be used afterwards: every request method, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `SmartschoolClientDisposedError` (a `StateError`, "SmartschoolClient was disposed") without sending anything (see *Exceptions*). Calling it again does nothing |
+| `isDisposed` | `true` from the moment `dispose()` is called (before its future completes): the client sends no more requests |
 | `dio` | Exposes the underlying `Dio` instance for advanced / dev use |
 
 ### Cache folder
@@ -848,6 +849,7 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |
+| `SmartschoolClientDisposedError` | A request on a client that was disposed, or one that was running when it was disposed (also the stream of a download being read). A `StateError`, not a `SmartschoolException`: see below |
 
 The login failure types all extend `SmartschoolAuthenticationError`, so a `catch` of the base class still catches them. They are thrown directly, by `ensureAuthenticated()` and also by a service call (or any `SmartschoolClient` request method) that finds the session cold or expired and fails to log in again, so the same `on` clauses work around either. Only a request made on `client.dio` itself gets them wrapped in a `DioException`, as its `error`.
 
@@ -868,7 +870,19 @@ try {
 
 `SmartschoolConnectionError` extends `SmartschoolException`, not `SmartschoolAuthenticationError`: a `catch` of the authentication error does not swallow a network problem. `ensureAuthenticated()` and every service call (or any `SmartschoolClient` request method) report an unreachable Smartschool this way, also when the network fails during a login the call triggered. Only a request made on `client.dio` itself gets the plain `DioException`.
 
-A request on a client that was disposed (`client.dispose()`) is not a network problem, and is not reported as one: every request method, and so every service call, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `StateError` that says the client was disposed, before sending anything (also when they have the answer cached). A request that was running when the client was disposed, and the stream of a download that was being read, fail with it too. A `StateError` is not a `SmartschoolException`: it is a mistake in the app, which should not retry or show "offline" for it, but create a new client.
+A request on a client that was disposed (`client.dispose()`) is not a network problem, and is not reported as one: every request method, and so every service call, `ensureAuthenticated()`, `platformId` and `getCurrentUser()` throw a `SmartschoolClientDisposedError` that says the client was disposed, before sending anything (also when they have the answer cached). A request that was running when the client was disposed, and the stream of a download that was being read, fail with it too. It is a `StateError`, so an `on StateError` clause still catches it, and not a `SmartschoolException`: it is a mistake in the app, which should not retry or show "offline" for it, but create a new client. Its own type tells it apart from any other `StateError` (such as the "No element" of a `.first`), and `client.isDisposed` tells whether the client was disposed:
+
+```dart
+for (final id in folderIds) {
+  try {
+    index.add(await intradesk.getFolderListing(id));
+  } on SmartschoolClientDisposedError {
+    break; // The app disposed the client: stop, do not save a partial index.
+  } on SmartschoolException {
+    // This folder failed: skip it.
+  }
+}
+```
 
 ---
 

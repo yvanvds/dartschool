@@ -211,6 +211,27 @@ class SmartschoolConnectionError extends SmartschoolException {
   const SmartschoolConnectionError(super.message, {this.cause});
 }
 
+/// Thrown by a `SmartschoolClient` that was disposed (`dispose()`, #54): by
+/// every request method, and so by every service call, before it sends
+/// anything, and by a request that was running when the client was disposed
+/// and did not complete. The stream of a download that was being read ends
+/// with it too. Its [message] starts with "SmartschoolClient was disposed".
+///
+/// A type of its own, so that a caller can tell it apart from any other
+/// [StateError] (such as the "No element" of a `.first` in its own code)
+/// without matching the message (#73). Catch it to stop work that outlives
+/// the client, such as a walk over many folders that the app shut down
+/// halfway; `SmartschoolClient.isDisposed` tells the same without an error.
+///
+/// It is a [StateError], so an `on StateError` clause still catches it, and
+/// deliberately not a [SmartschoolException]: using a disposed client is a
+/// mistake of its caller, not a problem of Smartschool or of the network, so
+/// code that shows "offline" or retries on a [SmartschoolConnectionError]
+/// does not take it for one. Create a new client to use Smartschool again.
+class SmartschoolClientDisposedError extends StateError {
+  SmartschoolClientDisposedError(super.message);
+}
+
 /// Thrown when parsing server response data fails.
 class SmartschoolParsingError extends SmartschoolException {
   const SmartschoolParsingError(super.message);

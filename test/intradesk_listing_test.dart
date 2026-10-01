@@ -22,10 +22,18 @@
 //    fails with `500` is now followed by that request, and its `404` makes a
 //    `SmartschoolIntradeskFolderNotFoundError`.
 //
+// Issue #73 is tested here too, with the walk it was found in: an app that
+// walks the tree skips a folder whose listing fails with a
+// SmartschoolException, and stops when the client was disposed. A disposed
+// client threw a plain StateError, which such a walk could only tell apart
+// from a StateError of its own code by the message; it is now a
+// SmartschoolClientDisposedError.
+//
 // The fake Smartschool below serves the recorded listings under
 // test/fixtures/smartschool/requests/get/intradesk (made-up names and IDs:
 // "Testschool", "Jan Janssens"); bbbb1111 (the "Archief" folder that its
 // parent lists with `hasChildren: false`) holds a file and a weblink.
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -165,6 +173,48 @@ Matcher _listingFailed(int status) => allOf(
   isA<SmartschoolDownloadError>().having((e) => e.statusCode, 'status', status),
   isNot(isA<SmartschoolIntradeskFolderNotFoundError>()),
 );
+
+/// What [_walk] did with each folder.
+class _Walk {
+  /// The name of the first file of each folder that has files.
+  final firstFiles = <String, String>{};
+
+  /// The folders without files: the `.first` of the walk's own code threw a
+  /// StateError for them.
+  final withoutFiles = <String>[];
+
+  /// The folders whose listing failed with a [SmartschoolException].
+  final broken = <String>[];
+
+  /// The folder that the walk stopped at, and the error it stopped on.
+  String? stoppedAt;
+  SmartschoolClientDisposedError? stoppedOn;
+}
+
+/// Walks the folders [ids] as an app that indexes Intradesk does (#73): it
+/// notes the first file of each folder, skips a folder whose listing fails
+/// with a [SmartschoolException] as broken, and stops when the client was
+/// disposed, as the app shut down. Its own code throws a StateError for a
+/// folder without files.
+Future<_Walk> _walk(IntradeskService intradesk, List<String> ids) async {
+  final walk = _Walk();
+  for (final id in ids) {
+    try {
+      final listing = await intradesk.getFolderListing(id);
+      walk.firstFiles[id] = listing.files.first.name;
+    } on SmartschoolClientDisposedError catch (e) {
+      walk
+        ..stoppedAt = id
+        ..stoppedOn = e;
+      break;
+    } on SmartschoolException {
+      walk.broken.add(id);
+    } on StateError {
+      walk.withoutFiles.add(id);
+    }
+  }
+  return walk;
+}
 
 void main() {
   forbidRealNetwork();
@@ -378,5 +428,80 @@ void main() {
         ]);
       },
     );
+  });
+
+  group('a walk of the tree that the app disposes the client during '
+      '(#73)', () {
+    // A folder with a file, one without files, an ID that is not a folder,
+    // and two more that the walk should not get to.
+    const walked = [
+      _documenten,
+      _examens,
+      _unknown,
+      _archief,
+      _weblinkInArchief,
+    ];
+
+    /// What the walk did up to the dispose: the same in either test.
+    void expectWalkedUpTo(_Walk walk, String stoppedAt) {
+      expect(walk.firstFiles, {_documenten: 'info.pdf'});
+      expect(walk.withoutFiles, [_examens]);
+      expect(walk.broken, [_unknown]);
+      expect(walk.stoppedAt, stoppedAt);
+      // Still what an `on StateError` clause catches, and not a
+      // SmartschoolException that the walk would skip as a broken folder.
+      expect(walk.stoppedOn, isA<StateError>());
+      expect(walk.stoppedOn, isNot(isA<SmartschoolException>()));
+      expect(client.isDisposed, isTrue);
+    }
+
+    test('stops at the next folder, without requesting it', () async {
+      // The app shuts down after the walk asked for the parents of the ID
+      // that is not a folder: that answer still comes in.
+      final server = await serve({
+        '$_api/folders/$_unknown/parents': (_) {
+          unawaited(client.dispose());
+          return _notFound();
+        },
+      });
+
+      final walk = await _walk(IntradeskService(client), walked);
+
+      // Before the fix: a plain StateError, which the walk took for one of
+      // its own, so it went on through every remaining folder.
+      expectWalkedUpTo(walk, _archief);
+      expect(
+        walk.stoppedOn?.message,
+        'SmartschoolClient was disposed: it sends no more requests',
+      );
+      expect(server.log.last, 'GET $_api/folders/$_unknown/parents');
+    });
+
+    test('stops at a listing that the dispose cut off', () async {
+      // The app shuts down while the listing runs: a forced dispose drops
+      // its connection.
+      final server = await serve({
+        '$_listing/$_archief': (options) {
+          unawaited(client.dispose());
+          throw DioException.connectionError(
+            requestOptions: options,
+            reason: 'Connection closed before full header was received',
+            error: const HttpException(
+              'Connection closed before full header was received',
+            ),
+          );
+        },
+      });
+
+      final walk = await _walk(IntradeskService(client), walked);
+
+      expectWalkedUpTo(walk, _archief);
+      expect(
+        walk.stoppedOn?.message,
+        'SmartschoolClient was disposed during GET '
+        'https://$_host$_listing/$_archief',
+      );
+      expect(server.log.last, 'GET $_listing/$_archief');
+    });
   });
 }

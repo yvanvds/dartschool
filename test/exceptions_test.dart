@@ -132,4 +132,32 @@ void main() {
       );
     });
   });
+
+  group('SmartschoolClientDisposedError (#73)', () {
+    const message = 'SmartschoolClient was disposed: it sends no more requests';
+
+    test('is a StateError, not a SmartschoolException', () {
+      // A mistake of the caller, not a problem of Smartschool or the network
+      // (#54): code that retries on a SmartschoolException must not catch it.
+      final Object error = SmartschoolClientDisposedError(message);
+      expect(error, isA<StateError>());
+      expect(error, isNot(isA<SmartschoolException>()));
+    });
+
+    test('an on StateError clause still catches it, as before #73', () {
+      Object? caught;
+      try {
+        throw SmartschoolClientDisposedError(message);
+      } on StateError catch (e) {
+        caught = e;
+      }
+      expect(caught, isA<SmartschoolClientDisposedError>());
+    });
+
+    test('keeps the message and the text of the plain StateError', () {
+      final error = SmartschoolClientDisposedError(message);
+      expect(error.message, message);
+      expect(error.toString(), 'Bad state: $message');
+    });
+  });
 }

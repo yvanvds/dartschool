@@ -55,6 +55,8 @@ class SmartschoolDownload {
   ///   download then fails before it is handed over). Everything before it
   ///   is at most `maxBytes` bytes;
   /// - a [SmartschoolConnectionError] when the connection fails halfway;
+  /// - a [SmartschoolClientDisposedError] when the client was disposed while
+  ///   it was read (#54, #73);
   /// - a [StateError] after [cancel].
   final Stream<List<int>> stream;
 

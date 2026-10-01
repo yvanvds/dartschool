@@ -1,3 +1,12 @@
+## 0.3.2 - Unreleased
+
+### Added
+- Session: the error of a disposed `SmartschoolClient` has a type of its own, and the client tells whether it was disposed (#73). Since 0.3.0 (#54) a request on a disposed client threw a plain `StateError` ("SmartschoolClient was disposed: …" / "… was disposed during GET …"), which a caller could only tell apart from any other `StateError`, such as the "No element" of a `.first` in its own code or in a parser, by its message: `_isDisposed` was private. An app that walks many folders and skips one whose listing fails (smartschool-mcp's Intradesk index) had to stop on every `StateError` to stop when the app shut down the client halfway. Now:
+  - every place that threw that `StateError` throws the new `SmartschoolClientDisposedError` (extends `StateError`, exported with the other errors): every request method, and so every service call, `ensureAuthenticated()`, `platformId`, `authenticatedUser` and `getCurrentUser()` on a disposed client, before sending anything; a request that was running when the client was disposed and did not complete; and the stream of a download that was being read. Its message and its text (`Bad state: SmartschoolClient was disposed …`) are unchanged, an `on StateError` clause still catches it, and it is still not a `SmartschoolException` (as #54 decided: using a disposed client is a mistake in the app, not a problem of the network or of Smartschool);
+  - the new `SmartschoolClient.isDisposed` is `true` from the moment `dispose()` is called, before the future it returns completes, and stays `true`.
+
+  The `StateError` of a download stream after its own `cancel()` is not a disposed client and stays a plain `StateError`. Tested offline, among others with the walk of the issue: it lists Intradesk folders, skips the one that is not a folder, survives the `StateError` of its own `.first`, and stops at the folder after the dispose (not requested) or at the listing that the dispose cut off.
+
 ## 0.3.1 - 2026-10-01
 
 ### Added

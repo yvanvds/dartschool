@@ -9,8 +9,11 @@
 // - The archive list concept:  identical parser, different [boxId] request
 // - [RecipientType] request payload values
 //
-// End-to-end tests that require an authenticated session are in
-// `example/send_message_lifecycle_example.dart`.
+// End-to-end tests that require an authenticated session are the live suite
+// in `test/live/` (#57): local and on demand only, on messages sent to the
+// own account, run with `dart test -P live test/live` (see "Live tests" in
+// the README). `example/send_message_lifecycle_example.dart` is an example
+// of the send → archive → trash flow, not a test.
 import 'dart:io';
 
 import 'package:flutter_smartschool/src/models/message_models.dart';

@@ -8,9 +8,11 @@
 // - Guard-rail behaviour when optional sub-objects are absent
 // - toString helpers
 //
-// End-to-end tests that require an authenticated session are in
-// `example/send_message_lifecycle_example.dart` (messages) and the live MCP
-// researcher for intradesk.
+// There is no end-to-end test for Intradesk: it is checked against an
+// authenticated session with the live MCP researcher
+// (`bin/smartschool_researcher_mcp.dart`). The live suite in `test/live/`
+// (`dart test -P live test/live`, see "Live tests" in the README) covers
+// messages only.
 
 import 'dart:convert';
 

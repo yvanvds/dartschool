@@ -16,8 +16,17 @@ export '../models/skore_models.dart';
 /// a teacher to a course of a class: [addTeacher] and [replaceTeacher].
 ///
 /// This is what Skore shows under Rapporten > Modellen > (model) > Leden >
-/// (group) > (class). The reads change nothing; only [addTeacher] and
-/// [replaceTeacher] write to Skore, and they never delete an assignment.
+/// (group) > (class).
+///
+/// It also reads the gradebooks of a teacher with the teachers they are
+/// shared with ([getGradebookShares]), and shares a gradebook with another
+/// teacher or stops sharing it ([shareGradebook], [unshareGradebook]), as
+/// Skore's "share gradebooks" manager does (Puntenboeken > the share button
+/// next to a teacher).
+///
+/// The reads change nothing; only [addTeacher], [replaceTeacher],
+/// [shareGradebook] and [unshareGradebook] write to Skore. They never delete
+/// an assignment or a gradebook.
 ///
 /// ```dart
 /// final skore = SkoreService(client);
@@ -33,21 +42,23 @@ export '../models/skore_models.dart';
 ///
 /// ### Access requirement
 /// The account needs access to Skore's report management (Rapporten >
-/// Modellen), as a Skore administrator has.
+/// Modellen) and to its gradebooks management (Puntenboeken), as a Skore
+/// administrator has.
 ///
 /// ### Errors
 /// - [SmartschoolSkoreError]: Skore answered with something the service
 ///   cannot use (an HTML page instead of data, invalid JSON, a missing RPC
 ///   `result`, or data in an unknown shape). The session was accepted:
-///   signing in again does not help. [addTeacher] and [replaceTeacher] also
-///   throw it when a check before the save refuses the change; from them, it
-///   means nothing was saved.
+///   signing in again does not help. The writes also throw it when a check
+///   before the save refuses the change; from them, it means nothing was
+///   saved.
 /// - [SmartschoolSkoreMyGroupsError] (a [SmartschoolSkoreError]):
 ///   [replaceTeacher] found that the current teacher works with "Mijn
 ///   lesgroepen" for the course. Nothing was saved.
-/// - [SmartschoolSkoreSaveUnconfirmedError]: [addTeacher] or
-///   [replaceTeacher] sent the save, but Skore's answer does not confirm it.
-///   It may or may not have been saved: read the class again.
+/// - [SmartschoolSkoreSaveUnconfirmedError]: a write sent the save, but
+///   Skore's answer (or, for [shareGradebook] and [unshareGradebook], reading
+///   the gradebooks again) does not confirm it. It may or may not have been
+///   saved: read again.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered an RPC without a session. Sign in again and
@@ -55,9 +66,9 @@ export '../models/skore_models.dart';
 ///   when the session is refused for it, it fails at once.
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
-/// - [SmartschoolConnectionError]: Smartschool could not be reached. From
-///   [addTeacher] and [replaceTeacher], only before the save went out: a
-///   save that failed on the way is a [SmartschoolSkoreSaveUnconfirmedError].
+/// - [SmartschoolConnectionError]: Smartschool could not be reached. From a
+///   write, only before the save went out: a save that failed on the way is
+///   a [SmartschoolSkoreSaveUnconfirmedError].
 class SkoreService {
   final SmartschoolClient _client;
 
@@ -80,6 +91,16 @@ class SkoreService {
 
   /// The RPC service behind the assignments page.
   static const _ownersRpcPath = '/modules/Skore/backend/models/owners.php';
+
+  /// The RPC service behind the "share gradebooks" manager. It also holds
+  /// methods that delete or lock (`deleteTeacher`, `cleanUpSkore`,
+  /// `hideWorkyear`, `unlockReport`, ...): only [_gradebooksRpcMethods] are
+  /// ever called on it.
+  static const _gradebooksRpcPath =
+      '/modules/Skore/modules/rapportbeheer/rpc/data.php';
+
+  /// The only methods of [_gradebooksRpcPath] the service calls.
+  static const _gradebooksRpcMethods = {'getCourses', 'saveShared'};
 
   // ---------------------------------------------------------------------------
   // Reads
@@ -117,6 +138,18 @@ class SkoreService {
   /// order (by name).
   Future<List<SkoreTeacher>> getTeachers() async {
     return parseTeachers(await _ownersRpc('getTeachers', const []));
+  }
+
+  /// Returns the gradebooks of teacher [ownerId] (a Smartschool user ID), in
+  /// Skore's order, each with the teachers it is shared with.
+  ///
+  /// Skore answers a teacher without gradebooks and a user ID it does not
+  /// know the same way, so both give an empty list.
+  Future<List<SkoreGradebookShares>> getGradebookShares(int ownerId) async {
+    return parseGradebookShares(
+      await _gradebooksRpc('getCourses', [ownerId]),
+      ownerId: ownerId,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -157,7 +190,7 @@ class SkoreService {
     const operation = 'addTeacher';
     final course = await _courseToAssign(operation, classId, courseId);
     _refuseAssignedTeacher(operation, course, teacherId);
-    final teacher = await _teacherToAssign(operation, teacherId);
+    final teacher = await _knownTeacher(operation, teacherId);
     return _saveOwner(
       operation,
       classId: classId,
@@ -216,7 +249,7 @@ class SkoreService {
       );
     }
     _refuseAssignedTeacher(operation, course, teacherId);
-    final teacher = await _teacherToAssign(operation, teacherId);
+    final teacher = await _knownTeacher(operation, teacherId);
     await _refuseMyGroups(
       operation,
       classId: classId,
@@ -278,14 +311,14 @@ class SkoreService {
 
   /// Returns teacher [teacherId] from [getTeachers]; refuses one that is not
   /// in it.
-  Future<SkoreTeacher> _teacherToAssign(String operation, int teacherId) async {
+  Future<SkoreTeacher> _knownTeacher(String operation, int teacherId) async {
     final teacher = (await getTeachers())
         .where((t) => t.id == teacherId)
         .firstOrNull;
     if (teacher == null) {
       throw SmartschoolSkoreError(
-        '$operation: teacher $teacherId is not one Skore lets assign to a '
-        'course (not in getTeachers). Nothing was saved.',
+        '$operation: teacher $teacherId is not one of Skore\'s teachers (not '
+        'in getTeachers). Nothing was saved.',
       );
     }
     return teacher;
@@ -402,27 +435,284 @@ class SkoreService {
   }
 
   // ---------------------------------------------------------------------------
+  // Gradebook shares
+  // ---------------------------------------------------------------------------
+
+  /// Shares gradebook [gradebookId] of teacher [ownerId] with teacher
+  /// [teacherId], with [access]: read, or read and write. Returns the
+  /// gradebook as Skore holds it after the save.
+  ///
+  /// The teachers the gradebook is already shared with keep their access. A
+  /// teacher has one kind of access: sharing with write access takes
+  /// [teacherId] off the readers, and sharing with read access takes them
+  /// off the writers.
+  ///
+  /// Before it saves, it reads the owner's gradebooks
+  /// ([getGradebookShares]) and the teachers ([getTeachers]), and refuses
+  /// with a [SmartschoolSkoreError], saving nothing:
+  /// - the owner as [teacherId] (before any request);
+  /// - a gradebook that is not one of the owner's (also for a user ID Skore
+  ///   does not know), so a gradebook is never saved under another owner;
+  /// - a teacher who is not in [getTeachers].
+  ///
+  /// When the gradebook is already shared with [teacherId] with [access], it
+  /// saves nothing and returns the gradebook as read (without reading the
+  /// teachers).
+  ///
+  /// The save (Skore's `saveShared`) holds this gradebook only, with its
+  /// complete new readers and writers; Skore leaves the owner's other
+  /// gradebooks as they are. Since it holds the complete lists, sending it
+  /// again does not change the outcome: it is retried once after logging in
+  /// again, as a read is. Skore must answer it with `state` 1, and reading the
+  /// owner's gradebooks again must show exactly the readers and writers
+  /// saved; otherwise this throws a [SmartschoolSkoreSaveUnconfirmedError]:
+  /// read the gradebooks again before trying again.
+  ///
+  /// The checks and the save are separate requests: do not change the shares
+  /// of the same gradebook from two places at once.
+  Future<SkoreGradebookShares> shareGradebook({
+    required int ownerId,
+    required int gradebookId,
+    required int teacherId,
+    required SkoreShareAccess access,
+  }) async {
+    const operation = 'shareGradebook';
+    _refuseOwnerAsTeacher(operation, ownerId, teacherId);
+    final gradebook = await _gradebookToShare(operation, ownerId, gradebookId);
+    final readers = [
+      ...gradebook.readerIds.where((id) => id != teacherId),
+      if (access == SkoreShareAccess.read) teacherId,
+    ];
+    final writers = [
+      ...gradebook.writerIds.where((id) => id != teacherId),
+      if (access == SkoreShareAccess.write) teacherId,
+    ];
+    if (_sameIds(readers, gradebook.readerIds) &&
+        _sameIds(writers, gradebook.writerIds)) {
+      return gradebook;
+    }
+    await _knownTeacher(operation, teacherId);
+    return _saveShared(
+      operation,
+      gradebook: gradebook,
+      readers: readers,
+      writers: writers,
+      change: 'sharing it with teacher $teacherId (${access.name})',
+    );
+  }
+
+  /// Stops sharing gradebook [gradebookId] of teacher [ownerId] with teacher
+  /// [teacherId]: takes them off its readers and its writers. Returns the
+  /// gradebook as Skore holds it after the save.
+  ///
+  /// The other teachers the gradebook is shared with keep their access.
+  ///
+  /// Before it saves, it reads the owner's gradebooks
+  /// ([getGradebookShares]), and refuses with a [SmartschoolSkoreError],
+  /// saving nothing:
+  /// - the owner as [teacherId] (before any request);
+  /// - a gradebook that is not one of the owner's (also for a user ID Skore
+  ///   does not know).
+  ///
+  /// [teacherId] need not be in [getTeachers]: a teacher who has left the
+  /// school can still be taken off. When the gradebook is not shared with
+  /// them, it saves nothing and returns the gradebook as read.
+  ///
+  /// The save and its checks afterwards are those of [shareGradebook].
+  Future<SkoreGradebookShares> unshareGradebook({
+    required int ownerId,
+    required int gradebookId,
+    required int teacherId,
+  }) async {
+    const operation = 'unshareGradebook';
+    _refuseOwnerAsTeacher(operation, ownerId, teacherId);
+    final gradebook = await _gradebookToShare(operation, ownerId, gradebookId);
+    if (gradebook.accessOf(teacherId) == null) return gradebook;
+    return _saveShared(
+      operation,
+      gradebook: gradebook,
+      readers: [...gradebook.readerIds.where((id) => id != teacherId)],
+      writers: [...gradebook.writerIds.where((id) => id != teacherId)],
+      change: 'no longer sharing it with teacher $teacherId',
+    );
+  }
+
+  /// Refuses [teacherId] when it is the owner of the gradebook: Skore's
+  /// manager never offers the owner as a reader or a writer.
+  static void _refuseOwnerAsTeacher(
+    String operation,
+    int ownerId,
+    int teacherId,
+  ) {
+    if (teacherId == ownerId) {
+      throw SmartschoolSkoreError(
+        '$operation: teacher $teacherId is the owner of the gradebook, who '
+        'cannot be a reader or a writer of it. Nothing was saved.',
+      );
+    }
+  }
+
+  /// Reads the gradebooks of teacher [ownerId] again and returns gradebook
+  /// [gradebookId]; refuses one that is not among them.
+  Future<SkoreGradebookShares> _gradebookToShare(
+    String operation,
+    int ownerId,
+    int gradebookId,
+  ) async {
+    final gradebooks = await getGradebookShares(ownerId);
+    final gradebook = gradebooks
+        .where((g) => g.gradebookId == gradebookId)
+        .firstOrNull;
+    if (gradebook == null) {
+      throw SmartschoolSkoreError(
+        '$operation: gradebook $gradebookId is not one of teacher $ownerId '
+        '(Skore lists ${gradebooks.length} gradebooks for them). Nothing was '
+        'saved.',
+      );
+    }
+    return gradebook;
+  }
+
+  /// Saves the [readers] and [writers] of [gradebook]: Skore's
+  /// `saveShared(userID, readers, writers)`, with only this gradebook in the
+  /// two maps. Returns the gradebook as read again, once Skore's answer
+  /// (`state` 1) and that read confirm it.
+  ///
+  /// Skore answers `{"state": 1}`.
+  Future<SkoreGradebookShares> _saveShared(
+    String operation, {
+    required SkoreGradebookShares gradebook,
+    required List<int> readers,
+    required List<int> writers,
+    required String change,
+  }) async {
+    final ownerId = gradebook.ownerId;
+    final gradebookId = gradebook.gradebookId;
+    final what =
+        'the save (gradebook $gradebookId of teacher $ownerId: $change; '
+        'readers $readers, writers $writers)';
+    const unconfirmed =
+        'It may or may not have been saved: read the gradebooks again '
+        '(getGradebookShares) before trying again.';
+
+    final dynamic result;
+    try {
+      result = await _gradebooksRpc('saveShared', [
+        ownerId,
+        {'$gradebookId': readers},
+        {'$gradebookId': writers},
+      ]);
+    } on SmartschoolSessionExpiredError {
+      // Refused before Skore handled it, also after logging in again (or
+      // answered without a session).
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolSkoreSaveUnconfirmedError(
+          '$operation: $what was sent, but no usable answer came in ($e). '
+          '$unconfirmed',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    final state = result is Map ? _tryId(result['state']) : null;
+    if (state != 1) {
+      throw SmartschoolSkoreSaveUnconfirmedError(
+        '$operation: $what was sent, but Skore\'s answer '
+        '${_jsonPreview(result)} does not confirm it (state 1). $unconfirmed',
+      );
+    }
+
+    final SkoreGradebookShares? after;
+    try {
+      after = (await getGradebookShares(
+        ownerId,
+      )).where((g) => g.gradebookId == gradebookId).firstOrNull;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolSkoreSaveUnconfirmedError(
+          '$operation: Skore confirmed $what, but reading the gradebooks '
+          'again to check it failed ($e). $unconfirmed',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    final String? problem;
+    if (after == null) {
+      problem = 'no longer lists the gradebook for teacher $ownerId';
+    } else if (!_sameIds(after.readerIds, readers) ||
+        !_sameIds(after.writerIds, writers)) {
+      problem =
+          'shows readers ${after.readerIds} and writers ${after.writerIds}';
+    } else {
+      problem = null;
+    }
+    if (problem != null) {
+      throw SmartschoolSkoreSaveUnconfirmedError(
+        '$operation: Skore confirmed $what, but reading the gradebooks again '
+        '$problem. $unconfirmed',
+      );
+    }
+    return after!;
+  }
+
+  /// Whether [a] and [b] hold the same IDs, in any order.
+  static bool _sameIds(Iterable<int> a, Iterable<int> b) {
+    final setA = a.toSet();
+    final setB = b.toSet();
+    return setA.length == setB.length && setA.containsAll(setB);
+  }
+
+  // ---------------------------------------------------------------------------
   // RPC
   // ---------------------------------------------------------------------------
 
   /// Calls [method] of Skore's assignments RPC service (`owners.php`) with
-  /// [params], and returns the `result` of its answer.
+  /// [params] (the web client sends IDs as strings to it); see [_rpc].
+  Future<dynamic> _ownersRpc(
+    String method,
+    List<Object?> params, {
+    bool retryAfterLogin = true,
+  }) => _rpc(_ownersRpcPath, method, params, retryAfterLogin: retryAfterLogin);
+
+  /// Calls [method] of Skore's gradebooks RPC service
+  /// (`rapportbeheer/rpc/data.php`) with [params] (the "share gradebooks"
+  /// manager sends IDs as numbers to it); see [_rpc].
+  ///
+  /// Only the methods in [_gradebooksRpcMethods]: any other is refused before
+  /// anything is sent, since that service also deletes and locks.
+  Future<dynamic> _gradebooksRpc(String method, List<Object?> params) {
+    if (!_gradebooksRpcMethods.contains(method)) {
+      throw ArgumentError.value(
+        method,
+        'method',
+        'not one the service calls on $_gradebooksRpcPath',
+      );
+    }
+    return _rpc(_gradebooksRpcPath, method, params);
+  }
+
+  /// Calls [method] of the Skore RPC service at [path] with [params], and
+  /// returns the `result` of its answer.
   ///
   /// Sends the form Skore's web client sends: `rpc_sessionobj`,
   /// `rpc_requestType` (`requestData`), `rpc_method` and `rpc_params` (the
-  /// arguments as a JSON array; the web client sends IDs as strings).
+  /// arguments as a JSON array).
   ///
   /// Pass `retryAfterLogin: false` for a call that must not be sent twice:
   /// when Smartschool refuses the session for it, it then fails at once with
   /// a [SmartschoolSessionExpiredError], instead of being sent again after
   /// logging in (see [SmartschoolClient.postFormResponse]).
-  Future<dynamic> _ownersRpc(
+  Future<dynamic> _rpc(
+    String path,
     String method,
     List<Object?> params, {
     bool retryAfterLogin = true,
   }) async {
     final response = await _client.postFormResponse(
-      _ownersRpcPath,
+      path,
       _rpcFields(method, params, DateTime.now()),
       retryAfterLogin: retryAfterLogin,
     );
@@ -623,6 +913,67 @@ class SkoreService {
             'object.',
           ),
     ];
+  }
+
+  /// Parses the `result` of the gradebooks service's `getCourses(userID)`
+  /// for teacher [ownerId]: a list of
+  /// `{"id": "34826", "icon": "IconLib:laptop", "name": "Digitale
+  /// vaardigheden", "class": "5WW1", "readers": [], "writers": [320]}`, the
+  /// gradebook ID as a string and the teacher IDs as numbers (numeric
+  /// strings are taken too).
+  ///
+  /// An entry without its `readers` or `writers` list is refused rather than
+  /// read as empty: a save built on it would take those teachers off.
+  static List<SkoreGradebookShares> parseGradebookShares(
+    dynamic result, {
+    required int ownerId,
+  }) {
+    if (result is! List) {
+      throw SmartschoolSkoreError(
+        'Skore gave the gradebooks of teacher $ownerId as '
+        '${result.runtimeType} instead of a list.',
+      );
+    }
+    return [
+      for (final entry in result)
+        if (entry is Map)
+          _gradebookShares(entry, ownerId)
+        else
+          throw SmartschoolSkoreError(
+            'Skore gave a gradebook of teacher $ownerId as '
+            '${entry.runtimeType} instead of an object.',
+          ),
+    ];
+  }
+
+  static SkoreGradebookShares _gradebookShares(
+    Map<dynamic, dynamic> entry,
+    int ownerId,
+  ) {
+    final gradebookId = _id(entry['id'], 'a gradebook');
+    List<int> teachers(String key) {
+      final ids = entry[key];
+      if (ids is! List) {
+        throw SmartschoolSkoreError(
+          'Skore gave the $key of gradebook $gradebookId as '
+          '${_jsonPreview(ids)} instead of a list.',
+        );
+      }
+      return [
+        for (final id in ids)
+          _id(id, 'one of the $key of gradebook $gradebookId'),
+      ];
+    }
+
+    return SkoreGradebookShares(
+      gradebookId: gradebookId,
+      ownerId: ownerId,
+      className: '${entry['class'] ?? ''}'.trim(),
+      courseName: '${entry['name'] ?? ''}'.trim(),
+      icon: '${entry['icon'] ?? ''}'.trim(),
+      readerIds: teachers('readers'),
+      writerIds: teachers('writers'),
+    );
   }
 
   // ---------------------------------------------------------------------------

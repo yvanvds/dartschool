@@ -405,7 +405,10 @@ class SmartschoolPresenceError extends SmartschoolException {
 /// before the save refuses the change (#71): the course is not in the class
 /// or is a group header, the assignment is not one of that course, the
 /// teacher already has an assignment on that course or is not one Skore lets
-/// assign. From those two methods, this type (and its subtype
+/// assign. So do `SkoreService.shareGradebook` and `unshareGradebook` (#74):
+/// the teacher is the owner of the gradebook, the gradebook is not one of the
+/// owner's, or (to share) the teacher is not one of Skore's teachers. From
+/// those four methods, this type (and its subtype
 /// [SmartschoolSkoreMyGroupsError]) always means that **nothing was saved**.
 /// A save that went out without Skore confirming it is a
 /// [SmartschoolSkoreSaveUnconfirmedError] instead.
@@ -455,13 +458,22 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
 /// went out, before an answer came in ([cause] holds the failure, typically
 /// a [SmartschoolConnectionError]).
 ///
+/// Also thrown by `SkoreService.shareGradebook` and `unshareGradebook` (#74)
+/// when Skore answers their save (`saveShared`) with anything other than
+/// `state` 1, when no usable answer came in, and when reading the owner's
+/// gradebooks again afterwards fails, or does not show the gradebook with
+/// exactly the readers and writers saved. Read the gradebooks again
+/// (`SkoreService.getGradebookShares`) before trying again. That save holds
+/// the complete readers and writers of one gradebook, so sending it again
+/// does not change the outcome.
+///
 /// Deliberately not a [SmartschoolSkoreError], so a `catch` meant for the
 /// failures where nothing was saved does not catch it.
 class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
   /// The failure of the save when no usable answer came in, such as a
   /// [SmartschoolConnectionError] or a [SmartschoolSkoreError] about the
-  /// answer; `null` when Skore answered with a result that does not confirm
-  /// the save.
+  /// answer, or of the read that checks a gradebook share afterwards; `null`
+  /// when Skore answered with a result that does not confirm the save.
   final Object? cause;
 
   const SmartschoolSkoreSaveUnconfirmedError(super.message, {this.cause});

@@ -16,7 +16,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
-- Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried.
+- Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
 
 ---
 
@@ -612,11 +612,11 @@ dart run example/set_late_example.dart
 
 ## `SkoreService`
 
-Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). And assigns a teacher to a course of a class there (`addTeacher`, `replaceTeacher`); nothing else changes Skore, and nothing deletes an assignment.
+Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). And assigns a teacher to a course of a class there (`addTeacher`, `replaceTeacher`). It also reads the gradebooks of a teacher with the teachers they are shared with, and shares a gradebook or stops sharing it (`shareGradebook`, `unshareGradebook`), as Skore's "share gradebooks" manager does (Puntenboeken > the share button next to a teacher). Nothing else changes Skore, and nothing deletes an assignment or a gradebook.
 
-> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen), as a Skore administrator has.
+> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has.
 
-> **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`).
+> **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`). A gradebook ID is the ID of the assignment that holds the gradebook (`SkoreAssignment.id`); its owner is that assignment's teacher.
 
 ```dart
 final skore = SkoreService(client);
@@ -639,6 +639,9 @@ final teachers = await skore.getTeachers();        // List<SkoreTeacher>
 | `getTeachers()` | `Future<List<SkoreTeacher>>` | The teachers that can be assigned to a course. |
 | `addTeacher({classId, courseId, teacherId})` | `Future<SkoreAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it. |
 | `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it. |
+| `getGradebookShares(ownerId)` | `Future<List<SkoreGradebookShares>>` | The gradebooks of a teacher, each with the teachers who may read it and those who may read and change it. Empty for a teacher without gradebooks, and for a user ID Skore does not know. |
+| `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShares>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again. |
+| `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShares>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again. |
 
 A course code is **not** unique within a class: a course and its sub-course can both end in the same `[CODE]`. Tell them apart by `id` (or `label`). Group headers (`isGroupHeader`) are headings for the courses under them and cannot get a teacher.
 
@@ -672,11 +675,45 @@ The example asks for confirmation before it saves, and reads the class again aft
 dart run example/skore_assign_teacher_example.dart CLASS_ID COURSE_ID TEACHER_ID [ASSIGNMENT_ID]
 ```
 
+### Sharing a gradebook
+
+> **Warning:** these calls change the live Skore too, and need Skore admin rights.
+
+```dart
+// Every year: share the titularis's "Digitale vaardigheden" gradebook of a
+// class with the other teachers of the class.
+final gradebooks = await skore.getGradebookShares(146); // List<SkoreGradebookShares>
+final shared = await skore.shareGradebook(
+    ownerId: 146, gradebookId: 34826, teacherId: 320, access: SkoreShareAccess.write);
+print('${shared.readerIds} ${shared.writerIds}');
+
+// And undo it.
+await skore.unshareGradebook(ownerId: 146, gradebookId: 34826, teacherId: 320);
+```
+
+Both go through Skore's `saveShared`. The save holds **this gradebook only**, with its complete new readers and writers: the teachers it is already shared with keep their access, unless the change is about them, and the owner's other gradebooks are not touched. A teacher has one kind of access: sharing with write access takes them off the readers, and the other way round.
+
+Before the save, they read the owner's gradebooks again, and refuse with a `SmartschoolSkoreError`, saving nothing:
+
+- the owner as the teacher (Skore never offers the owner as a reader or a writer);
+- a gradebook that is not one of the owner's (also for a user ID Skore does not know), so a gradebook is never saved under another owner;
+- for `shareGradebook`, a teacher who is not in `getTeachers()`. `unshareGradebook` can take off a teacher who is no longer in it, such as one who has left the school.
+
+When nothing changes (already shared with that access, or not shared when unsharing), nothing is saved and the gradebook is returned as read.
+
+Skore answers the save with `state` 1. The call then reads the owner's gradebooks again and checks that the gradebook has exactly the readers and writers saved; when the answer or that read does not confirm the save, it throws a `SmartschoolSkoreSaveUnconfirmedError`: read the gradebooks again before trying again. Since the save holds the complete lists, sending it again does not change the outcome, so (unlike `addTeacher` and `replaceTeacher`) it is retried once after logging in again, as a read is. The checks and the save are separate requests, so do not change the shares of the same gradebook from two places at once.
+
+The example shows the gradebook, asks for confirmation before it saves, and reads the gradebooks again afterwards:
+
+```bash
+dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHER_ID read|write|remove
+```
+
 ### Errors
 
-- `SmartschoolSkoreError` — Skore answered with something the service cannot use: an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape. The session was accepted: signing in again does not help. `addTeacher` and `replaceTeacher` also throw it when a check before the save refuses the change; from them, it always means nothing was saved.
+- `SmartschoolSkoreError` — Skore answered with something the service cannot use: an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers). The session was accepted: signing in again does not help. `addTeacher`, `replaceTeacher`, `shareGradebook` and `unshareGradebook` also throw it when a check before the save refuses the change; from them, it always means nothing was saved.
 - `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
-- `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again. Not a `SmartschoolSkoreError`.
+- `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher`, `replaceTeacher`, `shareGradebook` or `unshareGradebook` sent the save, but Skore's answer (for a share, also the read afterwards) does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read again. Not a `SmartschoolSkoreError`.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry. The save of `addTeacher` and `replaceTeacher` is not retried: it fails at once.
 
 ---
@@ -769,6 +806,9 @@ Returned by `SkoreService.getCourses()`. A course row (`id`, `classId`, `name`, 
 ### `SkoreTeacher`
 Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID), `name` (`"Last, First"`).
 
+### `SkoreGradebookShares`
+Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshareGradebook()`. A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
+
 ---
 
 ## Enums
@@ -782,6 +822,7 @@ Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID)
 | `LvsCopy` | `none` (`dontCopyToLVS`), `store` (`copyToLVS`), `storeConfidential` (`copyToLVSAndMarkAsPrivate`) |
 | `MessageLabel` | `noFlag`, `greenFlag`, `yellowFlag`, `redFlag`, `blueFlag` |
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
+| `SkoreShareAccess` | `read` (Skore's `readers`), `write` (Skore's `writers`: read and change) |
 
 ---
 
@@ -801,9 +842,9 @@ Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID)
 | `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient). Both throw it too when the form does not offer the LVS copy or the delayed send that `params.options` asks for (#47) |
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
-| `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` refuses the change before the save: nothing was saved. Not a session problem |
+| `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
 | `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
-| `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Not a `SmartschoolSkoreError` |
+| `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

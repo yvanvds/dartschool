@@ -2,7 +2,9 @@
 // `getArchiveHeaders()` return at most 50 headers, the newest 50 of the box,
 // with no way to get the older ones. And for #76: when Smartschool restarted
 // the paging halfway, `getHeaderPages` ended as after the last page, so that
-// `getAllHeaders` returned part of the box without telling.
+// `getAllHeaders` returned part of the box without telling. And for #80: two
+// pagings of the same box on one client could skip each other's pages
+// without an error, since they share Smartschool's one position of the box.
 //
 // How Smartschool pages, verified live (read-only, `postboxes / message list`
 // and `continue_messages` on the inbox, the sent box, the archive, the drafts
@@ -43,6 +45,7 @@
 // (the shape of the live answers, with made-up names), from pages built by
 // `_page`, or from `_Account`, which keeps the paging position per box as
 // Smartschool does.
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -204,6 +207,11 @@ String Function(_Request) _pages(
 /// a `continue_messages` answers with the page at the position and moves it
 /// on. Past the last page it answers with `rebuildfinish` only. Clients that
 /// share an account have sessions of their own, but share its positions.
+///
+/// The IDs of a box are in descending order; a `message list` with `sortKey`
+/// `asc` gets them the other way round. A `continue_messages` names no order,
+/// so it goes on in the order of the box's last `message list` (assumed, not
+/// checked live; #80's tests use it to show a page of another listing).
 class _Account {
   _Account(this.boxes);
 
@@ -211,11 +219,13 @@ class _Account {
 
   final Map<String, List<int>> boxes;
   final Map<String, int> _position = {};
+  final Map<String, bool> _ascending = {};
 
   String answer(_Request request) {
     final box = '${request.params['boxType']}/${request.params['boxID']}';
-    final ids = boxes[box]!;
     final first = request.action == 'message list';
+    if (first) _ascending[box] = request.params['sortKey'] == 'asc';
+    final ids = _ascending[box]! ? boxes[box]!.reversed.toList() : boxes[box]!;
     final page = first ? 0 : _position[box]!;
     _position[box] = page + 1;
     final start = page * pageSize;
@@ -794,6 +804,311 @@ void main() {
           ),
         ),
       );
+    });
+  });
+
+  group('pagings of a box on one client (#80)', () {
+    // Five pages of two headers.
+    final box = [for (var id = 10; id > 0; id--) id];
+    final restarted = isA<SmartschoolPagingRestartedError>();
+    final restartedHere = restarted.having(
+      (e) => e.message,
+      'message',
+      allOf(
+        contains('boxType inbox, boxID 0'),
+        contains('listed again on this client'),
+        contains('List the box again'),
+      ),
+    );
+
+    /// The actions of [server]'s requests.
+    List<String> actions(_Smartschool server) =>
+        server.requests.map((r) => r.action).toList();
+
+    /// The actions of a paging of [box], from its `message list` on.
+    const wholeBox = [
+      'message list',
+      'continue_messages',
+      'continue_messages',
+      'continue_messages',
+      'continue_messages',
+    ];
+
+    /// Fails a paging that hangs, rather than let the test time out.
+    Future<T> inTime<T>(Future<T> future) =>
+        future.timeout(const Duration(seconds: 5));
+
+    test('a paging started while another runs makes the first one fail '
+        'before its next page, rather than skip one: the issue\'s '
+        'interleaving', () async {
+      final server = await serve(_Account({'inbox/0': box}).answer);
+      final messages = MessagesService(client);
+      final a = StreamIterator(messages.getHeaderPages());
+      final b = StreamIterator(messages.getHeaderPages());
+
+      // A and B each send their message list and get the first page.
+      expect(await a.moveNext(), isTrue);
+      expect(_ids(a.current), [10, 9]);
+      expect(await b.moveNext(), isTrue);
+      expect(_ids(b.current), [10, 9]);
+
+      // A's continue_messages would get the second page and leave B the
+      // third: A fails without sending it.
+      await expectLater(
+        a.moveNext(),
+        throwsA(
+          restartedHere.having(
+            (e) => e.message,
+            'message',
+            contains('after 2 headers'),
+          ),
+        ),
+      );
+      final ofB = _ids(b.current);
+      while (await b.moveNext()) {
+        ofB.addAll(_ids(b.current));
+      }
+
+      expect(ofB, box);
+      expect(actions(server), ['message list', ...wholeBox]);
+    });
+
+    test('two getAllHeaders of a box at the same time run one after the '
+        'other, also on two services of the client, and both get the whole '
+        'box', () async {
+      final server = await serve(_Account({'inbox/0': box}).answer);
+
+      final results = await inTime(
+        Future.wait([
+          MessagesService(client).getAllHeaders(),
+          MessagesService(client).getAllHeaders(),
+        ]),
+      );
+
+      expect(results.map(_ids), [box, box]);
+      expect(actions(server), [...wholeBox, ...wholeBox]);
+    });
+
+    test('a getHeaderPages waits for a getAllHeaders of the box that '
+        'runs', () async {
+      final server = await serve(_Account({'inbox/0': box}).answer);
+      final messages = MessagesService(client);
+
+      final all = messages.getAllHeaders();
+      final pages = messages.getHeaderPages().toList();
+
+      expect(_ids(await inTime(all)), box);
+      expect(_ids((await inTime(pages)).expand((page) => page)), box);
+      expect(actions(server), [...wholeBox, ...wholeBox]);
+    });
+
+    test('a getAllHeaders in the listener of a getHeaderPages of the box '
+        'goes ahead rather than wait for it; the paging then fails', () async {
+      final server = await serve(_Account({'inbox/0': box}).answer);
+      final messages = MessagesService(client);
+      final pages = <List<int>>[];
+      List<ShortMessage>? inner;
+
+      // Waiting for the paging would never end: it goes on only once the
+      // listener is done with its page.
+      await expectLater(
+        inTime(() async {
+          await for (final page in messages.getHeaderPages()) {
+            pages.add(_ids(page));
+            inner ??= await messages.getAllHeaders();
+          }
+        }()),
+        throwsA(restartedHere),
+      );
+
+      expect(pages, [
+        [10, 9],
+      ]);
+      expect(_ids(inner!), box);
+      expect(actions(server), ['message list', ...wholeBox]);
+    });
+
+    test('a getHeaderPages whose listener stops without cancelling does not '
+        'hold the box; it fails once its listener goes on', () async {
+      final server = await serve(_Account({'inbox/0': box}).answer);
+      final messages = MessagesService(client);
+      final pages = <List<int>>[];
+      final firstPage = Completer<void>();
+      final ended = Completer<void>();
+      late StreamSubscription<List<ShortMessage>> paging;
+      paging = messages.getHeaderPages().listen(
+        (page) {
+          pages.add(_ids(page));
+          paging.pause();
+          if (!firstPage.isCompleted) firstPage.complete();
+        },
+        onError: ended.completeError,
+        onDone: ended.complete,
+        cancelOnError: true,
+      );
+      await firstPage.future;
+
+      expect(_ids(await inTime(messages.getAllHeaders())), box);
+
+      paging.resume();
+      await expectLater(inTime(ended.future), throwsA(restartedHere));
+      expect(pages, [
+        [10, 9],
+      ]);
+      expect(actions(server), ['message list', ...wholeBox]);
+    });
+
+    test('a getHeaders of the box between two pages makes the paging fail '
+        'before it asks for the next one', () async {
+      final server = await serve(_Account({'inbox/0': box}).answer);
+      final paging = StreamIterator(MessagesService(client).getHeaderPages());
+
+      expect(await paging.moveNext(), isTrue);
+      // On another service of the client, in another order: the next
+      // continue_messages would get the second page of that listing.
+      await MessagesService(client).getHeaders(sortOrder: SortOrder.asc);
+
+      await expectLater(paging.moveNext(), throwsA(restartedHere));
+      expect(actions(server), ['message list', 'message list']);
+    });
+
+    test('a getHeaders of the box sent while a page is asked for makes the '
+        'paging fail without that page', () async {
+      var listed = false;
+      final server = await serve(
+        _Account({'inbox/0': box}).answer,
+        // Smartschool gets the getHeaders before the continue_messages that
+        // was on its way, and answers it with the second page of that
+        // listing.
+        before: (request) async {
+          if (request.action != 'continue_messages' || listed) return;
+          listed = true;
+          await MessagesService(client).getHeaders(sortOrder: SortOrder.asc);
+        },
+      );
+
+      final pages = await pagesBefore(
+        MessagesService(client).getHeaderPages(),
+        restartedHere,
+      );
+
+      expect(pages, [
+        [10, 9],
+      ]);
+      expect(actions(server), [
+        'message list',
+        'continue_messages',
+        'message list',
+      ]);
+    });
+
+    test('pagings and listings of different boxes do not wait for or cut '
+        'into each other', () async {
+      final sentBox = [for (var id = 25; id > 20; id--) id];
+      final server = await serve(
+        _Account({'inbox/0': box, 'outbox/0': sentBox}).answer,
+      );
+      final messages = MessagesService(client);
+      final inbox = StreamIterator(messages.getHeaderPages());
+      final sent = StreamIterator(
+        messages.getHeaderPages(boxType: BoxType.sent),
+      );
+      final ofInbox = <int>[];
+      final ofSent = <int>[];
+
+      // Page by page in turns, while the sent box has pages.
+      while (await sent.moveNext()) {
+        ofSent.addAll(_ids(sent.current));
+        if (await inbox.moveNext()) ofInbox.addAll(_ids(inbox.current));
+      }
+      // A listing of the sent box, then the rest of the inbox.
+      await messages.getHeaders(boxType: BoxType.sent);
+      while (await inbox.moveNext()) {
+        ofInbox.addAll(_ids(inbox.current));
+      }
+
+      expect(ofSent, sentBox);
+      expect(ofInbox, box);
+      expect(server.requests, hasLength(9));
+    });
+
+    test('a getAllHeaders that fails, or stops at limit, lets the next one '
+        'of the box go', () async {
+      final account = _Account({'inbox/0': box});
+      var requests = 0;
+      final server = await serve(
+        (request) => ++requests == 2
+            ? '<html><body>Login</body></html>'
+            : account.answer(request),
+      );
+      final messages = MessagesService(client);
+
+      final failing = messages.getAllHeaders();
+      final limited = messages.getAllHeaders(limit: 3);
+      final whole = messages.getAllHeaders();
+
+      await expectLater(
+        inTime(failing),
+        throwsA(isA<SmartschoolAuthenticationError>()),
+      );
+      expect(_ids(await inTime(limited)), [10, 9, 8]);
+      expect(_ids(await inTime(whole)), box);
+      expect(actions(server), [
+        'message list',
+        'continue_messages',
+        'message list',
+        'continue_messages',
+        ...wholeBox,
+      ]);
+    });
+
+    test('getAllArchiveHeaders and a getAllHeaders of the archive box ID '
+        'take turns', () async {
+      // The Messages page names no archive folder: its ID falls back to 208.
+      final server = await serve(_Account({'inbox/208': box}).answer);
+      final messages = MessagesService(client);
+
+      final results = await inTime(
+        Future.wait([
+          messages.getAllArchiveHeaders(),
+          messages.getAllHeaders(boxId: 208),
+        ]),
+      );
+
+      expect(results.map(_ids), [box, box]);
+      expect(actions(server), [...wholeBox, ...wholeBox]);
+    });
+
+    test('another client of the account is not seen coming: its listing '
+        'restarts the paging, which fails as in #76', () async {
+      // The #76 test above, with a paging on the second client instead of a
+      // getHeaders: the first client's paging is not told of it, and only
+      // Smartschool's answer shows the restart.
+      final account = _Account({'inbox/0': box});
+      final (other, otherServer) = await otherSession(account.answer);
+      final server = await serve(account.answer);
+      final paging = StreamIterator(MessagesService(client).getHeaderPages());
+
+      expect(await paging.moveNext(), isTrue);
+      expect(await paging.moveNext(), isTrue);
+      expect(await MessagesService(other).getHeaderPages().first, hasLength(2));
+
+      await expectLater(
+        paging.moveNext(),
+        throwsA(
+          restarted.having(
+            (e) => e.message,
+            'message',
+            contains('Smartschool restarted the paging'),
+          ),
+        ),
+      );
+      expect(actions(server), [
+        'message list',
+        'continue_messages',
+        'continue_messages',
+      ]);
+      expect(actions(otherServer), ['message list']);
     });
   });
 

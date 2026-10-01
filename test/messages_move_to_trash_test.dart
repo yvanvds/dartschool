@@ -20,9 +20,10 @@
 // And for issue #59: `moveToTrash` threw a `SmartschoolParsingError` ("a
 // non-XML response") when Smartschool deleted nothing, instead of returning
 // `null`. Seen live by the live suite of #57 (`moveToTrash(0)`, ID 0 names no
-// message): Smartschool answers such a `quick delete` with an empty body. An
-// empty body is also how Smartschool refuses the session of an XML POST, with
-// a `401` (#8), so only an empty `200` means that nothing was deleted.
+// message): Smartschool answered that `quick delete` with an empty body (not
+// always: a `quick delete` is never a guaranteed no-op, #61). An empty body
+// is also how Smartschool refuses the session of an XML POST, with a `401`
+// (#8), so only an empty `200` means that nothing was deleted.
 //
 // The fake Smartschool below answers `quick delete` from canned XML.
 import 'dart:io';

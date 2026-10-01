@@ -19,9 +19,12 @@
 //   the end, also when a test failed: the sent-box copies first, then the
 //   inbox copies, once each, after checking the run's subject and that the
 //   own account sent it, with moveToTrashFrom, which names the box of the
-//   copy (#60); it never sends a quick delete (moveToTrash) for a message
-//   of the run, which names the ID only (one of a message in the trash
-//   deletes it for good, #19), and never empties the trash;
+//   copy (#60); it never empties the trash;
+// - it sends no quick delete (moveToTrash) at all: that names the ID only,
+//   Smartschool acts on whichever copy of the ID its session state points
+//   to, and one of a copy in the trash deletes it for good (#19), so it is
+//   never a guaranteed no-op, not even for ID 0 (#61); and it moves no ID it
+//   did not send in the same run, 0 included;
 // - it logs in at most once (usually not at all: the session is kept in
 //   `.dart_tool/live_cache`, support/live_client.dart), and never with wrong
 //   credentials; it prints no credential and no cookie.
@@ -234,18 +237,6 @@ void main() {
           throwsArgumentError,
         );
         expect(run.guard.requestsSent, requests, reason: 'requests sent');
-      });
-
-      test('moveToTrash(0): what Smartschool answers when it deletes nothing '
-          '(#19), and moveToTrash returns null (#59)', () async {
-        // ID 0 names no message. Seen live on 2026-10-01: Smartschool answers
-        // with an empty body, which moveToTrash reports as nothing deleted
-        // (null) since #59; it threw a SmartschoolParsingError before.
-        final status = await messages.moveToTrash(0);
-        final answer = run.guard.quickDeleteAnswers[0];
-        print('Smartschool answered: "$answer"');
-        expect(answer?.trim(), isEmpty, reason: "Smartschool's answer");
-        expect(status, isNull);
       });
 
       test('moveToTrashFrom moves both copies of every message of the run to '

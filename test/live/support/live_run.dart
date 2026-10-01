@@ -251,8 +251,9 @@ class LiveRun {
   /// names its box, in Smartschool's web client too, and was seen live to
   /// take the copy of that box and leave the other copy alone, also with
   /// the other copy in the trash (#60). It never sends a `quick delete`
-  /// (`moveToTrash`) for a message of the run: that names the ID only, and
-  /// one of a message in the trash deletes it for good (#19).
+  /// (`moveToTrash`): that names the ID only, Smartschool acts on whichever
+  /// copy of the ID its session state points to, and one of a message in
+  /// the trash deletes it for good (#19, #61).
   ///
   /// It looks for the run's subjects in each box, and moves a copy only
   /// when:

@@ -15,20 +15,26 @@
 //   registered, that stores the message in the LVS or schedules it, whose
 //   subject lacks the run's tag, or that replies to a message the run did not
 //   send to the own account only;
-// - moving a message to the trash that the run did not send and check, or
-//   one it moved there already (a second `quick delete` could delete it for
-//   good, #19); with `quickmove messages`, which names the box of the copy
-//   it moves (#60): moving a copy the run did not check in that box, a copy
-//   it moved already, a copy out of another box than the inbox or the sent
-//   box (or a folder of one), or to another box than the trash; and a
-//   `quick delete` of a message of which a copy was moved, or a move of a
-//   copy of one that had a `quick delete` (that names no box);
+// - a `quick delete` (MessagesService.moveToTrash), of any ID, 0 included:
+//   it names no box, Smartschool acts on whichever copy of the ID its own
+//   session state points to, and one of a copy in the trash deletes it for
+//   good (#19). Smartschool once answered a `quick delete` of ID 0, which
+//   names no message, as one in the trash (#61);
+// - moving a copy of a message to the trash with `quickmove messages`
+//   (MessagesService.moveToTrashFrom, which names the box of the copy, #60)
+//   unless it is a copy of a message this run sent: one that Smartschool
+//   listed in that box (`message list`) with the run's subject, and that the
+//   run checked there; a second move of a copy; and a move out of another
+//   box than the inbox or the sent box (or a folder of one), or to another
+//   box than the trash. So the run moves no ID it did not send, 0 included
+//   (#61);
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
 // (test/support/no_network.dart), whatever the library makes of the error.
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
+import 'package:flutter_smartschool/src/xml_interface.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:test/test.dart';
 import 'package:xml/xml.dart';
@@ -107,12 +113,10 @@ class LiveWireGuard extends Interceptor {
   /// reply to.
   final Set<int> _replyTargets = {};
 
-  /// The messages the run may move to the trash: those it sent and checked,
-  /// and `0`, which names no message.
-  final Set<int> _trashable = {0};
-
-  /// The messages the run asked to move to the trash with a `quick delete`.
-  final Set<int> _trashRequested = {};
+  /// The copies of the run's messages that Smartschool listed, as (ID, box):
+  /// the headers with the run's subject in its answers to a `message list`
+  /// of the inbox or the sent box itself (not of a folder of it).
+  final Set<(int, String)> _listed = {};
 
   /// The copies of messages the run may move to the trash out of their box
   /// (`quickmove messages`, MessagesService.moveToTrashFrom), as (ID, box):
@@ -125,9 +129,6 @@ class LiveWireGuard extends Interceptor {
   /// How often each step of a login went out.
   final Map<String, int> _loginSteps = {};
 
-  /// Smartschool's answers to `quick delete`, by message ID, as they came in.
-  final Map<int, String> quickDeleteAnswers = {};
-
   /// Smartschool's answers to the moves to the trash out of a box, by
   /// (message ID, box), as they came in.
   final Map<(int, String), String> trashMoveAnswers = {};
@@ -136,12 +137,11 @@ class LiveWireGuard extends Interceptor {
   /// to the own account only.
   void allowReplyTo(int msgId) => _replyTargets.add(msgId);
 
-  /// Lets the run move message [msgId] to the trash, once: a message it sent
-  /// and checked.
-  void allowTrash(int msgId) => _trashable.add(msgId);
-
   /// Lets the run move the copy of message [msgId] in [box] (the inbox or
   /// the sent box) to the trash, once: a message it sent and checked there.
+  ///
+  /// The guard lets the move out only for a copy that Smartschool listed in
+  /// [box] with the run's subject too, whatever this allows (#61).
   void allowTrashFrom(int msgId, BoxType box) =>
       _movable.add((msgId, box.value));
 
@@ -275,25 +275,13 @@ class LiveWireGuard extends Interceptor {
     }
     if (_readActions.contains(action)) return null;
     if (action == 'quickmove messages') return _moveRefusal(xml);
-    if (action != 'quick delete') {
-      return 'the live suite sends no "$action" command';
+    if (action == 'quick delete') {
+      return 'the live suite sends no quick delete (moveToTrash), of any '
+          'ID: it names no box, Smartschool acts on whichever copy of the ID '
+          'its session state points to, and one of a copy in the trash '
+          'deletes it for good (#19, #61)';
     }
-    final id = int.tryParse(_param(xml, 'msgID') ?? '');
-    if (id == null) return 'its quick delete names no message';
-    if (!_trashable.contains(id)) {
-      return 'message $id is not one this run sent and checked: the run '
-          'moves only those to the trash (and 0, which names no message)';
-    }
-    if (_moveRequested.any((copy) => copy.$1 == id)) {
-      return 'a copy of message $id was moved to the trash already in this '
-          'run: a quick delete names no box, and one of a message in the '
-          'trash could delete it for good (#19, #60)';
-    }
-    if (!_trashRequested.add(id)) {
-      return 'message $id was moved to the trash already in this run: a '
-          'second quick delete could delete it for good (#19)';
-    }
-    return null;
+    return 'the live suite sends no "$action" command';
   }
 
   /// Why the `quickmove messages` command [xml] may not go out, or `null`.
@@ -301,12 +289,18 @@ class LiveWireGuard extends Interceptor {
   /// It moves one copy of a message, the one in the box it names, as the
   /// web client does when a message is dragged onto the trash (#60). The
   /// live suite sends it only to move the inbox or sent-box copy of a
-  /// message it sent and checked to the trash, once per copy. It may do so
-  /// while the other copy is in the trash: that the move takes the copy of
-  /// the box it names, and leaves the other one alone, was seen live.
+  /// message it sent to the trash, once per copy: a copy that Smartschool
+  /// listed in that box with the run's subject, and that the run checked
+  /// there. It may do so while the other copy is in the trash: that the move
+  /// takes the copy of the box it names, and leaves the other one alone, was
+  /// seen live.
   String? _moveRefusal(XmlDocument xml) {
     final id = int.tryParse(_param(xml, 'msgID') ?? '');
     if (id == null) return 'its move names no message';
+    if (id <= 0) {
+      return 'it moves message $id, which names no message: the live suite '
+          'moves only messages it sent (#61)';
+    }
     if (_param(xml, 'toBoxType') != BoxType.trash.value ||
         _param(xml, 'toBoxID') != '0') {
       return 'it moves message $id elsewhere than to the trash';
@@ -319,13 +313,13 @@ class LiveWireGuard extends Interceptor {
     if (_param(xml, 'boxID') != '0') {
       return 'it moves message $id out of a folder of the $box';
     }
+    if (!_listed.contains((id, box))) {
+      return 'Smartschool did not list message $id in the $box with the '
+          "run's subject: it is not a message this run sent (#61)";
+    }
     if (!_movable.contains((id, box))) {
       return 'the $box copy of message $id is not one this run sent and '
           'checked there';
-    }
-    if (_trashRequested.contains(id)) {
-      return 'message $id was moved to the trash with a quick delete already '
-          'in this run, which names no box';
     }
     if (!_moveRequested.add((id, box))) {
       return 'the $box copy of message $id was moved to the trash already in '
@@ -425,10 +419,8 @@ class LiveWireGuard extends Interceptor {
     if ((fields['sendDate'] ?? '').isNotEmpty) {
       return 'it schedules the message for later';
     }
-    final subject = fields['subject'] ?? '';
-    final tagged = '$liveSubjectPrefix $runTag ';
-    if (!subject.startsWith(tagged) && !subject.startsWith('Re: $tagged')) {
-      return 'its subject does not start with "$tagged"';
+    if (!_isRunSubject(fields['subject'] ?? '')) {
+      return 'its subject does not start with "$_tagged"';
     }
     if (submits >= maxSubmits) {
       return 'the run sent $maxSubmits messages already, its maximum';
@@ -555,19 +547,51 @@ class LiveWireGuard extends Interceptor {
     final command = data is Map ? data['command'] : null;
     if (command is! String) return;
     final xml = XmlDocument.parse(command);
-    final id = int.tryParse(_param(xml, 'msgID') ?? '');
-    if (id == null) return;
     switch (_text(xml, 'action')) {
-      case 'quick delete':
-        quickDeleteAnswers[id] = body;
+      case 'message list':
+        _recordListed(xml, body);
       case 'quickmove messages':
+        final id = int.tryParse(_param(xml, 'msgID') ?? '');
+        if (id == null) return;
         trashMoveAnswers[(id, _param(xml, 'boxType') ?? '')] = body;
+    }
+  }
+
+  /// Keeps the copies of the run's messages that Smartschool's answer [body]
+  /// to the `message list` [command] lists: the headers with the run's
+  /// subject, read as MessagesService.getHeaders reads them, when the list
+  /// is of the inbox or the sent box itself (not of a folder of it). An
+  /// answer the guard cannot read lists none, so no move of what it lists
+  /// goes out.
+  void _recordListed(XmlDocument command, String body) {
+    final box = _param(command, 'boxType') ?? '';
+    if (box != BoxType.inbox.value && box != BoxType.sent.value) return;
+    if (_param(command, 'boxID') != '0') return;
+    final List<ShortMessage> headers;
+    try {
+      headers = XmlInterface.parseResponse(
+        body,
+        './/messages/message',
+      ).map(ShortMessage.fromXml).toList();
+    } on Object {
+      return; // The library reports what it cannot read itself.
+    }
+    for (final header in headers) {
+      if (_isRunSubject(header.subject)) _listed.add((header.id, box));
     }
   }
 
   // -------------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------------
+
+  /// The start of the subject of every message of the run, after `Re: ` for
+  /// a reply.
+  String get _tagged => '$liveSubjectPrefix $runTag ';
+
+  /// Whether [subject] is the subject of a message of the run.
+  bool _isRunSubject(String subject) =>
+      subject.startsWith(_tagged) || subject.startsWith('Re: $_tagged');
 
   static String _key(MessageSearchUser user) =>
       '${user.userId}|${user.ssId}|${user.userLt}';

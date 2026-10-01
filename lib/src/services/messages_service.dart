@@ -680,29 +680,36 @@ class MessagesService {
     return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
   }
 
-  /// Moves message [msgId] to the trash.
+  /// Moves message [msgId] to the trash, or deletes it for good: prefer
+  /// [moveToTrashFrom], which names the box of the copy it moves.
   ///
-  /// Sends Smartschool's `quick delete`, as the web client's delete button
-  /// does. For a message that is in the trash already, the web client asks to
-  /// confirm deleting it for good instead: do not call this on one.
+  /// Sends Smartschool's `quick delete`, as the trash icon of a message in
+  /// the web client's list does. The request names the ID only, not a box
+  /// or a copy: Smartschool acts on whichever copy of the ID its own session
+  /// state points to, which the caller does not control. That can be a copy
+  /// in the trash, and a `quick delete` of a message in the trash deletes it
+  /// for good (#19; the web client asks to confirm that first). So this is
+  /// never a guaranteed no-op, not even for an ID that names no message:
+  /// Smartschool answered a `quick delete` of ID `0` with an empty body
+  /// twice, and later, in the same session, as one of a message in the
+  /// trash (a `finish quick delete` with `boxType` `trash`, #61). Do not call
+  /// this for an ID that is not a message of the account, nor for one that
+  /// may have a copy in the trash.
   ///
-  /// The request names the message only, not its box: Smartschool picks the
-  /// box (once it answered a `quick delete` of ID `0` as one in the trash,
-  /// #61). A message the account sent to itself has the same ID in the inbox
-  /// and in the sent box: this moved its inbox copy to the trash and left
-  /// the sent-box copy (seen live, right after listing the inbox). Then the
-  /// ID is in the trash, so do not call this again for it: use
-  /// [moveToTrashFrom], which names the box, to move the sent-box copy, or
-  /// either copy (#60).
+  /// A message the account sent to itself has the same ID in the inbox and
+  /// in the sent box: this moved its inbox copy to the trash and left the
+  /// sent-box copy (seen live, right after listing the inbox). Then the ID
+  /// is in the trash, so do not call this again for it. [moveToTrashFrom]
+  /// moves the copy of the box it names, never one in the trash (#60).
   ///
   /// Returns the deletion status from Smartschool's `finish quick delete`
   /// answer, which the web client takes as the message deleted
   /// ([MessageDeletionStatus.isDeleted] is `true`; see
-  /// [MessageDeletionStatus.fromXml]), or `null` when the answer is not a
-  /// `finish quick delete`. Smartschool answers with an empty body when it
-  /// deletes nothing, as seen for ID `0`, which names no message; that
-  /// returns `null` too (#59). Whether it answers the same for the ID of
-  /// another user's message was not checked.
+  /// [MessageDeletionStatus.fromXml]); its [MessageDeletionStatus.boxType]
+  /// is the box of the copy Smartschool acted on (`trash`: a copy in the
+  /// trash, which a `quick delete` deletes for good). Returns `null` when the
+  /// answer is not a `finish quick delete`, also when it is an empty body,
+  /// as Smartschool answered when it deleted nothing (seen for ID `0`, #59).
   ///
   /// An answer that is not XML and not empty still throws (as for every
   /// command): a [SmartschoolAuthenticationError] for an HTML page, a

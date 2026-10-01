@@ -59,13 +59,49 @@ final _replyFormFromOwn = _replyFormFromOther
     .replaceFirst(_senderSpan, _senderSpan.replaceAll('201', '777'))
     .replaceFirst('>Piet Peeters<', '>Jan Janssens<');
 
+/// The subject of a message of the run.
+const _runSubject = '[dartschool test] $_tag send';
+
+/// The recorded answer to a `message list`, with the headers [headers], as
+/// (ID, subject), in place of the recorded ones.
+String _messageList(List<(int, String)> headers) {
+  final recorded = _fixture('post/postboxes/message list.xml');
+  final start = recorded.indexOf('<message>');
+  final end = recorded.lastIndexOf('</message>') + '</message>'.length;
+  final template = recorded.substring(
+    start,
+    recorded.indexOf('</message>') + '</message>'.length,
+  );
+  return recorded.replaceRange(
+    start,
+    end,
+    [
+      for (final (id, subject) in headers)
+        template
+            .replaceFirst('<id>123456</id>', '<id>$id</id>')
+            .replaceFirst(
+              '<subject>Re: LO les</subject>',
+              '<subject>$subject</subject>',
+            ),
+    ].join(),
+  );
+}
+
 /// A Smartschool that answers the steps of a send, a move to the trash and
 /// a message list, and records what reaches it.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool({required this.replyForm, this.answerAdd});
+  _Smartschool({
+    required this.replyForm,
+    this.answerAdd,
+    this.boxes = const {},
+  });
 
   /// The reply form of message 900030.
   final String replyForm;
+
+  /// The headers, as (ID, subject), that a `message list` of each box lists,
+  /// by `<boxType>/<boxID>` (such as `inbox/0`); other boxes list none.
+  final Map<String, List<(int, String)>> boxes;
 
   /// The answer to `addUserToSelected` with the given fields; the recorded
   /// answer that registers the recipient asked for when `null`.
@@ -133,12 +169,21 @@ class _Smartschool implements HttpClientAdapter {
             contentType: 'text/xml',
           );
         }
+        final box = RegExp(
+          r'name="boxType"><!\[CDATA\[(\w+)',
+        ).firstMatch(command)?.group(1);
         if (command.contains('<action>quickmove messages</action>')) {
-          final box = RegExp(
-            r'name="boxType"><!\[CDATA\[(\w+)',
-          ).firstMatch(command)!.group(1);
           moved.add('$box ${id!.group(1)}');
           return _answer(_moveAnswer, contentType: 'text/xml');
+        }
+        if (command.contains('<action>message list</action>')) {
+          final folder = RegExp(
+            r'name="boxID"><!\[CDATA\[(\d+)',
+          ).firstMatch(command)!.group(1);
+          return _answer(
+            _messageList(boxes['$box/$folder'] ?? const []),
+            contentType: 'text/xml',
+          );
         }
         return _answer(
           '<server><response><status>ok</status><actions><action><data>'
@@ -237,6 +282,30 @@ void main() {
     expect(_replyFormFromOwn, isNot(contains(_senderSpan)));
   });
 
+  test('the live suite calls no moveToTrash, which sends a quick delete: the '
+      'guard would refuse it on the wire (#61)', () {
+    // This file calls it, to check that the guard refuses it.
+    final suite = [
+      for (final file in Directory(
+        p.join('test', 'live'),
+      ).listSync(recursive: true))
+        if (file is File &&
+            file.path.endsWith('.dart') &&
+            p.basename(file.path) != 'live_wire_guard_test.dart')
+          file,
+    ];
+    final call = RegExp(r'\.moveToTrash\s*\(');
+
+    expect(
+      suite.map((file) => p.basename(file.path)),
+      containsAll(['messages_live_test.dart', 'live_run.dart']),
+    );
+    expect([
+      for (final file in suite)
+        if (call.hasMatch(file.readAsStringSync())) file.path,
+    ], isEmpty);
+  });
+
   group('lets out', () {
     test('a message to the own account, in To, CC and BCC', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
@@ -287,26 +356,19 @@ void main() {
       expect(guard.violations, isEmpty);
     });
 
-    test('a move to the trash of a message the run checked, once, and of '
-        '0', () async {
-      final server = _Smartschool(replyForm: _replyFormFromOwn);
-      final (messages, guard) = await _guarded(server);
-      guard.allowTrash(4242);
-
-      final status = await messages.moveToTrash(4242);
-      await messages.moveToTrash(0);
-
-      expect(status?.msgId, 4242);
-      expect(server.trashed, ['4242', '0']);
-      expect(guard.quickDeleteAnswers.keys, [4242, 0]);
-      expect(guard.violations, isEmpty);
-    });
-
     test('a move to the trash of the sent-box copy, and then of the inbox '
-        'copy, of a message the run checked in each box, once each '
-        '(#60)', () async {
-      final server = _Smartschool(replyForm: _replyFormFromOwn);
+        'copy, of a message the run sent, listed and checked in each box, '
+        'once each (#60, #61)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        boxes: {
+          'outbox/0': [(4242, _runSubject)],
+          'inbox/0': [(4242, 'Re: $_runSubject'), (5555, 'Hello')],
+        },
+      );
       final (messages, guard) = await _guarded(server);
+      await messages.getHeaders(boxType: BoxType.sent);
+      await messages.getHeaders();
       guard
         ..allowTrashFrom(4242, BoxType.sent)
         ..allowTrashFrom(4242, BoxType.inbox);
@@ -530,30 +592,142 @@ void main() {
       expect(_violations(guard), [contains('did not make')]);
     });
 
-    test('a move to the trash of a message the run did not check, or a '
-        'second one of a message (also of 0)', () async {
-      final server = _Smartschool(replyForm: _replyFormFromOwn);
+    test('a quick delete (moveToTrash), of any ID: of 0, and of a message '
+        'the run sent, listed and checked (#61)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        boxes: {
+          'inbox/0': [(4242, _runSubject)],
+        },
+      );
       final (messages, guard) = await _guarded(server);
-      guard.allowTrash(4242);
+      await messages.getHeaders();
+      guard.allowTrashFrom(4242, BoxType.inbox);
 
-      await expectLater(messages.moveToTrash(1234), throwsA(anything));
-      await messages.moveToTrash(4242);
-      await expectLater(messages.moveToTrash(4242), throwsA(anything));
-      await messages.moveToTrash(0);
       await expectLater(messages.moveToTrash(0), throwsA(anything));
+      await expectLater(messages.moveToTrash(4242), throwsA(anything));
 
-      expect(server.trashed, ['4242', '0']);
+      expect(server.trashed, isEmpty);
+      expect(
+        _violations(guard),
+        everyElement(contains('the live suite sends no quick delete')),
+      );
+      expect(guard.violations, hasLength(2));
+    });
+
+    test(
+      'a move to the trash of ID 0, also when the run allowed it, and '
+      'Smartschool listed it in the box with the run\'s subject (#61)',
+      () async {
+        final server = _Smartschool(
+          replyForm: _replyFormFromOwn,
+          boxes: {
+            'inbox/0': [(0, _runSubject)],
+            'outbox/0': [(0, _runSubject)],
+          },
+        );
+        final (messages, guard) = await _guarded(server);
+        await messages.getHeaders();
+        await messages.getHeaders(boxType: BoxType.sent);
+        guard
+          ..allowTrashFrom(0, BoxType.inbox)
+          ..allowTrashFrom(0, BoxType.sent);
+
+        await expectLater(
+          messages.moveToTrashFrom(0, boxType: BoxType.inbox),
+          throwsA(anything),
+        );
+        await expectLater(
+          messages.moveToTrashFrom(0, boxType: BoxType.sent),
+          throwsA(anything),
+        );
+
+        expect(server.moved, isEmpty);
+        expect(_violations(guard), [
+          contains('it moves message 0, which names no message'),
+          contains('it moves message 0, which names no message'),
+        ]);
+      },
+    );
+
+    test('a move to the trash of a copy that Smartschool did not list in its '
+        'box with the run\'s subject, also when the run allowed it: not a '
+        'message this run sent (#61)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        boxes: {
+          'inbox/0': [
+            (4242, _runSubject),
+            (5555, 'Hello'),
+            (6666, '[dartschool test] run-20200101-000000-0000 send'),
+          ],
+          'trash/0': [(7777, _runSubject)],
+          'inbox/208': [(8888, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      await messages.getHeaders(boxType: BoxType.sent);
+      await messages.getHeaders(boxType: BoxType.trash);
+      await messages.getHeaders(boxId: 208);
+      for (final (id, box) in [
+        (1234, BoxType.inbox), // Listed nowhere.
+        (4242, BoxType.sent), // Listed in the inbox only.
+        (5555, BoxType.inbox), // Another subject.
+        (6666, BoxType.inbox), // The subject of another run.
+        (7777, BoxType.inbox), // Listed in the trash only.
+        (8888, BoxType.inbox), // Listed in a folder of the inbox only.
+        (4242, BoxType.inbox),
+      ]) {
+        guard.allowTrashFrom(id, box);
+      }
+
+      for (final (id, box) in [
+        (1234, BoxType.inbox),
+        (4242, BoxType.sent),
+        (5555, BoxType.inbox),
+        (6666, BoxType.inbox),
+        (7777, BoxType.inbox),
+        (8888, BoxType.inbox),
+      ]) {
+        await expectLater(
+          messages.moveToTrashFrom(id, boxType: box),
+          throwsA(anything),
+          reason: '$id, ${box.value}',
+        );
+      }
+      // The copy that Smartschool listed in its box with the run's subject.
+      await messages.moveToTrashFrom(4242, boxType: BoxType.inbox);
+
+      expect(server.moved, ['inbox 4242']);
       expect(_violations(guard), [
-        contains('message 1234 is not one this run sent and checked'),
-        contains('message 4242 was moved to the trash already'),
-        contains('message 0 was moved to the trash already'),
+        for (final (id, box) in [
+          (1234, 'inbox'),
+          (4242, 'outbox'),
+          (5555, 'inbox'),
+          (6666, 'inbox'),
+          (7777, 'inbox'),
+          (8888, 'inbox'),
+        ])
+          contains(
+            "Smartschool did not list message $id in the $box with the run's "
+            'subject',
+          ),
       ]);
     });
 
     test('a move to the trash of a copy the run did not check in its box, '
         'or a second one of a copy (#60)', () async {
-      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        boxes: {
+          'inbox/0': [(4242, _runSubject)],
+          'outbox/0': [(4242, _runSubject), (1234, _runSubject)],
+        },
+      );
       final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      await messages.getHeaders(boxType: BoxType.sent);
       guard.allowTrashFrom(4242, BoxType.sent);
 
       await expectLater(
@@ -579,36 +753,6 @@ void main() {
         contains('the outbox copy of message 1234 is not one this run sent'),
         contains(
           'the outbox copy of message 4242 was moved to the trash '
-          'already',
-        ),
-      ]);
-    });
-
-    test('a quick delete of a message with a copy moved to the trash, and a '
-        'move of a copy of a message moved with a quick delete: a quick '
-        'delete names no box (#60)', () async {
-      final server = _Smartschool(replyForm: _replyFormFromOwn);
-      final (messages, guard) = await _guarded(server);
-      guard
-        ..allowTrash(4242)
-        ..allowTrashFrom(4242, BoxType.sent)
-        ..allowTrash(5555)
-        ..allowTrashFrom(5555, BoxType.sent);
-
-      await messages.moveToTrashFrom(4242, boxType: BoxType.sent);
-      await expectLater(messages.moveToTrash(4242), throwsA(anything));
-      await messages.moveToTrash(5555);
-      await expectLater(
-        messages.moveToTrashFrom(5555, boxType: BoxType.sent),
-        throwsA(anything),
-      );
-
-      expect(server.moved, ['outbox 4242']);
-      expect(server.trashed, ['5555']);
-      expect(_violations(guard), [
-        contains('a copy of message 4242 was moved to the trash already'),
-        contains(
-          'message 5555 was moved to the trash with a quick delete '
           'already',
         ),
       ]);

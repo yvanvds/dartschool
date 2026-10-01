@@ -1,0 +1,572 @@
+// The wire-level guard of the live suite (#57).
+//
+// The live suite sends real messages, so it may send them to the own account
+// only: the account of credentials.yml, in To, CC or BCC, never a group. The
+// tests ask for nothing else, but a bug in the library or in a test could
+// still register another recipient on a compose form (a reply form comes
+// with its recipients registered on it already, #26, #42). So the live
+// client gets this Dio interceptor, the last one, which sees every request as
+// it goes out and every answer as it comes in, and refuses what the live
+// suite may not do before it is sent:
+// - a request to another host than the one of credentials.yml;
+// - registering anyone but the own account on a compose form
+//   (`addUserToSelected`), or an answer that registers anyone else;
+// - submitting a compose form that has anyone but the own account
+//   registered, that stores the message in the LVS or schedules it, whose
+//   subject lacks the run's tag, or that replies to a message the run did not
+//   send to the own account only;
+// - moving a message to the trash that the run did not send and check, or
+//   one it moved there already (a second `quick delete` could delete it for
+//   good, #19);
+// - any other request that changes something, and a second login.
+//
+// A refused request fails the test that sent it, as forbidRealNetwork() does
+// (test/support/no_network.dart), whatever the library makes of the error.
+import 'package:dio/dio.dart';
+import 'package:flutter_smartschool/flutter_smartschool.dart';
+import 'package:html/parser.dart' as html_parser;
+import 'package:test/test.dart';
+import 'package:xml/xml.dart';
+
+/// The start of the subject of every message the live suite sends, before
+/// the run's tag (a reply's subject starts with `Re: ` before it).
+const liveSubjectPrefix = '[dartschool test]';
+
+/// The start of the name of every file the live suite attaches.
+const liveFilePrefix = 'dartschool-test-';
+
+/// A request that [LiveWireGuard] did not let out, or an answer it did not
+/// let through.
+class LiveGuardViolation implements Exception {
+  LiveGuardViolation(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'LiveGuardViolation: $message';
+}
+
+/// Lets out only what the live suite may send (see the top of this file).
+///
+/// Add it to the live client's `dio` as its last interceptor, before the
+/// first request, and set [own] before the first send. Until then, it
+/// refuses every request that registers a recipient or sends a message.
+class LiveWireGuard extends Interceptor {
+  LiveWireGuard({
+    required this.host,
+    required this.runTag,
+    this.maxSubmits = 6,
+    void Function(LiveGuardViolation violation)? onViolation,
+  }) : _onViolation = onViolation ?? _failTest;
+
+  /// The host of credentials.yml: the only one requests may go to.
+  final String host;
+
+  /// The tag of this run, which every subject carries.
+  final String runTag;
+
+  /// How many messages the run may send at most.
+  final int maxSubmits;
+
+  final void Function(LiveGuardViolation violation) _onViolation;
+
+  /// Fails the test that runs, also when the code under test catches the
+  /// error the request fails with.
+  static void _failTest(LiveGuardViolation violation) =>
+      registerException(violation, StackTrace.current);
+
+  /// Every violation so far, in order.
+  final List<LiveGuardViolation> violations = [];
+
+  /// How many requests the guard let out.
+  int requestsSent = 0;
+
+  /// How many messages (submits of a compose form) it let out.
+  int submits = 0;
+
+  /// The own account: the only recipient a message may have.
+  MessageSearchUser? get own => _own;
+  MessageSearchUser? _own;
+  set own(MessageSearchUser user) {
+    final current = _own;
+    if (current != null && _key(current) != _key(user)) {
+      throw StateError('the own account of the run is set already');
+    }
+    _own = user;
+  }
+
+  /// The compose forms loaded through the guard, by their `uniqueUsc`.
+  final Map<String, _Form> _forms = {};
+
+  /// The messages the run sent to the own account only: the only ones it may
+  /// reply to.
+  final Set<int> _replyTargets = {};
+
+  /// The messages the run may move to the trash: those it sent and checked,
+  /// and `0`, which names no message.
+  final Set<int> _trashable = {0};
+
+  /// The messages the run asked to move to the trash.
+  final Set<int> _trashRequested = {};
+
+  /// How often each step of a login went out.
+  final Map<String, int> _loginSteps = {};
+
+  /// Smartschool's answers to `quick delete`, by message ID, as they came in.
+  final Map<int, String> quickDeleteAnswers = {};
+
+  /// Lets the run reply to message [msgId] of the inbox: a message it sent
+  /// to the own account only.
+  void allowReplyTo(int msgId) => _replyTargets.add(msgId);
+
+  /// Lets the run move message [msgId] to the trash, once: a message it sent
+  /// and checked.
+  void allowTrash(int msgId) => _trashable.add(msgId);
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    final refusal = _guarded(() => _requestRefusal(options));
+    if (refusal != null) {
+      handler.reject(
+        DioException(
+          requestOptions: options,
+          error: _violation('${_describe(options)} was not sent: $refusal'),
+        ),
+        true,
+      );
+      return;
+    }
+    requestsSent++;
+    handler.next(options);
+  }
+
+  @override
+  void onResponse(
+    Response<dynamic> response,
+    ResponseInterceptorHandler handler,
+  ) {
+    final refusal = _guarded(() => _answerRefusal(response));
+    if (refusal != null) {
+      final options = response.requestOptions;
+      handler.reject(
+        DioException(
+          requestOptions: options,
+          response: response,
+          error: _violation('the answer to ${_describe(options)}: $refusal'),
+        ),
+        true,
+      );
+      return;
+    }
+    handler.next(response);
+  }
+
+  /// What [check] returns, or why the guard could not check: a request or an
+  /// answer it cannot read is refused.
+  static String? _guarded(String? Function() check) {
+    try {
+      return check();
+    } on Object catch (e) {
+      return 'the guard could not check it ($e)';
+    }
+  }
+
+  LiveGuardViolation _violation(String message) {
+    final violation = LiveGuardViolation(message);
+    violations.add(violation);
+    _onViolation(violation);
+    return violation;
+  }
+
+  /// The method and the URL of a request, without its host. Neither ever
+  /// holds a credential: the password, the 2FA code and the cookies are in
+  /// the body and the headers, which this never shows.
+  static String _describe(RequestOptions options) {
+    final uri = options.uri;
+    return '${options.method} ${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
+  }
+
+  // -------------------------------------------------------------------------
+  // Requests
+  // -------------------------------------------------------------------------
+
+  /// Why [options] may not go out, or `null` when it may.
+  String? _requestRefusal(RequestOptions options) {
+    final uri = options.uri;
+    if (uri.scheme != 'https' || uri.host != host) {
+      return 'it goes to another host than the one of credentials.yml';
+    }
+    final method = options.method.toUpperCase();
+    if (method == 'GET') return null;
+    if (method != 'POST') return 'the live suite sends no $method';
+
+    final path = uri.path;
+    if (path.endsWith('/login')) return _loginStep('password');
+    if (path.startsWith('/2fa/')) return _loginStep('2FA code');
+    if (path.endsWith('/account-verification')) {
+      return _loginStep('account verification');
+    }
+    if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
+
+    final query = uri.queryParameters;
+    if (path == '/' && query['module'] == 'Messages') {
+      switch ((query['file'], query['function'])) {
+        case ('dispatcher', _):
+          return _commandRefusal(options.data);
+        case ('searchUsers', 'addUserToSelected'):
+          return _addRefusal(options.data);
+        case ('searchUsers', 'deleteUsersFromSelected'):
+          return _removeRefusal(options.data);
+        case ('composeMessage', _):
+          return _submitRefusal(uri, options.data);
+      }
+    }
+    return 'it is not a request the live suite sends';
+  }
+
+  /// Counts a POST of the login chain; refuses the second of a kind: the run
+  /// logs in at most once.
+  String? _loginStep(String step) {
+    final count = (_loginSteps[step] ?? 0) + 1;
+    _loginSteps[step] = count;
+    if (count == 1) return null;
+    return 'it would log in a second time in this run (its $step); the live '
+        'suite logs in at most once per run';
+  }
+
+  /// The XML commands that only read.
+  static const _readActions = {
+    'message list',
+    'continue_messages',
+    'show message',
+    'attachment list',
+  };
+
+  String? _commandRefusal(Object? data) {
+    final command = data is Map ? data['command'] : null;
+    if (command is! String) return 'it carries no XML command';
+    final xml = XmlDocument.parse(command);
+    final subsystem = _text(xml, 'subsystem');
+    final action = _text(xml, 'action');
+    if (subsystem != 'postboxes') {
+      return 'the live suite sends no "$subsystem" command';
+    }
+    if (_readActions.contains(action)) return null;
+    if (action != 'quick delete') {
+      return 'the live suite sends no "$action" command';
+    }
+    final id = int.tryParse(_param(xml, 'msgID') ?? '');
+    if (id == null) return 'its quick delete names no message';
+    if (!_trashable.contains(id)) {
+      return 'message $id is not one this run sent and checked: the run '
+          'moves only those to the trash (and 0, which names no message)';
+    }
+    if (!_trashRequested.add(id)) {
+      return 'message $id was moved to the trash already in this run: a '
+          'second quick delete could delete it for good (#19)';
+    }
+    return null;
+  }
+
+  String? _addRefusal(Object? data) {
+    final own = _own;
+    if (own == null) return 'the own account of the run is not known yet';
+    if (data is! Map) return 'it carries no form fields';
+    final formRefusal = _formRefusal(data['uniqueUsc']);
+    if (formRefusal != null) return formRefusal;
+    if (data['typeId'] != 'users') {
+      return 'it registers a group; the live suite sends to the own account '
+          'only';
+    }
+    if (!const {'0', '2', '3'}.contains(data['type'])) {
+      return 'it registers a recipient in another field than To, CC or BCC';
+    }
+    if (data['id'] != '${own.userId}' ||
+        data['ssid'] != '${own.ssId}' ||
+        data['userlt'] != '${own.userLt}') {
+      return 'it registers someone other than the own account';
+    }
+    return null;
+  }
+
+  String? _removeRefusal(Object? data) {
+    if (data is! Map) return 'it carries no form fields';
+    return _formRefusal(data['uniqueUsc']);
+  }
+
+  String? _uploadRefusal(Object? data) {
+    if (data is! FormData) return 'it is not a multipart upload';
+    final folder = _field(data, 'uploadDir');
+    if (folder == null || !_forms.values.any((f) => f.randomDir == folder)) {
+      return 'it uploads to a folder that is not the one of a compose form '
+          'loaded through the guard';
+    }
+    if (data.files.isEmpty) return 'it uploads no file';
+    for (final file in data.files) {
+      final name = file.value.filename ?? '';
+      if (!name.startsWith(liveFilePrefix)) {
+        return 'it uploads a file that the live suite did not make';
+      }
+    }
+    return null;
+  }
+
+  String? _submitRefusal(Uri uri, Object? data) {
+    final own = _own;
+    if (own == null) return 'the own account of the run is not known yet';
+    if (data is! FormData) return 'it is not a multipart submit';
+    if (data.files.isNotEmpty) {
+      return 'a compose form is submitted without files';
+    }
+    final fields = {for (final field in data.fields) field.key: field.value};
+    if (fields['send'] != 'send') return 'it is not a send';
+    final formRefusal = _formRefusal(fields['uniqueUsc']);
+    if (formRefusal != null) return formRefusal;
+    final form = _forms[fields['uniqueUsc']]!;
+
+    final query = uri.queryParameters;
+    if (!_sameQuery(form.url.queryParameters, query)) {
+      return 'it goes to another URL than its compose form was loaded from';
+    }
+    for (final name in const ['boxType', 'composeType', 'msgID']) {
+      if (fields[name] != query[name]) {
+        return 'its $name does not match its URL';
+      }
+    }
+    switch (query['composeType']) {
+      case '0':
+        break;
+      case '1' || '2':
+        final target = int.tryParse(query['msgID'] ?? '');
+        if (query['boxType'] != BoxType.inbox.value ||
+            target == null ||
+            !_replyTargets.contains(target)) {
+          return 'it replies to a message that this run did not send to the '
+              'own account only';
+        }
+      default:
+        return 'it is neither a new message nor a reply';
+    }
+
+    if (form.recipients.isEmpty) return 'its compose form has no recipient';
+    if (!form.recipients.values.every((r) => r.isOwn(own))) {
+      return 'its compose form has someone other than the own account '
+          'registered';
+    }
+    if (fields['copyToLVS'] != LvsCopy.none.value) {
+      return 'it stores the message in the LVS';
+    }
+    if ((fields['sendDate'] ?? '').isNotEmpty) {
+      return 'it schedules the message for later';
+    }
+    final subject = fields['subject'] ?? '';
+    final tagged = '$liveSubjectPrefix $runTag ';
+    if (!subject.startsWith(tagged) && !subject.startsWith('Re: $tagged')) {
+      return 'its subject does not start with "$tagged"';
+    }
+    if (submits >= maxSubmits) {
+      return 'the run sent $maxSubmits messages already, its maximum';
+    }
+    submits++;
+    return null;
+  }
+
+  /// Why the compose form with [uniqueUsc] may not be used, or `null`.
+  String? _formRefusal(Object? uniqueUsc) {
+    final form = _forms[uniqueUsc];
+    if (form == null) {
+      return 'its compose form was not loaded through the guard';
+    }
+    final unusable = form.unusable;
+    if (unusable != null) return 'its compose form is unusable: $unusable';
+    return null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Answers
+  // -------------------------------------------------------------------------
+
+  /// Why [response] may not reach the library, or `null` when it may; keeps
+  /// track of the compose forms and what is registered on them.
+  String? _answerRefusal(Response<dynamic> response) {
+    final options = response.requestOptions;
+    final uri = options.uri;
+    final query = uri.queryParameters;
+    if (uri.path != '/' || query['module'] != 'Messages') return null;
+    final body = response.data is String ? response.data as String : '';
+    switch ((options.method.toUpperCase(), query['file'], query['function'])) {
+      case ('GET', 'composeMessage', _):
+        _recordForm(uri, body);
+      case ('POST', 'searchUsers', 'addUserToSelected'):
+        return _addedRefusal(options.data, body);
+      case ('POST', 'searchUsers', 'deleteUsersFromSelected'):
+        _recordRemoved(options.data, body);
+      case ('POST', 'dispatcher', _):
+        _recordCommandAnswer(options.data, body);
+    }
+    return null;
+  }
+
+  /// Keeps the compose form of [html], loaded from [url], with the
+  /// recipients it names: a reply form has them registered already.
+  void _recordForm(Uri url, String html) {
+    final hidden = MessagesService.parseHiddenFields(html);
+    final uniqueUsc = hidden['uniqueUsc'] ?? '';
+    if (uniqueUsc.isEmpty) return;
+    final form = _Form(url, hidden['randomDir'] ?? '');
+    final page = html_parser.parse(html);
+    for (final span in page.querySelectorAll('div.receiverSpan')) {
+      final a = span.attributes;
+      final recipient = _Recipient(
+        type: a['typeatt'] ?? '0',
+        id: a['idatt'] ?? '',
+        ssId: a['ssidatt'] ?? '',
+        userLt: a['userltatt'] ?? '0',
+        realUserId: a['realuserid'] ?? '',
+        isUser: a['typeidatt'] == 'users',
+      );
+      form.recipients[recipient.key] = recipient;
+    }
+    _forms[uniqueUsc] = form;
+  }
+
+  /// Checks that Smartschool's answer [body] to `addUserToSelected` with the
+  /// fields [data] registered the own account only, and keeps what it
+  /// registered. An answer the guard cannot read makes the form unusable.
+  String? _addedRefusal(Object? data, String body) {
+    final form = _forms[(data as Map)['uniqueUsc']]!;
+    if (body.trim().isEmpty) return null; // Nothing registered.
+    final Iterable<XmlElement> users;
+    try {
+      users = XmlDocument.parse(body).findAllElements('user');
+    } on XmlException {
+      form.unusable = 'an answer to addUserToSelected was not XML';
+      return form.unusable;
+    }
+    for (final user in users) {
+      final recipient = _Recipient(
+        type: _text(user, 'type'),
+        id: _text(user, 'userID'),
+        ssId: _text(user, 'ssID'),
+        userLt: _text(user, 'userLT'),
+        realUserId: _text(user, 'realUserId'),
+        isUser: _text(user, 'typeId') == 'users',
+      );
+      form.recipients[recipient.key] = recipient;
+      if (!recipient.isOwn(_own!)) {
+        form.unusable =
+            'Smartschool registered someone other than the own '
+            'account on it';
+        return form.unusable;
+      }
+    }
+    return null;
+  }
+
+  /// Drops the recipients that Smartschool's answer [body] to
+  /// `deleteUsersFromSelected` lists as taken off the form. An answer the
+  /// guard cannot read takes nothing off.
+  void _recordRemoved(Object? data, String body) {
+    final form = _forms[(data as Map)['uniqueUsc']];
+    if (form == null || body.trim().isEmpty) return;
+    try {
+      for (final user in XmlDocument.parse(body).findAllElements('user')) {
+        form.recipients.remove(
+          _Recipient.keyOf(
+            _text(user, 'type'),
+            _text(user, 'userID'),
+            _text(user, 'ssID'),
+            _text(user, 'userLT'),
+          ),
+        );
+      }
+    } on XmlException {
+      return;
+    }
+  }
+
+  void _recordCommandAnswer(Object? data, String body) {
+    final command = data is Map ? data['command'] : null;
+    if (command is! String) return;
+    final xml = XmlDocument.parse(command);
+    if (_text(xml, 'action') != 'quick delete') return;
+    final id = int.tryParse(_param(xml, 'msgID') ?? '');
+    if (id != null) quickDeleteAnswers[id] = body;
+  }
+
+  // -------------------------------------------------------------------------
+  // Helpers
+  // -------------------------------------------------------------------------
+
+  static String _key(MessageSearchUser user) =>
+      '${user.userId}|${user.ssId}|${user.userLt}';
+
+  static String _text(XmlNode node, String name) =>
+      node.findAllElements(name).firstOrNull?.innerText.trim() ?? '';
+
+  static String? _param(XmlNode command, String name) => command
+      .findAllElements('param')
+      .where((param) => param.getAttribute('name') == name)
+      .firstOrNull
+      ?.innerText
+      .trim();
+
+  static String? _field(FormData data, String name) =>
+      data.fields.where((field) => field.key == name).firstOrNull?.value;
+
+  static bool _sameQuery(Map<String, String> a, Map<String, String> b) =>
+      a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
+}
+
+/// A compose form that was loaded through the guard.
+class _Form {
+  _Form(this.url, this.randomDir);
+
+  /// The URL it was loaded from, which its submit goes to.
+  final Uri url;
+
+  /// Its upload folder.
+  final String randomDir;
+
+  /// What is registered on it, by [_Recipient.key].
+  final Map<String, _Recipient> recipients = {};
+
+  /// Why it may not be used anymore, or `null`.
+  String? unusable;
+}
+
+/// A recipient registered on a compose form, as its entry on the form
+/// (`div.receiverSpan`) and Smartschool's answers to `addUserToSelected` and
+/// `deleteUsersFromSelected` name it.
+class _Recipient {
+  _Recipient({
+    required this.type,
+    required this.id,
+    required this.ssId,
+    required this.userLt,
+    required this.realUserId,
+    required this.isUser,
+  });
+
+  /// The field: `0` To, `2` CC, `3` BCC (`1`, `4`, `5` co-account fields).
+  final String type;
+
+  /// The ID with Smartschool's prefix (`U` for a user), as `idatt`/`userID`.
+  final String id;
+  final String ssId;
+  final String userLt;
+  final String realUserId;
+  final bool isUser;
+
+  String get key => keyOf(type, id, ssId, userLt);
+
+  static String keyOf(String type, String id, String ssId, String userLt) =>
+      '$type|$id|$ssId|$userLt';
+
+  bool isOwn(MessageSearchUser own) =>
+      isUser &&
+      realUserId == '${own.userId}' &&
+      id == 'U${own.userId}' &&
+      ssId == '${own.ssId}' &&
+      userLt == '${own.userLt}';
+}

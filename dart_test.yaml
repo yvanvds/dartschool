@@ -1,0 +1,22 @@
+# Configuration of `dart test` (package:test).
+#
+# The live suite (test/live/, tagged `live`, #57) sends real messages to the
+# account of credentials.yml. It never runs by default: `dart test`, as CI
+# and the Lefthook pre-commit hook run it, skips every suite tagged `live`
+# without loading it. Run it on purpose, and only it, with the `live` preset:
+#
+#   dart test -P live
+#
+# (`exclude_tags` cannot be used here: a preset or `--tags live` cannot undo
+# it. And do not pass `--run-skipped`: it runs the live suite too.)
+tags:
+  live:
+    skip: "Live: sends real messages to the own account. Run it on purpose with `dart test -P live` (#57)."
+
+presets:
+  live:
+    paths: [test/live]
+    include_tags: live
+    tags:
+      live:
+        skip: false

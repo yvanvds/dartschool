@@ -770,6 +770,29 @@ The `pre-commit` hook runs the same checks as CI, in parallel:
 
 `.lefthook.yml` sets `assert_lefthook_installed: true`: if the hook is installed but Lefthook is missing (e.g. `node_modules/` was deleted), the commit is aborted with `Can't find lefthook in PATH` instead of silently skipping the checks. Run `npm install` to fix it.
 
+The tests never use the network: they talk to fake Smartschools, and every test file calls `forbidRealNetwork()` (`test/support/no_network.dart`) and gives its clients a temporary cache folder (`tempCacheDir()`); `test/network_guard_test.dart` and `test/cache_dir_guard_test.dart` fail otherwise.
+
+### Live tests
+
+`test/live/` holds a live suite that **really sends messages** on the Smartschool of `credentials.yml`, to check that sending still works there (Smartschool can change its compose flow at any time). It is local and on demand only: `dart_test.yaml` skips the suites tagged `live` without loading them, so `dart test` (and so CI and the pre-commit hook) never runs it. Run it on purpose, with a `credentials.yml` in the package root (without one, it skips):
+
+```bash
+dart test -P live
+```
+
+The `live` preset runs the live suite only. Do not pass `--run-skipped` to a plain `dart test`: that runs it too.
+
+What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; and `moveToTrash`, which cleans up, reports the messages deleted. It also checks what Smartschool answers to `moveToTrash(0)`, a move that deletes nothing: an empty body (which the library reports as a `SmartschoolParsingError`, #59).
+
+Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
+
+- Every message goes to the **own account only** (the account of `credentials.yml`, as `getCurrentUserAsRecipient()` and the session name it), in To, CC or BCC, never to a group. The guard refuses registering anyone else on a compose form, checks Smartschool's answer to every registration, and refuses a submit with anyone else registered (a reply form comes with its recipients registered already).
+- Replies go only to a message the same run sent to the own account only, after checking that its reply form names the own account alone.
+- Every subject starts with `[dartschool test]` and a tag of the run (a reply's with `Re: ` before it).
+- No LVS copy (`lvsCopy`) and no delayed send (`sendAt`: the library cannot cancel a scheduled message yet, #58).
+- At the end, also when a test failed, the run moves every message it sent to the trash, once each, after checking the run's subject and that the own account sent it. It never moves a message that is in the trash already (that deletes it for good) and never empties the trash: emptying it stays manual. A message you send yourself has the same ID in the inbox and the sent box, and `moveToTrash` takes the ID only: it moves the inbox copy, and the sent box keeps its copy (#60).
+- It logs in at most once per run, and usually not at all: it keeps its session in `.dart_tool/live_cache/<username>` (gitignored; not the user's `~/.cache/smartschool`, and only the live suite may use it). It never prints a credential or a cookie.
+
 ---
 
 ## Smartschool Researcher MCP Server

@@ -6,6 +6,14 @@
 // without one: a `SmartschoolClient.create` call that has no `cacheDir`
 // argument, or a `DevInspector.create` call, which cannot take one. Give such
 // a client `cacheDir: tempCacheDir()` (support/temp_cache_dir.dart).
+//
+// The live suite (test/live/, #57) is the one exception to temporary
+// folders: it keeps its real session between runs in a persistent folder of
+// its own under `.dart_tool/` (gitignored; see
+// test/live/support/live_client.dart), so that a run normally does not log
+// in. No other test may use that folder: an offline test with a fake
+// Smartschool would clobber the real session there. So this test also fails
+// on any file outside test/live/ that names it.
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -19,6 +27,12 @@ const _allowed = <String, String>{
       'session_cache_dir_test.dart runs it as a separate process whose HOME '
       'and USERPROFILE are temporary folders, to test the default folder',
 };
+
+/// The name of the live suite's persistent cache folder (#57), built from
+/// pieces so that this file does not name it.
+const _liveCacheName =
+    'live'
+    '_cache';
 
 /// A call that creates a client, up to and including its `(`.
 final _createCall = RegExp(
@@ -111,6 +125,39 @@ void main() {
           '~/.cache/smartschool of whoever runs the tests. Pass '
           '`cacheDir: tempCacheDir()` (test/support/temp_cache_dir.dart):\n'
           '${offenders.join('\n')}',
+    );
+  });
+
+  test('only the live suite uses its persistent cache folder (#57)', () {
+    final files =
+        Directory('test')
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((file) => file.path.endsWith('.dart'))
+            .toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
+
+    final live = <String>[];
+    final offenders = <String>[];
+    for (final file in files) {
+      if (!file.readAsStringSync().contains(_liveCacheName)) continue;
+      final path = _packagePath(file.path);
+      (path.startsWith('test/live/') ? live : offenders).add(path);
+    }
+
+    // Otherwise the folder was renamed, and this test checks nothing.
+    expect(
+      live,
+      isNotEmpty,
+      reason: 'test/live/ does not name its cache folder "$_liveCacheName"',
+    );
+    expect(
+      offenders,
+      isEmpty,
+      reason:
+          'Only the live suite may use its persistent cache folder; give '
+          'these clients `cacheDir: tempCacheDir()` '
+          '(test/support/temp_cache_dir.dart):\n${offenders.join('\n')}',
     );
   });
 

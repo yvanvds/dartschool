@@ -32,6 +32,9 @@ credentials.yml
 # Python reference implementation (nested project, kept local)
 /smartschool/
 
+# Per-developer codebase overview (regenerated locally, never committed)
+/PROJECT_OVERVIEW.md
+
 # ── IDE ───────────────────────────────────────────────────────────────────────
 .idea/
 *.iml

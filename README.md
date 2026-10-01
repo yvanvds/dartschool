@@ -16,6 +16,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Intradesk read support (`IntradeskService`): root/folder listing and file download.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
+- Skore read support (`SkoreService`): the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned.
 
 ---
 
@@ -609,6 +610,43 @@ dart run example/set_late_example.dart
 
 ---
 
+## `SkoreService`
+
+Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). It only reads; nothing here changes Skore.
+
+> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen), as a Skore administrator has.
+
+> **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`).
+
+```dart
+final skore = SkoreService(client);
+
+final classes = await skore.getClasses();          // List<SkoreClass>
+final courses = await skore.getCourses(classes.first.id); // List<SkoreCourse>
+for (final course in courses.where((c) => !c.isGroupHeader)) {
+  final names = course.assignments.map((a) => a.teacherName).join('; ');
+  print('${'  ' * course.depth}${course.label}: $names');
+}
+final teachers = await skore.getTeachers();        // List<SkoreTeacher>
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `getClasses()` | `Future<List<SkoreClass>>` | The classes of all report models, with their model and group. |
+| `getCourses(classId)` | `Future<List<SkoreCourse>>` | The courses of a class, in Skore's order, each with its `assignments`. Empty for a class without a course structure, and for a class ID Skore does not know (Skore answers both the same way). |
+| `getTeachers()` | `Future<List<SkoreTeacher>>` | The teachers that can be assigned to a course. |
+
+A course code is **not** unique within a class: a course and its sub-course can both end in the same `[CODE]`. Tell them apart by `id` (or `label`). Group headers (`isGroupHeader`) are headings for the courses under them and cannot get a teacher.
+
+### Errors
+
+- `SmartschoolSkoreError` — Skore answered with something the service cannot use: an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape. The session was accepted: signing in again does not help.
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry.
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -687,6 +725,15 @@ A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`a
 
 ### `PresencePupil` / `PresenceHalfDay`
 Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell.
+
+### `SkoreClass`
+Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `name`, `modelId`, `modelName`, `groupId` (`int?`), `groupName` (`String?`).
+
+### `SkoreCourse` / `SkoreAssignment`
+Returned by `SkoreService.getCourses()`. A course row (`id`, `classId`, `name`, `label` — as Skore shows it, code included, `code` (`String?`, the last `[...]` of the label), `isGroupHeader`, `depth` — `0` for a top-level row, `assignments`) and the teachers assigned to it (`id` — the assignment ID, `ownerID` in Skore, `teacherId`, `teacherName`).
+
+### `SkoreTeacher`
+Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID), `name` (`"Last, First"`).
 
 ---
 

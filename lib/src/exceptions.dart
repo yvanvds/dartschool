@@ -177,6 +177,10 @@ class SmartschoolAccountVerificationRejectedError
 /// the send stops before the submit, nothing was sent, and calling the method
 /// again starts from a new compose form in the new session.
 ///
+/// Also thrown, without logging in again and without a retry, by
+/// `SkoreService` when Smartschool's Skore module answers an RPC without a
+/// session (its web client reports that answer as an empty session).
+///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
 /// error type (e.g. [SmartschoolPresenceError]).
@@ -385,4 +389,17 @@ class SmartschoolPresenceError extends SmartschoolException {
   String toString() => errors.isEmpty
       ? '$runtimeType: $message'
       : '$runtimeType: $message (${errors.join('; ')})';
+}
+
+/// Thrown when Smartschool's Skore module (grading and reports) answers a
+/// request with something `SkoreService` cannot use: an HTML page instead of
+/// data, an answer that is not valid JSON, an RPC answer without its
+/// `result`, or data in a shape it does not recognise (such as an assignments
+/// page without its table of courses, or a non-numeric ID).
+///
+/// The session was accepted: signing in again does not help. A Skore RPC
+/// answer that carries no session is reported as a
+/// [SmartschoolSessionExpiredError] instead.
+class SmartschoolSkoreError extends SmartschoolException {
+  const SmartschoolSkoreError(super.message);
 }

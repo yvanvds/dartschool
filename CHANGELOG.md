@@ -1,3 +1,13 @@
+## 0.3.1 - Unreleased
+
+### Added
+- Skore: read the classes of the report models, the courses of a class with the teachers assigned to them, and the teacher list (#70). New `SkoreService(client)`, read-only, for what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class):
+  - `getClasses()` returns a `SkoreClass` per class of every report model (`id`, `name`, `modelId`, `modelName`, `groupId`, `groupName`), from Skore's tree of models (`rapportbeheer/data.php`, `select_models`);
+  - `getCourses(classId)` returns a `SkoreCourse` per row of the class's assignments page (`owners/template.php`): `id`, `classId`, `name`, `label` (as Skore shows it), `code` (the last `[...]` of the label), `isGroupHeader` (a heading that cannot get a teacher), `depth` (the nesting), and `assignments`, a `SkoreAssignment` per teacher assigned to the course (`id`, Skore's `ownerID`; `teacherId`; `teacherName`), none or several. A course code is not unique within a class (a course and its sub-course can share it), so tell rows apart by `id`. A class without a course structure and a class ID Skore does not know give an empty list: Skore answers both the same way;
+  - `getTeachers()` returns a `SkoreTeacher` (`id`, the Smartschool user ID; `name`) per teacher that can be assigned, through the `getTeachers` method of Skore's RPC service (`owners.php`), called as Skore's web client calls it (`rpc_sessionobj`, `rpc_requestType`, `rpc_method`, `rpc_params`).
+
+  A Skore answer the service cannot use (an HTML page, invalid JSON, an RPC answer without `result`, an unknown shape) throws the new `SmartschoolSkoreError` (extends `SmartschoolException`); an RPC answer without a session, which Skore's web client reports as an empty session, throws a `SmartschoolSessionExpiredError`. Verified live with read-only calls only; none of the endpoints needed a browser user agent. Tested offline against trimmed captures with fake teacher names.
+
 ## 0.3.0 - 2026-10-01
 
 ### Breaking changes

@@ -259,6 +259,32 @@ class SmartschoolClient {
     return _decodeJson(resp);
   }
 
+  /// Performs an authenticated POST with a JSON body and returns the whole
+  /// [Response]: the status code, the headers and the final URL (`realUri`)
+  /// as well as the body, which is not decoded.
+  ///
+  /// [data] goes out as `application/json`: a map or a list is encoded as
+  /// JSON, a string is sent as it is. Unlike [postJson], this neither
+  /// decodes the answer nor throws for a status other than `200`, so that a
+  /// service can read a JSON API's error answers itself (such as the
+  /// planner's, #85). A session that Smartschool refuses is handled as for
+  /// every request: the client logs in again and retries the request once,
+  /// with the same body.
+  Future<Response<String>> postJsonResponse(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? query,
+  }) {
+    return _send(
+      () => _dio.post<String>(
+        path,
+        data: data,
+        queryParameters: query,
+        options: Options(contentType: Headers.jsonContentType),
+      ),
+    );
+  }
+
   /// Executes the Smartschool XML command protocol.
   ///
   /// Builds the `<request>` XML, POSTs it to the dispatcher URL, parses the
@@ -804,10 +830,10 @@ class SmartschoolClient {
   /// without it, the connections they use are left to finish them.
   ///
   /// A disposed client cannot be used for Smartschool anymore (#54). Every
-  /// request method ([getJson], [postJson], [postXml], [getRaw],
-  /// [getResponse], [postFormRaw], [postFormResponse], [postMultipartRaw],
-  /// [postMultipartResponse], [postFormEncodedRaw], [download],
-  /// [downloadStream]), and so every service call, throws a
+  /// request method ([getJson], [postJson], [postJsonResponse], [postXml],
+  /// [getRaw], [getResponse], [postFormRaw], [postFormResponse],
+  /// [postMultipartRaw], [postMultipartResponse], [postFormEncodedRaw],
+  /// [download], [downloadStream]), and so every service call, throws a
   /// [SmartschoolClientDisposedError] saying that the client was disposed,
   /// before it sends anything; so do [ensureAuthenticated], [platformId],
   /// [authenticatedUser] and [getCurrentUser], also when they have their

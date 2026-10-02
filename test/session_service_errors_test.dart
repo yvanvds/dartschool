@@ -27,6 +27,7 @@ import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/services/intradesk_service.dart';
 import 'package:flutter_smartschool/src/services/messages_service.dart';
+import 'package:flutter_smartschool/src/services/planner_service.dart';
 import 'package:flutter_smartschool/src/services/presence_service.dart';
 import 'package:flutter_smartschool/src/session.dart';
 import 'package:test/test.dart';
@@ -202,6 +203,8 @@ final _calls = <String, Future<Object?> Function(SmartschoolClient)>{
     FormData.fromMap({'field': 'value'}),
   ),
   'postJson': (c) => c.postJson('/api/v1/endpoint', data: '{}'),
+  'postJsonResponse: PlannerService.searchCalendars()': (c) =>
+      PlannerService(c).searchCalendars('jan'),
   'download': (c) => c.download('/files/document.pdf'),
   // The answer to it comes as a stream (#41).
   'downloadStream': (c) => c.downloadStream('/files/document.pdf'),

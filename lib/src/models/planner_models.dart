@@ -13,7 +13,8 @@
 ///
 /// [PlannerUser.calendar], [PlannerGroup.calendar] and
 /// [PlannerLocation.calendar] give the calendar of a user, class or location
-/// that an element names.
+/// that an element names; [PlannerSearchResult.calendar] that of a user,
+/// class or location found by name.
 library;
 
 import '../exceptions.dart';
@@ -124,6 +125,169 @@ class PlannerCalendar {
   @override
   String toString() => 'PlannerCalendar(${type.wireName}: $id)';
 }
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+/// What a [PlannerSearchResult] found: a user, a class (group), a location,
+/// or something else.
+enum PlannerSearchResultKind {
+  /// A user (`identifier.type` `user`): a teacher, a pupil or a co-account;
+  /// the answer does not tell them apart.
+  user,
+
+  /// A group (`identifier.type` `group`), such as a class.
+  group,
+
+  /// A location (a room): an item of the location module (`location` in
+  /// `origin.modules`; `identifier.type` `mini-db-2` on the live site).
+  location,
+
+  /// Something this library cannot map to a calendar.
+  /// [PlannerSearchResult.typeName] holds the planner's type.
+  other,
+}
+
+/// A hit of the planner's search ("Zoek een planner"): a user, a class or a
+/// location whose name holds the text, with its calendar.
+///
+/// Returned by `PlannerService.searchCalendars`. Read the calendar with
+/// `PlannerService.getPlannedElements(result.calendar!, ...)`.
+///
+/// Users are not told apart: teachers, pupils and co-accounts come in the
+/// same form. A co-account has an ID of its own (ending in its number, such
+/// as `_1`) and a [description] such as `Interimaris van ...`. To keep
+/// teachers only, compare the user ID (the middle part of the calendar ID)
+/// with a list of teachers, such as `SkoreService.getTeachers()`.
+class PlannerSearchResult {
+  /// The planner's ID of what was found (`identifier.id`): the calendar ID
+  /// for a user, a class or a location.
+  final String id;
+
+  /// The planner's type of what was found (`identifier.type`: `user`,
+  /// `group`, `mini-db-2`, ...), also for a type this library does not know.
+  final String typeName;
+
+  /// What was found; [PlannerSearchResultKind.other] for a hit this library
+  /// cannot map to a calendar.
+  final PlannerSearchResultKind kind;
+
+  /// The calendar of what was found, with [id]; `null` when [kind] is
+  /// [PlannerSearchResultKind.other].
+  final PlannerCalendar? calendar;
+
+  /// The name (`origin.name`): a user first name first (`Jan Janssens`), a
+  /// class (`6A1`), a room (`101`). The [title] when the planner gave no
+  /// name.
+  final String name;
+
+  /// The hit as the planner's search list shows it (the `title` parts
+  /// joined): a user last name first (`Janssens Jan`). For a pupil, the list
+  /// seen live adds the class (`Janssens Lotte • 6A1`).
+  final String title;
+
+  /// More about the hit, `""` when there is none: the `origin.description`
+  /// (a class's full name, `Interimaris van ...` for a co-account), or else
+  /// the description the search list shows (`Locatie` for a room).
+  final String description;
+
+  /// The URL of a user's picture, or `null`.
+  final String? pictureUrl;
+
+  /// The icon the search list shows (`briefcase` for a class), or `null`.
+  final String? icon;
+
+  /// The hit as the planner gave it (decoded JSON, read-only), for the
+  /// fields this model does not cover.
+  final Map<String, dynamic> raw;
+
+  const PlannerSearchResult({
+    required this.id,
+    required this.typeName,
+    required this.kind,
+    required this.name,
+    this.calendar,
+    this.title = '',
+    this.description = '',
+    this.pictureUrl,
+    this.icon,
+    this.raw = const {},
+  });
+
+  /// Parses a hit as the planner's search gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks its `identifier` (`id` and
+  /// `type`), holds a part in an unknown shape, or has a user, class or
+  /// location ID that is not a calendar ID.
+  factory PlannerSearchResult.fromJson(Map<String, dynamic> json) {
+    final identifier = _map(json['identifier'], 'the identifier of a hit');
+    final id = _requiredString(identifier, 'id', 'a hit');
+    final what = 'hit $id';
+    final typeName = _requiredString(identifier, 'type', what);
+    final origin =
+        _optionalMap(json['origin'], 'the origin of $what') ??
+        const <String, dynamic>{};
+    final graphic =
+        _optionalMap(json['graphic'], 'the graphic of $what') ??
+        const <String, dynamic>{};
+    final graphicValue = _optionalString(graphic['value']);
+    final modules = _list(origin['modules'], 'the modules of $what');
+
+    final kind = switch (typeName) {
+      'user' => PlannerSearchResultKind.user,
+      'group' => PlannerSearchResultKind.group,
+      _ when modules.contains('location') => PlannerSearchResultKind.location,
+      _ => PlannerSearchResultKind.other,
+    };
+    final PlannerCalendar? calendar;
+    try {
+      calendar = switch (kind) {
+        PlannerSearchResultKind.user => PlannerCalendar.user(id),
+        PlannerSearchResultKind.group => PlannerCalendar.group(id),
+        PlannerSearchResultKind.location => PlannerCalendar.location(id),
+        PlannerSearchResultKind.other => null,
+      };
+    } on ArgumentError {
+      throw SmartschoolPlannerError(
+        'The planner gave $what of type $typeName, whose ID is not a planner '
+        '${kind.name} calendar ID.',
+      );
+    }
+
+    final title = _parts(json['title'], 'the title of $what');
+    final name = (_optionalString(origin['name']) ?? '').trim();
+    final description = (_optionalString(origin['description']) ?? '').trim();
+    final picture = _optionalString(origin['userPictureUrl']) ?? '';
+    return PlannerSearchResult(
+      id: id,
+      typeName: typeName,
+      kind: kind,
+      calendar: calendar,
+      name: name.isEmpty ? title : name,
+      title: title,
+      description: description.isEmpty
+          ? _parts(json['description'], 'the description of $what')
+          : description,
+      pictureUrl: picture.isNotEmpty
+          ? picture
+          : (graphic['type'] == 'image' ? graphicValue : null),
+      icon: graphic['type'] == 'icon' ? graphicValue : null,
+      raw: Map.unmodifiable(json),
+    );
+  }
+
+  @override
+  String toString() =>
+      'PlannerSearchResult($typeName $id, $name'
+      '${description.isEmpty ? '' : ' ($description)'})';
+}
+
+/// The text of a list of highlighted parts (`[{"part": "6A", "isHighlighted":
+/// true}, ...]`), joined and trimmed.
+String _parts(Object? value, String what) => [
+  for (final part in _list(value, what))
+    _optionalString(_map(part, 'a part of $what')['part']) ?? '',
+].join().trim();
 
 // ---------------------------------------------------------------------------
 // Element types

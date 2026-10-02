@@ -17,7 +17,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
-- Planner read support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element.
+- Planner read support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name.
 
 ---
 
@@ -144,6 +144,7 @@ await client.ensureAuthenticated();
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getResponse(path, {query})` | Same GET → the whole `Response<String>`; pass it as `sameSessionAs` to a request that carries state of the page (see *Logging in again* below) |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
+| `postJsonResponse(path, {data, query})` | POST with a JSON body (`application/json`; a map or list is encoded) → the whole `Response<String>`, not decoded, whatever its status |
 | `postFormRaw(path, fields, {query, retryAfterLogin, sameSessionAs})` | `application/x-www-form-urlencoded` POST → `String` |
 | `postFormResponse(path, fields, {query, retryAfterLogin, sameSessionAs})` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
@@ -739,10 +740,16 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ## `PlannerService`
 
-Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It only reads: every request is a GET to the planner's JSON API (`/planner/api/v1/`).
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It only reads: every request is a GET to the planner's JSON API (`/planner/api/v1/`), except the search for a calendar by name, a POST that only reads.
 
 ```dart
 final planner = PlannerService(client);
+
+// A class found by name ("Zoek een planner").
+final hits = await planner.searchCalendars('6A1');  // List<PlannerSearchResult>
+final klas = hits
+    .firstWhere((hit) => hit.kind == PlannerSearchResultKind.group)
+    .calendar!;                                    // PlannerCalendar
 
 // The own planner of one week.
 final me = await planner.ownCalendar();            // PlannerCalendar
@@ -754,7 +761,7 @@ final week = await planner.getPlannedElements(
 
 // The tests of a class in that week (all its teachers), with their detail.
 final tests = await planner.getPlannedElements(
-  PlannerCalendar.group('4069_2001'),
+  klas,
   from: DateTime(2026, 10, 5),
   to: DateTime(2026, 10, 9, 23, 59, 59),
   types: {PlannedElementType.assignment},
@@ -776,11 +783,25 @@ for (final test in tests) {
 
 `ownCalendar()` gives the planner of the authenticated user (from `authenticatedUser.id`; note that `getCurrentUser().id` is only the middle part of that ID). The users, classes and locations an element names give their own calendar: `element.organiserUsers.first.calendar`, `element.participantGroups.first.calendar`, `element.locations.first.calendar` (a location's calendar ID joins its platform ID and its item ID; the planner answers the bare item ID with `400`). The constructors check the form of the ID and throw an `ArgumentError` for another one.
 
+### Finding a calendar by name
+
+`searchCalendars(text)` does what the planner's search field ("Zoek een planner") does: it finds the users, classes and locations whose name holds the text (`6A` finds `6A1` and `6A2`, `Janssens` every Janssens, `101` the room), each with its `calendar`:
+
+| Hit (`kind`) | Planner type (`typeName`) | `calendar` |
+|---|---|---|
+| `PlannerSearchResultKind.user` | `user` | `PlannerCalendar.user(id)` |
+| `PlannerSearchResultKind.group` | `group` | `PlannerCalendar.group(id)` |
+| `PlannerSearchResultKind.location` | an item of the location module (`location` in `origin.modules`), `mini-db-2` on the live site | `PlannerCalendar.location(id)` |
+| `PlannerSearchResultKind.other` | anything else | `null` |
+
+**Users are not told apart**: teachers, pupils and co-accounts come with the same fields, and no field says which is which. A co-account has an ID of its own (ending in its number, such as `_1`) and a `description` such as `Interimaris van ...`; the `title` of the pupils seen live ended in their class, but that is display text, which the library does not rely on. To keep teachers only, compare the user ID (the middle part of the calendar ID) with `SkoreService.getTeachers()`. The search is a `POST quick-search/planner/search` with `{"searchString": text, "searchOptions": []}`, as the web client sends it; it only reads. The planner's `include-deleted` option is not sent, and the favourites of the search (which the planner keeps per user) are not touched.
+
 ### Methods
 
 | Method | Returns | Description |
 |---|---|---|
 | `ownCalendar()` | `Future<PlannerCalendar>` | The planner of the authenticated user. |
+| `searchCalendars(text)` | `Future<List<PlannerSearchResult>>` | The users, classes and locations whose name holds `text`, in the planner's order, each with its calendar (see *Finding a calendar by name*). An empty text throws an `ArgumentError` before anything is sent. |
 | `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. |
 | `getPlannedElement({type, platformId, id})` | `Future<PlannedElementDetail>` | The full detail of one element. |
 | `getDetail(element)` | `Future<PlannedElementDetail>` | The same, for a listed element (also one of a type the library does not know). |
@@ -797,7 +818,7 @@ for (final test in tests) {
 
 ### Errors
 
-- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape. The session was accepted: signing in again does not help.
+- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID). The session was accepted: signing in again does not help.
 - `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash (carries `elementType`, `platformId`, `elementId`).
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once. Sign in again and retry.
 - `SmartschoolParsingError` — `ownCalendar()`: the session's user ID is not in the form `{platformId}_{userId}_{coaccount}`.
@@ -898,6 +919,9 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 ### `PlannerCalendar`
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
 
+### `PlannerSearchResult`
+Returned by `PlannerService.searchCalendars()`. Fields: `id` (the planner's ID, the calendar ID for a user, class or location), `typeName` (the planner's type: `user`, `group`, `mini-db-2`, ...), `kind` (`PlannerSearchResultKind`), `calendar` (`PlannerCalendar?`; `null` for `other`), `name` (a user first name first, a class, a room), `title` (as the search list shows it: a user last name first, a pupil with the class), `description` (`""` when none: a class's full name, `Interimaris van ...` for a co-account, `Locatie` for a room), `pictureUrl` (`String?`, users), `icon` (`String?`), and `raw` (the hit as the planner gave it, read-only).
+
 ### `PlannedElement`
 Returned by `PlannerService.getPlannedElements()`. Fields: `id` (a UUID), `platformId`, `type` (`PlannedElementType`; `other` for a type the library does not know), `typeName` (the planner's name of the type, such as `planned-lessons`), `name` (`String?`; `null` on a timetable slot), `period` (`PlannerPeriod`: `from`, `to` in local time, `wholeDay`, `deadline`), `organiserUsers` / `organiserGroups`, `participantUsers` / `participantGroups`, `isParticipant`, `capabilities` (`PlannedElementCapabilities`), `icon` (`String?`), `courses`, `locations`, `assignmentType` (`PlannerAssignmentType?`, assignments only), `resolvedStatus` (`String?`, assignments only), `pinned`, `unconfirmed`, `color`, and `raw` (the element as the planner gave it, read-only, for the fields the model does not cover).
 
@@ -928,6 +952,7 @@ What the authenticated user may do with an element: `flags` (every `canUser...` 
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 | `SkoreShareAccess` | `read` (Skore's `readers`), `write` (Skore's `writers`: read and change) |
 | `PlannerCalendarType` | `user`, `group`, `location` (`wireName`: the name in the planner's URL) |
+| `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found) |
 | `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
 
 ---

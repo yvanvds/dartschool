@@ -141,6 +141,9 @@ class _Smartschool implements HttpClientAdapter {
   final List<String> sent = <String>[];
   final List<String> uploads = <String>[];
 
+  /// The bodies of the JSON POSTs (with the session accepted).
+  final List<String> jsonBodies = <String>[];
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -187,6 +190,7 @@ class _Smartschool implements HttpClientAdapter {
           uploads.add(await _read(requestStream));
           return _response('true');
         case _postJson:
+          jsonBodies.add(await _read(requestStream));
           return _response('{"ok":true}', contentType: Headers.jsonContentType);
         case _elsewhere:
           return _redirect('/?module=Messages&file=index');
@@ -369,6 +373,24 @@ void main() {
 
       expect(data, {'ok': true});
       expect(server.log, [_postJson, ..._login, _postJson]);
+    });
+
+    test('postJsonResponse sends the JSON body again after logging in again '
+        '(#85)', () async {
+      final server = await serve(_Smartschool());
+
+      final response = await client.postJsonResponse(
+        '/api/v1/endpoint',
+        data: {'searchString': 'Janssens', 'searchOptions': <Object>[]},
+      );
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"ok":true}');
+      expect(server.log, [_postJson, ..._login, _postJson]);
+      // The retry sends the whole JSON body again, not an empty body.
+      expect(server.jsonBodies, [
+        '{"searchString":"Janssens","searchOptions":[]}',
+      ]);
     });
 
     test('an XHR/form POST on the same session still gets a 401 and logs in '

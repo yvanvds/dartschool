@@ -13,10 +13,17 @@ export '../models/planner_models.dart';
 /// full detail of one element. A calendar is the planner of a user (the
 /// account itself, or another teacher), of a class or of a location, as
 /// `/planner/main/user/...`, `/planner/main/group/...` and
-/// `/planner/main/location/...` show it.
+/// `/planner/main/location/...` show it; [searchCalendars] finds one by
+/// name.
 ///
 /// ```dart
 /// final planner = PlannerService(client);
+///
+/// // A class found by name.
+/// final hits = await planner.searchCalendars('6A1');
+/// final klas = hits
+///     .firstWhere((hit) => hit.kind == PlannerSearchResultKind.group)
+///     .calendar!;
 ///
 /// final me = await planner.ownCalendar();
 /// final week = await planner.getPlannedElements(
@@ -30,7 +37,7 @@ export '../models/planner_models.dart';
 ///
 /// // The tests of a class in a period.
 /// final tests = await planner.getPlannedElements(
-///   PlannerCalendar.group('4069_2001'),
+///   klas,
 ///   from: DateTime(2026, 10, 5),
 ///   to: DateTime(2026, 10, 9, 23, 59, 59),
 ///   types: {PlannedElementType.assignment},
@@ -39,8 +46,9 @@ export '../models/planner_models.dart';
 /// print(detail.publicInfo);
 /// ```
 ///
-/// Everything here reads: the service sends GET requests only, to the
-/// planner's JSON API (`/planner/api/v1/`).
+/// Everything here reads, through the planner's JSON API
+/// (`/planner/api/v1/`): the service sends GET requests, and one POST that
+/// only reads, the search of [searchCalendars].
 ///
 /// ### What a teacher sees
 /// A class calendar holds the elements of all teachers of the class, and a
@@ -84,11 +92,14 @@ class PlannerService {
 
   /// The base path of the planner's JSON API.
   ///
-  /// The service sends GET requests only. The planner also answers POSTs on
-  /// it that change the planner; one of them,
-  /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, moves
-  /// everything in a period to the trash. Writes that a later version adds
-  /// must never use the bulk endpoints.
+  /// The service sends GET requests, and one POST that only reads:
+  /// `quick-search/planner/search`. The planner also answers POSTs on it
+  /// that change the planner or the user's settings: the favourites of the
+  /// search (`quick-search/planner/mark-as-favourite` and
+  /// `discard-as-favourite`), and
+  /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
+  /// moves everything in a period to the trash. Writes that a later version
+  /// adds must never use the bulk endpoints.
   static const _apiPath = '/planner/api/v1';
 
   // ---------------------------------------------------------------------------
@@ -113,6 +124,45 @@ class PlannerService {
       );
     }
     return PlannerCalendar.user(id);
+  }
+
+  /// Finds the calendars of the users, classes and locations whose name
+  /// holds [text], as the search field of the planner ("Zoek een planner")
+  /// does: `6A` finds `6A1` and `6A2`, `Janssens` every Janssens, `101` the
+  /// room. Returns the hits in the planner's order; an empty list when
+  /// nothing matches.
+  ///
+  /// Each hit has its [PlannerSearchResult.calendar], for
+  /// [getPlannedElements]; a hit of a kind this library does not know is
+  /// kept as [PlannerSearchResultKind.other], without a calendar.
+  ///
+  /// Users are not told apart: teachers, pupils and co-accounts come in the
+  /// same form (a co-account with an ID of its own and a description such as
+  /// `Interimaris van ...`). Telling teachers apart is up to the caller, for
+  /// instance with the teacher list of `SkoreService.getTeachers()`, whose
+  /// IDs are the middle part of a user's calendar ID.
+  ///
+  /// Sends `POST quick-search/planner/search` with
+  /// `{"searchString": text, "searchOptions": []}` as the web client does:
+  /// a POST that only reads. [text] goes out without the white space around
+  /// it. The planner's `include-deleted` option is not sent, so the search
+  /// leaves out what the planner counts as deleted; the user's favourites of
+  /// the search are left alone.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [text] is
+  /// empty or white space only.
+  Future<List<PlannerSearchResult>> searchCalendars(String text) async {
+    final searchString = text.trim();
+    if (searchString.isEmpty) {
+      throw ArgumentError.value(text, 'text', 'is empty');
+    }
+    final response = await _client.postJsonResponse(
+      '$_apiPath/quick-search/planner/search',
+      data: {'searchString': searchString, 'searchOptions': const <Object>[]},
+    );
+    return parseSearchResults(
+      _decode(response, 'the search for "$searchString"'),
+    );
   }
 
   /// Returns the elements of [calendar] in the period from [from] to [to],
@@ -292,6 +342,26 @@ class PlannerService {
       );
     }
     return PlannedElementDetail.fromJson(json);
+  }
+
+  /// Parses the hits of the planner's search (a JSON array of hits).
+  static List<PlannerSearchResult> parseSearchResults(dynamic json) {
+    if (json is! List) {
+      throw SmartschoolPlannerError(
+        'The planner gave the hits of a search as ${json.runtimeType} '
+        'instead of a list.',
+      );
+    }
+    return [
+      for (final (index, item) in json.indexed)
+        if (item is Map<String, dynamic>)
+          PlannerSearchResult.fromJson(item)
+        else
+          throw SmartschoolPlannerError(
+            'The planner gave hit $index of a search as ${item.runtimeType} '
+            'instead of an object.',
+          ),
+    ];
   }
 
   // ---------------------------------------------------------------------------

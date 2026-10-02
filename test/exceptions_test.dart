@@ -142,6 +142,100 @@ void main() {
     });
   });
 
+  group('planner errors (#84)', () {
+    test('SmartschoolPlannerError is a SmartschoolException, not a session '
+        'problem, and shows its status when it has one', () {
+      const error = SmartschoolPlannerError('refused', statusCode: 400);
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.statusCode, 400);
+      expect(error.toString(), 'SmartschoolPlannerError(400): refused');
+      expect(
+        const SmartschoolPlannerError('unknown shape').toString(),
+        'SmartschoolPlannerError: unknown shape',
+      );
+    });
+
+    test('SmartschoolPlannedElementNotFoundError is a SmartschoolPlannerError '
+        'with status 404 and names the element', () {
+      const error = SmartschoolPlannedElementNotFoundError(
+        'gone',
+        elementType: 'planned-lessons',
+        platformId: 4069,
+        elementId: 'e0000000-0000-4000-8000-000000000002',
+      );
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error.statusCode, 404);
+      expect(error.elementType, 'planned-lessons');
+      expect(error.platformId, 4069);
+      expect(error.elementId, 'e0000000-0000-4000-8000-000000000002');
+      expect(
+        error.toString(),
+        'SmartschoolPlannedElementNotFoundError(404): gone',
+      );
+    });
+  });
+
+  group('planner write errors (#87)', () {
+    test('SmartschoolPlannerWriteRefusedError is a SmartschoolPlannerError '
+        'without a status: nothing was sent', () {
+      const error = SmartschoolPlannerWriteRefusedError('not your slot');
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error, isNot(isA<SmartschoolPlannedElementNotFoundError>()));
+      expect(error.statusCode, isNull);
+      expect(
+        error.toString(),
+        'SmartschoolPlannerWriteRefusedError: not your slot',
+      );
+    });
+
+    test('SmartschoolPlannerSaveUnconfirmedError is not a '
+        'SmartschoolPlannerError and carries its status and cause', () {
+      // "Nothing was sent" and "may have been changed" must not share a type.
+      const cause = SmartschoolConnectionError('dropped');
+      const dropped = SmartschoolPlannerSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+      );
+      expect(dropped, isA<SmartschoolException>());
+      expect(dropped, isNot(isA<SmartschoolPlannerError>()));
+      expect(dropped.cause, same(cause));
+      expect(dropped.statusCode, isNull);
+      expect(
+        dropped.toString(),
+        'SmartschoolPlannerSaveUnconfirmedError: unconfirmed',
+      );
+
+      const answered = SmartschoolPlannerSaveUnconfirmedError(
+        'unconfirmed',
+        statusCode: 500,
+      );
+      expect(answered.statusCode, 500);
+      expect(answered.cause, isNull);
+      expect(
+        answered.toString(),
+        'SmartschoolPlannerSaveUnconfirmedError(500): unconfirmed',
+      );
+    });
+  });
+
+  group('lesson content errors (#88)', () {
+    test('SmartschoolLessonContentError is a SmartschoolException, not a '
+        'session problem nor a planner error, and shows its status when it '
+        'has one', () {
+      const error = SmartschoolLessonContentError('refused', statusCode: 500);
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error, isNot(isA<SmartschoolPlannerError>()));
+      expect(error.statusCode, 500);
+      expect(error.toString(), 'SmartschoolLessonContentError(500): refused');
+      expect(
+        const SmartschoolLessonContentError('unknown shape').toString(),
+        'SmartschoolLessonContentError: unknown shape',
+      );
+    });
+  });
+
   group('SmartschoolClientDisposedError (#73)', () {
     const message = 'SmartschoolClient was disposed: it sends no more requests';
 

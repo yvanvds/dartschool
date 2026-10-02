@@ -183,7 +183,8 @@ class SmartschoolAccountVerificationRejectedError
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
-/// error type (e.g. [SmartschoolPresenceError]).
+/// error type (e.g. [SmartschoolPresenceError], or a
+/// [SmartschoolPlannerError] with the planner's HTTP status).
 class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
   const SmartschoolSessionExpiredError([
     super.message = 'Smartschool did not accept the session.',
@@ -490,6 +491,178 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
     required this.courseId,
     required this.teacherId,
   });
+}
+
+/// Thrown when Smartschool's planner answers a request with something
+/// `PlannerService` cannot use (#84): another HTTP status than `200` (in
+/// [statusCode], such as `400` for a calendar ID or a date range the planner
+/// refuses), an HTML page instead of data, an answer that is not valid JSON,
+/// or data in a shape it does not recognise (such as an element without its
+/// `id` or `period`, or the detail of another element than the one asked
+/// for).
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept is a [SmartschoolSessionExpiredError]
+/// instead.
+///
+/// An element the planner does not know is a
+/// [SmartschoolPlannedElementNotFoundError], a subtype of this one; a write
+/// that a check refused before it was sent is a
+/// [SmartschoolPlannerWriteRefusedError], another one.
+///
+/// From the writes of `PlannerService` (`planLesson`, `renameElement`,
+/// `changePublicInfo`, `changePrivateInfo`, `clearLesson`, #87;
+/// `planLessonContent`, #88; `planAssignment`, `trashAssignment`, #89), this
+/// type and its subtypes always mean that **nothing was sent**: the read
+/// before the write failed, or a check refused it. A write that went out without
+/// the planner confirming it is a [SmartschoolPlannerSaveUnconfirmedError]
+/// instead.
+class SmartschoolPlannerError extends SmartschoolException {
+  /// The HTTP status of the planner's answer when it was not `200`; `null`
+  /// when the answer had status `200` but could not be used.
+  final int? statusCode;
+
+  const SmartschoolPlannerError(super.message, {this.statusCode});
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `PlannerService.getPlannedElement` and `getDetail` when the
+/// planner answers `404`: it has no element of that type with that ID (#84).
+/// The ID is unknown, or the element was removed or moved to the trash (a
+/// lesson hour that was cleared comes back as a timetable slot with a new
+/// ID).
+///
+/// A [SmartschoolPlannerError] with [statusCode] `404`.
+class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
+  /// The planner's name of the element type that was asked for
+  /// (`planned-lessons`).
+  final String elementType;
+
+  /// The platform ID that was asked for.
+  final int platformId;
+
+  /// The element ID that was asked for.
+  final String elementId;
+
+  const SmartschoolPlannedElementNotFoundError(
+    super.message, {
+    required this.elementType,
+    required this.platformId,
+    required this.elementId,
+  }) : super(statusCode: 404);
+}
+
+/// Thrown by the writes of `PlannerService` (#87) when a check before the
+/// write refuses it, after reading the element again. **Nothing was sent**:
+/// the planner was not changed.
+///
+/// The checks keep the writes to the authenticated user's own planner, as
+/// far as the planner tells: the element must be organised by the
+/// authenticated user (`organisers.users`), and the planner's capabilities
+/// must allow the change (`canUserReplace` to fill a timetable slot,
+/// `canUserEdit` with `canUserRename`, `canUserChangePublicInfo` or
+/// `canUserChangePrivateInfo` to edit, `canUserEdit` to clear,
+/// `canUserTrash` to move an assignment to the trash). A slot must still be
+/// a slot, in the period it was read with. A lesfiche planned into a slot
+/// (`planLessonContent`, #88) must be a lesson lesfiche among the user's
+/// lesfiches. A new assignment (`planAssignment`, #89) must be of one of the
+/// school's assignment types, and an assignment moved to the trash
+/// (`trashAssignment`, #89) must not have a linked Skore evaluation. The
+/// method says which check refused.
+///
+/// A [SmartschoolPlannerError] (without a [statusCode]), so that from the
+/// writes that type always means nothing was sent. An element that is gone
+/// when it is read again (such as a slot that was filled since it was read)
+/// is a [SmartschoolPlannedElementNotFoundError] instead, also before
+/// anything was sent.
+class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
+  const SmartschoolPlannerWriteRefusedError(super.message);
+}
+
+/// Thrown by the writes of `PlannerService` (#87) when the write went out to
+/// the planner, but the planner's answer does not confirm it.
+///
+/// **The change may or may not have been made.** Read the element again
+/// (`PlannerService.getDetail`) before trying again; the message says what
+/// to read. For the fill of a timetable slot (`planLesson`,
+/// `planLessonContent`), the clear of a lesson (`clearLesson`) and the move
+/// of an assignment to the trash (`trashAssignment`, #89), the planner
+/// answers the element they replaced or trashed with `404` once the change
+/// went through. Calling those methods again is safe in itself: they read
+/// the element first, so a fill, a clear or a trash that did go through is
+/// not made a second time, and an edit that did is not sent again. **Not so
+/// for the create of an assignment** (`planAssignment`, #89): there is no
+/// element to read first, and calling it again adds a second assignment
+/// when the first was made. Look for it in the calendar of one of its
+/// classes first.
+///
+/// Thrown when the planner answers the write with another status than the
+/// one it gives on success (`200`; `201` or `200` for the create of an
+/// assignment) ([statusCode]), an answer that is not the element as
+/// expected (another type, name, assignment type, period, info text or
+/// element), or an answer the service cannot use; when the element is
+/// still there after its move to the trash; and when the write failed after
+/// it went out, before a usable answer came in ([cause] holds the failure,
+/// typically a [SmartschoolConnectionError]).
+///
+/// A session that Smartschool refuses for the write is not this error but a
+/// [SmartschoolSessionExpiredError] (or another
+/// [SmartschoolAuthenticationError]): Smartschool refused it before handling
+/// it, so the planner was not changed.
+///
+/// Deliberately not a [SmartschoolPlannerError], so a `catch` meant for the
+/// failures where nothing was sent does not catch it.
+class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
+  /// The HTTP status of the planner's answer to the write, or `null` when no
+  /// answer came in (see [cause]).
+  final int? statusCode;
+
+  /// The failure of the write when no usable answer came in: a
+  /// [SmartschoolConnectionError], or a [SmartschoolPlannerError] about the
+  /// answer; `null` when the planner answered with an element that does not
+  /// confirm the write.
+  final Object? cause;
+
+  const SmartschoolPlannerSaveUnconfirmedError(
+    super.message, {
+    this.statusCode,
+    this.cause,
+  });
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown when Smartschool's Lesfiches module (lesson content) answers a
+/// request with something `LessonContentService` cannot use (#88): another
+/// HTTP status than `200` (in [statusCode]), an HTML page instead of data
+/// (the module answers a route it does not know with its web app), an
+/// answer that is not valid JSON, or data in a shape it does not recognise
+/// (such as a lesfiche without its `id` or `type`).
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept is a [SmartschoolSessionExpiredError]
+/// instead.
+///
+/// `PlannerService.planLessonContent` reads the lesfiches before it plans
+/// one; this error from it means that **nothing was sent** to the planner.
+class SmartschoolLessonContentError extends SmartschoolException {
+  /// The HTTP status of the module's answer when it was not `200`; `null`
+  /// when the answer had status `200` but could not be used.
+  final int? statusCode;
+
+  const SmartschoolLessonContentError(super.message, {this.statusCode});
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

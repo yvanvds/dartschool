@@ -100,6 +100,8 @@ final _disposed = isA<SmartschoolClientDisposedError>().having(
 final _calls = <String, Future<Object?> Function(SmartschoolClient client)>{
   'getJson': (client) => client.getJson('/json'),
   'postJson': (client) => client.postJson('/json', data: {'a': 1}),
+  'postJsonResponse': (client) =>
+      client.postJsonResponse('/json', data: {'a': 1}),
   'postXml': (client) => client.postXml(
     url: '/xml',
     subsystem: 'postboxes',

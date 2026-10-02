@@ -17,6 +17,8 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
+- Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
+- Lesfiches read support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses, to plan into the planner.
 
 ---
 
@@ -143,6 +145,7 @@ await client.ensureAuthenticated();
 | `getRaw(path)` | Authenticated GET → response body as `String` |
 | `getResponse(path, {query})` | Same GET → the whole `Response<String>`; pass it as `sameSessionAs` to a request that carries state of the page (see *Logging in again* below) |
 | `getJson(path, {query})` | Authenticated GET with JSON Accept header → decoded `dynamic` |
+| `postJsonResponse(path, {data, query})` | POST with a JSON body (`application/json`; a map or list is encoded) → the whole `Response<String>`, not decoded, whatever its status |
 | `postFormRaw(path, fields, {query, retryAfterLogin, sameSessionAs})` | `application/x-www-form-urlencoded` POST → `String` |
 | `postFormResponse(path, fields, {query, retryAfterLogin, sameSessionAs})` | Same POST → the whole `Response<String>` (status code, headers, final URL and body) |
 | `postFormEncodedRaw(path, body)` | Same but accepts a pre-encoded body string |
@@ -736,6 +739,298 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ---
 
+## `PlannerService`
+
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name and the workload calls, POSTs that only read.
+
+In the **own planner** only, it fills an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library (see `LessonContentService`) and clears the hour again (see *Lessons in the own planner*), adds an assignment for classes and moves it to the planner's trash again (see *Assignments in the own planner*), and changes the name and info of an own lesson or assignment: eight writes, each for one element, after checks that keep them out of colleagues' elements.
+
+```dart
+final planner = PlannerService(client);
+
+// A class found by name ("Zoek een planner").
+final hits = await planner.searchCalendars('6A1');  // List<PlannerSearchResult>
+final klas = hits
+    .firstWhere((hit) => hit.kind == PlannerSearchResultKind.group)
+    .calendar!;                                    // PlannerCalendar
+
+// The own planner of one week.
+final me = await planner.ownCalendar();            // PlannerCalendar
+final week = await planner.getPlannedElements(
+  me,
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+);                                                 // List<PlannedElement>
+
+// The tests of a class in that week (all its teachers), with their detail.
+final tests = await planner.getPlannedElements(
+  klas,
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+  types: {PlannedElementType.assignment},
+);
+for (final test in tests) {
+  final detail = await planner.getDetail(test);    // PlannedElementDetail
+  print('${test.period.from} ${test.assignmentType?.abbreviation} '
+      '${test.name} (${test.organiserUsers.first.name}): ${detail.publicInfo}');
+}
+```
+
+### Calendars
+
+| Calendar | ID | Example |
+|---|---|---|
+| `PlannerCalendar.user(id)` | the whole user ID `{platformId}_{userId}_{coaccount}` | `4069_146_0` |
+| `PlannerCalendar.group(id)` | a class, `{platformId}_{groupId}` | `4069_2001` |
+| `PlannerCalendar.location(id)` | a location, `{platformId}_{itemId}` | `4069_<item UUID>` |
+
+`ownCalendar()` gives the planner of the authenticated user (from `authenticatedUser.id`; note that `getCurrentUser().id` is only the middle part of that ID). The users, classes and locations an element names give their own calendar: `element.organiserUsers.first.calendar`, `element.participantGroups.first.calendar`, `element.locations.first.calendar` (a location's calendar ID joins its platform ID and its item ID; the planner answers the bare item ID with `400`). The constructors check the form of the ID and throw an `ArgumentError` for another one.
+
+### Finding a calendar by name
+
+`searchCalendars(text)` does what the planner's search field ("Zoek een planner") does: it finds the users, classes and locations whose name holds the text (`6A` finds `6A1` and `6A2`, `Janssens` every Janssens, `101` the room), each with its `calendar`:
+
+| Hit (`kind`) | Planner type (`typeName`) | `calendar` |
+|---|---|---|
+| `PlannerSearchResultKind.user` | `user` | `PlannerCalendar.user(id)` |
+| `PlannerSearchResultKind.group` | `group` | `PlannerCalendar.group(id)` |
+| `PlannerSearchResultKind.location` | an item of the location module (`location` in `origin.modules`), `mini-db-2` on the live site | `PlannerCalendar.location(id)` |
+| `PlannerSearchResultKind.other` | anything else | `null` |
+
+**Users are not told apart**: teachers, pupils and co-accounts come with the same fields, and no field says which is which. A co-account has an ID of its own (ending in its number, such as `_1`) and a `description` such as `Interimaris van ...`; the `title` of the pupils seen live ended in their class, but that is display text, which the library does not rely on. To keep teachers only, compare the user ID (the middle part of the calendar ID) with `SkoreService.getTeachers()`. The search is a `POST quick-search/planner/search` with `{"searchString": text, "searchOptions": []}`, as the web client sends it; it only reads. The planner's `include-deleted` option is not sent, and the favourites of the search (which the planner keeps per user) are not touched.
+
+### Assignment types and workload
+
+What a caller needs to answer "when is a good moment for a test in class X": the school's assignment types, the assignments of the class in a period (of all its teachers, with their type), and the workload figures the planner itself uses, per day or for one moment. The library returns these facts as the planner gives them; choosing the moment (no other test that day, not right before an exam, ...) is up to the caller.
+
+```dart
+final types = await planner.getAssignmentTypes();  // List<PlannerAssignmentType>: GO, GT, KO, ...
+
+final assignments = await planner.getAssignmentsOfGroups(
+  groupIds: [klas.id],                             // '4069_2001'; several classes in one request
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+);                                                 // List<PlannedElement>
+for (final a in assignments) {
+  print('${a.period.from} ${a.assignmentType?.abbreviation} ${a.name} '
+      '(${a.organiserUsers.first.name})');
+}
+
+final load = await planner.getWorkloadSchedule(
+  groupIds: [klas.id],
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+);                                                 // Map<DateTime, List<PlannerGroupWorkload>>
+for (final MapEntry(key: day, value: groups) in load.entries) {
+  for (final g in groups) {
+    print('$day ${g.group.name}: weight ${g.weight}, ${g.setting?.name}');
+  }
+}
+
+// The check the planner runs before it saves an assignment.
+final now = await planner.calculateWorkload(
+  groupIds: [klas.id],
+  from: DateTime(2026, 10, 6, 8, 30),
+  to: DateTime(2026, 10, 6, 9, 20),
+);                                                 // List<PlannerGroupWorkload>
+```
+
+- `groupIds` are class IDs `{platformId}_{groupId}`: the `id` of a class's `PlannerCalendar` (from `searchCalendars`) or of a `PlannerGroup` an element names. Each goes out once. No class, an ID in another form, or `to` before `from` throws an `ArgumentError` before anything is sent. `from` and `to` go out as for `getPlannedElements`.
+- `getAssignmentsOfGroups` returns the assignments as the planner's workload view lists them, in the planner's order (not by date). An assignment of several classes comes once, with all its classes in `participantGroups`, also those that were not asked for. The same assignments are in each class calendar (`getPlannedElements` with `PlannedElementType.assignment`), one request per class.
+- `getWorkloadSchedule` returns, per day the planner names (a local `DateTime` at midnight, in date order), a `PlannerGroupWorkload` per class: the planner's `weight` and `concurrentWeight` and the class's workload `setting` (name, `limit`, allowed assignment types). An empty schedule is an empty map.
+- **The figures are returned as they are**: what `weight` and `concurrentWeight` add up was not checked. At the school seen live every assignment type had weight `0` and every class the setting `Geen limiet` (limit `-1` per `day`, `soft`), so the weights stayed `0`, also on days with tests: there, the assignments per day (with their type and teacher) are what says something.
+- The workload calls are POSTs that only read, as the planner's web client sends them (checked in its code, and called live): `workload/planned-elements?from=&to=` with `{"users": [], "groups": [...], "courses": []}`, `workload/schedule?from=&to=` with `{"groups": [...]}`, and `workload/calculate` with the period and `{"users": [], "groups": [...], "groupFilters": {}}`; `calculate` saves nothing. The assignment types come from `GET /lesson-content/api/v1/assignments/applicable-assignment-types`.
+
+### Lessons in the own planner
+
+> **Warning:** these calls change the live planner. Pupils of the hour's classes see a lesson's name and public info as soon as it is planned.
+
+```dart
+final me = await planner.ownCalendar();
+final slot = (await planner.getPlannedElements(
+  me,
+  from: DateTime(2026, 11, 20, 11, 10),
+  to: DateTime(2026, 11, 20, 12),
+  types: {PlannedElementType.placeholder},
+)).single;                                         // an empty lesson hour
+
+final lesson = await planner.planLesson(
+  placeholder: slot,
+  name: 'Lussen: for en while',
+  publicInfo: '<p>Breng je laptop mee.</p>',       // HTML, what pupils see
+  privateInfo: '<p>Oefening 3 overslaan.</p>',     // HTML, what pupils do not see
+);                                                 // PlannedElementDetail, a new ID
+
+await planner.renameElement(lesson, 'Lussen: for, while en break');
+await planner.changePublicInfo(lesson, '<p>Breng je laptop <strong>opgeladen</strong> mee.</p>');
+await planner.changePrivateInfo(lesson, '<p>Oefening 3 en 4 overslaan.</p>');
+
+final emptyAgain = await planner.clearLesson(lesson); // the slot again, with a new ID
+
+// A lesfiche of the Lesfiches library into the same hour.
+final fiche = (await LessonContentService(client).getItems())
+    .firstWhere((item) => item.type == LessonContentType.lesson);
+final planned = await planner.planLessonContent(
+  placeholder: emptyAgain,
+  lessonContentId: fiche.id,
+);                                                 // named after the lesfiche
+await planner.clearLesson(planned);
+```
+
+> **`privateInfo` is not private to the teacher.** It is the info that pupils do not see; colleagues who can read the lesson (in the calendar of one of its classes, for instance) see it too.
+
+| Method | Request (to `/planner/api/v1/`) | Sent |
+|---|---|---|
+| `planLesson({placeholder, name, publicInfo, privateInfo, icon})` | `POST planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco` with the slot's organisers, classes, course, period and rooms, and the lesson's `name`, `publicInfo`, `privateInfo` and `icon` (default `PlannerService.defaultLessonIcon`, `document_observation`) | once |
+| `planLessonContent({placeholder, lessonContentId})` | `POST planned-placeholders/{platformId}/{id}/replace/planned-lessons` (without `/blanco`) with the slot's organisers, classes, course, period and rooms, the lesfiche's ID as `sourceId` and its icon (`defaultLessonIcon` when it has none), and no name or info: the planner names the lesson after the lesfiche | once |
+| `renameElement(element, newName)` | `POST {plannedElementType}/{platformId}/{id}/rename` with `{"newName"}` | retried once after logging in again |
+| `changePublicInfo(element, newInfo)` | `POST .../change-public-info` with `{"newInfo"}` (HTML as given) | retried once after logging in again |
+| `changePrivateInfo(element, newInfo)` | `POST .../change-private-info` with `{"newInfo"}`; `info` follows | retried once after logging in again |
+| `clearLesson(lesson)` | `POST planned-elements/clear` with `{"type": "planned-lessons", "elementId", "elementPlatformId"}`; returns the slot, with a new ID | once |
+
+Each call reads the element again first (its detail, which is up to date at once, unlike the list) and refuses with a `SmartschoolPlannerWriteRefusedError`, sending nothing:
+
+- an element that is **not organised by the authenticated user**: a class calendar also shows colleagues' slots, lessons and assignments, and the planner may even let a user change some of them; the service never does;
+- an element whose capabilities do not allow the change: `canUserReplace` to fill a slot; `canUserEdit` with `canUserRename`, `canUserChangePublicInfo` or `canUserChangePrivateInfo` to edit; `canUserEdit` to clear (as the web client requires);
+- for `planLesson` and `planLessonContent`, a slot that is no longer in the period it was read with, or that has participant roles or group filters (never seen on a timetable slot);
+- for `planLessonContent`, a lesfiche that is not among the user's lesfiches (`LessonContentService.getItems`, read again first), or that is not a lesson lesfiche (`LessonContentType.lesson`): an assignment lesfiche would be planned as an assignment, which the service does not do;
+- for `clearLesson`, a lesson that the planner lets the user trash or delete (`canUserTrash`, `canUserDelete`): the lessons in a timetable hour seen live allowed neither, clearing being the planner's way to remove them, and the clear of any other lesson was not tried.
+
+An element that is gone throws a `SmartschoolPlannedElementNotFoundError`, also before anything is sent: a slot that was filled since it was read is gone under its ID. The fill body is built from the slot as read again, not from the listed element. `planLesson` and `planLessonContent` refuse an element that is not a slot, and the calls refuse an empty name, icon or lesfiche ID, with an `ArgumentError` before any request. When `planLessonContent` cannot read the lesfiches, it throws the `SmartschoolLessonContentError` of `LessonContentService`, also before anything is sent. An edit to the value the element has already sends nothing.
+
+The fill and the clear are sent **once**: never again after logging in again (a second fill could plan a second lesson). The edits set a value, so they are retried once after logging in again, as a read is. When the planner's answer does not confirm a write (a lesson with the name asked for, or the lesfiche's name, in the slot's period; the element with the new value; a slot of the own planner in the lesson's period), or no usable answer comes in, the call throws a `SmartschoolPlannerSaveUnconfirmedError`: the change may or may not have been made, so read the element again (`getDetail`; it answers `404` for a slot that was filled or a lesson that was cleared) before trying again. Calling the method again is safe in itself: it reads the element first.
+
+Of the planner's trash, the service only uses the move of one own assignment (`trashAssignment`, see *Assignments in the own planner*). It never uses the planner's `DELETE` of an element (which deletes it for good), the restore from the trash, or its bulk endpoints (`planned-elements/trash`, `planned-elements/delete`, `planned-elements/bulk/...`, `planned-elements/replace-with-...`, and `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which moves everything in a period to the trash). Attachments, weblinks, goals, labels, the icon of an existing lesson, rescheduling and lessons outside the timetable are not covered.
+
+**Planning a lesfiche.** The planner makes the lesson from the lesfiche: in the try live it took the lesfiche's name, labels and goals, and its (empty) info; the answer has no field that points back to the lesfiche. Planning did not change the lesfiche (the whole list was the same afterwards), and a hidden lesfiche (`isVisible` `false`) was planned like any other. Whether the planner copies the attachments, weblinks and info of a richer lesfiche, and whether later changes to a lesfiche reach the lessons planned from it, was not checked. The bulk plan of one lesfiche into several hours (`planned-elements/replace-with-lesson-content`) is not used: `planLessonContent` plans one hour at a time, each with its own checks.
+
+The example shows the hour, asks for confirmation, fills it with a `[dartschool test]` lesson, renames it, clears it (also when the rename failed) and shows the hour again; given a lesfiche (its ID or exact name), it plans that lesfiche into the hour instead, and clears it again without renaming it (a lesfiche that matches none, such as `?`, lists the lesson lesfiches and changes nothing):
+
+```bash
+dart run example/planner_lesson_example.dart 2026-11-20 11:10
+dart run example/planner_lesson_example.dart 2026-11-20 11:10 '?'
+dart run example/planner_lesson_example.dart 2026-11-20 11:10 b0000000-0000-4000-8000-000000000001
+```
+
+### Assignments in the own planner
+
+> **Warning:** these calls change the live planner. **Pupils of the classes see a new assignment at once**: the planner makes it visible from the moment it is created (`visibleFrom`), with its name and public info, until it is in the trash.
+
+An assignment ("opdracht": a test, a task, something to bring along) is not tied to a lesson hour: it is a deadline, for one or more classes. In a class calendar it shows next to the timetable slot of that hour, which stays as it is. With *Assignment types and workload* above, a caller can pick a moment and then plan the test:
+
+```dart
+final ko = (await planner.getAssignmentTypes())
+    .firstWhere((type) => type.abbreviation == 'KO');
+
+final test = await planner.planAssignment(
+  groupIds: [for (final group in slot.participantGroups) group.id], // '4069_2001', ...
+  course: slot.courses.first,                      // a PlannerCourse, e.g. of a timetable slot
+  type: ko,                                        // one of getAssignmentTypes()
+  name: 'Test: hoofdstuk 3',
+  due: slot.period.from,                           // the deadline, usually the start of a lesson hour
+  until: slot.period.to,                           // the end of that hour
+  publicInfo: '<p>Leerstof: hoofdstuk 3.</p>',     // HTML, what pupils see
+  locations: slot.locations,                       // optional
+);                                                 // PlannedElementDetail, organised by you
+
+await planner.renameElement(test, 'Test: hoofdstuk 3 en 4');
+await planner.changePublicInfo(test, '<p>Leerstof: hoofdstuk 3 en 4.</p>');
+await planner.trashAssignment(test);               // to the planner's trash (30 days)
+```
+
+| Method | Request (to `/planner/api/v1/`) | Sent |
+|---|---|---|
+| `planAssignment({groupIds, course, type, name, due, until, publicInfo, privateInfo, icon, locations})` | `POST planned-assignments/blanco?waitForRefresh=true` with the authenticated user as the only organiser, the classes as participants, the course, the period (`dateTimeFrom` = `due`, `dateTimeTo` = `until`, `wholeDay` `false`, `deadline` `true`, `dateTime` = `due`), the `name` (sent trimmed), an empty `info`, `publicInfo` and `privateInfo` (HTML as given, empty by default), the type's ID as `assignmentType`, the `icon` (required by the planner; default `PlannerService.defaultAssignmentIcon`, `flags_red_yellow`) and the `locations`; answered with `201` and the assignment | once |
+| `renameElement`, `changePublicInfo`, `changePrivateInfo` | as for a lesson, at `planned-assignments/{platformId}/{id}/...` | retried once after logging in again |
+| `trashAssignment(assignment)` | `POST planned-assignments/{platformId}/{id}/trash` without a body, answered with `200` and `[]`; then the assignment's detail is read again and must be `404` | once |
+
+Before anything is sent:
+
+- `planAssignment` reads the school's assignment types again (`getAssignmentTypes`) and refuses a `type` whose ID is not among them with a `SmartschoolPlannerWriteRefusedError`; types that cannot be read throw the `SmartschoolPlannerError` of `getAssignmentTypes`. No class, an ID that is not a class ID, an empty name, icon, course ID or type ID, or `until` before `due` throws an `ArgumentError` before any request. `due` and `until` go out as `PlannerService.formatDateTime` writes them.
+- The edits and `trashAssignment` read the assignment again and refuse, as for a lesson, one that is **not organised by the authenticated user** (a class calendar also shows colleagues' tests, which the service never changes, even when the planner would let the user) or whose capabilities do not allow the change (`canUserTrash` to trash, as the web client's delete requires). `trashAssignment` also refuses an assignment with a linked Skore evaluation (`hasLinkedEvaluation`): the trash of one was not tried. An assignment that is gone (also one that is in the trash already) throws a `SmartschoolPlannedElementNotFoundError`; an element that is not an assignment throws an `ArgumentError` before any request.
+
+The create and the trash are sent **once**, never again after logging in again. When the planner's answer does not confirm the create (an assignment of the authenticated user with the name and type asked for, due at `due`; `201` or `200`), or no usable answer comes in, `planAssignment` throws a `SmartschoolPlannerSaveUnconfirmedError`: the assignment may or may not have been made. **Calling `planAssignment` again adds another assignment** when the first one was made: look for it in the calendar of one of its classes first (`getPlannedElements(PlannerCalendar.group(id), ..., types: {PlannedElementType.assignment})`, or `getAssignmentsOfGroups`). `trashAssignment` throws it when the trash is not answered with a list, or when the assignment is still there (or cannot be read) afterwards; calling it again is safe, since it reads the assignment first.
+
+The planner keeps what is in its trash for 30 days, and its web client can restore it from there; the service does not read, restore or empty the trash (the restore was not tried). Not covered either: rescheduling an assignment, changing its type, classes or visibility, pinning or resolving it, announcing it (`announce`; whether it notifies pupils or parents is not known), hand-in folders, linking a Skore evaluation, attachments, weblinks, goals, reminders, recurrence, and planning an assignment lesfiche of the Lesfiches library.
+
+The example shows a lesson hour of the own planner and the assignment type, asks for confirmation, adds a `[dartschool test]` assignment for the hour's classes, due at its start, reads it back and looks for it in the class calendar, renames it, and moves it to the trash (also when the read or the rename failed; after a create that was not confirmed it looks for it in the class calendar and trashes what it finds); a type that matches none (such as `?`) lists the school's types and changes nothing:
+
+```bash
+dart run example/planner_assignment_example.dart 2026-11-20 11:10
+dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `ownCalendar()` | `Future<PlannerCalendar>` | The planner of the authenticated user. |
+| `searchCalendars(text)` | `Future<List<PlannerSearchResult>>` | The users, classes and locations whose name holds `text`, in the planner's order, each with its calendar (see *Finding a calendar by name*). An empty text throws an `ArgumentError` before anything is sent. |
+| `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. |
+| `getPlannedElement({type, platformId, id})` | `Future<PlannedElementDetail>` | The full detail of one element. |
+| `getDetail(element)` | `Future<PlannedElementDetail>` | The same, for a listed element (also one of a type the library does not know). |
+| `getAssignmentTypes()` | `Future<List<PlannerAssignmentType>>` | The school's assignment types (such as `Kleine Overhoring`, `KO`), in the planner's order. |
+| `getAssignmentsOfGroups({groupIds, from, to})` | `Future<List<PlannedElement>>` | The assignments of the classes in the period, of every teacher, in the planner's order (see *Assignment types and workload*). |
+| `getWorkloadSchedule({groupIds, from, to})` | `Future<Map<DateTime, List<PlannerGroupWorkload>>>` | The planner's workload figures of the classes per day of the period. |
+| `calculateWorkload({groupIds, from, to, wholeDay, deadline})` | `Future<List<PlannerGroupWorkload>>` | The planner's workload figures of the classes for an assignment in that period (`deadline` defaults to `true`, `wholeDay` to `false`), as the planner computes them before it saves an assignment. Saves nothing. |
+| `planLesson({placeholder, name, publicInfo, privateInfo, icon})` | `Future<PlannedElementDetail>` | Fills an empty lesson hour of the own planner with a new lesson; returns it (see *Lessons in the own planner*). |
+| `planLessonContent({placeholder, lessonContentId})` | `Future<PlannedElementDetail>` | Plans a lesson lesfiche of the Lesfiches library (an ID from `LessonContentService.getItems`) into an empty lesson hour of the own planner; returns the lesson, named after the lesfiche. |
+| `clearLesson(lesson)` | `Future<PlannedElementDetail>` | Clears an own lesson in a lesson hour; returns the empty slot, with a new ID. |
+| `planAssignment({groupIds, course, type, name, due, until, publicInfo, privateInfo, icon, locations})` | `Future<PlannedElementDetail>` | Adds an assignment of one of the school's types for the classes to the own planner, due at `due`; returns it. Pupils see it at once (see *Assignments in the own planner*). |
+| `trashAssignment(assignment)` | `Future<void>` | Moves an own assignment to the planner's trash, and checks that it is gone. |
+| `renameElement(element, newName)` | `Future<PlannedElementDetail>` | Renames an own lesson or assignment (or another own element the planner lets the user rename); returns it. |
+| `changePublicInfo(element, newInfo)` / `changePrivateInfo(element, newInfo)` | `Future<PlannedElementDetail>` | Sets the info that pupils see / do not see of an own lesson or assignment (HTML); returns it. |
+| `formatDateTime(time, {timeZoneOffset})` (static) | `String` | A date as the planner's API takes it: ISO 8601 to the second with the offset from UTC (`2026-11-20T11:10:00+01:00`); in the given offset when `timeZoneOffset` is set. |
+
+`from` and `to` go out as ISO 8601 with their offset (URL-encoded, `+` as `%2B`): a local `DateTime` in the local time of the machine, with its offset at that moment (in Belgium `+02:00` in summer, `+01:00` in winter), a UTC one in UTC. The planner's own dates are read into local `DateTime`s. Use `23:59:59` rather than midnight to include the last day. `to` before `from`, an empty `types` and `PlannedElementType.other` in `types` throw an `ArgumentError` before anything is sent.
+
+### What the planner shows
+
+- **A class calendar holds the elements of all teachers of the class**, and a colleague's lessons and assignments can be read in full. `privateInfo` is the info that pupils do not see, **not** info that only its teacher sees: other teachers who can read the element see it too. `publicInfo` is what pupils see. Both are HTML (`""` when empty); `info` held the same text as `privateInfo` in every answer seen.
+- **Timetable slots** are `PlannedElementType.placeholder` elements: one per teacher per lesson hour, with the classes, the course and the room, but no `name`. `capabilities.canReplace` tells whether a slot can be filled. Do not keep their IDs: a slot that was filled and cleared again comes back with a new ID. Find a slot again by its period, course and groups.
+- **The list lags behind**: after a change in the planner, `getPlannedElements` may show the old state for a few seconds, while `getPlannedElement` / `getDetail` show the new one at once. Read the detail to check a change.
+- Only lessons, assignments and placeholders were seen live; the other `PlannedElementType`s are the web client's constants. An element of a type the library does not know is kept as `PlannedElementType.other`, with the planner's name in `typeName`.
+
+### Errors
+
+- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID). The session was accepted: signing in again does not help.
+- `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash (carries `elementType`, `platformId`, `elementId`). Also from a write, for the element it reads again first (such as a slot that was filled since it was read): nothing was sent.
+- `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, an assignment type the school does not have, ...). Nothing was sent. From the writes, every `SmartschoolPlannerError` means nothing was sent.
+- `SmartschoolLessonContentError` — `planLessonContent` could not read the lesfiches before planning one (see `LessonContentService`). Nothing was sent.
+- `SmartschoolPlannerSaveUnconfirmedError` — a write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again before trying again; for `planAssignment`, look for the assignment in the calendar of one of its classes, since calling it again adds another one. Not a `SmartschoolPlannerError`.
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; for `planLesson`, `planLessonContent`, `clearLesson`, `planAssignment` and `trashAssignment`, which are not retried, at once. Nothing was changed: sign in again and retry.
+- `SmartschoolParsingError` — `ownCalendar()`: the session's user ID is not in the form `{platformId}_{userId}_{coaccount}`.
+
+---
+
+## `LessonContentService`
+
+Reads Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lesfiches a teacher keeps there, lessons and assignments, with their labels (such as `JAAR 6`, `TRIMESTER 1`) and courses, to plan into the planner. It only reads, with a GET to the module's JSON API (`/lesson-content/api/v1/`). A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent` (see *Lessons in the own planner*).
+
+```dart
+final lessonContent = LessonContentService(client);
+final fiches = await lessonContent.getItems();       // List<LessonContentItem>
+for (final fiche in fiches.where((f) => f.type == LessonContentType.lesson)) {
+  print('${fiche.name}  ${fiche.labels.map((l) => l.text).join(', ')}');
+}
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `getItems()` | `Future<List<LessonContentItem>>` | The lesfiches of the authenticated user, lessons and assignments, hidden ones included, in the module's order (`GET lesson-content/`). |
+| `parseItems(json)` (static) | `List<LessonContentItem>` | Parses the module's list. |
+
+The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, unlike the planner): the school's local time, read as the local time of the machine. The detail of one lesfiche is not read: the module answers `lesson-content/{id}` with its web app, not with JSON. Creating, changing, sharing or trashing lesfiches is not covered. The school's assignment types, which the planner also reads from this module, come from `PlannerService.getAssignmentTypes()`.
+
+### Errors
+
+- `SmartschoolLessonContentError` — the module answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page (its web app, for a route it does not know), invalid JSON, or data in an unknown shape (such as a lesfiche without its `id` or `type`). The session was accepted: signing in again does not help.
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once.
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -827,6 +1122,33 @@ Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID)
 ### `SkoreGradebookShares`
 Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshareGradebook()`. A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
 
+### `PlannerCalendar`
+A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
+
+### `PlannerSearchResult`
+Returned by `PlannerService.searchCalendars()`. Fields: `id` (the planner's ID, the calendar ID for a user, class or location), `typeName` (the planner's type: `user`, `group`, `mini-db-2`, ...), `kind` (`PlannerSearchResultKind`), `calendar` (`PlannerCalendar?`; `null` for `other`), `name` (a user first name first, a class, a room), `title` (as the search list shows it: a user last name first, a pupil with the class), `description` (`""` when none: a class's full name, `Interimaris van ...` for a co-account, `Locatie` for a room), `pictureUrl` (`String?`, users), `icon` (`String?`), and `raw` (the hit as the planner gave it, read-only).
+
+### `PlannedElement`
+Returned by `PlannerService.getPlannedElements()`. Fields: `id` (a UUID), `platformId`, `type` (`PlannedElementType`; `other` for a type the library does not know), `typeName` (the planner's name of the type, such as `planned-lessons`), `name` (`String?`; `null` on a timetable slot), `period` (`PlannerPeriod`: `from`, `to` in local time, `wholeDay`, `deadline`), `organiserUsers` / `organiserGroups`, `participantUsers` / `participantGroups`, `isParticipant`, `capabilities` (`PlannedElementCapabilities`), `icon` (`String?`), `courses`, `locations`, `assignmentType` (`PlannerAssignmentType?`, assignments only), `resolvedStatus` (`String?`, assignments only), `pinned`, `unconfirmed`, `color`, and `raw` (the element as the planner gave it, read-only, for the fields the model does not cover).
+
+### `PlannedElementDetail`
+Returned by `PlannerService.getPlannedElement()` and `getDetail()`. A `PlannedElement` with `info`, `privateInfo` and `publicInfo` (HTML, `""` when empty), and for assignments `isAnnounced`, `visibleFrom` (from when pupils see it), `hasLinkedEvaluation` and `dateCreated` (`null` on other elements).
+
+### `PlannerUser` / `PlannerGroup` / `PlannerCourse` / `PlannerLocation`
+What an element names. A user (`id` — the whole planner ID `{platformId}_{userId}_{coaccount}`, `name`, `nameLastFirst`, `pictureUrl`, `isDeleted`, `calendar`); a group (`id` — `{platformId}_{groupId}`, `platformId`, `name`, `type` — `K` for a class, `icon`, `calendar`); a course (`id`, `platformId`, `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`); a location (`id` — the item UUID, `platformId`, `platformName`, `number`, `title` — the room, `icon`, `type`, `selectable`, `calendar`).
+
+### `PlannerAssignmentType`
+The type of an assignment, such as `Kleine Overhoring` (`KO`): `id`, `platformId` (`int?`; `null` inside a planned element), `name`, `abbreviation`, `isVisible`, `defaultTiming`, `weight`. Returned by `PlannerService.getAssignmentTypes()`, named by an assignment (`PlannedElement.assignmentType`) and by a workload setting (`allowedAssignmentTypes`).
+
+### `PlannerGroupWorkload` / `PlannerWorkloadSetting` / `PlannerWorkloadLimit`
+Returned by `PlannerService.getWorkloadSchedule()` (per day) and `calculateWorkload()`. The workload of one class: `group` (`PlannerGroup`), `weight` and `concurrentWeight` (`num`, the planner's figures as they are), `setting` (`PlannerWorkloadSetting?`), and `raw` (as the planner gave it, read-only). A setting: `id`, `platformId` (`int?`), `name` (`Geen limiet`), `color` (`String?`), `limit` (`PlannerWorkloadLimit?`: `value` — `-1` in `Geen limiet` —, `period` such as `day`, `type` such as `soft`), `allowedAssignmentTypes` (`PlannerAssignmentType`s).
+
+### `PlannedElementCapabilities`
+What the authenticated user may do with an element: `flags` (every `canUser...` flag by name), `visibleProperties` (the properties the user may see), `can(name)` (`false` for a flag the planner left out), and the getters `canEdit`, `canRename`, `canReplace`, `canReschedule`, `canChangePublicInfo`, `canChangePrivateInfo`, `canTrash`, `canDelete`.
+
+### `LessonContentItem`
+Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `lessonContentId` of `PlannerService.planLessonContent`), `platformId`, `type` (`LessonContentType`; `other` for a kind the library does not know), `typeName` (`lessons`, `assignments`), `name`, `icon` (`String?`), `publicInfo` (HTML, `""` when empty), `isVisible`, `ownerId` (`String?`, the whole user ID), `dateLastChanged` / `dateStateChanged` (`DateTime?`, local time), `courses` (`LessonContentCourse`: `id`, `platformId`; the name is not in the list), `labels` (`LessonContentLabel`: `id`, `text`, `color`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`), `assignmentType` (`PlannerAssignmentType?`, assignment lesfiches only), `attachmentCount`, `weblinkCount`, `partnerWeblinkCount`, `deeplinkCount`, `capabilities` (every `canUser...` flag by name; `can(flag)`), and `raw` (as the module gave it, read-only).
+
 ---
 
 ## Enums
@@ -841,6 +1163,10 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 | `MessageLabel` | `noFlag`, `greenFlag`, `yellowFlag`, `redFlag`, `blueFlag` |
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 | `SkoreShareAccess` | `read` (Skore's `readers`), `write` (Skore's `writers`: read and change) |
+| `PlannerCalendarType` | `user`, `group`, `location` (`wireName`: the name in the planner's URL) |
+| `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found) |
+| `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
+| `LessonContentType` | `lesson` (`lessons`), `assignment` (`assignments`), `other` (`wireName`: the Lesfiches module's name; `null` for `other`) |
 
 ---
 
@@ -863,6 +1189,11 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 | `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
 | `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError` |
+| `SmartschoolPlannerError` | The planner answers `PlannerService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. Not a session problem |
+| `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`); also a planner write, for the element it reads again first (nothing was sent). A `SmartschoolPlannerError` |
+| `SmartschoolPlannerWriteRefusedError` | `PlannerService.planLesson` / `planLessonContent` / `renameElement` / `changePublicInfo` / `changePrivateInfo` / `clearLesson`: a check before the write refused it (the element is not organised by the authenticated user, a capability is not set, the lesfiche is not a lesson lesfiche of the user, ...). Nothing was sent. A `SmartschoolPlannerError` |
+| `SmartschoolPlannerSaveUnconfirmedError` | A planner write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again (`getDetail`) before trying again. Not a `SmartschoolPlannerError` |
+| `SmartschoolLessonContentError` | The Lesfiches module answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

@@ -259,6 +259,42 @@ class SmartschoolClient {
     return _decodeJson(resp);
   }
 
+  /// Performs an authenticated POST with a JSON body and returns the whole
+  /// [Response]: the status code, the headers and the final URL (`realUri`)
+  /// as well as the body, which is not decoded.
+  ///
+  /// [data] goes out as `application/json`: a map or a list is encoded as
+  /// JSON, a string is sent as it is. Unlike [postJson], this neither
+  /// decodes the answer nor throws for a status other than `200`, so that a
+  /// service can read a JSON API's error answers itself (such as the
+  /// planner's, #85). A session that Smartschool refuses is handled as for
+  /// every request: the client logs in again and retries the request once,
+  /// with the same body.
+  ///
+  /// Pass `retryAfterLogin: false` for a request that must go out once only,
+  /// such as one that creates something (the planner's fill of a timetable
+  /// slot, #87): when Smartschool refuses the session for it, it then fails
+  /// at once with a [SmartschoolSessionExpiredError], without logging in and
+  /// sending it again (see [postMultipartResponse]).
+  Future<Response<String>> postJsonResponse(
+    String path, {
+    Object? data,
+    Map<String, dynamic>? query,
+    bool retryAfterLogin = true,
+  }) {
+    return _send(
+      () => _dio.post<String>(
+        path,
+        data: data,
+        queryParameters: query,
+        options: Options(
+          contentType: Headers.jsonContentType,
+          extra: _sessionStateExtra(retryAfterLogin, null),
+        ),
+      ),
+    );
+  }
+
   /// Executes the Smartschool XML command protocol.
   ///
   /// Builds the `<request>` XML, POSTs it to the dispatcher URL, parses the
@@ -804,10 +840,10 @@ class SmartschoolClient {
   /// without it, the connections they use are left to finish them.
   ///
   /// A disposed client cannot be used for Smartschool anymore (#54). Every
-  /// request method ([getJson], [postJson], [postXml], [getRaw],
-  /// [getResponse], [postFormRaw], [postFormResponse], [postMultipartRaw],
-  /// [postMultipartResponse], [postFormEncodedRaw], [download],
-  /// [downloadStream]), and so every service call, throws a
+  /// request method ([getJson], [postJson], [postJsonResponse], [postXml],
+  /// [getRaw], [getResponse], [postFormRaw], [postFormResponse],
+  /// [postMultipartRaw], [postMultipartResponse], [postFormEncodedRaw],
+  /// [download], [downloadStream]), and so every service call, throws a
   /// [SmartschoolClientDisposedError] saying that the client was disposed,
   /// before it sends anything; so do [ensureAuthenticated], [platformId],
   /// [authenticatedUser] and [getCurrentUser], also when they have their
@@ -1802,7 +1838,9 @@ class _SmartschoolAuthInterceptor extends Interceptor {
     // attachments), and what Smartschool makes of that was never checked.
     // Smartschool refused it before handling it, so it fails as not carried
     // out, without a login: the next refused request logs in (#25). Nor does
-    // it wait for a login that is running (#36).
+    // it wait for a login that is running (#36). The same holds for a
+    // request that must go out once only, such as one that creates something
+    // (Skore's saveOwner, #71; the planner's fill of a slot, #87).
     if (extra[_noRetryKey] == true) {
       handler.reject(
         DioException(
@@ -1810,7 +1848,7 @@ class _SmartschoolAuthInterceptor extends Interceptor {
           error: SmartschoolSessionExpiredError(
             'Smartschool did not accept the session for $request. It is not '
             'retried after logging in again, because it carries state of the '
-            'refused session',
+            'refused session or must not be sent twice',
           ),
         ),
         true,

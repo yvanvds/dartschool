@@ -141,6 +141,9 @@ class _Smartschool implements HttpClientAdapter {
   final List<String> sent = <String>[];
   final List<String> uploads = <String>[];
 
+  /// The bodies of the JSON POSTs (with the session accepted).
+  final List<String> jsonBodies = <String>[];
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -187,6 +190,7 @@ class _Smartschool implements HttpClientAdapter {
           uploads.add(await _read(requestStream));
           return _response('true');
         case _postJson:
+          jsonBodies.add(await _read(requestStream));
           return _response('{"ok":true}', contentType: Headers.jsonContentType);
         case _elsewhere:
           return _redirect('/?module=Messages&file=index');
@@ -371,6 +375,24 @@ void main() {
       expect(server.log, [_postJson, ..._login, _postJson]);
     });
 
+    test('postJsonResponse sends the JSON body again after logging in again '
+        '(#85)', () async {
+      final server = await serve(_Smartschool());
+
+      final response = await client.postJsonResponse(
+        '/api/v1/endpoint',
+        data: {'searchString': 'Janssens', 'searchOptions': <Object>[]},
+      );
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"ok":true}');
+      expect(server.log, [_postJson, ..._login, _postJson]);
+      // The retry sends the whole JSON body again, not an empty body.
+      expect(server.jsonBodies, [
+        '{"searchString":"Janssens","searchOptions":[]}',
+      ]);
+    });
+
     test('an XHR/form POST on the same session still gets a 401 and logs in '
         'again (#8)', () async {
       final server = await serve(
@@ -505,6 +527,41 @@ void main() {
         throwsA(notRetried()),
       );
       expect(server.log, [_addRecipient]);
+    });
+
+    test('a JSON POST redirected to /login (postJsonResponse, #87)', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _postJson),
+      );
+
+      // Before #87, postJsonResponse had no retryAfterLogin: the client
+      // logged in again and sent the JSON body a second time.
+      await expectLater(
+        client.postJsonResponse(
+          '/api/v1/endpoint',
+          data: {'name': 'Les 1'},
+          retryAfterLogin: false,
+        ),
+        throwsA(notRetried()),
+      );
+      expect(server.log, [_postJson]);
+      expect(server.jsonBodies, isEmpty);
+    });
+
+    test('an accepted JSON POST is answered as usual (postJsonResponse, '
+        '#87)', () async {
+      final server = await serve(_Smartschool(loggedIn: true));
+
+      final response = await client.postJsonResponse(
+        '/api/v1/endpoint',
+        data: {'name': 'Les 1'},
+        retryAfterLogin: false,
+      );
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"ok":true}');
+      expect(server.log, [_postJson]);
+      expect(server.jsonBodies, ['{"name":"Les 1"}']);
     });
 
     test('the next refused request logs in as usual', () async {

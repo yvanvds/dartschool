@@ -6,6 +6,10 @@
 /credentials.yml
 /dev_dumps/
 
+# Per-developer codebase overview (in .gitignore too, but pub reads only this
+# file; 0.3.1 shipped it by mistake)
+/PROJECT_OVERVIEW.md
+
 # Workspace tooling not needed by package consumers
 /tool/
 

@@ -1,4 +1,4 @@
-## 0.3.2 - Unreleased
+## 0.3.2 - 2026-10-02
 
 ### Added
 - Session: the error of a disposed `SmartschoolClient` has a type of its own, and the client tells whether it was disposed (#73). Since 0.3.0 (#54) a request on a disposed client threw a plain `StateError` ("SmartschoolClient was disposed: …" / "… was disposed during GET …"), which a caller could only tell apart from any other `StateError`, such as the "No element" of a `.first` in its own code or in a parser, by its message: `_isDisposed` was private. An app that walks many folders and skips one whose listing fails (smartschool-mcp's Intradesk index) had to stop on every `StateError` to stop when the app shut down the client halfway. Now:
@@ -87,6 +87,8 @@
   - a download that is neither read nor cancelled keeps its connection open (Dio used to read it to its end into memory): read its stream or call `cancel()`, as the docs already asked. A `receiveTimeout` set on `client.dio` counts the wait for the reader, as it counts a pause. `download`, `downloadFile` and `MessageAttachment.download` read the stream at once and are unchanged.
 
   So a caller can rely on `maxBytes` as a limit on the whole transfer and on the memory it takes, and need not listen to the stream right away: it may open the file it writes to first and pipe the stream into it afterwards (smartschool-mcp's `writeDownload` opens the file first, and needs no change). The doc comments of `downloadStream` and `SmartschoolDownload`, and the README, now say so instead of "listen to it right away". Tested offline: the issue's 17 MiB file without `Content-Length`, sent in chunks of 64 KiB as a connection sends them (none while paused), through `IntradeskService.downloadFileStream` with a `maxBytes` of 1 MiB and a reader 300 ms late (before the fix all 17,825,792 bytes came in; now 196,608 before the reader listened, the stream gave 1,048,576 bytes and the error, and the transfer stopped at the chunk that went past the limit, 1,114,112 bytes sent in all); the same file of 4 MiB without `maxBytes` (a few chunks, then the whole file once read); a `cancel()` before listening; a `receiveTimeout`; and over a real connection on loopback, a body of 64 MiB with a reader 300 ms late that pipes it into a file (before the fix the server sent all of it; now it could only fill the buffers of the connection, and the file got at most `maxBytes`).
+
+- Package: the published package no longer contains `PROJECT_OVERVIEW.md`, a local developer notes file that 0.3.1 shipped by mistake. It is in `.gitignore`, but pub reads only `.pubignore` when that file exists, so `.pubignore` now lists it too. The file held no credentials or personal data.
 
 ## 0.3.1 - 2026-10-01
 

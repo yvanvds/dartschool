@@ -17,7 +17,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
-- Planner read support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view).
+- Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a lesson, change its name and info, and clear the hour again, with checks before each write that keep it out of colleagues' elements, and a fill and a clear that are never retried.
 
 ---
 
@@ -740,7 +740,9 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ## `PlannerService`
 
-Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. It only reads: every request is a GET to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), except the search for a calendar by name and the workload calls, POSTs that only read.
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name and the workload calls, POSTs that only read.
+
+In the **own planner** only, it fills an empty lesson hour with a lesson, changes the lesson's name and info, and clears the hour again (see *Lessons in the own planner*): five writes, each for one element, after checks that keep them out of colleagues' elements.
 
 ```dart
 final planner = PlannerService(client);
@@ -838,6 +840,62 @@ final now = await planner.calculateWorkload(
 - **The figures are returned as they are**: what `weight` and `concurrentWeight` add up was not checked. At the school seen live every assignment type had weight `0` and every class the setting `Geen limiet` (limit `-1` per `day`, `soft`), so the weights stayed `0`, also on days with tests: there, the assignments per day (with their type and teacher) are what says something.
 - The workload calls are POSTs that only read, as the planner's web client sends them (checked in its code, and called live): `workload/planned-elements?from=&to=` with `{"users": [], "groups": [...], "courses": []}`, `workload/schedule?from=&to=` with `{"groups": [...]}`, and `workload/calculate` with the period and `{"users": [], "groups": [...], "groupFilters": {}}`; `calculate` saves nothing. The assignment types come from `GET /lesson-content/api/v1/assignments/applicable-assignment-types`.
 
+### Lessons in the own planner
+
+> **Warning:** these calls change the live planner. Pupils of the hour's classes see a lesson's name and public info as soon as it is planned.
+
+```dart
+final me = await planner.ownCalendar();
+final slot = (await planner.getPlannedElements(
+  me,
+  from: DateTime(2026, 11, 20, 11, 10),
+  to: DateTime(2026, 11, 20, 12),
+  types: {PlannedElementType.placeholder},
+)).single;                                         // an empty lesson hour
+
+final lesson = await planner.planLesson(
+  placeholder: slot,
+  name: 'Lussen: for en while',
+  publicInfo: '<p>Breng je laptop mee.</p>',       // HTML, what pupils see
+  privateInfo: '<p>Oefening 3 overslaan.</p>',     // HTML, what pupils do not see
+);                                                 // PlannedElementDetail, a new ID
+
+await planner.renameElement(lesson, 'Lussen: for, while en break');
+await planner.changePublicInfo(lesson, '<p>Breng je laptop <strong>opgeladen</strong> mee.</p>');
+await planner.changePrivateInfo(lesson, '<p>Oefening 3 en 4 overslaan.</p>');
+
+final emptyAgain = await planner.clearLesson(lesson); // the slot again, with a new ID
+```
+
+> **`privateInfo` is not private to the teacher.** It is the info that pupils do not see; colleagues who can read the lesson (in the calendar of one of its classes, for instance) see it too.
+
+| Method | Request (to `/planner/api/v1/`) | Sent |
+|---|---|---|
+| `planLesson({placeholder, name, publicInfo, privateInfo, icon})` | `POST planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco` with the slot's organisers, classes, course, period and rooms, and the lesson's `name`, `publicInfo`, `privateInfo` and `icon` (default `PlannerService.defaultLessonIcon`, `document_observation`) | once |
+| `renameElement(element, newName)` | `POST {plannedElementType}/{platformId}/{id}/rename` with `{"newName"}` | retried once after logging in again |
+| `changePublicInfo(element, newInfo)` | `POST .../change-public-info` with `{"newInfo"}` (HTML as given) | retried once after logging in again |
+| `changePrivateInfo(element, newInfo)` | `POST .../change-private-info` with `{"newInfo"}`; `info` follows | retried once after logging in again |
+| `clearLesson(lesson)` | `POST planned-elements/clear` with `{"type": "planned-lessons", "elementId", "elementPlatformId"}`; returns the slot, with a new ID | once |
+
+Each call reads the element again first (its detail, which is up to date at once, unlike the list) and refuses with a `SmartschoolPlannerWriteRefusedError`, sending nothing:
+
+- an element that is **not organised by the authenticated user**: a class calendar also shows colleagues' slots, lessons and assignments, and the planner may even let a user change some of them; the service never does;
+- an element whose capabilities do not allow the change: `canUserReplace` to fill a slot; `canUserEdit` with `canUserRename`, `canUserChangePublicInfo` or `canUserChangePrivateInfo` to edit; `canUserEdit` to clear (as the web client requires);
+- for `planLesson`, a slot that is no longer in the period it was read with, or that has participant roles or group filters (never seen on a timetable slot);
+- for `clearLesson`, a lesson that the planner lets the user trash or delete (`canUserTrash`, `canUserDelete`): the lessons in a timetable hour seen live allowed neither, clearing being the planner's way to remove them, and the clear of any other lesson was not tried.
+
+An element that is gone throws a `SmartschoolPlannedElementNotFoundError`, also before anything is sent: a slot that was filled since it was read is gone under its ID. The fill body is built from the slot as read again, not from the listed element. `planLesson` refuses an element that is not a slot, and the calls refuse an empty name or icon, with an `ArgumentError` before any request. An edit to the value the element has already sends nothing.
+
+The fill and the clear are sent **once**: never again after logging in again (a second fill could plan a second lesson). The edits set a value, so they are retried once after logging in again, as a read is. When the planner's answer does not confirm a write (a lesson with the name asked for in the slot's period; the element with the new value; a slot of the own planner in the lesson's period), or no usable answer comes in, the call throws a `SmartschoolPlannerSaveUnconfirmedError`: the change may or may not have been made, so read the element again (`getDetail`; it answers `404` for a slot that was filled or a lesson that was cleared) before trying again. Calling the method again is safe in itself: it reads the element first.
+
+The service never uses the planner's trash, its `DELETE` of an element (which deletes it for good), or its bulk endpoints (`planned-elements/trash`, `planned-elements/delete`, `planned-elements/bulk/...`, `planned-elements/replace-with-...`, and `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which moves everything in a period to the trash). Attachments, weblinks, goals, labels, the icon of an existing lesson, rescheduling and lessons outside the timetable are not covered.
+
+The example shows the hour, asks for confirmation, fills it with a `[dartschool test]` lesson, renames it, clears it (also when the rename failed) and shows the hour again:
+
+```bash
+dart run example/planner_lesson_example.dart 2026-11-20 11:10
+```
+
 ### Methods
 
 | Method | Returns | Description |
@@ -851,6 +909,10 @@ final now = await planner.calculateWorkload(
 | `getAssignmentsOfGroups({groupIds, from, to})` | `Future<List<PlannedElement>>` | The assignments of the classes in the period, of every teacher, in the planner's order (see *Assignment types and workload*). |
 | `getWorkloadSchedule({groupIds, from, to})` | `Future<Map<DateTime, List<PlannerGroupWorkload>>>` | The planner's workload figures of the classes per day of the period. |
 | `calculateWorkload({groupIds, from, to, wholeDay, deadline})` | `Future<List<PlannerGroupWorkload>>` | The planner's workload figures of the classes for an assignment in that period (`deadline` defaults to `true`, `wholeDay` to `false`), as the planner computes them before it saves an assignment. Saves nothing. |
+| `planLesson({placeholder, name, publicInfo, privateInfo, icon})` | `Future<PlannedElementDetail>` | Fills an empty lesson hour of the own planner with a new lesson; returns it (see *Lessons in the own planner*). |
+| `renameElement(element, newName)` | `Future<PlannedElementDetail>` | Renames an own lesson (or another own element the planner lets the user rename); returns it. |
+| `changePublicInfo(element, newInfo)` / `changePrivateInfo(element, newInfo)` | `Future<PlannedElementDetail>` | Sets the info that pupils see / do not see of an own lesson (HTML); returns it. |
+| `clearLesson(lesson)` | `Future<PlannedElementDetail>` | Clears an own lesson in a lesson hour; returns the empty slot, with a new ID. |
 | `formatDateTime(time, {timeZoneOffset})` (static) | `String` | A date as the planner's API takes it: ISO 8601 to the second with the offset from UTC (`2026-11-20T11:10:00+01:00`); in the given offset when `timeZoneOffset` is set. |
 
 `from` and `to` go out as ISO 8601 with their offset (URL-encoded, `+` as `%2B`): a local `DateTime` in the local time of the machine, with its offset at that moment (in Belgium `+02:00` in summer, `+01:00` in winter), a UTC one in UTC. The planner's own dates are read into local `DateTime`s. Use `23:59:59` rather than midnight to include the last day. `to` before `from`, an empty `types` and `PlannedElementType.other` in `types` throw an `ArgumentError` before anything is sent.
@@ -865,8 +927,10 @@ final now = await planner.calculateWorkload(
 ### Errors
 
 - `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID). The session was accepted: signing in again does not help.
-- `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash (carries `elementType`, `platformId`, `elementId`).
-- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once. Sign in again and retry.
+- `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash (carries `elementType`, `platformId`, `elementId`). Also from a write, for the element it reads again first (such as a slot that was filled since it was read): nothing was sent.
+- `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, ...). Nothing was sent. From the writes, every `SmartschoolPlannerError` means nothing was sent.
+- `SmartschoolPlannerSaveUnconfirmedError` — a write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again before trying again. Not a `SmartschoolPlannerError`.
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; for `planLesson` and `clearLesson`, which are not retried, at once. Nothing was changed: sign in again and retry.
 - `SmartschoolParsingError` — `ownCalendar()`: the session's user ID is not in the form `{platformId}_{userId}_{coaccount}`.
 
 ---
@@ -1026,7 +1090,9 @@ What the authenticated user may do with an element: `flags` (every `canUser...` 
 | `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError` |
 | `SmartschoolPlannerError` | The planner answers `PlannerService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. Not a session problem |
-| `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`). A `SmartschoolPlannerError` |
+| `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`); also a planner write, for the element it reads again first (nothing was sent). A `SmartschoolPlannerError` |
+| `SmartschoolPlannerWriteRefusedError` | `PlannerService.planLesson` / `renameElement` / `changePublicInfo` / `changePrivateInfo` / `clearLesson`: a check before the write refused it (the element is not organised by the authenticated user, a capability is not set, ...). Nothing was sent. A `SmartschoolPlannerError` |
+| `SmartschoolPlannerSaveUnconfirmedError` | A planner write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again (`getDetail`) before trying again. Not a `SmartschoolPlannerError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

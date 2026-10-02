@@ -176,6 +176,49 @@ void main() {
     });
   });
 
+  group('planner write errors (#87)', () {
+    test('SmartschoolPlannerWriteRefusedError is a SmartschoolPlannerError '
+        'without a status: nothing was sent', () {
+      const error = SmartschoolPlannerWriteRefusedError('not your slot');
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error, isNot(isA<SmartschoolPlannedElementNotFoundError>()));
+      expect(error.statusCode, isNull);
+      expect(
+        error.toString(),
+        'SmartschoolPlannerWriteRefusedError: not your slot',
+      );
+    });
+
+    test('SmartschoolPlannerSaveUnconfirmedError is not a '
+        'SmartschoolPlannerError and carries its status and cause', () {
+      // "Nothing was sent" and "may have been changed" must not share a type.
+      const cause = SmartschoolConnectionError('dropped');
+      const dropped = SmartschoolPlannerSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+      );
+      expect(dropped, isA<SmartschoolException>());
+      expect(dropped, isNot(isA<SmartschoolPlannerError>()));
+      expect(dropped.cause, same(cause));
+      expect(dropped.statusCode, isNull);
+      expect(
+        dropped.toString(),
+        'SmartschoolPlannerSaveUnconfirmedError: unconfirmed',
+      );
+
+      const answered = SmartschoolPlannerSaveUnconfirmedError(
+        'unconfirmed',
+        statusCode: 500,
+      );
+      expect(answered.statusCode, 500);
+      expect(answered.cause, isNull);
+      expect(
+        answered.toString(),
+        'SmartschoolPlannerSaveUnconfirmedError(500): unconfirmed',
+      );
+    });
+  });
+
   group('SmartschoolClientDisposedError (#73)', () {
     const message = 'SmartschoolClient was disposed: it sends no more requests';
 

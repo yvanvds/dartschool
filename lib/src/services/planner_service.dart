@@ -16,6 +16,11 @@ export '../models/planner_models.dart';
 /// `/planner/main/location/...` show it; [searchCalendars] finds one by
 /// name.
 ///
+/// In the authenticated user's own planner, it fills a lesson hour with a
+/// lesson ([planLesson]), changes its name and info ([renameElement],
+/// [changePublicInfo], [changePrivateInfo]) and clears the hour again
+/// ([clearLesson]); see *Writes* below.
+///
 /// For the planner's workload view ("werkbelasting") it reads the school's
 /// assignment types ([getAssignmentTypes]), the assignments of classes in a
 /// period ([getAssignmentsOfGroups]) and the planner's workload figures of
@@ -66,11 +71,57 @@ export '../models/planner_models.dart';
 /// );
 /// ```
 ///
-/// Everything here reads, through the planner's JSON API
-/// (`/planner/api/v1/`; the assignment types through the lesson-content API,
-/// `/lesson-content/api/v1/`): the service sends GET requests, and POSTs that
-/// only read: the search of [searchCalendars] and the workload calls of
+/// The reads go through the planner's JSON API (`/planner/api/v1/`; the
+/// assignment types through the lesson-content API,
+/// `/lesson-content/api/v1/`): GET requests, and POSTs that only read: the
+/// search of [searchCalendars] and the workload calls of
 /// [getAssignmentsOfGroups], [getWorkloadSchedule] and [calculateWorkload].
+///
+/// ### Writes
+/// Only [planLesson], [renameElement], [changePublicInfo],
+/// [changePrivateInfo] and [clearLesson] change the planner, each with one
+/// POST for one element:
+///
+/// ```dart
+/// final me = await planner.ownCalendar();
+/// final slot = (await planner.getPlannedElements(
+///   me,
+///   from: DateTime(2026, 11, 20, 11, 10),
+///   to: DateTime(2026, 11, 20, 12),
+///   types: {PlannedElementType.placeholder},
+/// )).single;
+///
+/// final lesson = await planner.planLesson(
+///   placeholder: slot,
+///   name: 'Lussen: for en while',
+///   publicInfo: '<p>Breng je laptop mee.</p>',
+/// );
+/// await planner.renameElement(lesson, 'Lussen: for, while en break');
+/// await planner.changePrivateInfo(lesson, '<p>Oefening 3 overslaan.</p>');
+///
+/// final emptyAgain = await planner.clearLesson(lesson); // a new slot ID
+/// ```
+///
+/// Each write reads the element again first and refuses, with a
+/// [SmartschoolPlannerWriteRefusedError] and without sending anything, an
+/// element that is not organised by the authenticated user or whose
+/// capabilities do not allow the change: a class calendar also shows the
+/// elements of colleagues, which the service never changes. The fill of a
+/// slot and the clear of a lesson are sent once, never again after logging
+/// in again; the edits, which set a value, are retried once after logging in
+/// again, as a read is. A write that went out without the planner's answer
+/// confirming it throws a [SmartschoolPlannerSaveUnconfirmedError]. The
+/// service never uses the planner's trash, its permanent delete
+/// (`DELETE {plannedElementType}/{platformId}/{id}`) or its bulk endpoints
+/// (`planned-elements/trash`, `planned-elements/delete`,
+/// `planned-elements/bulk/...`, `planned-elements/replace-with-...`, and
+/// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
+/// moves everything in a period to the trash).
+///
+/// [PlannedElementDetail.privateInfo] is not private to the teacher: other
+/// teachers who can read the element see it too (see below). Pupils see the
+/// name and [PlannedElementDetail.publicInfo] of a lesson as soon as it is
+/// planned.
 ///
 /// ### What a teacher sees
 /// A class calendar holds the elements of all teachers of the class, and a
@@ -95,13 +146,22 @@ export '../models/planner_models.dart';
 ///   service cannot use: another HTTP status than `200` (its
 ///   [SmartschoolPlannerError.statusCode]), an HTML page, invalid JSON, or
 ///   data in an unknown shape. The session was accepted: signing in again
-///   does not help.
+///   does not help. From a write, it (and each subtype) means nothing was
+///   sent.
 /// - [SmartschoolPlannedElementNotFoundError] (a [SmartschoolPlannerError]):
 ///   [getPlannedElement] or [getDetail] asked for an element the planner
-///   does not have (`404`).
+///   does not have (`404`); so did a write, for the element it reads again
+///   first (such as a slot that was filled since it was read).
+/// - [SmartschoolPlannerWriteRefusedError] (a [SmartschoolPlannerError]): a
+///   check before a write refused it. Nothing was sent.
+/// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
+///   planner's answer does not confirm it. It may or may not have been
+///   made: read the element again.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
-///   once. Sign in again and retry.
+///   once; for the fill of a slot and the clear of a lesson, which are not
+///   retried, at once. The request was not carried out: sign in again and
+///   retry.
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
@@ -114,17 +174,24 @@ class PlannerService {
 
   /// The base path of the planner's JSON API.
   ///
-  /// The service sends GET requests, and POSTs that only read:
+  /// The reads send GET requests, and POSTs that only read:
   /// `quick-search/planner/search`, and `workload/planned-elements`,
   /// `workload/schedule` and `workload/calculate` (checked in the web
   /// client's code: it reads with them, and `calculate` is the check it runs
-  /// before it saves an assignment). The planner also answers POSTs on it
-  /// that change the planner or the user's settings: the favourites of the
-  /// search (`quick-search/planner/mark-as-favourite` and
-  /// `discard-as-favourite`), and
+  /// before it saves an assignment). The writes send, for one element each,
+  /// `planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco`
+  /// ([planLesson]), `{plannedElementType}/{platformId}/{id}/rename`,
+  /// `.../change-public-info` and `.../change-private-info` (the edits), and
+  /// `planned-elements/clear` ([clearLesson]). The planner also answers POSTs
+  /// on it that change the planner or the user's settings and that the
+  /// service never sends: the favourites of the search
+  /// (`quick-search/planner/mark-as-favourite` and `discard-as-favourite`),
+  /// the trash and the bulk endpoints (`planned-elements/trash`,
+  /// `planned-elements/delete`, `planned-elements/bulk/...`,
+  /// `planned-elements/replace-with-...`), and
   /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
-  /// moves everything in a period to the trash. Writes that a later version
-  /// adds must never use the bulk endpoints.
+  /// moves everything in a period to the trash; nor its `DELETE` of an
+  /// element, which deletes it for good.
   static const _apiPath = '/planner/api/v1';
 
   // ---------------------------------------------------------------------------
@@ -426,6 +493,577 @@ class PlannerService {
     return parseGroupWorkloads(
       _decode(response, 'the workload of ${groups.join(', ')}'),
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writes: a lesson in a lesson hour of the own planner
+  // ---------------------------------------------------------------------------
+
+  /// The icon [planLesson] gives a lesson when the caller names none
+  /// (`document_observation`): the icon of the lessons seen live, which the
+  /// fill was tried with.
+  static const defaultLessonIcon = 'document_observation';
+
+  /// Fills [placeholder], an empty lesson hour (a timetable slot,
+  /// [PlannedElementType.placeholder]) of the authenticated user's own
+  /// planner, with a new lesson ("lesfiche") named [name], as the planner's
+  /// "plan a blank lesson" does. Returns the lesson: a new element of type
+  /// [PlannedElementType.lesson], with its own ID, in the slot's period, with
+  /// its classes, course and room.
+  ///
+  /// [publicInfo] is what pupils see, [privateInfo] what they do not (but
+  /// colleagues who read the element do: it is not private to the teacher);
+  /// both are HTML, `""` (the default) for none, and go out as given. [icon]
+  /// is the lesson's icon ([defaultLessonIcon] by default). [name] goes out
+  /// without the white space around it. Pupils of the classes see the name
+  /// and [publicInfo] as soon as the lesson is planned.
+  ///
+  /// Before it sends anything, it reads the slot again (its detail, which is
+  /// up to date at once, unlike the list) and refuses with a
+  /// [SmartschoolPlannerWriteRefusedError]:
+  /// - a slot that is not organised by the authenticated user (a class
+  ///   calendar also shows colleagues' slots);
+  /// - a slot whose capabilities do not allow filling it (`canUserReplace`);
+  /// - a slot whose period is no longer the one of [placeholder];
+  /// - a slot with participant roles or group filters, which the timetable
+  ///   slots seen live never had, and which the service does not know how to
+  ///   send on.
+  ///
+  /// A slot that was filled (or cleared) since [placeholder] was read is gone
+  /// under its ID, and reading it again throws a
+  /// [SmartschoolPlannedElementNotFoundError]: read the calendar again.
+  ///
+  /// The lesson gets the slot's organisers, classes, course, period and rooms
+  /// as reading the slot again gave them, not as [placeholder] holds them:
+  /// `POST planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco`
+  /// with the body the web client sends (tried live, 2026-10-02). The fill is
+  /// sent **once**, never again after logging in again: a second one could
+  /// plan a second lesson. When the planner's answer is not a lesson with
+  /// [name] in the slot's period (or no usable answer comes in), this throws
+  /// a [SmartschoolPlannerSaveUnconfirmedError]: read the slot again
+  /// ([getDetail] of [placeholder] answers `404` once it was filled) before
+  /// trying again. Calling this again is safe in itself: once the fill went
+  /// through, reading the slot again fails.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [placeholder]
+  /// is not a timetable slot, or [name] or [icon] is empty.
+  Future<PlannedElementDetail> planLesson({
+    required PlannedElement placeholder,
+    required String name,
+    String publicInfo = '',
+    String privateInfo = '',
+    String icon = defaultLessonIcon,
+  }) async {
+    final title = name.trim();
+    if (title.isEmpty) {
+      throw ArgumentError.value(name, 'name', 'is empty');
+    }
+    if (icon.trim().isEmpty) {
+      throw ArgumentError.value(icon, 'icon', 'is empty');
+    }
+    return _fillSlot(
+      'planLesson',
+      placeholder,
+      route: 'planned-lessons/blanco',
+      content: {
+        'name': title,
+        'info': '',
+        'publicInfo': publicInfo,
+        'privateInfo': privateInfo,
+        'icon': icon,
+      },
+      name: title,
+    );
+  }
+
+  /// Renames [element], an element of the authenticated user's own planner
+  /// (a lesson; an assignment the same way), to [newName], which goes out
+  /// without the white space around it. Returns the element as the planner
+  /// holds it after the change.
+  ///
+  /// Sends `POST {plannedElementType}/{platformId}/{id}/rename` with
+  /// `{"newName": newName}` (tried live on a lesson, 2026-10-02). See
+  /// [changePublicInfo] for the checks before it, and for what this throws.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [newName] is
+  /// empty.
+  Future<PlannedElementDetail> renameElement(
+    PlannedElement element,
+    String newName,
+  ) {
+    final name = newName.trim();
+    if (name.isEmpty) {
+      throw ArgumentError.value(newName, 'newName', 'is empty');
+    }
+    return _edit(
+      'renameElement',
+      element,
+      action: 'rename',
+      capability: 'canUserRename',
+      field: 'name',
+      body: {'newName': name},
+      valueOf: (detail) => (detail.name ?? '').trim(),
+      value: name,
+    );
+  }
+
+  /// Sets the info that pupils see of [element], an element of the
+  /// authenticated user's own planner (a lesson; an assignment the same
+  /// way), to [newInfo] (HTML, sent as given; `""` empties it). Returns the
+  /// element as the planner holds it after the change.
+  ///
+  /// Before it sends anything, it reads the element again (its detail) and
+  /// refuses with a [SmartschoolPlannerWriteRefusedError] an element that is
+  /// not organised by the authenticated user (a class calendar also shows
+  /// colleagues' elements), or whose capabilities do not allow the change
+  /// (`canUserEdit` and `canUserChangePublicInfo`; for [renameElement]
+  /// `canUserRename`, for [changePrivateInfo] `canUserChangePrivateInfo`).
+  /// An element that is gone throws a
+  /// [SmartschoolPlannedElementNotFoundError]. When the element already has
+  /// that value, it sends nothing and returns the element as read.
+  ///
+  /// Sends `POST {plannedElementType}/{platformId}/{id}/change-public-info`
+  /// with `{"newInfo": newInfo}` (tried live on a lesson, 2026-10-02: the
+  /// planner kept the HTML as given). The change sets a value, so sending it
+  /// again does not change the outcome: it is retried once after logging in
+  /// again, as a read is. When the planner's answer is not the element with
+  /// that value (or no usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read the element again before
+  /// trying again.
+  Future<PlannedElementDetail> changePublicInfo(
+    PlannedElement element,
+    String newInfo,
+  ) => _edit(
+    'changePublicInfo',
+    element,
+    action: 'change-public-info',
+    capability: 'canUserChangePublicInfo',
+    field: 'publicInfo',
+    body: {'newInfo': newInfo},
+    valueOf: (detail) => detail.publicInfo,
+    value: newInfo,
+  );
+
+  /// Sets the info that pupils do not see of [element], an element of the
+  /// authenticated user's own planner, to [newInfo] (HTML, sent as given;
+  /// `""` empties it). Returns the element as the planner holds it after the
+  /// change; its [PlannedElementDetail.info] follows (seen live).
+  ///
+  /// This info is **not private to the teacher**: colleagues who can read
+  /// the element (in the calendar of one of its classes, for instance) see
+  /// it too.
+  ///
+  /// Sends `POST {plannedElementType}/{platformId}/{id}/change-private-info`
+  /// with `{"newInfo": newInfo}` (tried live on a lesson, 2026-10-02), after
+  /// the checks of [changePublicInfo] with `canUserChangePrivateInfo`; it
+  /// throws what [changePublicInfo] throws.
+  Future<PlannedElementDetail> changePrivateInfo(
+    PlannedElement element,
+    String newInfo,
+  ) => _edit(
+    'changePrivateInfo',
+    element,
+    action: 'change-private-info',
+    capability: 'canUserChangePrivateInfo',
+    field: 'privateInfo',
+    body: {'newInfo': newInfo},
+    valueOf: (detail) => detail.privateInfo,
+    value: newInfo,
+  );
+
+  /// Clears [lesson], a lesson in a lesson hour of the authenticated user's
+  /// own planner: the hour is an empty timetable slot again, as the
+  /// planner's "delete and keep the placeholder" does. Returns that slot
+  /// ([PlannedElementType.placeholder]), with the same period, classes,
+  /// course and room, but a **new ID**. The lesson, its name and its info
+  /// are gone: the planner answers its detail with `404`.
+  ///
+  /// Before it sends anything, it reads the lesson again (its detail) and
+  /// refuses with a [SmartschoolPlannerWriteRefusedError]:
+  /// - a lesson that is not organised by the authenticated user (a class
+  ///   calendar also shows colleagues' lessons);
+  /// - a lesson whose capabilities do not allow editing it (`canUserEdit`, as
+  ///   the web client requires for this action);
+  /// - a lesson that the planner lets the user trash or delete
+  ///   (`canUserTrash`, `canUserDelete`): the lessons in a timetable hour seen
+  ///   live allowed neither, clearing being the planner's way to remove them.
+  ///   The clear of a lesson outside the timetable was not tried, so the
+  ///   service does not send it.
+  ///
+  /// A lesson that is gone throws a [SmartschoolPlannedElementNotFoundError].
+  ///
+  /// Sends `POST planned-elements/clear` with `{"type": "planned-lessons",
+  /// "elementId": id, "elementPlatformId": platformId}` (tried live,
+  /// 2026-10-02), **once**: never again after logging in again. When the
+  /// planner's answer is not a timetable slot of the authenticated user in
+  /// the lesson's period (or no usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read the lesson again
+  /// ([getDetail] answers `404` once it was cleared) before trying again.
+  ///
+  /// After the clear, [getPlannedElements] may show the lesson for a few
+  /// seconds more; the detail is up to date at once.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [lesson] is not
+  /// a [PlannedElementType.lesson].
+  Future<PlannedElementDetail> clearLesson(PlannedElement lesson) async {
+    const operation = 'clearLesson';
+    if (lesson.type != PlannedElementType.lesson) {
+      throw ArgumentError.value(
+        lesson,
+        'lesson',
+        'is a ${lesson.typeName}, not a lesson (planned-lessons)',
+      );
+    }
+    final me = await _ownUserId();
+    final current = await _detail(
+      lesson.typeName,
+      lesson.platformId,
+      lesson.id,
+    );
+    final what = _describe(current);
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const ['canUserEdit']);
+    for (final flag in const ['canUserTrash', 'canUserDelete']) {
+      if (current.capabilities.can(flag)) {
+        throw SmartschoolPlannerWriteRefusedError(
+          '$operation: the planner lets you trash or delete $what ($flag), '
+          'so it is not a lesson in a timetable hour as the service knows '
+          'them, which only clearing removes. Nothing was sent.',
+        );
+      }
+    }
+    return _write(
+      operation,
+      path: '$_apiPath/planned-elements/clear',
+      body: {
+        'type': current.typeName,
+        'elementId': current.id,
+        'elementPlatformId': current.platformId,
+      },
+      change: 'the clear of $what',
+      retryAfterLogin: false,
+      unconfirmed:
+          'It may or may not have been cleared: read the lesson again '
+          '(getDetail; the planner answers 404 once it was cleared) before '
+          'trying again.',
+      problemOf: (answer) {
+        if (answer.type != PlannedElementType.placeholder) {
+          return 'a ${answer.typeName} instead of a timetable slot';
+        }
+        if (!_samePeriod(answer.period, current.period)) {
+          return 'a slot in another period (${answer.period.from} - '
+              '${answer.period.to})';
+        }
+        if (!_organisedBy(answer, me)) {
+          return 'a slot that is not organised by $me';
+        }
+        return null;
+      },
+    );
+  }
+
+  /// Fills slot [placeholder] through
+  /// `planned-placeholders/{platformId}/{id}/replace/[route]` with the slot's
+  /// organisers, participants, courses, period and locations (read again)
+  /// and [content]; returns the new element once the answer confirms it: of
+  /// type `planned-lessons`, named [name] when it is given, in the slot's
+  /// period. Sent once, never retried.
+  ///
+  /// [route] and [content] are what the kind of fill adds: a blank lesson
+  /// (`planned-lessons/blanco`, with the name, info and icon). Planning an
+  /// existing lesfiche is the route without `/blanco`, with its `sourceId`
+  /// instead (seen live, #88).
+  Future<PlannedElementDetail> _fillSlot(
+    String operation,
+    PlannedElement placeholder, {
+    required String route,
+    required Map<String, Object?> content,
+    String? name,
+  }) async {
+    if (placeholder.type != PlannedElementType.placeholder) {
+      throw ArgumentError.value(
+        placeholder,
+        'placeholder',
+        'is a ${placeholder.typeName}, not a timetable slot '
+            '(planned-placeholders)',
+      );
+    }
+    final me = await _ownUserId();
+    final slot = await _detail(
+      placeholder.typeName,
+      placeholder.platformId,
+      placeholder.id,
+    );
+    final what = _describe(slot);
+    if (slot.type != PlannedElementType.placeholder) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: ${slot.id} is a ${slot.typeName} now, not a timetable '
+        'slot. Nothing was sent.',
+      );
+    }
+    if (!_samePeriod(slot.period, placeholder.period)) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: $what is no longer in the period it was read with '
+        '(${placeholder.period.from} - ${placeholder.period.to}): read the '
+        'calendar again. Nothing was sent.',
+      );
+    }
+    _refuseUnlessOwn(operation, slot, me);
+    _refuseUnlessCapable(operation, slot, const ['canUserReplace']);
+    final participants = slot.raw['participants'];
+    final roles = participants is Map ? participants['userRoles'] : null;
+    final filters = participants is Map ? participants['groupFilters'] : null;
+    if (_isFilled(roles) ||
+        filters is Map &&
+            (_isFilled(filters['filters']) ||
+                _isFilled(filters['additionalUsers']))) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: $what has participant roles or group filters, which '
+        'the service does not know how to send on. Nothing was sent.',
+      );
+    }
+
+    return _write(
+      operation,
+      path:
+          '$_apiPath/planned-placeholders/${slot.platformId}/'
+          '${Uri.encodeComponent(slot.id)}/replace/$route',
+      body: {..._slotBody(slot), ...content},
+      change: 'the fill of $what',
+      retryAfterLogin: false,
+      unconfirmed:
+          'It may or may not have been filled: read the slot again '
+          '(getDetail; the planner answers 404 once it was filled) before '
+          'trying again.',
+      problemOf: (answer) {
+        if (answer.type != PlannedElementType.lesson) {
+          return 'a ${answer.typeName} instead of a lesson';
+        }
+        if (name != null && (answer.name ?? '').trim() != name) {
+          return 'a lesson named "${answer.name ?? ''}" instead of "$name"';
+        }
+        if (!_samePeriod(answer.period, slot.period)) {
+          return 'a lesson in another period (${answer.period.from} - '
+              '${answer.period.to})';
+        }
+        return null;
+      },
+    );
+  }
+
+  /// Changes [field] of [element] to [value] through
+  /// `{plannedElementType}/{platformId}/{id}/[action]` with [body], after
+  /// reading the element again and checking that it is the authenticated
+  /// user's own and that its capabilities hold `canUserEdit` and
+  /// [capability]. Sends nothing when [valueOf] the element read is [value]
+  /// already. Retried once after logging in again: the change sets a value.
+  Future<PlannedElementDetail> _edit(
+    String operation,
+    PlannedElement element, {
+    required String action,
+    required String capability,
+    required String field,
+    required Map<String, Object?> body,
+    required String Function(PlannedElementDetail detail) valueOf,
+    required String value,
+  }) async {
+    final me = await _ownUserId();
+    final current = await _detail(
+      element.typeName,
+      element.platformId,
+      element.id,
+    );
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, ['canUserEdit', capability]);
+    if (valueOf(current) == value) return current;
+    final what = _describe(current);
+    return _write(
+      operation,
+      path:
+          '$_apiPath/${Uri.encodeComponent(current.typeName)}/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}/$action',
+      body: body,
+      change: 'the change of the $field of $what',
+      retryAfterLogin: true,
+      unconfirmed:
+          'It may or may not have been changed: read the element again '
+          '(getDetail) before trying again.',
+      problemOf: (answer) {
+        if (answer.id.toLowerCase() != current.id.toLowerCase()) {
+          return 'element ${answer.id}';
+        }
+        if (valueOf(answer) != value) {
+          return 'the $field "${_preview(valueOf(answer), max: 80)}"';
+        }
+        return null;
+      },
+    );
+  }
+
+  /// Sends the write [body] to [path] and returns the element of the
+  /// planner's answer once [problemOf] finds nothing wrong with it.
+  ///
+  /// A session that Smartschool refuses (an
+  /// [SmartschoolAuthenticationError]) is thrown as it is: the write was not
+  /// carried out. Any other failure, an unusable answer or a [problemOf] is
+  /// a [SmartschoolPlannerSaveUnconfirmedError] that ends in [unconfirmed].
+  Future<PlannedElementDetail> _write(
+    String operation, {
+    required String path,
+    required Map<String, Object?> body,
+    required String change,
+    required bool retryAfterLogin,
+    required String unconfirmed,
+    required String? Function(PlannedElementDetail answer) problemOf,
+  }) async {
+    final Response<String> response;
+    try {
+      response = await _client.postJsonResponse(
+        path,
+        data: body,
+        retryAfterLogin: retryAfterLogin,
+      );
+    } on SmartschoolAuthenticationError {
+      // Refused before the planner handled it (and, for a write that is not
+      // retried, not sent again): the planner was not changed.
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent, but no answer came in ($e). '
+          '$unconfirmed',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    final PlannedElementDetail answer;
+    try {
+      answer = parsePlannedElementDetail(_decode(response, change));
+    } on SmartschoolPlannerError catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent, but the planner\'s answer cannot be '
+          'used (${e.message}). $unconfirmed',
+          statusCode: response.statusCode,
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    final problem = problemOf(answer);
+    if (problem != null) {
+      throw SmartschoolPlannerSaveUnconfirmedError(
+        '$operation: $change was sent, but the planner answered with '
+        '$problem. $unconfirmed',
+        statusCode: response.statusCode,
+      );
+    }
+    return answer;
+  }
+
+  /// The whole user ID of the authenticated user (`4069_146_0`).
+  Future<String> _ownUserId() async => (await ownCalendar()).id;
+
+  /// Refuses [element] unless the authenticated user [me] is one of its
+  /// organising users.
+  static void _refuseUnlessOwn(
+    String operation,
+    PlannedElement element,
+    String me,
+  ) {
+    if (_organisedBy(element, me)) return;
+    final organisers = [
+      for (final user in element.organiserUsers) '${user.name} (${user.id})',
+    ];
+    throw SmartschoolPlannerWriteRefusedError(
+      '$operation: ${_describe(element)} is not in your own planner: it is '
+      'organised by ${organisers.isEmpty ? 'no user' : organisers.join(', ')}'
+      ', not by $me. Nothing was sent.',
+    );
+  }
+
+  /// Refuses [element] unless its capabilities hold every flag of [flags].
+  static void _refuseUnlessCapable(
+    String operation,
+    PlannedElement element,
+    List<String> flags,
+  ) {
+    final missing = [
+      for (final flag in flags)
+        if (!element.capabilities.can(flag)) flag,
+    ];
+    if (missing.isEmpty) return;
+    throw SmartschoolPlannerWriteRefusedError(
+      '$operation: the planner does not let you change '
+      '${_describe(element)} (${missing.join(', ')} not set). Nothing was '
+      'sent.',
+    );
+  }
+
+  static bool _organisedBy(PlannedElement element, String userId) =>
+      element.organiserUsers.any((user) => user.id == userId);
+
+  static bool _samePeriod(PlannerPeriod a, PlannerPeriod b) =>
+      a.from.isAtSameMomentAs(b.from) &&
+      a.to.isAtSameMomentAs(b.to) &&
+      a.wholeDay == b.wholeDay;
+
+  /// Whether [value] is a list or a map with something in it.
+  static bool _isFilled(Object? value) =>
+      value is List && value.isNotEmpty || value is Map && value.isNotEmpty;
+
+  /// [element] for a message: its type, ID, name and period.
+  static String _describe(PlannedElement element) =>
+      '${element.typeName} ${element.id}'
+      '${element.name == null ? '' : ' "${element.name}"'} '
+      '(${element.period.from} - ${element.period.to})';
+
+  /// The part of the fill of a timetable slot that comes from [slot]: its
+  /// organisers, participants, courses, period and locations, as the
+  /// planner's web client sends them (IDs as strings, a course and a
+  /// location as an object; `platformlName` is the web client's own
+  /// spelling). The period goes out as the planner gave it.
+  static Map<String, Object?> _slotBody(PlannedElementDetail slot) {
+    final period = slot.raw['period'];
+    String time(String key, DateTime parsed) {
+      final value = period is Map ? period[key] : null;
+      return value is String ? value : formatDateTime(parsed);
+    }
+
+    return {
+      'organisers': {
+        'users': [for (final user in slot.organiserUsers) user.id],
+        'groups': [for (final group in slot.organiserGroups) group.id],
+      },
+      'participants': {
+        'groups': [for (final group in slot.participantGroups) group.id],
+        'users': [for (final user in slot.participantUsers) user.id],
+        'userRoles': const <Object>[],
+        'groupFilters': {
+          'filters': const <Object>[],
+          'additionalUsers': const <Object>[],
+        },
+      },
+      'courses': [
+        for (final course in slot.courses)
+          {'platformId': course.platformId, 'id': course.id},
+      ],
+      'period': {
+        'dateTimeFrom': time('dateTimeFrom', slot.period.from),
+        'dateTimeTo': time('dateTimeTo', slot.period.to),
+        'wholeDay': slot.period.wholeDay,
+      },
+      'locations': [
+        for (final location in slot.locations)
+          {
+            'id': location.id,
+            'platformId': location.platformId,
+            'platformlName': location.platformName,
+            'type': location.type,
+          },
+      ],
+    };
   }
 
   Future<PlannedElementDetail> _detail(

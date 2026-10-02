@@ -506,7 +506,16 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
 /// instead.
 ///
 /// An element the planner does not know is a
-/// [SmartschoolPlannedElementNotFoundError], a subtype of this one.
+/// [SmartschoolPlannedElementNotFoundError], a subtype of this one; a write
+/// that a check refused before it was sent is a
+/// [SmartschoolPlannerWriteRefusedError], another one.
+///
+/// From the writes of `PlannerService` (`planLesson`, `renameElement`,
+/// `changePublicInfo`, `changePrivateInfo`, `clearLesson`, #87), this type
+/// and its subtypes always mean that **nothing was sent**: the read before
+/// the write failed, or a check refused it. A write that went out without
+/// the planner confirming it is a [SmartschoolPlannerSaveUnconfirmedError]
+/// instead.
 class SmartschoolPlannerError extends SmartschoolException {
   /// The HTTP status of the planner's answer when it was not `200`; `null`
   /// when the answer had status `200` but could not be used.
@@ -544,6 +553,77 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
     required this.platformId,
     required this.elementId,
   }) : super(statusCode: 404);
+}
+
+/// Thrown by the writes of `PlannerService` (#87) when a check before the
+/// write refuses it, after reading the element again. **Nothing was sent**:
+/// the planner was not changed.
+///
+/// The checks keep the writes to the authenticated user's own planner, as
+/// far as the planner tells: the element must be organised by the
+/// authenticated user (`organisers.users`), and the planner's capabilities
+/// must allow the change (`canUserReplace` to fill a timetable slot,
+/// `canUserEdit` with `canUserRename`, `canUserChangePublicInfo` or
+/// `canUserChangePrivateInfo` to edit, `canUserEdit` to clear). A slot must
+/// still be a slot, in the period it was read with; the method says which
+/// check refused.
+///
+/// A [SmartschoolPlannerError] (without a [statusCode]), so that from the
+/// writes that type always means nothing was sent. An element that is gone
+/// when it is read again (such as a slot that was filled since it was read)
+/// is a [SmartschoolPlannedElementNotFoundError] instead, also before
+/// anything was sent.
+class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
+  const SmartschoolPlannerWriteRefusedError(super.message);
+}
+
+/// Thrown by the writes of `PlannerService` (#87) when the write went out to
+/// the planner, but the planner's answer does not confirm it.
+///
+/// **The change may or may not have been made.** Read the element again
+/// (`PlannerService.getDetail`) before trying again; the message says what
+/// to read. For the fill of a timetable slot (`planLesson`) and the clear of
+/// a lesson (`clearLesson`), the planner answers the element they replaced
+/// with `404` once the change went through. Calling the method again is safe
+/// in itself: it reads the element first, so a fill or a clear that did go
+/// through is not made a second time, and an edit that did is not sent
+/// again.
+///
+/// Thrown when the planner answers the write with another status than `200`
+/// ([statusCode]), an answer that is not the element as expected (another
+/// type, name, period, info text or element), or an answer the service
+/// cannot use; and when the write failed after it went out, before a usable
+/// answer came in ([cause] holds the failure, typically a
+/// [SmartschoolConnectionError]).
+///
+/// A session that Smartschool refuses for the write is not this error but a
+/// [SmartschoolSessionExpiredError] (or another
+/// [SmartschoolAuthenticationError]): Smartschool refused it before handling
+/// it, so the planner was not changed.
+///
+/// Deliberately not a [SmartschoolPlannerError], so a `catch` meant for the
+/// failures where nothing was sent does not catch it.
+class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
+  /// The HTTP status of the planner's answer to the write, or `null` when no
+  /// answer came in (see [cause]).
+  final int? statusCode;
+
+  /// The failure of the write when no usable answer came in: a
+  /// [SmartschoolConnectionError], or a [SmartschoolPlannerError] about the
+  /// answer; `null` when the planner answered with an element that does not
+  /// confirm the write.
+  final Object? cause;
+
+  const SmartschoolPlannerSaveUnconfirmedError(
+    super.message, {
+    this.statusCode,
+    this.cause,
+  });
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

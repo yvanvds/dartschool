@@ -529,6 +529,41 @@ void main() {
       expect(server.log, [_addRecipient]);
     });
 
+    test('a JSON POST redirected to /login (postJsonResponse, #87)', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _postJson),
+      );
+
+      // Before #87, postJsonResponse had no retryAfterLogin: the client
+      // logged in again and sent the JSON body a second time.
+      await expectLater(
+        client.postJsonResponse(
+          '/api/v1/endpoint',
+          data: {'name': 'Les 1'},
+          retryAfterLogin: false,
+        ),
+        throwsA(notRetried()),
+      );
+      expect(server.log, [_postJson]);
+      expect(server.jsonBodies, isEmpty);
+    });
+
+    test('an accepted JSON POST is answered as usual (postJsonResponse, '
+        '#87)', () async {
+      final server = await serve(_Smartschool(loggedIn: true));
+
+      final response = await client.postJsonResponse(
+        '/api/v1/endpoint',
+        data: {'name': 'Les 1'},
+        retryAfterLogin: false,
+      );
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"ok":true}');
+      expect(server.log, [_postJson]);
+      expect(server.jsonBodies, ['{"name":"Les 1"}']);
+    });
+
     test('the next refused request logs in as usual', () async {
       final server = await serve(
         _Smartschool(loggedIn: true, expiresBefore: _send),

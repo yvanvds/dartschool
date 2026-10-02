@@ -396,6 +396,14 @@ class SmartschoolClient {
   /// itself: Dio would read a response to its end after its reader stopped
   /// listening.
   ///
+  /// Until the stream is listened to, the transfer waits, as while it is
+  /// paused: no more of the content comes in than the few chunks that
+  /// arrived while the client handled the headers, however late the stream
+  /// is listened to (#81). So it can be listened to once the file it is
+  /// written to is open. A download that is neither read nor cancelled keeps
+  /// its connection open. (A `receiveTimeout` set on [dio] counts that wait,
+  /// as it counts a pause.)
+  ///
   /// A session that Smartschool refuses is handled as for every request: it
   /// answers the download with its login chain (or `401`) instead of the
   /// file, the client logs in again and retries the download once, and the
@@ -410,7 +418,10 @@ class SmartschoolClient {
   /// (`Content-Length`), this throws it and nothing is read. Otherwise the
   /// bytes are counted as they come in, and the stream ends with it once
   /// more than [maxBytes] came in, after at most [maxBytes] bytes. Either way
-  /// the client stops the transfer. Must not be negative.
+  /// the client stops the transfer. Every byte of the content counts, also
+  /// one that came in before the stream was listened to: whenever it is
+  /// listened to, the transfer, and what the client holds of it in memory,
+  /// stays within [maxBytes] and a few chunks (#81). Must not be negative.
   ///
   /// Throws a [SmartschoolDownloadError] when Smartschool answers with
   /// another status than `200` (such as `404` for an Intradesk file that
@@ -1412,16 +1423,23 @@ class SmartschoolClient {
 /// client throws for it, and stops the transfer when the content is not
 /// read to its end.
 ///
-/// Dio subscribes to the body of a response as soon as it comes in, and
-/// keeps reading it to its end when the reader of a `ResponseType.stream`
-/// body cancels its subscription; only cancelling the request (its
-/// [CancelToken]) closes the connection. So the transfer is stopped by
-/// cancelling the download's token: when the reader cancels its
+/// Dio subscribes to the body of a response as soon as its headers are in,
+/// and keeps what comes in in memory until the body is listened to. So the
+/// body is taken over as soon as the download has its answer, and held
+/// until the reader listens: its subscription is paused, which pauses the
+/// transfer (#81). What came in before then is no more than the chunks that
+/// arrived while the client handled the headers, and every byte of the
+/// content is counted against `maxBytes`, whenever the reader listens.
+///
+/// Dio also keeps reading a body to its end when the reader of a
+/// `ResponseType.stream` body cancels its subscription; only cancelling the
+/// request (its [CancelToken]) closes the connection. So the transfer is
+/// stopped by cancelling the download's token: when the reader cancels its
 /// subscription before the end, when more than `maxBytes` bytes came in,
 /// on [cancel], and when the transfer fails.
 class _DownloadContent {
   _DownloadContent(
-    this._source, {
+    Stream<List<int>> source, {
     required CancelToken cancelToken,
     required int? maxBytes,
     required Object Function() tooLarge,
@@ -1431,10 +1449,15 @@ class _DownloadContent {
        _maxBytes = maxBytes,
        _tooLarge = tooLarge,
        _failure = failure,
-       _cancelled = cancelled;
-
-  /// The body of the response, as Dio hands it on.
-  final Stream<Uint8List> _source;
+       _cancelled = cancelled {
+    // Held until the reader listens (see [_listen]).
+    _subscription = source.listen(
+      _onData,
+      onError: _onError,
+      onDone: _onDone,
+      cancelOnError: true,
+    )..pause();
+  }
 
   /// The token of the download's request, and of its retry after a login.
   final CancelToken _cancelToken;
@@ -1452,12 +1475,13 @@ class _DownloadContent {
 
   late final StreamController<List<int>> _reader = StreamController(
     onListen: _listen,
-    onPause: () => _subscription?.pause(),
-    onResume: () => _subscription?.resume(),
+    onPause: () => _subscription.pause(),
+    onResume: () => _subscription.resume(),
     onCancel: _readerCancelled,
   );
 
-  StreamSubscription<List<int>>? _subscription;
+  /// The subscription to the body of the response, as Dio hands it on.
+  late final StreamSubscription<List<int>> _subscription;
   int _received = 0;
 
   /// Whether the content ended: it was read to its end, the transfer failed
@@ -1473,12 +1497,8 @@ class _DownloadContent {
   void _listen() {
     // Cancelled before it was read: the error is waiting for the reader.
     if (_finished) return;
-    _subscription = _source.listen(
-      _onData,
-      onError: _onError,
-      onDone: _onDone,
-      cancelOnError: true,
-    );
+    // The transfer, held until now, goes on.
+    _subscription.resume();
   }
 
   void _onData(List<int> chunk) {
@@ -1512,7 +1532,7 @@ class _DownloadContent {
     if (_finished) return;
     _finished = true;
     _cancelToken.cancel();
-    _subscription?.cancel();
+    _subscription.cancel();
     _reader
       ..addError(error)
       ..close();
@@ -1524,7 +1544,7 @@ class _DownloadContent {
     if (_finished) return null;
     _finished = true;
     _cancelToken.cancel();
-    return _subscription?.cancel();
+    return _subscription.cancel();
   }
 }
 

@@ -108,6 +108,54 @@ class _Body {
   }
 }
 
+/// A file that the fake Smartschool sends as a connection does (#81): one
+/// chunk of [chunkSize] per turn of the event loop while it is read, and
+/// none while its reader pauses it (backpressure). It tells how many bytes
+/// it sent, and whether the transfer was stopped before the end.
+class _File {
+  _File(this.length);
+
+  static const chunkSize = 64 * 1024;
+
+  /// The size of the file.
+  final int length;
+
+  /// The bytes sent so far.
+  int sent = 0;
+
+  /// Whether the transfer was stopped before the whole file was sent.
+  bool stoppedEarly = false;
+
+  late final StreamController<Uint8List> _controller = StreamController(
+    onListen: _schedule,
+    onResume: _schedule,
+    onCancel: () => stoppedEarly = sent < length,
+  );
+  bool _scheduled = false;
+
+  Stream<Uint8List> get stream => _controller.stream;
+
+  void _schedule() {
+    if (_scheduled) return;
+    _scheduled = true;
+    Timer.run(_next);
+  }
+
+  void _next() {
+    _scheduled = false;
+    if (!_controller.hasListener || _controller.isPaused) return;
+    if (_controller.isClosed) return;
+    if (sent >= length) {
+      _controller.close();
+      return;
+    }
+    final size = (length - sent).clamp(0, chunkSize);
+    _controller.add(Uint8List(size));
+    sent += size;
+    _schedule();
+  }
+}
+
 /// A 200 answer with [body] and [headers].
 ResponseBody _answer(
   Stream<Uint8List> body, {
@@ -277,6 +325,9 @@ class _FileServer {
   /// The size of the body.
   int get length => _chunks * _chunkSize;
 
+  /// The bytes of the body written so far.
+  int get sent => _sent;
+
   /// The bytes of the body written when the client closed the connection,
   /// or `null` when the whole body was written first.
   Future<int?> get closedAfter =>
@@ -432,6 +483,34 @@ void main() {
         await pumpEventQueue();
         expect(body.paused, isFalse);
         await subscription.cancel();
+      });
+
+      test('until the stream is listened to, the transfer waits, as if '
+          'paused (#81)', () async {
+        final body = _Body();
+        await start(() => _answer(body.stream));
+
+        final download = await client.downloadStream('/file');
+        body.add([1, 2, 3]);
+        await pumpEventQueue();
+        // Before the fix: Dio read the body from the moment the headers were
+        // in, and kept what came in in memory until the stream was listened
+        // to.
+        expect(body.paused, isTrue);
+
+        final chunks = <List<int>>[];
+        final done = download.stream.listen(chunks.add).asFuture<void>();
+        await pumpEventQueue();
+        expect(body.paused, isFalse);
+
+        body.add([4, 5]);
+        await body.close();
+        await done;
+        expect(chunks, [
+          [1, 2, 3],
+          [4, 5],
+        ], reason: 'nothing that came in before is lost');
+        expect(body.stoppedEarly, isFalse);
       });
 
       test('cancelling the subscription before the end stops the '
@@ -620,6 +699,99 @@ void main() {
           throwsArgumentError,
         );
         expect(server.log, isEmpty);
+      });
+    });
+
+    // #81: Dio reads the body of an answer from the moment its headers are
+    // in, and keeps what comes in in memory until the body is listened to.
+    // The client subscribed to it, and counted the bytes against maxBytes,
+    // only once the download's stream was listened to. A reader that listened
+    // a moment late (smartschool-mcp piped the stream into File.openWrite(),
+    // which listens once the file is open) could so hold the whole file in
+    // memory, however large, before the limit was checked.
+    group('a reader that listens late (#81)', () {
+      /// What a download takes in before its stream is listened to: the
+      /// chunks that came in while the client handled the headers, before it
+      /// held the transfer.
+      const fewChunks = 8 * _File.chunkSize;
+
+      test('maxBytes bounds the transfer, not only what is read: the 17 MiB '
+          'file of the issue', () async {
+        const maxBytes = 1024 * 1024;
+        final file = _File(17 * 1024 * 1024);
+        await start(() => _answer(file.stream));
+
+        final download = await IntradeskService(
+          client,
+        ).downloadFileStream('abc', maxBytes: maxBytes);
+        // As a reader that first opens the file it writes to, on a slow
+        // machine.
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        // Before the fix: all 17,825,792 bytes.
+        expect(
+          file.sent,
+          lessThanOrEqualTo(fewChunks),
+          reason: 'the transfer waits for the reader',
+        );
+
+        final chunks = <List<int>>[];
+        final errors = <Object>[];
+        final done = Completer<void>();
+        download.stream.listen(
+          chunks.add,
+          onError: errors.add,
+          onDone: done.complete,
+        );
+        await done.future;
+
+        expect(chunks.fold<int>(0, (n, chunk) => n + chunk.length), maxBytes);
+        expect(errors, [_tooLarge(maxBytes: maxBytes)]);
+        expect(file.sent, lessThanOrEqualTo(maxBytes + fewChunks));
+        expect(file.stoppedEarly, isTrue);
+      });
+
+      test('without maxBytes too, only a few chunks come in until the reader '
+          'listens, and then the whole file', () async {
+        final file = _File(4 * 1024 * 1024);
+        await start(() => _answer(file.stream));
+
+        final download = await client.downloadStream('/file');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        // Before the fix: the whole file.
+        expect(file.sent, lessThanOrEqualTo(fewChunks));
+
+        expect(await _read(download), hasLength(file.length));
+        expect(file.stoppedEarly, isFalse);
+      });
+
+      test('cancel() before the stream is listened to stops the transfer it '
+          'held', () async {
+        final file = _File(4 * 1024 * 1024);
+        await start(() => _answer(file.stream));
+
+        final download = await client.downloadStream('/file');
+        await download.cancel();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        expect(file.stoppedEarly, isTrue);
+        expect(file.sent, lessThanOrEqualTo(fewChunks));
+        await expectLater(download.stream.toList(), throwsStateError);
+      });
+
+      test('a receiveTimeout counts the wait for the reader, as it counts a '
+          'pause', () async {
+        final file = _File(4 * 1024 * 1024);
+        await start(() => _answer(file.stream));
+        client.dio.options.receiveTimeout = const Duration(milliseconds: 50);
+
+        final download = await client.downloadStream('/file');
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+
+        await expectLater(
+          download.stream.toList(),
+          throwsA(_connectionError(DioExceptionType.receiveTimeout)),
+        );
+        expect(file.stoppedEarly, isTrue);
       });
     });
 
@@ -949,6 +1121,35 @@ void main() {
 
       expect(first, isNotEmpty);
       // Dio alone would read the whole 64 MiB off the connection.
+      expect(await files.closedAfter, lessThan(files.length ~/ 2));
+    });
+
+    test('a reader that listens late: the transfer waits for it, and maxBytes '
+        'stops it at the limit (#81)', () async {
+      final files = await fileServer(announceLength: false);
+      const maxBytes = 256 * 1024;
+
+      final download = await client.downloadStream('/file', maxBytes: maxBytes);
+      // As a reader that first opens the file it writes to, on a slow
+      // machine.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      // Before the fix: the HTTP client read on into memory meanwhile, as
+      // much as the server could send in that time.
+      expect(
+        files.sent,
+        lessThan(files.length ~/ 2),
+        reason: 'the server can only fill the buffers of the connection',
+      );
+
+      final dir = Directory.systemTemp.createTempSync('smartschool_download_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final out = File(p.join(dir.path, 'out.bin'));
+      await expectLater(
+        download.stream.pipe(out.openWrite()),
+        throwsA(_tooLarge(maxBytes: maxBytes)),
+      );
+
+      expect(out.lengthSync(), lessThanOrEqualTo(maxBytes));
       expect(await files.closedAfter, lessThan(files.length ~/ 2));
     });
 

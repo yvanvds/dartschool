@@ -19,10 +19,12 @@ export '../models/planner_models.dart';
 ///
 /// In the authenticated user's own planner, it fills a lesson hour with a
 /// new lesson ([planLesson]) or with a lesfiche of the Lesfiches library
-/// ([planLessonContent], the lesfiches read with `LessonContentService`),
-/// changes its name and info ([renameElement], [changePublicInfo],
-/// [changePrivateInfo]) and clears the hour again ([clearLesson]); see
-/// *Writes* below.
+/// ([planLessonContent], the lesfiches read with `LessonContentService`) and
+/// clears the hour again ([clearLesson]); it adds an assignment (a test, a
+/// task) for classes ([planAssignment]) and moves it to the planner's trash
+/// again ([trashAssignment]); and it changes the name and info of an own
+/// lesson or assignment ([renameElement], [changePublicInfo],
+/// [changePrivateInfo]). See *Writes* below.
 ///
 /// For the planner's workload view ("werkbelasting") it reads the school's
 /// assignment types ([getAssignmentTypes]), the assignments of classes in a
@@ -81,9 +83,10 @@ export '../models/planner_models.dart';
 /// [getAssignmentsOfGroups], [getWorkloadSchedule] and [calculateWorkload].
 ///
 /// ### Writes
-/// Only [planLesson], [planLessonContent], [renameElement],
-/// [changePublicInfo], [changePrivateInfo] and [clearLesson] change the
-/// planner, each with one POST for one element:
+/// Only [planLesson], [planLessonContent], [clearLesson], [planAssignment],
+/// [trashAssignment], [renameElement], [changePublicInfo] and
+/// [changePrivateInfo] change the planner, each with one POST for one
+/// element:
 ///
 /// ```dart
 /// final me = await planner.ownCalendar();
@@ -111,28 +114,48 @@ export '../models/planner_models.dart';
 ///   placeholder: emptyAgain,
 ///   lessonContentId: fiche.id,
 /// ); // named after the lesfiche
+///
+/// // A test for the classes of that hour, due at its start.
+/// final ko = (await planner.getAssignmentTypes())
+///     .firstWhere((type) => type.abbreviation == 'KO');
+/// final test = await planner.planAssignment(
+///   groupIds: [for (final group in slot.participantGroups) group.id],
+///   course: slot.courses.first,
+///   type: ko,
+///   name: 'Test: lussen',
+///   due: slot.period.from,
+///   until: slot.period.to,
+///   publicInfo: '<p>Leerstof: hoofdstuk 3.</p>',
+/// );
+/// await planner.renameElement(test, 'Test: lussen en functies');
+/// await planner.trashAssignment(test); // to the planner's trash
 /// ```
 ///
-/// Each write reads the element again first and refuses, with a
-/// [SmartschoolPlannerWriteRefusedError] and without sending anything, an
-/// element that is not organised by the authenticated user or whose
-/// capabilities do not allow the change: a class calendar also shows the
-/// elements of colleagues, which the service never changes. The fill of a
-/// slot and the clear of a lesson are sent once, never again after logging
-/// in again; the edits, which set a value, are retried once after logging in
-/// again, as a read is. A write that went out without the planner's answer
-/// confirming it throws a [SmartschoolPlannerSaveUnconfirmedError]. The
-/// service never uses the planner's trash, its permanent delete
-/// (`DELETE {plannedElementType}/{platformId}/{id}`) or its bulk endpoints
-/// (`planned-elements/trash`, `planned-elements/delete`,
+/// Each write that changes an element reads it again first and refuses,
+/// with a [SmartschoolPlannerWriteRefusedError] and without sending
+/// anything, an element that is not organised by the authenticated user or
+/// whose capabilities do not allow the change: a class calendar also shows
+/// the elements of colleagues, which the service never changes. A new
+/// assignment is organised by the authenticated user, of one of the school's
+/// assignment types. The fill of a slot, the clear of a lesson, the create
+/// of an assignment and its move to the trash are sent once, never again
+/// after logging in again; the edits, which set a value, are retried once
+/// after logging in again, as a read is. A write that went out without the
+/// planner's answer confirming it throws a
+/// [SmartschoolPlannerSaveUnconfirmedError]. Of the planner's trash the
+/// service only uses the move of one own assignment ([trashAssignment]); it
+/// never uses its permanent delete
+/// (`DELETE {plannedElementType}/{platformId}/{id}`), its restore, or its
+/// bulk endpoints (`planned-elements/trash`, `planned-elements/delete`,
 /// `planned-elements/bulk/...`, `planned-elements/replace-with-...`, and
 /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
-/// moves everything in a period to the trash).
+/// moves everything in a period to the trash), nor an assignment's
+/// `announce`.
 ///
 /// [PlannedElementDetail.privateInfo] is not private to the teacher: other
 /// teachers who can read the element see it too (see below). Pupils see the
 /// name and [PlannedElementDetail.publicInfo] of a lesson as soon as it is
-/// planned.
+/// planned, and of an assignment as soon as it is created.
 ///
 /// ### What a teacher sees
 /// A class calendar holds the elements of all teachers of the class, and a
@@ -169,12 +192,13 @@ export '../models/planner_models.dart';
 ///   lesfiches before it planned one. Nothing was sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
 ///   planner's answer does not confirm it. It may or may not have been
-///   made: read the element again.
+///   made: read the element again (for a new assignment, the calendar of
+///   one of its classes).
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
-///   once; for the fill of a slot and the clear of a lesson, which are not
-///   retried, at once. The request was not carried out: sign in again and
-///   retry.
+///   once; for the fill of a slot, the clear of a lesson, and the create and
+///   trash of an assignment, which are not retried, at once. The request was
+///   not carried out: sign in again and retry.
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
@@ -194,15 +218,18 @@ class PlannerService {
   /// before it saves an assignment). The writes send, for one element each,
   /// `planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco`
   /// ([planLesson]), `.../replace/planned-lessons` ([planLessonContent]),
+  /// `planned-elements/clear` ([clearLesson]),
+  /// `planned-assignments/blanco?waitForRefresh=true` ([planAssignment]),
+  /// `planned-assignments/{platformId}/{id}/trash` ([trashAssignment]), and
   /// `{plannedElementType}/{platformId}/{id}/rename`,
-  /// `.../change-public-info` and `.../change-private-info` (the edits), and
-  /// `planned-elements/clear` ([clearLesson]). The planner also answers POSTs
-  /// on it that change the planner or the user's settings and that the
-  /// service never sends: the favourites of the search
+  /// `.../change-public-info` and `.../change-private-info` (the edits). The
+  /// planner also answers POSTs on it that change the planner or the user's
+  /// settings and that the service never sends: the favourites of the search
   /// (`quick-search/planner/mark-as-favourite` and `discard-as-favourite`),
-  /// the trash and the bulk endpoints (`planned-elements/trash`,
-  /// `planned-elements/delete`, `planned-elements/bulk/...`,
-  /// `planned-elements/replace-with-...`), and
+  /// the restore from the trash (`.../trash/restore`), an assignment's
+  /// `announce` and `remove-announcement`, the bulk endpoints
+  /// (`planned-elements/trash`, `planned-elements/delete`,
+  /// `planned-elements/bulk/...`, `planned-elements/replace-with-...`), and
   /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
   /// moves everything in a period to the trash; nor its `DELETE` of an
   /// element, which deletes it for good.
@@ -614,8 +641,9 @@ class PlannerService {
   /// [SmartschoolPlannerWriteRefusedError] a [lessonContentId] that is not
   /// among them, or that is not a lesson lesfiche
   /// ([LessonContentType.lesson]): an assignment lesfiche is planned as
-  /// another element type (an assignment, #89), which this method does not
-  /// do. It then reads the slot again
+  /// another element type (an assignment), which this method does not do
+  /// ([planAssignment] adds a new assignment, not one from a lesfiche). It
+  /// then reads the slot again
   /// and checks it as [planLesson] does (organised by the authenticated user,
   /// `canUserReplace`, the same period, no participant roles or group
   /// filters); a slot that is gone throws a
@@ -682,13 +710,14 @@ class PlannerService {
   }
 
   /// Renames [element], an element of the authenticated user's own planner
-  /// (a lesson; an assignment the same way), to [newName], which goes out
-  /// without the white space around it. Returns the element as the planner
-  /// holds it after the change.
+  /// (a lesson or an assignment), to [newName], which goes out without the
+  /// white space around it. Returns the element as the planner holds it
+  /// after the change.
   ///
   /// Sends `POST {plannedElementType}/{platformId}/{id}/rename` with
-  /// `{"newName": newName}` (tried live on a lesson, 2026-10-02). See
-  /// [changePublicInfo] for the checks before it, and for what this throws.
+  /// `{"newName": newName}` (tried live on a lesson and on an assignment,
+  /// 2026-10-02). See [changePublicInfo] for the checks before it, and for
+  /// what this throws.
   ///
   /// Throws an [ArgumentError], without sending anything, when [newName] is
   /// empty.
@@ -714,8 +743,8 @@ class PlannerService {
 
   /// Sets the info that pupils see of [element], an element of the
   /// authenticated user's own planner (a lesson; an assignment the same
-  /// way), to [newInfo] (HTML, sent as given; `""` empties it). Returns the
-  /// element as the planner holds it after the change.
+  /// way, at its own route), to [newInfo] (HTML, sent as given; `""` empties
+  /// it). Returns the element as the planner holds it after the change.
   ///
   /// Before it sends anything, it reads the element again (its detail) and
   /// refuses with a [SmartschoolPlannerWriteRefusedError] an element that is
@@ -867,6 +896,325 @@ class PlannerService {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Writes: an assignment in the own planner
+  // ---------------------------------------------------------------------------
+
+  /// The icon [planAssignment] gives an assignment when the caller names
+  /// none (`flags_red_yellow`): the icon of the assignments seen live, which
+  /// the create was tried with. The planner requires an icon for an
+  /// assignment (it answers the create without one with `400`).
+  static const defaultAssignmentIcon = 'flags_red_yellow';
+
+  /// Adds an assignment ("opdracht": a test, a task, something to bring
+  /// along) to the authenticated user's own planner, for the classes
+  /// [groupIds], as the planner's "new assignment" does. Returns the
+  /// assignment: a new element of type [PlannedElementType.assignment],
+  /// organised by the authenticated user, of [type], due at [due].
+  ///
+  /// **Pupils of the classes see the assignment at once**: the planner makes
+  /// it visible from the moment it is created (its
+  /// [PlannedElementDetail.visibleFrom]), with its name and [publicInfo].
+  /// It is not announced
+  /// ([PlannedElementDetail.isAnnounced] `false`); the planner's "announce"
+  /// is not used.
+  ///
+  /// An assignment is not tied to a lesson hour: it is a deadline. [due] is
+  /// the moment it is due (usually the start of a lesson hour, the
+  /// [PlannerPeriod.from] of a timetable slot), [until] the end of its
+  /// period (the end of that hour); both go out as [formatDateTime] writes
+  /// them. In the class calendar it shows next to the timetable slot of that
+  /// hour, which stays as it is.
+  ///
+  /// - [groupIds] are class IDs `{platformId}_{groupId}` (a class calendar's
+  ///   [PlannerCalendar.id], a [PlannerGroup.id] of a slot), each sent once;
+  /// - [course] is the course the assignment is about, such as one of the
+  ///   [PlannedElement.courses] of a timetable slot;
+  /// - [type] is one of the school's assignment types ([getAssignmentTypes]);
+  /// - [name] goes out without the white space around it;
+  /// - [publicInfo] is what pupils see, [privateInfo] what they do not (but
+  ///   colleagues who read the assignment do: it is not private to the
+  ///   teacher); both are HTML, `""` (the default) for none, and go out as
+  ///   given;
+  /// - [icon] is the assignment's icon ([defaultAssignmentIcon] by default);
+  /// - [locations] are its rooms (none by default), such as the
+  ///   [PlannedElement.locations] of a timetable slot.
+  ///
+  /// Before it sends anything, it reads the school's assignment types again
+  /// ([getAssignmentTypes]) and refuses with a
+  /// [SmartschoolPlannerWriteRefusedError] a [type] whose ID is not among
+  /// them. When the types cannot be read, the [SmartschoolPlannerError] of
+  /// [getAssignmentTypes] is thrown: nothing was sent either.
+  ///
+  /// Sends `POST planned-assignments/blanco?waitForRefresh=true` with the
+  /// body the web client sends (tried live, 2026-10-02: the planner answered
+  /// `201` with the assignment, and the class calendar showed it at once):
+  /// the authenticated user as the only organiser, the classes as
+  /// participants, the course, the period with `deadline` `true` and
+  /// `dateTime` set to [due], the name, an empty `info`, the info texts, the
+  /// type's ID as `assignmentType`, the icon and the locations. The create
+  /// is sent **once**, never again after logging in again: a second one
+  /// would add a second assignment. When the planner's answer is not an
+  /// assignment of the authenticated user with [name] and [type], due at
+  /// [due] (or no usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: look for the assignment in
+  /// the calendar of one of its classes ([getPlannedElements] with
+  /// [PlannedElementType.assignment], or [getAssignmentsOfGroups]) before
+  /// trying again; **calling this again adds another assignment** when the
+  /// first one was made.
+  ///
+  /// The assignment is changed with [renameElement], [changePublicInfo] and
+  /// [changePrivateInfo], and moved to the planner's trash with
+  /// [trashAssignment]. Rescheduling it, changing its type, classes or
+  /// visibility, announcing it, hand-in folders, a linked Skore evaluation,
+  /// attachments and the planning of an assignment lesfiche are not
+  /// covered.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [groupIds] is
+  /// empty or holds an ID that is not a group ID, [name] or [icon] is empty,
+  /// [course] or [type] has an empty ID, or [until] is before [due].
+  Future<PlannedElementDetail> planAssignment({
+    required Iterable<String> groupIds,
+    required PlannerCourse course,
+    required PlannerAssignmentType type,
+    required String name,
+    required DateTime due,
+    required DateTime until,
+    String publicInfo = '',
+    String privateInfo = '',
+    String icon = defaultAssignmentIcon,
+    Iterable<PlannerLocation> locations = const [],
+  }) async {
+    const operation = 'planAssignment';
+    final groups = _checkedGroupIds(groupIds);
+    final title = name.trim();
+    if (title.isEmpty) {
+      throw ArgumentError.value(name, 'name', 'is empty');
+    }
+    if (icon.trim().isEmpty) {
+      throw ArgumentError.value(icon, 'icon', 'is empty');
+    }
+    if (course.id.trim().isEmpty) {
+      throw ArgumentError.value(course, 'course', 'has an empty ID');
+    }
+    if (type.id.trim().isEmpty) {
+      throw ArgumentError.value(type, 'type', 'has an empty ID');
+    }
+    if (until.isBefore(due)) {
+      throw ArgumentError.value(until, 'until', 'is before due ($due)');
+    }
+    final me = await _ownUserId();
+    final types = await getAssignmentTypes();
+    final known = types
+        .where((known) => known.id.toLowerCase() == type.id.toLowerCase())
+        .firstOrNull;
+    if (known == null) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: assignment type ${type.id} "${type.name}" is not one of '
+        'the school\'s ${types.length} assignment types '
+        '(getAssignmentTypes). Nothing was sent.',
+      );
+    }
+    final dueAt = formatDateTime(due);
+    final what =
+        'assignment "$title" (${known.name}) for ${groups.join(', ')}, due '
+        '$dueAt';
+    return _write(
+      operation,
+      path: '$_apiPath/planned-assignments/blanco',
+      query: const {'waitForRefresh': 'true'},
+      ok: const {200, 201},
+      body: {
+        'organisers': {
+          'users': [me],
+          'groups': const <Object>[],
+        },
+        'participants': {
+          'groups': groups,
+          'users': const <Object>[],
+          'userRoles': const <Object>[],
+        },
+        'courses': [
+          {'platformId': course.platformId, 'id': course.id},
+        ],
+        'period': {
+          'dateTimeFrom': dueAt,
+          'dateTimeTo': formatDateTime(until),
+          'wholeDay': false,
+          'deadline': true,
+          'dateTime': dueAt,
+        },
+        'name': title,
+        'info': '',
+        'publicInfo': publicInfo,
+        'privateInfo': privateInfo,
+        'assignmentType': known.id,
+        'icon': icon,
+        'locations': [
+          for (final location in locations) _locationBody(location),
+        ],
+      },
+      change: 'the creation of $what',
+      retryAfterLogin: false,
+      unconfirmed:
+          'It may or may not have been made: look for it in the calendar of '
+          'one of its classes (getPlannedElements with '
+          'PlannedElementType.assignment) before trying again; trying again '
+          'adds another assignment if it was made.',
+      problemOf: (answer) {
+        if (answer.type != PlannedElementType.assignment) {
+          return 'a ${answer.typeName} instead of an assignment';
+        }
+        if ((answer.name ?? '').trim() != title) {
+          return 'an assignment named "${answer.name ?? ''}" instead of '
+              '"$title"';
+        }
+        final answerType = answer.assignmentType;
+        if (answerType == null ||
+            answerType.id.toLowerCase() != known.id.toLowerCase()) {
+          return 'an assignment of type ${answerType?.id} '
+              '"${answerType?.name ?? ''}" instead of ${known.id}';
+        }
+        if (!answer.period.deadline) {
+          return 'an assignment that is not a deadline';
+        }
+        if (!answer.period.from.isAtSameMomentAs(due)) {
+          return 'an assignment due at ${answer.period.from}';
+        }
+        if (!_organisedBy(answer, me)) {
+          return 'an assignment that is not organised by $me';
+        }
+        return null;
+      },
+    );
+  }
+
+  /// Moves [assignment], an assignment of the authenticated user's own
+  /// planner, to the planner's trash, as the planner's "delete" of one
+  /// assignment does. Afterwards the planner answers its detail with `404`
+  /// and the class calendars no longer show it; pupils no longer see it.
+  ///
+  /// The planner keeps what is in its trash for 30 days (as its page
+  /// configuration says, `daysTrashedSaved`), and its web client can restore
+  /// it from there (`.../trash/restore`); the service does neither read nor
+  /// restore the trash (the restore was not tried), nor empty it.
+  ///
+  /// Before it sends anything, it reads the assignment again (its detail)
+  /// and refuses with a [SmartschoolPlannerWriteRefusedError]:
+  /// - an assignment that is not organised by the authenticated user (a
+  ///   class calendar also shows colleagues' assignments);
+  /// - an assignment the planner does not let the user trash
+  ///   (`canUserTrash`, which the web client's delete requires);
+  /// - an assignment with a linked Skore evaluation
+  ///   ([PlannedElementDetail.hasLinkedEvaluation]): the trash of one was not
+  ///   tried.
+  ///
+  /// An assignment that is gone (also one that was trashed already) throws a
+  /// [SmartschoolPlannedElementNotFoundError].
+  ///
+  /// Sends `POST planned-assignments/{platformId}/{id}/trash` without a body
+  /// (tried live, 2026-10-02: the planner answered `200` with `[]`),
+  /// **once**: never again after logging in again. It then reads the
+  /// assignment's detail again, which is up to date at once, and returns
+  /// when the planner answers it with `404`. When the planner's answer to
+  /// the trash is not a list with status `200`, the detail is still there,
+  /// or it cannot be read, this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read the assignment again
+  /// ([getDetail]; `404` once it was trashed) before trying again.
+  ///
+  /// The service never sends the planner's `DELETE` of an element (which
+  /// deletes it for good, without the trash) or its trash of several
+  /// elements or of a whole period.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [assignment]
+  /// is not a [PlannedElementType.assignment].
+  Future<void> trashAssignment(PlannedElement assignment) async {
+    const operation = 'trashAssignment';
+    if (assignment.type != PlannedElementType.assignment) {
+      throw ArgumentError.value(
+        assignment,
+        'assignment',
+        'is a ${assignment.typeName}, not an assignment (planned-assignments)',
+      );
+    }
+    final me = await _ownUserId();
+    final current = await _detail(
+      assignment.typeName,
+      assignment.platformId,
+      assignment.id,
+    );
+    final what = _describe(current);
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const ['canUserTrash']);
+    if (current.hasLinkedEvaluation ?? false) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: $what has a linked Skore evaluation '
+        '(hasLinkedEvaluation); the trash of such an assignment was not '
+        'tried, so the service does not send it. Nothing was sent.',
+      );
+    }
+
+    final change = 'the move of $what to the trash';
+    const unconfirmed =
+        'It may or may not be in the trash: read the assignment again '
+        '(getDetail; the planner answers 404 once it was trashed) before '
+        'trying again.';
+    final response = await _send(
+      operation,
+      path:
+          '$_apiPath/${Uri.encodeComponent(current.typeName)}/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}/trash',
+      body: null,
+      change: change,
+      retryAfterLogin: false,
+      unconfirmed: unconfirmed,
+    );
+    final Object? answer;
+    try {
+      answer = _decode(response, change);
+    } on SmartschoolPlannerError catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent, but the planner\'s answer cannot be '
+          'used (${e.message}). $unconfirmed',
+          statusCode: response.statusCode,
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    if (answer is! List) {
+      throw SmartschoolPlannerSaveUnconfirmedError(
+        '$operation: $change was sent, but the planner answered with '
+        '${answer.runtimeType} instead of a list. $unconfirmed',
+        statusCode: response.statusCode,
+      );
+    }
+
+    // The trash answers with a list (empty in the try live); the detail
+    // tells whether the assignment is gone.
+    try {
+      await _detail(current.typeName, current.platformId, current.id);
+    } on SmartschoolPlannedElementNotFoundError {
+      return;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent and answered, but reading the '
+          'assignment again failed ($e). $unconfirmed',
+          statusCode: response.statusCode,
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    throw SmartschoolPlannerSaveUnconfirmedError(
+      '$operation: $change was sent and answered, but the planner still has '
+      'the assignment. $unconfirmed',
+      statusCode: response.statusCode,
+    );
+  }
+
   /// Fills slot [placeholder] through
   /// `planned-placeholders/{platformId}/{id}/replace/[route]` with the slot's
   /// organisers, participants, courses, period and locations (read again)
@@ -998,8 +1346,9 @@ class PlannerService {
     );
   }
 
-  /// Sends the write [body] to [path] and returns the element of the
-  /// planner's answer once [problemOf] finds nothing wrong with it.
+  /// Sends the write [body] to [path] (with [query]) and returns the element
+  /// of the planner's answer, which must have one of the HTTP statuses [ok],
+  /// once [problemOf] finds nothing wrong with it.
   ///
   /// A session that Smartschool refuses (an
   /// [SmartschoolAuthenticationError]) is thrown as it is: the write was not
@@ -1013,31 +1362,21 @@ class PlannerService {
     required bool retryAfterLogin,
     required String unconfirmed,
     required String? Function(PlannedElementDetail answer) problemOf,
+    Map<String, String>? query,
+    Set<int> ok = const {200},
   }) async {
-    final Response<String> response;
-    try {
-      response = await _client.postJsonResponse(
-        path,
-        data: body,
-        retryAfterLogin: retryAfterLogin,
-      );
-    } on SmartschoolAuthenticationError {
-      // Refused before the planner handled it (and, for a write that is not
-      // retried, not sent again): the planner was not changed.
-      rethrow;
-    } on Exception catch (e, stackTrace) {
-      Error.throwWithStackTrace(
-        SmartschoolPlannerSaveUnconfirmedError(
-          '$operation: $change was sent, but no answer came in ($e). '
-          '$unconfirmed',
-          cause: e,
-        ),
-        stackTrace,
-      );
-    }
+    final response = await _send(
+      operation,
+      path: path,
+      body: body,
+      query: query,
+      change: change,
+      retryAfterLogin: retryAfterLogin,
+      unconfirmed: unconfirmed,
+    );
     final PlannedElementDetail answer;
     try {
-      answer = parsePlannedElementDetail(_decode(response, change));
+      answer = parsePlannedElementDetail(_decode(response, change, ok: ok));
     } on SmartschoolPlannerError catch (e, stackTrace) {
       Error.throwWithStackTrace(
         SmartschoolPlannerSaveUnconfirmedError(
@@ -1058,6 +1397,46 @@ class PlannerService {
       );
     }
     return answer;
+  }
+
+  /// Sends the write [body] (none when `null`) to [path] (with [query]) and
+  /// returns the planner's answer, whatever its status.
+  ///
+  /// A session that Smartschool refuses (an
+  /// [SmartschoolAuthenticationError]) is thrown as it is: the write was not
+  /// carried out. Any other failure is a
+  /// [SmartschoolPlannerSaveUnconfirmedError] that ends in [unconfirmed]:
+  /// the write may have reached the planner.
+  Future<Response<String>> _send(
+    String operation, {
+    required String path,
+    required Map<String, Object?>? body,
+    required String change,
+    required bool retryAfterLogin,
+    required String unconfirmed,
+    Map<String, String>? query,
+  }) async {
+    try {
+      return await _client.postJsonResponse(
+        path,
+        data: body,
+        query: query,
+        retryAfterLogin: retryAfterLogin,
+      );
+    } on SmartschoolAuthenticationError {
+      // Refused before the planner handled it (and, for a write that is not
+      // retried, not sent again): the planner was not changed.
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent, but no answer came in ($e). '
+          '$unconfirmed',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
   }
 
   /// Throws an [ArgumentError] unless [placeholder] is a timetable slot.
@@ -1164,16 +1543,19 @@ class PlannerService {
         'wholeDay': slot.period.wholeDay,
       },
       'locations': [
-        for (final location in slot.locations)
-          {
-            'id': location.id,
-            'platformId': location.platformId,
-            'platformlName': location.platformName,
-            'type': location.type,
-          },
+        for (final location in slot.locations) _locationBody(location),
       ],
     };
   }
+
+  /// [location] as the planner's web client sends it in a write
+  /// (`platformlName` is the web client's own spelling).
+  static Map<String, Object?> _locationBody(PlannerLocation location) => {
+    'id': location.id,
+    'platformId': location.platformId,
+    'platformlName': location.platformName,
+    'type': location.type,
+  };
 
   Future<PlannedElementDetail> _detail(
     String typeName,
@@ -1415,11 +1797,17 @@ class PlannerService {
     }
   }
 
-  /// The decoded JSON of [response], the planner's answer to [what].
-  static dynamic _decode(Response<String> response, String what) {
+  /// The decoded JSON of [response], the planner's answer to [what], which
+  /// must have one of the HTTP statuses [ok] (`200` by default; the create
+  /// of an assignment is answered with `201`).
+  static dynamic _decode(
+    Response<String> response,
+    String what, {
+    Set<int> ok = const {200},
+  }) {
     final status = response.statusCode;
     final body = (response.data ?? '').trimLeft();
-    if (status != 200) {
+    if (!ok.contains(status)) {
       throw SmartschoolPlannerError(
         'The planner answered $what with HTTP $status: ${_preview(body)}',
         statusCode: status,

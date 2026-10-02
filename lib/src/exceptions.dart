@@ -512,9 +512,9 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
 ///
 /// From the writes of `PlannerService` (`planLesson`, `renameElement`,
 /// `changePublicInfo`, `changePrivateInfo`, `clearLesson`, #87;
-/// `planLessonContent`, #88), this type
-/// and its subtypes always mean that **nothing was sent**: the read before
-/// the write failed, or a check refused it. A write that went out without
+/// `planLessonContent`, #88; `planAssignment`, `trashAssignment`, #89), this
+/// type and its subtypes always mean that **nothing was sent**: the read
+/// before the write failed, or a check refused it. A write that went out without
 /// the planner confirming it is a [SmartschoolPlannerSaveUnconfirmedError]
 /// instead.
 class SmartschoolPlannerError extends SmartschoolException {
@@ -565,10 +565,14 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// authenticated user (`organisers.users`), and the planner's capabilities
 /// must allow the change (`canUserReplace` to fill a timetable slot,
 /// `canUserEdit` with `canUserRename`, `canUserChangePublicInfo` or
-/// `canUserChangePrivateInfo` to edit, `canUserEdit` to clear). A slot must
-/// still be a slot, in the period it was read with. A lesfiche planned into
-/// a slot (`planLessonContent`, #88) must be a lesson lesfiche among the
-/// user's lesfiches. The method says which check refused.
+/// `canUserChangePrivateInfo` to edit, `canUserEdit` to clear,
+/// `canUserTrash` to move an assignment to the trash). A slot must still be
+/// a slot, in the period it was read with. A lesfiche planned into a slot
+/// (`planLessonContent`, #88) must be a lesson lesfiche among the user's
+/// lesfiches. A new assignment (`planAssignment`, #89) must be of one of the
+/// school's assignment types, and an assignment moved to the trash
+/// (`trashAssignment`, #89) must not have a linked Skore evaluation. The
+/// method says which check refused.
 ///
 /// A [SmartschoolPlannerError] (without a [statusCode]), so that from the
 /// writes that type always means nothing was sent. An element that is gone
@@ -585,19 +589,25 @@ class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
 /// **The change may or may not have been made.** Read the element again
 /// (`PlannerService.getDetail`) before trying again; the message says what
 /// to read. For the fill of a timetable slot (`planLesson`,
-/// `planLessonContent`) and the clear of
-/// a lesson (`clearLesson`), the planner answers the element they replaced
-/// with `404` once the change went through. Calling the method again is safe
-/// in itself: it reads the element first, so a fill or a clear that did go
-/// through is not made a second time, and an edit that did is not sent
-/// again.
+/// `planLessonContent`), the clear of a lesson (`clearLesson`) and the move
+/// of an assignment to the trash (`trashAssignment`, #89), the planner
+/// answers the element they replaced or trashed with `404` once the change
+/// went through. Calling those methods again is safe in itself: they read
+/// the element first, so a fill, a clear or a trash that did go through is
+/// not made a second time, and an edit that did is not sent again. **Not so
+/// for the create of an assignment** (`planAssignment`, #89): there is no
+/// element to read first, and calling it again adds a second assignment
+/// when the first was made. Look for it in the calendar of one of its
+/// classes first.
 ///
-/// Thrown when the planner answers the write with another status than `200`
-/// ([statusCode]), an answer that is not the element as expected (another
-/// type, name, period, info text or element), or an answer the service
-/// cannot use; and when the write failed after it went out, before a usable
-/// answer came in ([cause] holds the failure, typically a
-/// [SmartschoolConnectionError]).
+/// Thrown when the planner answers the write with another status than the
+/// one it gives on success (`200`; `201` or `200` for the create of an
+/// assignment) ([statusCode]), an answer that is not the element as
+/// expected (another type, name, assignment type, period, info text or
+/// element), or an answer the service cannot use; when the element is
+/// still there after its move to the trash; and when the write failed after
+/// it went out, before a usable answer came in ([cause] holds the failure,
+/// typically a [SmartschoolConnectionError]).
 ///
 /// A session that Smartschool refuses for the write is not this error but a
 /// [SmartschoolSessionExpiredError] (or another

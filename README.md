@@ -17,7 +17,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
-- Planner read support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name.
+- Planner read support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view).
 
 ---
 
@@ -740,7 +740,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ## `PlannerService`
 
-Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It only reads: every request is a GET to the planner's JSON API (`/planner/api/v1/`), except the search for a calendar by name, a POST that only reads.
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. It only reads: every request is a GET to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), except the search for a calendar by name and the workload calls, POSTs that only read.
 
 ```dart
 final planner = PlannerService(client);
@@ -796,6 +796,48 @@ for (final test in tests) {
 
 **Users are not told apart**: teachers, pupils and co-accounts come with the same fields, and no field says which is which. A co-account has an ID of its own (ending in its number, such as `_1`) and a `description` such as `Interimaris van ...`; the `title` of the pupils seen live ended in their class, but that is display text, which the library does not rely on. To keep teachers only, compare the user ID (the middle part of the calendar ID) with `SkoreService.getTeachers()`. The search is a `POST quick-search/planner/search` with `{"searchString": text, "searchOptions": []}`, as the web client sends it; it only reads. The planner's `include-deleted` option is not sent, and the favourites of the search (which the planner keeps per user) are not touched.
 
+### Assignment types and workload
+
+What a caller needs to answer "when is a good moment for a test in class X": the school's assignment types, the assignments of the class in a period (of all its teachers, with their type), and the workload figures the planner itself uses, per day or for one moment. The library returns these facts as the planner gives them; choosing the moment (no other test that day, not right before an exam, ...) is up to the caller.
+
+```dart
+final types = await planner.getAssignmentTypes();  // List<PlannerAssignmentType>: GO, GT, KO, ...
+
+final assignments = await planner.getAssignmentsOfGroups(
+  groupIds: [klas.id],                             // '4069_2001'; several classes in one request
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+);                                                 // List<PlannedElement>
+for (final a in assignments) {
+  print('${a.period.from} ${a.assignmentType?.abbreviation} ${a.name} '
+      '(${a.organiserUsers.first.name})');
+}
+
+final load = await planner.getWorkloadSchedule(
+  groupIds: [klas.id],
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+);                                                 // Map<DateTime, List<PlannerGroupWorkload>>
+for (final MapEntry(key: day, value: groups) in load.entries) {
+  for (final g in groups) {
+    print('$day ${g.group.name}: weight ${g.weight}, ${g.setting?.name}');
+  }
+}
+
+// The check the planner runs before it saves an assignment.
+final now = await planner.calculateWorkload(
+  groupIds: [klas.id],
+  from: DateTime(2026, 10, 6, 8, 30),
+  to: DateTime(2026, 10, 6, 9, 20),
+);                                                 // List<PlannerGroupWorkload>
+```
+
+- `groupIds` are class IDs `{platformId}_{groupId}`: the `id` of a class's `PlannerCalendar` (from `searchCalendars`) or of a `PlannerGroup` an element names. Each goes out once. No class, an ID in another form, or `to` before `from` throws an `ArgumentError` before anything is sent. `from` and `to` go out as for `getPlannedElements`.
+- `getAssignmentsOfGroups` returns the assignments as the planner's workload view lists them, in the planner's order (not by date). An assignment of several classes comes once, with all its classes in `participantGroups`, also those that were not asked for. The same assignments are in each class calendar (`getPlannedElements` with `PlannedElementType.assignment`), one request per class.
+- `getWorkloadSchedule` returns, per day the planner names (a local `DateTime` at midnight, in date order), a `PlannerGroupWorkload` per class: the planner's `weight` and `concurrentWeight` and the class's workload `setting` (name, `limit`, allowed assignment types). An empty schedule is an empty map.
+- **The figures are returned as they are**: what `weight` and `concurrentWeight` add up was not checked. At the school seen live every assignment type had weight `0` and every class the setting `Geen limiet` (limit `-1` per `day`, `soft`), so the weights stayed `0`, also on days with tests: there, the assignments per day (with their type and teacher) are what says something.
+- The workload calls are POSTs that only read, as the planner's web client sends them (checked in its code, and called live): `workload/planned-elements?from=&to=` with `{"users": [], "groups": [...], "courses": []}`, `workload/schedule?from=&to=` with `{"groups": [...]}`, and `workload/calculate` with the period and `{"users": [], "groups": [...], "groupFilters": {}}`; `calculate` saves nothing. The assignment types come from `GET /lesson-content/api/v1/assignments/applicable-assignment-types`.
+
 ### Methods
 
 | Method | Returns | Description |
@@ -805,6 +847,10 @@ for (final test in tests) {
 | `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. |
 | `getPlannedElement({type, platformId, id})` | `Future<PlannedElementDetail>` | The full detail of one element. |
 | `getDetail(element)` | `Future<PlannedElementDetail>` | The same, for a listed element (also one of a type the library does not know). |
+| `getAssignmentTypes()` | `Future<List<PlannerAssignmentType>>` | The school's assignment types (such as `Kleine Overhoring`, `KO`), in the planner's order. |
+| `getAssignmentsOfGroups({groupIds, from, to})` | `Future<List<PlannedElement>>` | The assignments of the classes in the period, of every teacher, in the planner's order (see *Assignment types and workload*). |
+| `getWorkloadSchedule({groupIds, from, to})` | `Future<Map<DateTime, List<PlannerGroupWorkload>>>` | The planner's workload figures of the classes per day of the period. |
+| `calculateWorkload({groupIds, from, to, wholeDay, deadline})` | `Future<List<PlannerGroupWorkload>>` | The planner's workload figures of the classes for an assignment in that period (`deadline` defaults to `true`, `wholeDay` to `false`), as the planner computes them before it saves an assignment. Saves nothing. |
 | `formatDateTime(time, {timeZoneOffset})` (static) | `String` | A date as the planner's API takes it: ISO 8601 to the second with the offset from UTC (`2026-11-20T11:10:00+01:00`); in the given offset when `timeZoneOffset` is set. |
 
 `from` and `to` go out as ISO 8601 with their offset (URL-encoded, `+` as `%2B`): a local `DateTime` in the local time of the machine, with its offset at that moment (in Belgium `+02:00` in summer, `+01:00` in winter), a UTC one in UTC. The planner's own dates are read into local `DateTime`s. Use `23:59:59` rather than midnight to include the last day. `to` before `from`, an empty `types` and `PlannedElementType.other` in `types` throw an `ArgumentError` before anything is sent.
@@ -932,7 +978,10 @@ Returned by `PlannerService.getPlannedElement()` and `getDetail()`. A `PlannedEl
 What an element names. A user (`id` — the whole planner ID `{platformId}_{userId}_{coaccount}`, `name`, `nameLastFirst`, `pictureUrl`, `isDeleted`, `calendar`); a group (`id` — `{platformId}_{groupId}`, `platformId`, `name`, `type` — `K` for a class, `icon`, `calendar`); a course (`id`, `platformId`, `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`); a location (`id` — the item UUID, `platformId`, `platformName`, `number`, `title` — the room, `icon`, `type`, `selectable`, `calendar`).
 
 ### `PlannerAssignmentType`
-The type of an assignment, such as `Kleine Overhoring` (`KO`): `id`, `platformId` (`int?`), `name`, `abbreviation`, `isVisible`, `defaultTiming`, `weight`.
+The type of an assignment, such as `Kleine Overhoring` (`KO`): `id`, `platformId` (`int?`; `null` inside a planned element), `name`, `abbreviation`, `isVisible`, `defaultTiming`, `weight`. Returned by `PlannerService.getAssignmentTypes()`, named by an assignment (`PlannedElement.assignmentType`) and by a workload setting (`allowedAssignmentTypes`).
+
+### `PlannerGroupWorkload` / `PlannerWorkloadSetting` / `PlannerWorkloadLimit`
+Returned by `PlannerService.getWorkloadSchedule()` (per day) and `calculateWorkload()`. The workload of one class: `group` (`PlannerGroup`), `weight` and `concurrentWeight` (`num`, the planner's figures as they are), `setting` (`PlannerWorkloadSetting?`), and `raw` (as the planner gave it, read-only). A setting: `id`, `platformId` (`int?`), `name` (`Geen limiet`), `color` (`String?`), `limit` (`PlannerWorkloadLimit?`: `value` — `-1` in `Geen limiet` —, `period` such as `day`, `type` such as `soft`), `allowedAssignmentTypes` (`PlannerAssignmentType`s).
 
 ### `PlannedElementCapabilities`
 What the authenticated user may do with an element: `flags` (every `canUser...` flag by name), `visibleProperties` (the properties the user may see), `can(name)` (`false` for a flag the planner left out), and the getters `canEdit`, `canRename`, `canReplace`, `canReschedule`, `canChangePublicInfo`, `canChangePrivateInfo`, `canTrash`, `canDelete`.

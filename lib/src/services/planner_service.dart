@@ -16,6 +16,13 @@ export '../models/planner_models.dart';
 /// `/planner/main/location/...` show it; [searchCalendars] finds one by
 /// name.
 ///
+/// For the planner's workload view ("werkbelasting") it reads the school's
+/// assignment types ([getAssignmentTypes]), the assignments of classes in a
+/// period ([getAssignmentsOfGroups]) and the planner's workload figures of
+/// those classes per day ([getWorkloadSchedule]) or for one moment
+/// ([calculateWorkload]). It returns the facts as the planner gives them;
+/// choosing a good moment for a test is up to the caller.
+///
 /// ```dart
 /// final planner = PlannerService(client);
 ///
@@ -44,11 +51,26 @@ export '../models/planner_models.dart';
 /// );
 /// final detail = await planner.getDetail(tests.first);
 /// print(detail.publicInfo);
+///
+/// // The assignments of the class in that week, of all its teachers, and
+/// // the planner's workload figures per day.
+/// final assignments = await planner.getAssignmentsOfGroups(
+///   groupIds: [klas.id],
+///   from: DateTime(2026, 10, 5),
+///   to: DateTime(2026, 10, 9, 23, 59, 59),
+/// );
+/// final load = await planner.getWorkloadSchedule(
+///   groupIds: [klas.id],
+///   from: DateTime(2026, 10, 5),
+///   to: DateTime(2026, 10, 9, 23, 59, 59),
+/// );
 /// ```
 ///
 /// Everything here reads, through the planner's JSON API
-/// (`/planner/api/v1/`): the service sends GET requests, and one POST that
-/// only reads, the search of [searchCalendars].
+/// (`/planner/api/v1/`; the assignment types through the lesson-content API,
+/// `/lesson-content/api/v1/`): the service sends GET requests, and POSTs that
+/// only read: the search of [searchCalendars] and the workload calls of
+/// [getAssignmentsOfGroups], [getWorkloadSchedule] and [calculateWorkload].
 ///
 /// ### What a teacher sees
 /// A class calendar holds the elements of all teachers of the class, and a
@@ -92,8 +114,11 @@ class PlannerService {
 
   /// The base path of the planner's JSON API.
   ///
-  /// The service sends GET requests, and one POST that only reads:
-  /// `quick-search/planner/search`. The planner also answers POSTs on it
+  /// The service sends GET requests, and POSTs that only read:
+  /// `quick-search/planner/search`, and `workload/planned-elements`,
+  /// `workload/schedule` and `workload/calculate` (checked in the web
+  /// client's code: it reads with them, and `calculate` is the check it runs
+  /// before it saves an assignment). The planner also answers POSTs on it
   /// that change the planner or the user's settings: the favourites of the
   /// search (`quick-search/planner/mark-as-favourite` and
   /// `discard-as-favourite`), and
@@ -188,9 +213,7 @@ class PlannerService {
     required DateTime to,
     Set<PlannedElementType>? types,
   }) async {
-    if (to.isBefore(from)) {
-      throw ArgumentError.value(to, 'to', 'is before from ($from)');
-    }
+    _checkPeriod(from, to);
     if (types != null) {
       if (types.isEmpty) {
         throw ArgumentError.value(
@@ -256,6 +279,154 @@ class PlannerService {
   /// not know too ([PlannedElementType.other]).
   Future<PlannedElementDetail> getDetail(PlannedElement element) =>
       _detail(element.typeName, element.platformId, element.id);
+
+  // ---------------------------------------------------------------------------
+  // Assignment types and workload
+  // ---------------------------------------------------------------------------
+
+  /// Returns the school's assignment types (such as `Kleine Overhoring`,
+  /// `KO`), in the order the planner gives them: the types a teacher can
+  /// choose for an assignment, and the same objects a planned assignment
+  /// names as its [PlannedElement.assignmentType].
+  ///
+  /// Sends `GET /lesson-content/api/v1/assignments/applicable-assignment-types`
+  /// as the planner's web client does: the list lives in the lesson-content
+  /// API, not in the planner's. The type of the planner's lessons
+  /// (`assignmentTypeConfig.customTypes.lesson` in the page config) is not
+  /// in it.
+  Future<List<PlannerAssignmentType>> getAssignmentTypes() async {
+    final response = await _client.getResponse(
+      '$_lessonContentPath/assignments/applicable-assignment-types',
+    );
+    return parseAssignmentTypes(_decode(response, 'the assignment types'));
+  }
+
+  /// Returns the assignments of the classes [groupIds] in the period from
+  /// [from] to [to], of every teacher, in the planner's order (which is not
+  /// by date): the assignments that the planner's workload view
+  /// ("werkbelasting") shows for those classes, with their
+  /// [PlannedElement.assignmentType] and their teacher
+  /// ([PlannedElement.organiserUsers]).
+  ///
+  /// [groupIds] are class calendar IDs `{platformId}_{groupId}`
+  /// ([PlannerCalendar.id] of a class, [PlannerGroup.id]); one request covers
+  /// them all. An assignment of several classes comes once, with all its
+  /// classes in [PlannedElement.participantGroups], also the classes that
+  /// were not asked for. The same assignments are in each class calendar
+  /// ([getPlannedElements] with [PlannedElementType.assignment]).
+  ///
+  /// Sends `POST workload/planned-elements?from=&to=` with
+  /// `{"users": [], "groups": groupIds, "courses": []}` as the web client
+  /// does: a POST that only reads. [from] and [to] go out as in
+  /// [getPlannedElements]. Only assignments were seen in the answer; an
+  /// element of another type would be returned as well.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [groupIds] is
+  /// empty or holds an ID that is not a group ID, or [to] is before [from].
+  Future<List<PlannedElement>> getAssignmentsOfGroups({
+    required Iterable<String> groupIds,
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final groups = _checkedGroupIds(groupIds);
+    _checkPeriod(from, to);
+    final response = await _client.postJsonResponse(
+      '$_apiPath/workload/planned-elements',
+      query: {'from': formatDateTime(from), 'to': formatDateTime(to)},
+      data: {
+        'users': const <Object>[],
+        'groups': groups,
+        'courses': const <Object>[],
+      },
+    );
+    return parsePlannedElements(
+      _decode(response, 'the assignments of ${groups.join(', ')}'),
+    );
+  }
+
+  /// Returns the workload of the classes [groupIds] per day of the period
+  /// from [from] to [to], as the planner's workload view shows it: for every
+  /// day the planner names, a [PlannerGroupWorkload] per class, with the
+  /// planner's `weight` and `concurrentWeight` and the class's workload
+  /// setting.
+  ///
+  /// The keys are the days as the planner names them (`2026-10-05`), as local
+  /// [DateTime]s at midnight (`DateTime(2026, 10, 5)`), in date order; an
+  /// empty map when the planner names no day. The figures are returned as
+  /// the planner gives them: see [PlannerGroupWorkload] for what they say
+  /// (at the school seen live: nothing, every weight was `0`). The
+  /// assignments behind them are read with [getAssignmentsOfGroups].
+  ///
+  /// Sends `POST workload/schedule?from=&to=` with `{"groups": groupIds}` as
+  /// the web client does: a POST that only reads. [from] and [to] go out as
+  /// in [getPlannedElements].
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [groupIds] is
+  /// empty or holds an ID that is not a group ID, or [to] is before [from].
+  Future<Map<DateTime, List<PlannerGroupWorkload>>> getWorkloadSchedule({
+    required Iterable<String> groupIds,
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final groups = _checkedGroupIds(groupIds);
+    _checkPeriod(from, to);
+    final response = await _client.postJsonResponse(
+      '$_apiPath/workload/schedule',
+      query: {'from': formatDateTime(from), 'to': formatDateTime(to)},
+      data: {'groups': groups},
+    );
+    return parseWorkloadSchedule(
+      _decode(response, 'the workload schedule of ${groups.join(', ')}'),
+    );
+  }
+
+  /// Returns the workload of the classes [groupIds] for an assignment from
+  /// [from] to [to]: a [PlannerGroupWorkload] per class, as the planner
+  /// computes it before it saves an assignment (the web client warns when a
+  /// limit is passed). The figures are returned as the planner gives them;
+  /// see [PlannerGroupWorkload].
+  ///
+  /// [wholeDay] and [deadline] are the period's flags as an assignment has
+  /// them (an assignment is a deadline: `deadline` defaults to `true`).
+  ///
+  /// Sends `POST workload/calculate` with `{"period": {"dateTimeFrom",
+  /// "dateTimeTo", "wholeDay", "deadline"}, "participants": {"users": [],
+  /// "groups": groupIds, "groupFilters": {}}}` as the web client does: a
+  /// POST that only reads, which saves nothing. [from] and [to] go out as
+  /// [formatDateTime] writes them. The web client's `excludePlannedElement`,
+  /// which leaves out an assignment that is being moved, is not sent.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [groupIds] is
+  /// empty or holds an ID that is not a group ID, or [to] is before [from].
+  Future<List<PlannerGroupWorkload>> calculateWorkload({
+    required Iterable<String> groupIds,
+    required DateTime from,
+    required DateTime to,
+    bool wholeDay = false,
+    bool deadline = true,
+  }) async {
+    final groups = _checkedGroupIds(groupIds);
+    _checkPeriod(from, to);
+    final response = await _client.postJsonResponse(
+      '$_apiPath/workload/calculate',
+      data: {
+        'period': {
+          'dateTimeFrom': formatDateTime(from),
+          'dateTimeTo': formatDateTime(to),
+          'wholeDay': wholeDay,
+          'deadline': deadline,
+        },
+        'participants': {
+          'users': const <Object>[],
+          'groups': groups,
+          'groupFilters': const <String, Object>{},
+        },
+      },
+    );
+    return parseGroupWorkloads(
+      _decode(response, 'the workload of ${groups.join(', ')}'),
+    );
+  }
 
   Future<PlannedElementDetail> _detail(
     String typeName,
@@ -364,11 +535,138 @@ class PlannerService {
     ];
   }
 
+  /// Parses the school's assignment types (a JSON array of types).
+  static List<PlannerAssignmentType> parseAssignmentTypes(dynamic json) {
+    if (json is! List) {
+      throw SmartschoolPlannerError(
+        'The planner gave the assignment types as ${json.runtimeType} '
+        'instead of a list.',
+      );
+    }
+    return [
+      for (final (index, item) in json.indexed)
+        if (item is Map<String, dynamic>)
+          PlannerAssignmentType.fromJson(item)
+        else
+          throw SmartschoolPlannerError(
+            'The planner gave assignment type $index as ${item.runtimeType} '
+            'instead of an object.',
+          ),
+    ];
+  }
+
+  /// Parses the planner's workload per day (`{"schedule": {"2026-10-05":
+  /// [...], ...}}`): the days as local [DateTime]s at midnight, in date
+  /// order, each with the workload of every group. An empty schedule (`{}`,
+  /// or `[]` as the planner may write an empty map) is an empty map.
+  static Map<DateTime, List<PlannerGroupWorkload>> parseWorkloadSchedule(
+    dynamic json,
+  ) {
+    if (json is! Map<String, dynamic>) {
+      throw SmartschoolPlannerError(
+        'The planner gave the workload schedule as ${json.runtimeType} '
+        'instead of an object.',
+      );
+    }
+    final schedule = json['schedule'];
+    if (schedule is List && schedule.isEmpty) return const {};
+    if (schedule is! Map<String, dynamic>) {
+      throw SmartschoolPlannerError(
+        'The planner gave the days of the workload schedule as '
+        '${schedule.runtimeType} instead of an object.',
+      );
+    }
+    final days = <DateTime, List<PlannerGroupWorkload>>{};
+    for (final MapEntry(:key, :value) in schedule.entries) {
+      final day = _parseDay(key);
+      if (day == null) {
+        throw SmartschoolPlannerError(
+          'The planner gave a day of the workload schedule as "$key", which '
+          'is not a date.',
+        );
+      }
+      days[day] = parseGroupWorkloads(value, day: key);
+    }
+    final sorted = days.keys.toList()..sort();
+    return Map.unmodifiable({for (final day in sorted) day: days[day]!});
+  }
+
+  /// Parses the planner's workload of groups (a JSON array, one per group),
+  /// as the planner gives it for one moment, or for [day] of a schedule.
+  static List<PlannerGroupWorkload> parseGroupWorkloads(
+    dynamic json, {
+    String? day,
+  }) {
+    final what = day == null ? 'the workload' : 'the workload of $day';
+    if (json is! List) {
+      throw SmartschoolPlannerError(
+        'The planner gave $what as ${json.runtimeType} instead of a list.',
+      );
+    }
+    return List.unmodifiable([
+      for (final (index, item) in json.indexed)
+        if (item is Map<String, dynamic>)
+          PlannerGroupWorkload.fromJson(item)
+        else
+          throw SmartschoolPlannerError(
+            'The planner gave group $index of $what as ${item.runtimeType} '
+            'instead of an object.',
+          ),
+    ]);
+  }
+
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
 
+  /// The base path of the lesson-content JSON API, which holds the school's
+  /// assignment types ([getAssignmentTypes]).
+  static const _lessonContentPath = '/lesson-content/api/v1';
+
   static final _userId = RegExp(r'^\d+_\d+_\d+$');
+
+  static final _day = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$');
+
+  /// The local date at midnight that [text] (`2026-10-05`) names, or `null`
+  /// when it names none.
+  static DateTime? _parseDay(String text) {
+    final match = _day.firstMatch(text);
+    if (match == null) return null;
+    final [year, month, day] = [
+      for (var i = 1; i <= 3; i++) int.parse(match[i]!),
+    ];
+    final date = DateTime(year, month, day);
+    return date.month == month && date.day == day ? date : null;
+  }
+
+  /// The distinct IDs of [groupIds], in order, each checked to be a group
+  /// calendar ID `{platformId}_{groupId}`.
+  static List<String> _checkedGroupIds(Iterable<String> groupIds) {
+    final groups = <String>[];
+    for (final id in groupIds) {
+      try {
+        PlannerCalendar.group(id);
+      } on ArgumentError {
+        throw ArgumentError.value(
+          groupIds,
+          'groupIds',
+          'holds "$id", which is not a planner group ID {platformId}_{groupId} '
+              '(such as 4069_2001)',
+        );
+      }
+      if (!groups.contains(id)) groups.add(id);
+    }
+    if (groups.isEmpty) {
+      throw ArgumentError.value(groupIds, 'groupIds', 'is empty');
+    }
+    return groups;
+  }
+
+  static void _checkPeriod(DateTime from, DateTime to) {
+    if (to.isBefore(from)) {
+      throw ArgumentError.value(to, 'to', 'is before from ($from)');
+    }
+  }
 
   /// The decoded JSON of [response], the planner's answer to [what].
   static dynamic _decode(Response<String> response, String what) {

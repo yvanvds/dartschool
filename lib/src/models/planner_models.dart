@@ -1,6 +1,7 @@
 /// Models for Smartschool's **planner** (Planner): the calendars it shows (of
 /// a user, a class or a location), the elements planned in them (lessons,
-/// assignments, timetable slots, ...) and the full detail of one element.
+/// assignments, timetable slots, ...), the full detail of one element, the
+/// school's assignment types and the workload of a class.
 ///
 /// The planner's IDs are strings, and come in two forms:
 /// - a calendar ID, the platform ID and the ID joined by `_`: a user
@@ -613,6 +614,11 @@ class PlannerLocation {
 
 /// The type of an assignment (`assignmentType`): a school's kind of test or
 /// task, such as `Kleine Overhoring` (`KO`).
+///
+/// The school's types are listed by `PlannerService.getAssignmentTypes`; a
+/// planned assignment names its own ([PlannedElement.assignmentType]), and a
+/// workload setting the types it allows
+/// ([PlannerWorkloadSetting.allowedAssignmentTypes]).
 class PlannerAssignmentType {
   /// The type ID (a UUID).
   final String id;
@@ -1031,6 +1037,165 @@ class PlannedElementDetail extends PlannedElement {
 }
 
 // ---------------------------------------------------------------------------
+// Workload
+// ---------------------------------------------------------------------------
+
+/// The limit of a workload setting (`limit`): how much workload the school
+/// allows a group in a period, as the planner gives it.
+///
+/// The library does not interpret it. The one setting seen live, `Geen
+/// limiet` ("no limit"), had [value] `-1`, [period] `day` and [type] `soft`.
+class PlannerWorkloadLimit {
+  /// The limit (`value`); `-1` in the setting `Geen limiet`.
+  final num value;
+
+  /// The period the limit counts over (`period`, such as `day`).
+  final String period;
+
+  /// The kind of limit (`type`, such as `soft`).
+  final String type;
+
+  const PlannerWorkloadLimit({
+    required this.value,
+    this.period = '',
+    this.type = '',
+  });
+
+  /// Parses a limit as the planner gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks a numeric `value`.
+  factory PlannerWorkloadLimit.fromJson(Map<String, dynamic> json) =>
+      PlannerWorkloadLimit(
+        value: _requiredNum(json, 'value', 'a workload limit'),
+        period: _optionalString(json['period']) ?? '',
+        type: _optionalString(json['type']) ?? '',
+      );
+
+  @override
+  String toString() => 'PlannerWorkloadLimit($value per $period, $type)';
+}
+
+/// The workload setting of a group (`workloadSetting`): the limit the school
+/// set for it, and the assignment types the setting allows.
+class PlannerWorkloadSetting {
+  /// The setting ID (a UUID).
+  final String id;
+
+  /// The platform (school) of the setting, or `null` when the planner left
+  /// it out.
+  final int? platformId;
+
+  /// The setting's name (`Geen limiet`).
+  final String name;
+
+  /// The colour the planner shows the setting in (`aqua-500`), or `null`.
+  final String? color;
+
+  /// The limit, or `null` when the planner gave none.
+  final PlannerWorkloadLimit? limit;
+
+  /// The assignment types the setting allows (`allowedAssignmentTypes`).
+  final List<PlannerAssignmentType> allowedAssignmentTypes;
+
+  const PlannerWorkloadSetting({
+    required this.id,
+    required this.name,
+    this.platformId,
+    this.color,
+    this.limit,
+    this.allowedAssignmentTypes = const [],
+  });
+
+  /// Parses a setting as the planner gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks its `id` or holds a part in an
+  /// unknown shape.
+  factory PlannerWorkloadSetting.fromJson(Map<String, dynamic> json) {
+    final id = _requiredString(json, 'id', 'a workload setting');
+    final what = 'workload setting $id';
+    final limit = _optionalMap(json['limit'], 'the limit of $what');
+    return PlannerWorkloadSetting(
+      id: id,
+      platformId: _optionalInt(json['platformId']),
+      name: (_optionalString(json['name']) ?? '').trim(),
+      color: _optionalString(json['color']),
+      limit: limit == null ? null : PlannerWorkloadLimit.fromJson(limit),
+      allowedAssignmentTypes: _objects(
+        json['allowedAssignmentTypes'],
+        'the allowed assignment types of $what',
+        PlannerAssignmentType.fromJson,
+      ),
+    );
+  }
+
+  @override
+  String toString() => 'PlannerWorkloadSetting($id, $name)';
+}
+
+/// The workload of one group as the planner computes it: on one day (in
+/// `PlannerService.getWorkloadSchedule`) or for one moment (in
+/// `PlannerService.calculateWorkload`), with the group's workload setting.
+///
+/// These are the planner's own figures, returned as they are: the library
+/// does not interpret them. What [weight] and [concurrentWeight] add up was
+/// not checked: at the school seen live every assignment type had weight
+/// `0` and the setting was `Geen limiet`, so both stayed `0`, also on days
+/// with tests. To know which assignments fall on a day, read them with
+/// `PlannerService.getAssignmentsOfGroups`.
+class PlannerGroupWorkload {
+  /// The group (class) the figures are about.
+  final PlannerGroup group;
+
+  /// The planner's workload of the group (`weight`).
+  final num weight;
+
+  /// The planner's concurrent workload of the group (`concurrentWeight`).
+  final num concurrentWeight;
+
+  /// The group's workload setting (`workloadSetting`), or `null` when the
+  /// planner gave none.
+  final PlannerWorkloadSetting? setting;
+
+  /// The figures as the planner gave them (decoded JSON, read-only), for the
+  /// fields this model does not cover.
+  final Map<String, dynamic> raw;
+
+  const PlannerGroupWorkload({
+    required this.group,
+    required this.weight,
+    required this.concurrentWeight,
+    this.setting,
+    this.raw = const {},
+  });
+
+  /// Parses the workload of a group as the planner gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks its `group`, a numeric `weight`
+  /// or `concurrentWeight`, or holds a part in an unknown shape.
+  factory PlannerGroupWorkload.fromJson(Map<String, dynamic> json) {
+    final group = PlannerGroup.fromJson(
+      _map(json['group'], 'the group of a workload'),
+    );
+    final what = 'the workload of group ${group.id}';
+    final setting = _optionalMap(
+      json['workloadSetting'],
+      'the workload setting of $what',
+    );
+    return PlannerGroupWorkload(
+      group: group,
+      weight: _requiredNum(json, 'weight', what),
+      concurrentWeight: _requiredNum(json, 'concurrentWeight', what),
+      setting: setting == null
+          ? null
+          : PlannerWorkloadSetting.fromJson(setting),
+      raw: Map.unmodifiable(json),
+    );
+  }
+
+  @override
+  String toString() =>
+      'PlannerGroupWorkload(${group.name}, weight $weight, concurrent '
+      '$concurrentWeight${setting == null ? '' : ', ${setting!.name}'})';
+}
+
+// ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -1103,6 +1268,20 @@ int? _optionalInt(Object? value) => switch (value) {
   String() => int.tryParse(value.trim()),
   _ => null,
 };
+
+/// The number at [key]: a JSON number, or a text that holds one.
+num _requiredNum(Map<String, dynamic> json, String key, String what) {
+  final value = json[key];
+  final number = switch (value) {
+    num() => value,
+    String() => num.tryParse(value.trim()),
+    _ => null,
+  };
+  if (number != null) return number;
+  throw SmartschoolPlannerError(
+    'The planner gave $what without a numeric $key (${_kind(value)}).',
+  );
+}
 
 bool _bool(Object? value) => value == true || value == 1 || value == 'true';
 

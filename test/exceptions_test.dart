@@ -1,4 +1,6 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
+import 'package:flutter_smartschool/src/models/skore_models.dart'
+    show SkoreAccessArea;
 import 'package:test/test.dart';
 
 import 'support/no_network.dart';
@@ -137,6 +139,17 @@ void main() {
       expect(error.toString(), 'SmartschoolSkoreMyGroupsError: groups');
     });
 
+    test('SmartschoolSkoreMyGroupsError is a refused change (#83)', () {
+      const error = SmartschoolSkoreMyGroupsError(
+        'groups',
+        classId: 2516,
+        courseId: 1588,
+        teacherId: 1005,
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isNot(isA<SmartschoolSkoreAccessDeniedError>()));
+    });
+
     test('SmartschoolSkoreSaveUnconfirmedError is not a SmartschoolSkoreError '
         'and carries its cause', () {
       // "Nothing was saved" and "may have been saved" must not share a type.
@@ -151,6 +164,35 @@ void main() {
       expect(
         error.toString(),
         'SmartschoolSkoreSaveUnconfirmedError: unconfirmed',
+      );
+    });
+  });
+
+  group('Skore errors a caller tells apart (#83)', () {
+    test('SmartschoolSkoreAccessDeniedError is a SmartschoolSkoreError, not a '
+        'session problem or a refused change, and names the part of Skore', () {
+      const error = SmartschoolSkoreAccessDeniedError(
+        'no rights',
+        area: SkoreAccessArea.gradebookManagement,
+      );
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error, isNot(isA<SmartschoolSkoreChangeRefusedError>()));
+      expect(error.area, SkoreAccessArea.gradebookManagement);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreAccessDeniedError(gradebookManagement): no rights',
+      );
+    });
+
+    test('SmartschoolSkoreChangeRefusedError is a SmartschoolSkoreError, not '
+        'a missing right', () {
+      const error = SmartschoolSkoreChangeRefusedError('group header');
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreAccessDeniedError>()));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreChangeRefusedError: group header',
       );
     });
   });

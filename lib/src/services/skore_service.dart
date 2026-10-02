@@ -43,18 +43,32 @@ export '../models/skore_models.dart';
 /// ### Access requirement
 /// The account needs access to Skore's report management (Rapporten >
 /// Modellen) and to its gradebooks management (Puntenboeken), as a Skore
-/// administrator has.
+/// administrator has ([SkoreAccessArea]).
+///
+/// When Skore refuses a request to the account with HTTP 403, the call
+/// throws a [SmartschoolSkoreAccessDeniedError] that names the part of
+/// Skore. What Skore answers an account without the rights has not been
+/// captured yet (#91): until it is, such an account may get a plain
+/// [SmartschoolSkoreError] instead, or even an empty list.
 ///
 /// ### Errors
-/// - [SmartschoolSkoreError]: Skore answered with something the service
-///   cannot use (an HTML page instead of data, invalid JSON, a missing RPC
-///   `result`, or data in an unknown shape). The session was accepted:
-///   signing in again does not help. The writes also throw it when a check
-///   before the save refuses the change; from them, it means nothing was
+/// - [SmartschoolSkoreAccessDeniedError] (a [SmartschoolSkoreError]): Skore
+///   refused the request to the account, which lacks the rights for that
+///   part of Skore (its `area`; see above for when it is thrown). Its message
+///   quotes nothing of the answer. From a write, nothing was saved.
+/// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
+///   write's check before the save refused the change. Nothing was saved.
+///   Its message says why, so the call can be corrected.
+/// - [SmartschoolSkoreMyGroupsError] (a
+///   [SmartschoolSkoreChangeRefusedError]): [replaceTeacher] found that the
+///   current teacher works with "Mijn lesgroepen" for the course. Nothing was
 ///   saved.
-/// - [SmartschoolSkoreMyGroupsError] (a [SmartschoolSkoreError]):
-///   [replaceTeacher] found that the current teacher works with "Mijn
-///   lesgroepen" for the course. Nothing was saved.
+/// - [SmartschoolSkoreError] itself (none of the types above): Skore answered
+///   with something the service cannot use (another HTTP status than `200`,
+///   an HTML page instead of data, invalid JSON, a missing RPC `result`, or
+///   data in an unknown shape). The session was accepted: signing in again
+///   does not help. Its message may quote the answer, which can hold names.
+///   From a write, nothing was saved.
 /// - [SmartschoolSkoreSaveUnconfirmedError]: a write sent the save, but
 ///   Skore's answer (or, for [shareGradebook] and [unshareGradebook], reading
 ///   the gradebooks again) does not confirm it. It may or may not have been
@@ -114,7 +128,12 @@ class SkoreService {
       _modelsPath,
       query: _modelsQuery,
     );
-    return parseClasses(_decodeJson(_body(response, what), what));
+    return parseClasses(
+      _decodeJson(
+        _body(response, what, SkoreAccessArea.reportManagement),
+        what,
+      ),
+    );
   }
 
   /// Returns the courses of class [classId] (a [SkoreClass.id]), in Skore's
@@ -130,7 +149,11 @@ class SkoreService {
       query: {'classID': '$classId'},
     );
     return parseCourses(
-      _body(response, 'the assignments page of class $classId'),
+      _body(
+        response,
+        'the assignments page of class $classId',
+        SkoreAccessArea.reportManagement,
+      ),
     );
   }
 
@@ -163,8 +186,8 @@ class SkoreService {
   /// A new assignment holds all pupils of the class.
   ///
   /// Before it saves, it reads the class ([getCourses]) and the teachers
-  /// ([getTeachers]), and refuses with a [SmartschoolSkoreError], saving
-  /// nothing:
+  /// ([getTeachers]), and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
   /// - a course that is not in the class (also for a class ID Skore does not
   ///   know), or that is a group header;
   /// - a teacher who already has an assignment on the course (Skore's web
@@ -207,8 +230,8 @@ class SkoreService {
   /// teacher changes.
   ///
   /// Before it saves, it reads the class ([getCourses]) and the teachers
-  /// ([getTeachers]), and refuses with a [SmartschoolSkoreError], saving
-  /// nothing:
+  /// ([getTeachers]), and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
   /// - a course that is not in the class (also for a class ID Skore does not
   ///   know), or that is a group header;
   /// - an [assignmentId] that is not one of that course in that class;
@@ -221,7 +244,8 @@ class SkoreService {
   /// client does, and throws a [SmartschoolSkoreMyGroupsError] when they do,
   /// saving nothing. The web client offers to delete those groups; this
   /// never deletes them. An answer it does not recognise is refused with a
-  /// [SmartschoolSkoreError], also saving nothing.
+  /// plain [SmartschoolSkoreError] (an answer it cannot use, not a refused
+  /// change), also saving nothing.
   ///
   /// The save (Skore's `saveOwner` with the assignment's `ownerID`) is sent
   /// once and never retried, not even after logging in again. When Skore's
@@ -243,7 +267,7 @@ class SkoreService {
         .where((a) => a.id == assignmentId)
         .firstOrNull;
     if (assignment == null) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: assignment $assignmentId is not one of course $courseId '
         'of class $classId. Nothing was saved.',
       );
@@ -277,13 +301,13 @@ class SkoreService {
         .where((c) => c.id == courseId && c.classId == classId)
         .firstOrNull;
     if (course == null) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: course $courseId is not in class $classId (Skore lists '
         '${courses.length} courses for it). Nothing was saved.',
       );
     }
     if (course.isGroupHeader) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: course $courseId of class $classId ("${course.label}") '
         'is a group header, which cannot get a teacher. Nothing was saved.',
       );
@@ -301,7 +325,7 @@ class SkoreService {
         .where((a) => a.teacherId == teacherId)
         .firstOrNull;
     if (assigned != null) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: teacher $teacherId (${assigned.teacherName}) already has '
         'assignment ${assigned.id} on course ${course.id} of class '
         '${course.classId} ("${course.label}"). Nothing was saved.',
@@ -316,7 +340,7 @@ class SkoreService {
         .where((t) => t.id == teacherId)
         .firstOrNull;
     if (teacher == null) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: teacher $teacherId is not one of Skore\'s teachers (not '
         'in getTeachers). Nothing was saved.',
       );
@@ -449,7 +473,7 @@ class SkoreService {
   ///
   /// Before it saves, it reads the owner's gradebooks
   /// ([getGradebookShares]) and the teachers ([getTeachers]), and refuses
-  /// with a [SmartschoolSkoreError], saving nothing:
+  /// with a [SmartschoolSkoreChangeRefusedError], saving nothing:
   /// - the owner as [teacherId] (before any request);
   /// - a gradebook that is not one of the owner's (also for a user ID Skore
   ///   does not know), so a gradebook is never saved under another owner;
@@ -508,8 +532,8 @@ class SkoreService {
   /// The other teachers the gradebook is shared with keep their access.
   ///
   /// Before it saves, it reads the owner's gradebooks
-  /// ([getGradebookShares]), and refuses with a [SmartschoolSkoreError],
-  /// saving nothing:
+  /// ([getGradebookShares]), and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
   /// - the owner as [teacherId] (before any request);
   /// - a gradebook that is not one of the owner's (also for a user ID Skore
   ///   does not know).
@@ -545,7 +569,7 @@ class SkoreService {
     int teacherId,
   ) {
     if (teacherId == ownerId) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: teacher $teacherId is the owner of the gradebook, who '
         'cannot be a reader or a writer of it. Nothing was saved.',
       );
@@ -564,7 +588,7 @@ class SkoreService {
         .where((g) => g.gradebookId == gradebookId)
         .firstOrNull;
     if (gradebook == null) {
-      throw SmartschoolSkoreError(
+      throw SmartschoolSkoreChangeRefusedError(
         '$operation: gradebook $gradebookId is not one of teacher $ownerId '
         '(Skore lists ${gradebooks.length} gradebooks for them). Nothing was '
         'saved.',
@@ -675,7 +699,13 @@ class SkoreService {
     String method,
     List<Object?> params, {
     bool retryAfterLogin = true,
-  }) => _rpc(_ownersRpcPath, method, params, retryAfterLogin: retryAfterLogin);
+  }) => _rpc(
+    _ownersRpcPath,
+    SkoreAccessArea.reportManagement,
+    method,
+    params,
+    retryAfterLogin: retryAfterLogin,
+  );
 
   /// Calls [method] of Skore's gradebooks RPC service
   /// (`rapportbeheer/rpc/data.php`) with [params] (the "share gradebooks"
@@ -691,11 +721,16 @@ class SkoreService {
         'not one the service calls on $_gradebooksRpcPath',
       );
     }
-    return _rpc(_gradebooksRpcPath, method, params);
+    return _rpc(
+      _gradebooksRpcPath,
+      SkoreAccessArea.gradebookManagement,
+      method,
+      params,
+    );
   }
 
-  /// Calls [method] of the Skore RPC service at [path] with [params], and
-  /// returns the `result` of its answer.
+  /// Calls [method] of the Skore RPC service at [path] (in [area] of Skore)
+  /// with [params], and returns the `result` of its answer.
   ///
   /// Sends the form Skore's web client sends: `rpc_sessionobj`,
   /// `rpc_requestType` (`requestData`), `rpc_method` and `rpc_params` (the
@@ -707,6 +742,7 @@ class SkoreService {
   /// logging in (see [SmartschoolClient.postFormResponse]).
   Future<dynamic> _rpc(
     String path,
+    SkoreAccessArea area,
     String method,
     List<Object?> params, {
     bool retryAfterLogin = true,
@@ -716,7 +752,7 @@ class SkoreService {
       _rpcFields(method, params, DateTime.now()),
       retryAfterLogin: retryAfterLogin,
     );
-    return _rpcResult(_body(response, 'the RPC call $method'), method);
+    return _rpcResult(_body(response, 'the RPC call $method', area), method);
   }
 
   /// The form fields of an RPC call to [method] with [params] at [now].
@@ -980,15 +1016,39 @@ class SkoreService {
   // Internals
   // ---------------------------------------------------------------------------
 
-  /// The body of [response], an answer to [what]; throws when Skore did not
-  /// answer with `200`.
-  static String _body(Response<String> response, String what) {
+  /// The body of [response], an answer to [what], a request in [area] of
+  /// Skore; throws when Skore did not answer with `200`.
+  ///
+  /// An answer with `403` (Forbidden) is a
+  /// [SmartschoolSkoreAccessDeniedError]: HTTP's answer for a request the
+  /// server refuses to the account. Not seen from Skore: what it answers an
+  /// account without the rights has not been captured yet (#91).
+  static String _body(
+    Response<String> response,
+    String what,
+    SkoreAccessArea area,
+  ) {
     final status = response.statusCode;
+    if (status == 403) {
+      throw SmartschoolSkoreAccessDeniedError(
+        'Skore refused $what to the account (HTTP 403): it lacks the rights '
+        'for ${_areaName(area)}.',
+        area: area,
+      );
+    }
     if (status != 200) {
       throw SmartschoolSkoreError('Skore answered $what with HTTP $status.');
     }
     return response.data ?? '';
   }
+
+  /// [area] as Skore's menus name it, for a message.
+  static String _areaName(SkoreAccessArea area) => switch (area) {
+    SkoreAccessArea.reportManagement =>
+      "Skore's report management (Rapporten > Modellen)",
+    SkoreAccessArea.gradebookManagement =>
+      "Skore's gradebook management (Puntenboeken)",
+  };
 
   /// Decodes [body], the JSON answer to [what].
   static dynamic _decodeJson(String body, String what) {

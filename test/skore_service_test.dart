@@ -190,10 +190,38 @@ class _Smartschool implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-/// A [SmartschoolSkoreError], not an authentication failure.
+/// A plain [SmartschoolSkoreError]: an answer the service cannot use (#83),
+/// neither a missing right nor a refused change, and not an authentication
+/// failure.
 Matcher _skoreError([Object? message = anything]) => allOf(
   isNot(isA<SmartschoolAuthenticationError>()),
+  isNot(isA<SmartschoolSkoreAccessDeniedError>()),
+  isNot(isA<SmartschoolSkoreChangeRefusedError>()),
   isA<SmartschoolSkoreError>().having((e) => e.message, 'message', message),
+);
+
+/// Skore's refusal of a request to an account without the rights, as HTTP
+/// defines it (403 Forbidden), with a page that names the user. What Skore
+/// really answers such an account has not been captured (#91).
+const _forbidden = (
+  status: 403,
+  body:
+      '<!DOCTYPE html><html><body><h1>Geen toegang</h1>'
+      '<p>Jan Janssens heeft geen rechten voor deze pagina.</p></body></html>',
+  contentType: 'text/html; charset=UTF-8',
+);
+
+/// A [SmartschoolSkoreAccessDeniedError] for [area] (#83): still a
+/// [SmartschoolSkoreError], not an authentication failure, and its message
+/// names the part of Skore but quotes nothing of the page.
+Matcher _accessDenied(SkoreAccessArea area, String areaName) => allOf(
+  isNot(isA<SmartschoolAuthenticationError>()),
+  isA<SmartschoolSkoreError>(),
+  isA<SmartschoolSkoreAccessDeniedError>()
+      .having((e) => e.area, 'area', area)
+      .having((e) => e.message, 'message', contains('HTTP 403'))
+      .having((e) => e.message, 'message', contains(areaName))
+      .having((e) => e.message, 'message', isNot(contains('Janssens'))),
 );
 
 void main() {
@@ -631,6 +659,90 @@ void main() {
         skore.getTeachers(),
         throwsA(_skoreError(contains('HTTP 500'))),
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // An account without the rights (#83)
+  // ---------------------------------------------------------------------------
+
+  group('Skore refusing a read with HTTP 403 is a missing right in report '
+      'management, not an answer the service cannot use', () {
+    const report = "Skore's report management (Rapporten > Modellen)";
+
+    test('getClasses', () async {
+      final (server, skore) = await serve({_modelsPath: _forbidden});
+
+      await expectLater(
+        skore.getClasses(),
+        throwsA(
+          allOf(
+            _accessDenied(SkoreAccessArea.reportManagement, report),
+            isA<SmartschoolSkoreError>().having(
+              (e) => e.message,
+              'message',
+              contains('the list of report models'),
+            ),
+          ),
+        ),
+      );
+      // Not signed in again: the session was accepted.
+      expect(server.requests.map((r) => r.path), [_modelsPath]);
+    });
+
+    test('getCourses', () async {
+      final (server, skore) = await serve({_ownersPagePath: _forbidden});
+
+      await expectLater(
+        skore.getCourses(2516),
+        throwsA(_accessDenied(SkoreAccessArea.reportManagement, report)),
+      );
+      expect(server.requests.map((r) => r.path), [_ownersPagePath]);
+    });
+
+    test('getTeachers', () async {
+      final (server, skore) = await serve({_ownersRpcPath: _forbidden});
+
+      await expectLater(
+        skore.getTeachers(),
+        throwsA(
+          allOf(
+            _accessDenied(SkoreAccessArea.reportManagement, report),
+            isA<SmartschoolSkoreError>().having(
+              (e) => e.message,
+              'message',
+              contains('getTeachers'),
+            ),
+          ),
+        ),
+      );
+      expect(server.requests.map((r) => r.path), [_ownersRpcPath]);
+    });
+
+    test('a caller tells the three cases apart by type', () async {
+      String kind(Object error) => switch (error) {
+        SmartschoolSkoreAccessDeniedError(:final area) => 'no rights: $area',
+        SmartschoolSkoreChangeRefusedError() => 'refused',
+        SmartschoolSkoreError() => 'unusable answer',
+        _ => 'other',
+      };
+      Future<String> failureOf(Future<Object?> call) async {
+        try {
+          await call;
+        } on Object catch (e) {
+          return kind(e);
+        }
+        fail('The call did not fail');
+      }
+
+      final (_, forbidden) = await serve({_ownersRpcPath: _forbidden});
+      final (_, broken) = await serve({_ownersRpcPath: _ok(_errorPage)});
+
+      expect(
+        await failureOf(forbidden.getTeachers()),
+        'no rights: ${SkoreAccessArea.reportManagement}',
+      );
+      expect(await failureOf(broken.getTeachers()), 'unusable answer');
     });
   });
 }

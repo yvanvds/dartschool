@@ -637,7 +637,7 @@ dart run example/set_late_example.dart
 
 Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). And assigns a teacher to a course of a class there (`addTeacher`, `replaceTeacher`). It also reads the gradebooks of a teacher with the teachers they are shared with, and shares a gradebook or stops sharing it (`shareGradebook`, `unshareGradebook`), as Skore's "share gradebooks" manager does (Puntenboeken > the share button next to a teacher). Nothing else changes Skore, and nothing deletes an assignment or a gradebook.
 
-> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has.
+> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has. An account can have one without the other (`SkoreAccessArea.reportManagement`, `.gradebookManagement`). When Skore refuses a request with HTTP 403, the call throws a `SmartschoolSkoreAccessDeniedError` that names the part of Skore. What Skore answers an account without the rights has not been captured yet (#91): until it is, such an account may get a plain `SmartschoolSkoreError` instead (most likely about an HTML page instead of data), or even an empty list.
 
 > **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`). A gradebook ID is the ID of the assignment that holds the gradebook (`SkoreAssignment.id`); its owner is that assignment's teacher.
 
@@ -681,14 +681,14 @@ final replaced = await skore.replaceTeacher(
     classId: 2516, courseId: 1588, assignmentId: added.id, teacherId: 320);
 ```
 
-Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreError`, saving nothing:
+Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreChangeRefusedError`, saving nothing:
 
 - a course that is not in the class (also for a class ID Skore does not know), or that is a group header;
 - for `replaceTeacher`, an `assignmentId` that is not one of that course in that class;
 - a teacher who already has an assignment on the course (for `replaceTeacher`, the current teacher of the assignment too);
 - a teacher who is not in `getTeachers()`.
 
-`replaceTeacher` then asks Skore whether the current teacher works with "Mijn lesgroepen" for the course, as Skore's web client does, and refuses with a `SmartschoolSkoreMyGroupsError` when they do. Skore's web client offers to delete those groups, which cannot be undone; the service never does: handle them in Skore first.
+`replaceTeacher` then asks Skore whether the current teacher works with "Mijn lesgroepen" for the course, as Skore's web client does, and refuses with a `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) when they do. Skore's web client offers to delete those groups, which cannot be undone; the service never does: handle them in Skore first.
 
 The save is sent **once**: it is never retried, not even after logging in again, since a repeated add adds a second assignment. Skore answers it with the assignment and its teacher; when the answer does not confirm the save (another teacher, for a replace another assignment, or no usable answer at all), the call throws a `SmartschoolSkoreSaveUnconfirmedError`: the change may or may not have been saved, so read the class again before trying again. Calling the method again is safe in itself: it reads the class first, and refuses a teacher who already has an assignment on the course. The checks and the save are separate requests, so do not change the same course from two places at once.
 
@@ -716,7 +716,7 @@ await skore.unshareGradebook(ownerId: 146, gradebookId: 34826, teacherId: 320);
 
 Both go through Skore's `saveShared`. The save holds **this gradebook only**, with its complete new readers and writers: the teachers it is already shared with keep their access, unless the change is about them, and the owner's other gradebooks are not touched. A teacher has one kind of access: sharing with write access takes them off the readers, and the other way round.
 
-Before the save, they read the owner's gradebooks again, and refuse with a `SmartschoolSkoreError`, saving nothing:
+Before the save, they read the owner's gradebooks again, and refuse with a `SmartschoolSkoreChangeRefusedError`, saving nothing:
 
 - the owner as the teacher (Skore never offers the owner as a reader or a writer);
 - a gradebook that is not one of the owner's (also for a user ID Skore does not know), so a gradebook is never saved under another owner;
@@ -734,8 +734,12 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ### Errors
 
-- `SmartschoolSkoreError` — Skore answered with something the service cannot use: an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers). The session was accepted: signing in again does not help. `addTeacher`, `replaceTeacher`, `shareGradebook` and `unshareGradebook` also throw it when a check before the save refuses the change; from them, it always means nothing was saved.
-- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+`SmartschoolSkoreError` has a type for each case a caller handles differently (#83): a missing right, a refused change, and (the type itself) an answer the service cannot use. A `catch` of `SmartschoolSkoreError` catches all of them, and from `addTeacher`, `replaceTeacher`, `shareGradebook` and `unshareGradebook` every `SmartschoolSkoreError` means nothing was saved.
+
+- `SmartschoolSkoreAccessDeniedError` — Skore refused the request to the account, which lacks the rights for that part of Skore (carries `area`: `SkoreAccessArea.reportManagement` or `.gradebookManagement`). Thrown for an answer with HTTP 403; see the access requirement above for what is not known yet. Its message quotes nothing of the answer, so it can be shown to the user.
+- `SmartschoolSkoreChangeRefusedError` — a check before the save refused the change (the checks are listed above). Nothing was saved. Its message says which check refused and why, so the call can be corrected.
+- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+- `SmartschoolSkoreError` itself (none of the types above) — Skore answered with something the service cannot use: another HTTP status than `200`, an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers, or a `getMyGroups` answer it does not recognise). The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log.
 - `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher`, `replaceTeacher`, `shareGradebook` or `unshareGradebook` sent the save, but Skore's answer (for a share, also the read afterwards) does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read again. Not a `SmartschoolSkoreError`.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry. The save of `addTeacher` and `replaceTeacher` is not retried: it fails at once.
 

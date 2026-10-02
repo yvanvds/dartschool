@@ -41,6 +41,8 @@ import 'support/no_network.dart';
 const _host = 'school.smartschool.be';
 
 class _Credentials extends Credentials {
+  _Credentials({this.mfa = 'JBSWY3DPEHPK3PXP'});
+
   @override
   String get username => 'user';
   @override
@@ -48,7 +50,7 @@ class _Credentials extends Credentials {
   @override
   String get mainUrl => _host;
   @override
-  String? get mfa => 'JBSWY3DPEHPK3PXP';
+  final String? mfa;
 }
 
 const _loginPage = '''
@@ -240,10 +242,11 @@ void main() {
     _Smartschool smartschool, {
     DateTime Function() clock = DateTime.now,
     Duration loginCooldown = SmartschoolClient.defaultLoginCooldown,
+    String mfa = 'JBSWY3DPEHPK3PXP',
   }) async {
     server = smartschool;
     client = await SmartschoolClient.create(
-      _Credentials(),
+      _Credentials(mfa: mfa),
       cacheDir: cacheDir.path,
       clock: clock,
       loginCooldown: loginCooldown,
@@ -528,21 +531,31 @@ void main() {
       expect(server.logins, 4);
     });
 
-    final credentialFailures = <String, (_Smartschool Function(), Matcher)>{
-      'a rejected password': (
-        () => _Smartschool(passwordAccepted: false),
-        isA<SmartschoolInvalidCredentialsError>(),
-      ),
-      'a rejected 2FA code': (
-        () => _Smartschool(twoFactorAccepted: false),
-        isA<SmartschoolTwoFactorRejectedError>(),
-      ),
-    };
-    for (final MapEntry(key: failure, value: (smartschool, loginFailed))
+    final credentialFailures =
+        <String, (_Smartschool Function(), Matcher, {String mfa})>{
+          'a rejected password': (
+            () => _Smartschool(passwordAccepted: false),
+            isA<SmartschoolInvalidCredentialsError>(),
+            mfa: 'JBSWY3DPEHPK3PXP',
+          ),
+          'a rejected 2FA code': (
+            () => _Smartschool(twoFactorAccepted: false),
+            isA<SmartschoolTwoFactorRejectedError>(),
+            mfa: 'JBSWY3DPEHPK3PXP',
+          ),
+          // A date passes the check before the password (#79): the login
+          // posts it, and the 2FA step finds it is no key.
+          'a date as TOTP secret, found at the 2FA step (#79)': (
+            () => _Smartschool(),
+            isA<SmartschoolInvalidTotpSecretError>(),
+            mfa: '2010-05-15',
+          ),
+        };
+    for (final MapEntry(key: failure, value: (smartschool, loginFailed, :mfa))
         in credentialFailures.entries) {
       test('$failure: no login after the cooldown, until '
           'resetLoginAttempts()', () async {
-        await serve(smartschool(), clock: clock);
+        await serve(smartschool(), clock: clock, mfa: mfa);
         for (var i = 1; i <= 3; i++) {
           await expectLater(
             client.postFormRaw('/x', {}),

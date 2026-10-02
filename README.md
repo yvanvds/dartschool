@@ -123,6 +123,8 @@ mfa: 2010-05-15   # date for account-verification, or Base32 secret for TOTP
 If you need mfa, open your smartschool profile, two-factor authentication, add authenticator app.
 When a QR code is displayed, choose 'I do not have a camera'. A code is shown and that's the one you need.
 
+That code is the TOTP secret (letters A-Z and digits 2-7), not the 6-digit code the authenticator app shows afterwards. It may be copied as shown, in groups: white space and hyphens are ignored, as are lower case and `=` padding (`JBSW Y3DP EHPK 3PXP` works as `JBSWY3DPEHPK3PXP`). An `mfa` that is empty or only white space counts as none (an account without 2FA logs in with it). When a login is needed and `mfa` is neither that, a date (`yyyy-mm-dd`), nor such a key, the login throws `SmartschoolInvalidTotpSecretError` before it posts the password; set `mfa` only when the account asks for one of the two. `Credentials.normalizeTotpSecret(key)` checks a key the same way without logging in (for instance where a user types it): it returns the key as the login uses it, or throws that error.
+
 ---
 
 ## `SmartschoolClient`
@@ -180,7 +182,7 @@ An app can keep its own per-user data in the folder, so it is found and cleaned 
 
 ### Logging in again
 
-When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. Requests on one client share that login: a request that Smartschool refuses while a login runs waits for it and is then retried in the new session, and fails with the same error when the login fails, so concurrent requests on an expired session send the password and the 2FA code once, and the login counts once toward the limit below. The login loads Smartschool's login page itself, in a new session, and the answers that Smartschool refused do not change the cookie cache, so the password always goes out in the session its login form belongs to. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
+When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. Requests on one client share that login: a request that Smartschool refuses while a login runs waits for it and is then retried in the new session, and fails with the same error when the login fails, so concurrent requests on an expired session send the password and the 2FA code once, and the login counts once toward the limit below. The login loads Smartschool's login page itself, in a new session, and the answers that Smartschool refused do not change the cookie cache, so the password always goes out in the session its login form belongs to. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer, or the TOTP secret turned out not to be a key at the 2FA step): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
 
 Pass `retryAfterLogin: false` to `postFormRaw`, `postFormResponse`, `postMultipartRaw` or `postMultipartResponse` for a request that carries state of the session it was prepared in, such as the tokens of Smartschool's compose form: a retry would send that state in a session it does not belong to. When Smartschool refuses the session for such a request, it is neither retried nor used to log in again: it throws `SmartschoolSessionExpiredError` at once, and the next refused request logs in. `MessagesService.sendMessage` sends its steps after loading the compose form this way.
 
@@ -1178,6 +1180,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolInvalidCredentialsError` | Smartschool rejects the username or password (also SSO-only accounts). In rare cases a rejected login form token instead, which Smartschool answers with the same page (#46); do not log in again automatically |
 | `SmartschoolTwoFactorRequiredError` | Smartschool asks for a 2FA code, but `mfa` holds no TOTP secret |
 | `SmartschoolTwoFactorRejectedError` | Smartschool rejects the 2FA code (wrong TOTP secret, or the device clock is off) |
+| `SmartschoolInvalidTotpSecretError` | The TOTP secret in `mfa` is not a key: not Base32 once white space and hyphens are removed, or only digits (such as the 6-digit code of the authenticator app). Thrown before the password is posted when `mfa` is not a date either, so nothing of the login is sent; otherwise at the 2FA step, before its code is sent |
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
@@ -1210,6 +1213,8 @@ try {
   // Ask the user to check their username and password.
 } on SmartschoolTwoFactorRejectedError {
   // Ask the user to check their TOTP secret and device clock.
+} on SmartschoolInvalidTotpSecretError {
+  // Ask the user for the key of the authenticator app, not its 6-digit code.
 } on SmartschoolAuthenticationError catch (e) {
   // Any other authentication failure.
 } on SmartschoolConnectionError {

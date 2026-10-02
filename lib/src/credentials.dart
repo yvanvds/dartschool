@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:yaml/yaml.dart';
 
+import 'exceptions.dart';
+
 // ---------------------------------------------------------------------------
 // Abstract base
 // ---------------------------------------------------------------------------
@@ -23,8 +25,55 @@ abstract class Credentials {
   ///
   /// - For **account-verification** (birthday-based): a date string like
   ///   `2010-05-15`.
-  /// - For **2FA / TOTP**: the Base32 secret from Google Authenticator.
+  /// - For **2FA / TOTP**: the Base32 secret from Google Authenticator: the
+  ///   key Smartschool shows when an authenticator app is added, not the
+  ///   6-digit code the app shows. It may be copied in groups, with spaces or
+  ///   hyphens, in lower case or with `=` padding (see
+  ///   [normalizeTotpSecret]).
+  ///
+  /// An `mfa` that is empty once trimmed counts as none. When a login is
+  /// needed and `mfa` is neither that, a date (`yyyy-mm-dd`), nor a TOTP
+  /// secret, the login throws a [SmartschoolInvalidTotpSecretError] before it
+  /// posts the password (#79).
   String? get mfa;
+
+  /// Returns the TOTP secret [secret] the way the login generates its 2FA
+  /// codes from it: without white space and hyphens (an authenticator setup
+  /// screen may show the key in groups, such as `JBSW Y3DP EHPK 3PXP`), in
+  /// upper case, and without `=` padding.
+  ///
+  /// Throws a [SmartschoolInvalidTotpSecretError] when that is not a TOTP
+  /// secret: empty, with a character that is not Base32 (the letters A-Z and
+  /// the digits 2-7, with `=` padding only at the end), or only digits, such
+  /// as the 6-digit code an authenticator app shows rather than the key it
+  /// was set up with (#79). Its message does not hold [secret].
+  ///
+  /// The login applies it to [mfa]. Call it to check a key without logging
+  /// in, for instance where a user enters it.
+  static String normalizeTotpSecret(String secret) {
+    final key = secret.replaceAll(_totpSecretSeparators, '');
+    // Checked before upper-casing: that maps some other letters onto Base32
+    // ones (`ß` becomes `SS`).
+    if (!_base32Key.hasMatch(key) || _digitsOnly.hasMatch(key)) {
+      throw const SmartschoolInvalidTotpSecretError();
+    }
+    return key.toUpperCase().replaceFirst(_base32Padding, '');
+  }
+
+  /// What a TOTP secret may be copied with that is not part of it: white
+  /// space (Unicode white space, so a non-breaking space of a web page too)
+  /// and hyphens.
+  static final _totpSecretSeparators = RegExp(r'[\s-]');
+
+  /// Base32 (RFC 4648) in either case, with any `=` padding at the end.
+  static final _base32Key = RegExp(r'^[A-Za-z2-7]+=*$');
+
+  /// The `=` padding at the end of a Base32 key.
+  static final _base32Padding = RegExp(r'=+$');
+
+  /// Only digits: a code (or a date), not a key. A Base32 key of only the
+  /// digits 2-7 is possible, but a random secret is next to never one.
+  static final _digitsOnly = RegExp(r'^[0-9]+=*$');
 
   /// Throws [StateError] if any required field is empty after trimming.
   void validate() {

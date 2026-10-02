@@ -57,6 +57,19 @@ void main() {
       expect(error.toString(), endsWith('(account offers: sms, mail)'));
     });
 
+    test('SmartschoolInvalidTotpSecretError is a login failure that points at '
+        'the key (#79)', () {
+      // A catch of the base class still catches it; the default message
+      // tells the key from the code of the app.
+      const error = SmartschoolInvalidTotpSecretError();
+      expect(error, isA<SmartschoolAuthenticationError>());
+      expect(error, isNot(isA<SmartschoolTwoFactorRejectedError>()));
+      expect(
+        error.message,
+        allOf(contains('not a Base32 key'), contains('not the 6-digit code')),
+      );
+    });
+
     test('SmartschoolUnsupportedTwoFactorMethodError without methods prints '
         'only the message', () {
       const error = SmartschoolUnsupportedTwoFactorMethodError([]);

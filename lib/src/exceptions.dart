@@ -18,6 +18,8 @@ class SmartschoolException implements Exception {
 /// - [SmartschoolTwoFactorRequiredError]: Smartschool asks for a 2FA code, but
 ///   the credentials hold no TOTP secret (`mfa`).
 /// - [SmartschoolTwoFactorRejectedError]: the 2FA code was rejected.
+/// - [SmartschoolInvalidTotpSecretError]: the TOTP secret (`mfa`) is not a
+///   Base32 key, such as the 6-digit code of the authenticator app.
 /// - [SmartschoolUnsupportedTwoFactorMethodError]: the account uses a 2FA
 ///   method other than an authenticator app (Google Authenticator).
 /// - [SmartschoolAccountVerificationRequiredError]: Smartschool asks for
@@ -88,6 +90,40 @@ class SmartschoolTwoFactorRejectedError extends SmartschoolAuthenticationError {
     super.message =
         '2FA verification failed. Check your TOTP secret (mfa) and '
         'ensure your device time is synchronized.',
+  ]);
+}
+
+/// Thrown when the TOTP secret in `mfa` is not one (#79): with white space
+/// and hyphens removed, it is empty, holds a character that is not Base32
+/// (the letters A-Z and the digits 2-7, with `=` padding only at the end), or
+/// holds only digits, such as the 6-digit code an authenticator app shows
+/// rather than the key it was set up with. Lower case is fine.
+///
+/// The login checks `mfa` before it loads the login form and posts the
+/// password, when `mfa` is not a date (`yyyy-mm-dd`, the answer to
+/// Smartschool's account verification) and not empty once trimmed (an `mfa`
+/// of only white space is no `mfa`, there as at the steps after the
+/// password, which throw [SmartschoolTwoFactorRequiredError] and
+/// [SmartschoolAccountVerificationRequiredError] for it): such an `mfa` can
+/// answer neither
+/// the 2FA step nor the account verification, so the login sends nothing,
+/// and every login fails this way until the credentials are fixed. That
+/// holds for an account that would not ask for either step too: set `mfa`
+/// only to a date or a TOTP secret. An `mfa` that is a date is checked when
+/// Smartschool asks for a 2FA code: after the password, before anything of
+/// the 2FA step is sent; the client then counts it as rejected credentials
+/// (see [SmartschoolSessionExpiredError]).
+///
+/// `Credentials.normalizeTotpSecret` runs the same check without a client,
+/// for instance where a user enters the key. The message never holds the
+/// secret.
+class SmartschoolInvalidTotpSecretError extends SmartschoolAuthenticationError {
+  const SmartschoolInvalidTotpSecretError([
+    super.message =
+        'The TOTP secret (mfa) is not a Base32 key. Use the key Smartschool '
+        'shows when an authenticator app is added (the letters A-Z and the '
+        'digits 2-7; spaces and hyphens are ignored), not the 6-digit code '
+        'the app shows.',
   ]);
 }
 

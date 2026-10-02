@@ -18,8 +18,11 @@ import 'package:test/test.dart';
 import 'support/no_network.dart';
 import 'support/temp_cache_dir.dart';
 
-/// Credentials with a valid base32 TOTP secret so `do2fa()` can generate a code.
+/// Credentials with a valid base32 TOTP secret so `do2fa()` can generate a
+/// code, unless a test gives another [mfa].
 class _TwoFaCredentials extends Credentials {
+  _TwoFaCredentials({this.mfa = 'JBSWY3DPEHPK3PXP'});
+
   @override
   String get username => 'user';
   @override
@@ -27,7 +30,7 @@ class _TwoFaCredentials extends Credentials {
   @override
   String get mainUrl => 'school.smartschool.be';
   @override
-  String? get mfa => 'JBSWY3DPEHPK3PXP';
+  final String? mfa;
 }
 
 /// A fake adapter that returns canned responses based on the request path,
@@ -42,6 +45,9 @@ class _FakeAdapter implements HttpClientAdapter {
 
   _FakeAdapter({required this.twoFaResultBody});
 
+  /// Every request the client made, as `METHOD path`.
+  final List<String> log = <String>[];
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -49,6 +55,7 @@ class _FakeAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     final path = options.uri.path;
+    log.add('${options.method} $path');
 
     if (path == '/2fa/api/v1/config') {
       return _json(
@@ -144,6 +151,45 @@ void main() {
           ),
         ),
       );
+
+      await client.dispose();
+    });
+  });
+
+  group('a TOTP secret that is not a key, on a session past the password '
+      '(#79)', () {
+    // The login continues from the /2fa page, so it posts no password and
+    // the 2FA step checks the secret itself.
+    test('fails with a SmartschoolInvalidTotpSecretError before any request '
+        'of the 2FA step', () async {
+      final client = await SmartschoolClient.create(
+        _TwoFaCredentials(mfa: 'JBSW Y3DP EHPK 3PX1'),
+        cacheDir: tempCacheDir(),
+      );
+      final server = _FakeAdapter(
+        twoFaResultBody: '{"success":true,"redirectTo":"/"}',
+      );
+      client.dio.httpClientAdapter = server;
+
+      await expectLater(
+        client.getRaw('/index'),
+        throwsA(isA<SmartschoolInvalidTotpSecretError>()),
+      );
+      expect(server.log, ['GET /index']);
+
+      await client.dispose();
+    });
+
+    test('a key copied in groups gets through', () async {
+      final client = await SmartschoolClient.create(
+        _TwoFaCredentials(mfa: 'jbsw y3dp ehpk 3pxp'),
+        cacheDir: tempCacheDir(),
+      );
+      client.dio.httpClientAdapter = _FakeAdapter(
+        twoFaResultBody: '{"success":true,"redirectTo":"/"}',
+      );
+
+      await expectLater(client.getRaw('/index'), completes);
 
       await client.dispose();
     });

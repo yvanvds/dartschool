@@ -939,7 +939,7 @@ class SmartschoolClient {
       'form[name="account_verification_form"] input[name*="_security_question_answer"]',
     );
     final expectsDate = answerInput?.attributes['type'] == 'date';
-    final dateLike = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(mfa.trim());
+    final dateLike = _dateAnswer.hasMatch(mfa.trim());
     if (expectsDate && !dateLike) {
       throw const SmartschoolAccountVerificationRequiredError(
         'Account verification expects a date (yyyy-mm-dd), but mfa looks like '
@@ -960,12 +960,46 @@ class SmartschoolClient {
     );
   }
 
+  /// An account verification answer as Smartschool's date field takes it.
+  static final _dateAnswer = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+
+  /// Throws a [SmartschoolInvalidTotpSecretError] when [Credentials.mfa] can
+  /// answer neither step that may follow the password: it is not a date for
+  /// the account verification, and not a TOTP secret for the 2FA step (#79).
+  ///
+  /// Run before a login loads the login form, so that an `mfa` that cannot
+  /// work does not cost a password login, on every login. An `mfa` that is
+  /// empty once trimmed (no `mfa`, as the steps after the password take it)
+  /// or a date passes: the steps after the password check it as they use it.
+  void _checkMfaBeforeLogin() {
+    final mfa = credentials.mfa?.trim();
+    if (mfa == null || mfa.isEmpty || _dateAnswer.hasMatch(mfa)) return;
+    try {
+      Credentials.normalizeTotpSecret(mfa);
+    } on SmartschoolInvalidTotpSecretError {
+      throw const SmartschoolInvalidTotpSecretError(
+        'mfa is neither a TOTP secret nor a date (yyyy-mm-dd) for account '
+        'verification, so the login did not post the password. As a TOTP '
+        'secret, use the key Smartschool shows when an authenticator app is '
+        'added (the letters A-Z and the digits 2-7; spaces and hyphens are '
+        'ignored), not the 6-digit code the app shows.',
+      );
+    }
+  }
+
   /// Handles the `/2fa` page: generates a TOTP code and POSTs it.
+  ///
+  /// The code is generated from [Credentials.mfa] as
+  /// [Credentials.normalizeTotpSecret] returns it, so a secret copied in
+  /// groups works; one that is not a TOTP secret throws its
+  /// [SmartschoolInvalidTotpSecretError] before anything of this step is sent
+  /// (#79).
   Future<Response<String>> do2fa() async {
     final mfa = credentials.mfa;
     if (mfa == null || mfa.trim().isEmpty) {
       throw const SmartschoolTwoFactorRequiredError();
     }
+    final secret = Credentials.normalizeTotpSecret(mfa);
 
     // Verify TOTP is configured on this account
     final configResp = await _rawGet('/2fa/api/v1/config');
@@ -980,7 +1014,7 @@ class SmartschoolClient {
     }
 
     final code = OTP.generateTOTPCodeString(
-      mfa,
+      secret,
       DateTime.now().millisecondsSinceEpoch,
       length: 6,
       interval: 30,
@@ -1955,17 +1989,25 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// Counts the login toward [_maxLoginAttempts] and in [_loginsStarted]
   /// and, when it completes, moves the client to the next
   /// [_sessionGeneration].
+  ///
+  /// A login that would post the password first checks that the credentials'
+  /// `mfa` can answer a step after it (#79): when it cannot, it throws the
+  /// [SmartschoolInvalidTotpSecretError] before it sends anything, so it is
+  /// not counted.
   Future<void> _logIn(Response<dynamic> response, Uri? loginChain) async {
+    final realUri = response.realUri;
+    final landedOnChain = _client.isAuthUri(realUri);
+    final start = landedOnChain ? realUri : loginChain;
+    final fromLoginForm = start == null || start.path.endsWith('/login');
+    if (fromLoginForm) _client._checkMfaBeforeLogin();
+
     _loginsStarted++;
     _loginAttempts++;
     _lastLoginAt = _clock();
     _rejectedCredentials = null;
 
     try {
-      final realUri = response.realUri;
-      final landedOnChain = _client.isAuthUri(realUri);
-      final start = landedOnChain ? realUri : loginChain;
-      if (start == null || start.path.endsWith('/login')) {
+      if (fromLoginForm) {
         final loginPage = await _client._rawGet(
           start?.toString() ?? '/login',
           newSession: true,
@@ -2013,12 +2055,14 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// Whether [e] says that the credentials do not get past the login chain:
   /// Smartschool rejected the password, the 2FA code or the account
   /// verification answer, or asked for a 2FA code or verification answer they
-  /// do not hold (#11). Logging in with them again does not help, and every
-  /// rejected attempt brings the account closer to being locked (#32).
+  /// do not hold (#11), or a 2FA code while their TOTP secret is not one
+  /// (#79). Logging in with them again does not help, and every rejected
+  /// attempt brings the account closer to being locked (#32).
   static bool _rejectsCredentials(SmartschoolAuthenticationError e) =>
       e is SmartschoolInvalidCredentialsError ||
       e is SmartschoolTwoFactorRequiredError ||
       e is SmartschoolTwoFactorRejectedError ||
+      e is SmartschoolInvalidTotpSecretError ||
       e is SmartschoolUnsupportedTwoFactorMethodError ||
       e is SmartschoolAccountVerificationRequiredError ||
       e is SmartschoolAccountVerificationRejectedError;

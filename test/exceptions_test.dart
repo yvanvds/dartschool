@@ -142,6 +142,40 @@ void main() {
     });
   });
 
+  group('planner errors (#84)', () {
+    test('SmartschoolPlannerError is a SmartschoolException, not a session '
+        'problem, and shows its status when it has one', () {
+      const error = SmartschoolPlannerError('refused', statusCode: 400);
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.statusCode, 400);
+      expect(error.toString(), 'SmartschoolPlannerError(400): refused');
+      expect(
+        const SmartschoolPlannerError('unknown shape').toString(),
+        'SmartschoolPlannerError: unknown shape',
+      );
+    });
+
+    test('SmartschoolPlannedElementNotFoundError is a SmartschoolPlannerError '
+        'with status 404 and names the element', () {
+      const error = SmartschoolPlannedElementNotFoundError(
+        'gone',
+        elementType: 'planned-lessons',
+        platformId: 4069,
+        elementId: 'e0000000-0000-4000-8000-000000000002',
+      );
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error.statusCode, 404);
+      expect(error.elementType, 'planned-lessons');
+      expect(error.platformId, 4069);
+      expect(error.elementId, 'e0000000-0000-4000-8000-000000000002');
+      expect(
+        error.toString(),
+        'SmartschoolPlannedElementNotFoundError(404): gone',
+      );
+    });
+  });
+
   group('SmartschoolClientDisposedError (#73)', () {
     const message = 'SmartschoolClient was disposed: it sends no more requests';
 

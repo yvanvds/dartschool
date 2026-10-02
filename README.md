@@ -17,6 +17,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
+- Planner read support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element.
 
 ---
 
@@ -736,6 +737,73 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ---
 
+## `PlannerService`
+
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It only reads: every request is a GET to the planner's JSON API (`/planner/api/v1/`).
+
+```dart
+final planner = PlannerService(client);
+
+// The own planner of one week.
+final me = await planner.ownCalendar();            // PlannerCalendar
+final week = await planner.getPlannedElements(
+  me,
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+);                                                 // List<PlannedElement>
+
+// The tests of a class in that week (all its teachers), with their detail.
+final tests = await planner.getPlannedElements(
+  PlannerCalendar.group('4069_2001'),
+  from: DateTime(2026, 10, 5),
+  to: DateTime(2026, 10, 9, 23, 59, 59),
+  types: {PlannedElementType.assignment},
+);
+for (final test in tests) {
+  final detail = await planner.getDetail(test);    // PlannedElementDetail
+  print('${test.period.from} ${test.assignmentType?.abbreviation} '
+      '${test.name} (${test.organiserUsers.first.name}): ${detail.publicInfo}');
+}
+```
+
+### Calendars
+
+| Calendar | ID | Example |
+|---|---|---|
+| `PlannerCalendar.user(id)` | the whole user ID `{platformId}_{userId}_{coaccount}` | `4069_146_0` |
+| `PlannerCalendar.group(id)` | a class, `{platformId}_{groupId}` | `4069_2001` |
+| `PlannerCalendar.location(id)` | a location, `{platformId}_{itemId}` | `4069_<item UUID>` |
+
+`ownCalendar()` gives the planner of the authenticated user (from `authenticatedUser.id`; note that `getCurrentUser().id` is only the middle part of that ID). The users, classes and locations an element names give their own calendar: `element.organiserUsers.first.calendar`, `element.participantGroups.first.calendar`, `element.locations.first.calendar` (a location's calendar ID joins its platform ID and its item ID; the planner answers the bare item ID with `400`). The constructors check the form of the ID and throw an `ArgumentError` for another one.
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `ownCalendar()` | `Future<PlannerCalendar>` | The planner of the authenticated user. |
+| `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. |
+| `getPlannedElement({type, platformId, id})` | `Future<PlannedElementDetail>` | The full detail of one element. |
+| `getDetail(element)` | `Future<PlannedElementDetail>` | The same, for a listed element (also one of a type the library does not know). |
+| `formatDateTime(time, {timeZoneOffset})` (static) | `String` | A date as the planner's API takes it: ISO 8601 to the second with the offset from UTC (`2026-11-20T11:10:00+01:00`); in the given offset when `timeZoneOffset` is set. |
+
+`from` and `to` go out as ISO 8601 with their offset (URL-encoded, `+` as `%2B`): a local `DateTime` in the local time of the machine, with its offset at that moment (in Belgium `+02:00` in summer, `+01:00` in winter), a UTC one in UTC. The planner's own dates are read into local `DateTime`s. Use `23:59:59` rather than midnight to include the last day. `to` before `from`, an empty `types` and `PlannedElementType.other` in `types` throw an `ArgumentError` before anything is sent.
+
+### What the planner shows
+
+- **A class calendar holds the elements of all teachers of the class**, and a colleague's lessons and assignments can be read in full. `privateInfo` is the info that pupils do not see, **not** info that only its teacher sees: other teachers who can read the element see it too. `publicInfo` is what pupils see. Both are HTML (`""` when empty); `info` held the same text as `privateInfo` in every answer seen.
+- **Timetable slots** are `PlannedElementType.placeholder` elements: one per teacher per lesson hour, with the classes, the course and the room, but no `name`. `capabilities.canReplace` tells whether a slot can be filled. Do not keep their IDs: a slot that was filled and cleared again comes back with a new ID. Find a slot again by its period, course and groups.
+- **The list lags behind**: after a change in the planner, `getPlannedElements` may show the old state for a few seconds, while `getPlannedElement` / `getDetail` show the new one at once. Read the detail to check a change.
+- Only lessons, assignments and placeholders were seen live; the other `PlannedElementType`s are the web client's constants. An element of a type the library does not know is kept as `PlannedElementType.other`, with the planner's name in `typeName`.
+
+### Errors
+
+- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape. The session was accepted: signing in again does not help.
+- `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash (carries `elementType`, `platformId`, `elementId`).
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once. Sign in again and retry.
+- `SmartschoolParsingError` — `ownCalendar()`: the session's user ID is not in the form `{platformId}_{userId}_{coaccount}`.
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -827,6 +895,24 @@ Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID)
 ### `SkoreGradebookShares`
 Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshareGradebook()`. A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
 
+### `PlannerCalendar`
+A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
+
+### `PlannedElement`
+Returned by `PlannerService.getPlannedElements()`. Fields: `id` (a UUID), `platformId`, `type` (`PlannedElementType`; `other` for a type the library does not know), `typeName` (the planner's name of the type, such as `planned-lessons`), `name` (`String?`; `null` on a timetable slot), `period` (`PlannerPeriod`: `from`, `to` in local time, `wholeDay`, `deadline`), `organiserUsers` / `organiserGroups`, `participantUsers` / `participantGroups`, `isParticipant`, `capabilities` (`PlannedElementCapabilities`), `icon` (`String?`), `courses`, `locations`, `assignmentType` (`PlannerAssignmentType?`, assignments only), `resolvedStatus` (`String?`, assignments only), `pinned`, `unconfirmed`, `color`, and `raw` (the element as the planner gave it, read-only, for the fields the model does not cover).
+
+### `PlannedElementDetail`
+Returned by `PlannerService.getPlannedElement()` and `getDetail()`. A `PlannedElement` with `info`, `privateInfo` and `publicInfo` (HTML, `""` when empty), and for assignments `isAnnounced`, `visibleFrom` (from when pupils see it), `hasLinkedEvaluation` and `dateCreated` (`null` on other elements).
+
+### `PlannerUser` / `PlannerGroup` / `PlannerCourse` / `PlannerLocation`
+What an element names. A user (`id` — the whole planner ID `{platformId}_{userId}_{coaccount}`, `name`, `nameLastFirst`, `pictureUrl`, `isDeleted`, `calendar`); a group (`id` — `{platformId}_{groupId}`, `platformId`, `name`, `type` — `K` for a class, `icon`, `calendar`); a course (`id`, `platformId`, `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`); a location (`id` — the item UUID, `platformId`, `platformName`, `number`, `title` — the room, `icon`, `type`, `selectable`, `calendar`).
+
+### `PlannerAssignmentType`
+The type of an assignment, such as `Kleine Overhoring` (`KO`): `id`, `platformId` (`int?`), `name`, `abbreviation`, `isVisible`, `defaultTiming`, `weight`.
+
+### `PlannedElementCapabilities`
+What the authenticated user may do with an element: `flags` (every `canUser...` flag by name), `visibleProperties` (the properties the user may see), `can(name)` (`false` for a flag the planner left out), and the getters `canEdit`, `canRename`, `canReplace`, `canReschedule`, `canChangePublicInfo`, `canChangePrivateInfo`, `canTrash`, `canDelete`.
+
 ---
 
 ## Enums
@@ -841,6 +927,8 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 | `MessageLabel` | `noFlag`, `greenFlag`, `yellowFlag`, `redFlag`, `blueFlag` |
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 | `SkoreShareAccess` | `read` (Skore's `readers`), `write` (Skore's `writers`: read and change) |
+| `PlannerCalendarType` | `user`, `group`, `location` (`wireName`: the name in the planner's URL) |
+| `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
 
 ---
 
@@ -863,6 +951,8 @@ Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshare
 | `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
 | `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError` |
+| `SmartschoolPlannerError` | The planner answers `PlannerService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. Not a session problem |
+| `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`). A `SmartschoolPlannerError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

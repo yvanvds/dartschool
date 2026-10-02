@@ -183,7 +183,8 @@ class SmartschoolAccountVerificationRejectedError
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
-/// error type (e.g. [SmartschoolPresenceError]).
+/// error type (e.g. [SmartschoolPresenceError], or a
+/// [SmartschoolPlannerError] with the planner's HTTP status).
 class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
   const SmartschoolSessionExpiredError([
     super.message = 'Smartschool did not accept the session.',
@@ -490,6 +491,59 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
     required this.courseId,
     required this.teacherId,
   });
+}
+
+/// Thrown when Smartschool's planner answers a request with something
+/// `PlannerService` cannot use (#84): another HTTP status than `200` (in
+/// [statusCode], such as `400` for a calendar ID or a date range the planner
+/// refuses), an HTML page instead of data, an answer that is not valid JSON,
+/// or data in a shape it does not recognise (such as an element without its
+/// `id` or `period`, or the detail of another element than the one asked
+/// for).
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept is a [SmartschoolSessionExpiredError]
+/// instead.
+///
+/// An element the planner does not know is a
+/// [SmartschoolPlannedElementNotFoundError], a subtype of this one.
+class SmartschoolPlannerError extends SmartschoolException {
+  /// The HTTP status of the planner's answer when it was not `200`; `null`
+  /// when the answer had status `200` but could not be used.
+  final int? statusCode;
+
+  const SmartschoolPlannerError(super.message, {this.statusCode});
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `PlannerService.getPlannedElement` and `getDetail` when the
+/// planner answers `404`: it has no element of that type with that ID (#84).
+/// The ID is unknown, or the element was removed or moved to the trash (a
+/// lesson hour that was cleared comes back as a timetable slot with a new
+/// ID).
+///
+/// A [SmartschoolPlannerError] with [statusCode] `404`.
+class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
+  /// The planner's name of the element type that was asked for
+  /// (`planned-lessons`).
+  final String elementType;
+
+  /// The platform ID that was asked for.
+  final int platformId;
+
+  /// The element ID that was asked for.
+  final String elementId;
+
+  const SmartschoolPlannedElementNotFoundError(
+    super.message, {
+    required this.elementType,
+    required this.platformId,
+    required this.elementId,
+  }) : super(statusCode: 404);
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

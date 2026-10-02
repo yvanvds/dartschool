@@ -35,6 +35,7 @@ export 'src/models/notification_models.dart';
 export 'src/models/user_models.dart';
 export 'src/models/presence_models.dart';
 export 'src/models/skore_models.dart';
+export 'src/models/planner_models.dart';
 
 // Services
 export 'src/services/messages_service.dart';
@@ -43,3 +44,4 @@ export 'src/services/message_send_options.dart';
 export 'src/services/send_message_params.dart';
 export 'src/services/presence_service.dart';
 export 'src/services/skore_service.dart';
+export 'src/services/planner_service.dart';

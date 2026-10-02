@@ -5,6 +5,7 @@ import 'package:dio/dio.dart';
 import '../exceptions.dart';
 import '../models/planner_models.dart';
 import '../session.dart';
+import 'lesson_content_service.dart';
 
 export '../models/planner_models.dart';
 
@@ -17,9 +18,11 @@ export '../models/planner_models.dart';
 /// name.
 ///
 /// In the authenticated user's own planner, it fills a lesson hour with a
-/// lesson ([planLesson]), changes its name and info ([renameElement],
-/// [changePublicInfo], [changePrivateInfo]) and clears the hour again
-/// ([clearLesson]); see *Writes* below.
+/// new lesson ([planLesson]) or with a lesfiche of the Lesfiches library
+/// ([planLessonContent], the lesfiches read with `LessonContentService`),
+/// changes its name and info ([renameElement], [changePublicInfo],
+/// [changePrivateInfo]) and clears the hour again ([clearLesson]); see
+/// *Writes* below.
 ///
 /// For the planner's workload view ("werkbelasting") it reads the school's
 /// assignment types ([getAssignmentTypes]), the assignments of classes in a
@@ -78,9 +81,9 @@ export '../models/planner_models.dart';
 /// [getAssignmentsOfGroups], [getWorkloadSchedule] and [calculateWorkload].
 ///
 /// ### Writes
-/// Only [planLesson], [renameElement], [changePublicInfo],
-/// [changePrivateInfo] and [clearLesson] change the planner, each with one
-/// POST for one element:
+/// Only [planLesson], [planLessonContent], [renameElement],
+/// [changePublicInfo], [changePrivateInfo] and [clearLesson] change the
+/// planner, each with one POST for one element:
 ///
 /// ```dart
 /// final me = await planner.ownCalendar();
@@ -100,6 +103,14 @@ export '../models/planner_models.dart';
 /// await planner.changePrivateInfo(lesson, '<p>Oefening 3 overslaan.</p>');
 ///
 /// final emptyAgain = await planner.clearLesson(lesson); // a new slot ID
+///
+/// // A lesfiche of the Lesfiches library into the same hour.
+/// final fiche = (await LessonContentService(client).getItems())
+///     .firstWhere((item) => item.type == LessonContentType.lesson);
+/// final planned = await planner.planLessonContent(
+///   placeholder: emptyAgain,
+///   lessonContentId: fiche.id,
+/// ); // named after the lesfiche
 /// ```
 ///
 /// Each write reads the element again first and refuses, with a
@@ -154,6 +165,8 @@ export '../models/planner_models.dart';
 ///   first (such as a slot that was filled since it was read).
 /// - [SmartschoolPlannerWriteRefusedError] (a [SmartschoolPlannerError]): a
 ///   check before a write refused it. Nothing was sent.
+/// - [SmartschoolLessonContentError]: [planLessonContent] could not read the
+///   lesfiches before it planned one. Nothing was sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
 ///   planner's answer does not confirm it. It may or may not have been
 ///   made: read the element again.
@@ -180,7 +193,8 @@ class PlannerService {
   /// client's code: it reads with them, and `calculate` is the check it runs
   /// before it saves an assignment). The writes send, for one element each,
   /// `planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco`
-  /// ([planLesson]), `{plannedElementType}/{platformId}/{id}/rename`,
+  /// ([planLesson]), `.../replace/planned-lessons` ([planLessonContent]),
+  /// `{plannedElementType}/{platformId}/{id}/rename`,
   /// `.../change-public-info` and `.../change-private-info` (the edits), and
   /// `planned-elements/clear` ([clearLesson]). The planner also answers POSTs
   /// on it that change the planner or the user's settings and that the
@@ -576,6 +590,97 @@ class PlannerService {
     );
   }
 
+  /// Fills [placeholder], an empty lesson hour (a timetable slot,
+  /// [PlannedElementType.placeholder]) of the authenticated user's own
+  /// planner, with the lesfiche [lessonContentId] of the Lesfiches library
+  /// (a [LessonContentItem.id] of `LessonContentService.getItems`), as the
+  /// planner's "plan a lesfiche" does. Returns the lesson: a new element of
+  /// type [PlannedElementType.lesson], with its own ID, in the slot's period,
+  /// with its classes, course and room, **named after the lesfiche** by the
+  /// planner. Pupils of the classes see the lesson as soon as it is planned.
+  ///
+  /// The planner makes the lesson from the lesfiche: in the try live
+  /// (2026-10-02) it took the lesfiche's name, labels and goals, and the
+  /// lesfiche's (empty) info. Whether it copies the attachments, weblinks and
+  /// info of a richer lesfiche, and whether later changes to the lesfiche
+  /// reach a lesson planned from it, was not checked. The answer has no
+  /// field that points back to the lesfiche. Planning does not change the
+  /// lesfiche (the whole list was the same afterwards), and a hidden
+  /// lesfiche ([LessonContentItem.isVisible] `false`) was planned like any
+  /// other.
+  ///
+  /// Before it sends anything, it reads the lesfiches again
+  /// (`LessonContentService.getItems`) and refuses with a
+  /// [SmartschoolPlannerWriteRefusedError] a [lessonContentId] that is not
+  /// among them, or that is not a lesson lesfiche
+  /// ([LessonContentType.lesson]): an assignment lesfiche is planned as
+  /// another element type (an assignment, #89), which this method does not
+  /// do. It then reads the slot again
+  /// and checks it as [planLesson] does (organised by the authenticated user,
+  /// `canUserReplace`, the same period, no participant roles or group
+  /// filters); a slot that is gone throws a
+  /// [SmartschoolPlannedElementNotFoundError]. When the lesfiches cannot be
+  /// read, the [SmartschoolLessonContentError] of
+  /// `LessonContentService.getItems` is thrown: nothing was sent.
+  ///
+  /// Sends `POST planned-placeholders/{platformId}/{id}/replace/planned-lessons`
+  /// (the route of [planLesson] without `/blanco`) with the slot's organisers,
+  /// classes, course, period and rooms as reading the slot again gave them,
+  /// the lesfiche's ID as `sourceId` and its icon ([defaultLessonIcon] when
+  /// it has none), and no name or info (tried live, 2026-10-02). The fill is
+  /// sent **once**, never again after logging in again. When the planner's
+  /// answer is not a lesson named as the lesfiche in the slot's period (or no
+  /// usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read the slot again
+  /// ([getDetail] of [placeholder] answers `404` once it was filled) before
+  /// trying again. The lesson is cleared again with [clearLesson].
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [placeholder]
+  /// is not a timetable slot, or [lessonContentId] is empty.
+  Future<PlannedElementDetail> planLessonContent({
+    required PlannedElement placeholder,
+    required String lessonContentId,
+  }) async {
+    const operation = 'planLessonContent';
+    _checkSlot(placeholder);
+    final sourceId = lessonContentId.trim();
+    if (sourceId.isEmpty) {
+      throw ArgumentError.value(lessonContentId, 'lessonContentId', 'is empty');
+    }
+    final fiches = await LessonContentService(_client).getItems();
+    final fiche = fiches
+        .where((item) => item.id.toLowerCase() == sourceId.toLowerCase())
+        .firstOrNull;
+    if (fiche == null) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: there is no lesfiche $sourceId among your '
+        '${fiches.length} lesfiches (LessonContentService.getItems). Nothing '
+        'was sent.',
+      );
+    }
+    if (fiche.type != LessonContentType.lesson) {
+      final kind = fiche.type == LessonContentType.assignment
+          ? 'an assignment'
+          : 'a "${fiche.typeName}"';
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: lesfiche ${fiche.id} "${fiche.name}" is $kind lesfiche '
+        '(${fiche.typeName}), not a lesson one (lessons): planning it would '
+        'not make a lesson. Nothing was sent.',
+      );
+    }
+    final icon = fiche.icon?.trim() ?? '';
+    return _fillSlot(
+      operation,
+      placeholder,
+      route: 'planned-lessons',
+      content: {
+        'sourceId': fiche.id,
+        'icon': icon.isEmpty ? defaultLessonIcon : icon,
+      },
+      name: fiche.name,
+    );
+  }
+
   /// Renames [element], an element of the authenticated user's own planner
   /// (a lesson; an assignment the same way), to [newName], which goes out
   /// without the white space around it. Returns the element as the planner
@@ -770,9 +875,9 @@ class PlannerService {
   /// period. Sent once, never retried.
   ///
   /// [route] and [content] are what the kind of fill adds: a blank lesson
-  /// (`planned-lessons/blanco`, with the name, info and icon). Planning an
-  /// existing lesfiche is the route without `/blanco`, with its `sourceId`
-  /// instead (seen live, #88).
+  /// (`planned-lessons/blanco`, with the name, info and icon, [planLesson]),
+  /// or a lesfiche (`planned-lessons`, with its `sourceId` and icon,
+  /// [planLessonContent]; the planner names the lesson after the lesfiche).
   Future<PlannedElementDetail> _fillSlot(
     String operation,
     PlannedElement placeholder, {
@@ -780,14 +885,7 @@ class PlannerService {
     required Map<String, Object?> content,
     String? name,
   }) async {
-    if (placeholder.type != PlannedElementType.placeholder) {
-      throw ArgumentError.value(
-        placeholder,
-        'placeholder',
-        'is a ${placeholder.typeName}, not a timetable slot '
-            '(planned-placeholders)',
-      );
-    }
+    _checkSlot(placeholder);
     final me = await _ownUserId();
     final slot = await _detail(
       placeholder.typeName,
@@ -960,6 +1058,17 @@ class PlannerService {
       );
     }
     return answer;
+  }
+
+  /// Throws an [ArgumentError] unless [placeholder] is a timetable slot.
+  static void _checkSlot(PlannedElement placeholder) {
+    if (placeholder.type == PlannedElementType.placeholder) return;
+    throw ArgumentError.value(
+      placeholder,
+      'placeholder',
+      'is a ${placeholder.typeName}, not a timetable slot '
+          '(planned-placeholders)',
+    );
   }
 
   /// The whole user ID of the authenticated user (`4069_146_0`).

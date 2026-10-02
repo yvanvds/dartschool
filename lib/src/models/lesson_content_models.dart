@@ -1,0 +1,389 @@
+/// Models for Smartschool's **Lesfiches** module (lesson content,
+/// `/lesson-content`): the lesfiches a teacher keeps there, lessons and
+/// assignments, with their courses and labels.
+///
+/// The IDs are strings: a lesfiche, a course or a label has a UUID, with the
+/// platform ID in a field of its own (`platformId`); a label's ID starts with
+/// the platform ID (a school label, `4069_<uuid>`) or the whole user ID of
+/// its owner (a label of the teacher's own, `4069_146_0_<uuid>`).
+library;
+
+import '../exceptions.dart';
+import 'planner_models.dart';
+
+/// The kind of a lesfiche (`type`): a lesson or an assignment.
+enum LessonContentType {
+  /// A lesson (`lessons`): planned into a lesson hour as a lesson
+  /// (`PlannerService.planLessonContent`).
+  lesson('lessons'),
+
+  /// An assignment (`assignments`), with a
+  /// [LessonContentItem.assignmentType]: planned as an assignment, which the
+  /// library does not do.
+  assignment('assignments'),
+
+  /// A kind this library does not know. [LessonContentItem.typeName] holds
+  /// the module's name for it.
+  other(null);
+
+  const LessonContentType(this.wireName);
+
+  /// The module's name of the kind (`lessons`), or `null` for [other].
+  final String? wireName;
+
+  /// The kind the module calls [wireName], or [other] when this library
+  /// does not know it.
+  static LessonContentType fromWire(String wireName) {
+    for (final type in values) {
+      if (type.wireName == wireName) return type;
+    }
+    return other;
+  }
+}
+
+/// A course a lesfiche is for, as the Lesfiches list names it: its ID and
+/// platform only (the course's name is not in the list; a planned lesson
+/// names its course in full, as a `PlannerCourse`).
+class LessonContentCourse {
+  /// The course ID (a UUID): the [PlannerCourse.id] of the same course.
+  final String id;
+
+  /// The platform (school) the course belongs to.
+  final int platformId;
+
+  const LessonContentCourse({required this.id, required this.platformId});
+
+  factory LessonContentCourse.fromJson(Map<String, dynamic> json) =>
+      LessonContentCourse(
+        id: _requiredString(json, 'id', 'a course'),
+        platformId: _requiredInt(json, 'platformId', 'a course'),
+      );
+
+  @override
+  String toString() => 'LessonContentCourse($id)';
+}
+
+/// A label of a lesfiche: a school label (such as `JAAR 6` or `TRIMESTER 1`)
+/// or one of the teacher's own.
+class LessonContentLabel {
+  /// The label ID (`id`): the platform ID and a UUID for a school label, the
+  /// owner's whole user ID and a UUID for an own label.
+  final String id;
+
+  /// The text of the label (`JAAR 6`).
+  final String text;
+
+  /// The colour the module shows the label in (`aqua`, `yellow`, `steel`),
+  /// or `null` when it gave none.
+  final String? color;
+
+  /// The kind of label (`type`): `platform` for a label of the school, `user`
+  /// for one of the teacher's own.
+  final String type;
+
+  /// Whether the label is visible.
+  final bool isVisible;
+
+  const LessonContentLabel({
+    required this.id,
+    required this.text,
+    this.color,
+    this.type = '',
+    this.isVisible = true,
+  });
+
+  factory LessonContentLabel.fromJson(Map<String, dynamic> json) =>
+      LessonContentLabel(
+        id: _requiredString(json, 'id', 'a label'),
+        text: (_optionalString(json['text']) ?? '').trim(),
+        color: _optionalString(json['color']),
+        type: _optionalString(json['type']) ?? '',
+        isVisible: json['isVisible'] == null || _bool(json['isVisible']),
+      );
+
+  /// Whether this is a label of the school (`type` `platform`).
+  bool get isSchoolLabel => type == 'platform';
+
+  @override
+  String toString() => 'LessonContentLabel($text)';
+}
+
+/// A lesfiche of the Lesfiches module (lesson content): a lesson or an
+/// assignment a teacher keeps there to plan into the planner.
+///
+/// Returned by `LessonContentService.getItems`. A lesson lesfiche
+/// ([LessonContentType.lesson]) is planned into an empty lesson hour of the
+/// own planner with `PlannerService.planLessonContent`.
+class LessonContentItem {
+  /// The lesfiche ID (a UUID): the `sourceId` the planner plans it by.
+  final String id;
+
+  /// The platform (school) of the lesfiche.
+  final int platformId;
+
+  /// Whether it is a lesson or an assignment; [LessonContentType.other] for
+  /// a kind this library does not know (see [typeName]).
+  final LessonContentType type;
+
+  /// The module's name of the kind (`lessons`, `assignments`), also for a
+  /// kind this library does not know.
+  final String typeName;
+
+  /// The title of the lesfiche; a lesson planned from it gets this name.
+  final String name;
+
+  /// The icon of the lesfiche (`document_observation` for the lessons seen,
+  /// `flags_red_yellow` for the assignments), or `null`.
+  final String? icon;
+
+  /// The info that pupils see (HTML; `""` when empty).
+  final String publicInfo;
+
+  /// Whether the lesfiche is visible in the module. A lesfiche that is not
+  /// was still planned (seen live, #88).
+  final bool isVisible;
+
+  /// The whole user ID of the owner (`owner`, `{platformId}_{userId}_
+  /// {coaccount}`, such as `4069_146_0`), or `null` when the module gave
+  /// none.
+  final String? ownerId;
+
+  /// When the lesfiche was last changed (`dateLastChanged`), or `null` when
+  /// the module gave no such date.
+  ///
+  /// The module gives its dates without an offset from UTC
+  /// (`2025-09-01 19:51:25`, unlike the planner): the school's local time,
+  /// read here as the local time of this machine.
+  final DateTime? dateLastChanged;
+
+  /// When the state of the lesfiche last changed (`dateStateChanged`), as
+  /// [dateLastChanged] gives it; `null` when the module gave no such date.
+  final DateTime? dateStateChanged;
+
+  /// The courses the lesfiche is for.
+  final List<LessonContentCourse> courses;
+
+  /// The labels of the lesfiche, school labels and own labels.
+  final List<LessonContentLabel> labels;
+
+  /// The type of an assignment lesfiche (such as `Kleine Taak`, `KT`); `null`
+  /// for a lesson.
+  final PlannerAssignmentType? assignmentType;
+
+  /// How many attachments the lesfiche has (`attachments`).
+  final int attachmentCount;
+
+  /// How many weblinks the lesfiche has (`weblinks`).
+  final int weblinkCount;
+
+  /// How many weblinks of partners (publishers) the lesfiche has
+  /// (`partnerWeblinks`).
+  final int partnerWeblinkCount;
+
+  /// How many deeplinks the lesfiche has (`deeplinks`).
+  final int deeplinkCount;
+
+  /// What the authenticated user may do with the lesfiche: every
+  /// `canUser...` flag by its name (`canUserSeeDetails`, `canUserEdit`,
+  /// `canUserTrash`, ...). A flag the module left out is not in it.
+  final Map<String, bool> capabilities;
+
+  /// The lesfiche as the module gave it (decoded JSON, read-only), for the
+  /// fields this model does not cover (the weblinks themselves, for
+  /// instance).
+  final Map<String, dynamic> raw;
+
+  const LessonContentItem({
+    required this.id,
+    required this.platformId,
+    required this.type,
+    required this.typeName,
+    required this.name,
+    this.icon,
+    this.publicInfo = '',
+    this.isVisible = true,
+    this.ownerId,
+    this.dateLastChanged,
+    this.dateStateChanged,
+    this.courses = const [],
+    this.labels = const [],
+    this.assignmentType,
+    this.attachmentCount = 0,
+    this.weblinkCount = 0,
+    this.partnerWeblinkCount = 0,
+    this.deeplinkCount = 0,
+    this.capabilities = const {},
+    this.raw = const {},
+  });
+
+  /// Parses a lesfiche as the Lesfiches list gives it. Throws a
+  /// [SmartschoolLessonContentError] when it lacks its `id`, `platformId` or
+  /// `type`, or holds a part in an unknown shape.
+  factory LessonContentItem.fromJson(Map<String, dynamic> json) {
+    final id = _requiredString(json, 'id', 'a lesfiche');
+    final what = 'lesfiche $id';
+    final typeName = _requiredString(json, 'type', what);
+    final assignmentType = _optionalMap(
+      json['assignmentType'],
+      'the assignment type of $what',
+    );
+    final capabilities =
+        _optionalMap(json['capabilities'], 'the capabilities of $what') ??
+        const <String, dynamic>{};
+    return LessonContentItem(
+      id: id,
+      platformId: _requiredInt(json, 'platformId', what),
+      type: LessonContentType.fromWire(typeName),
+      typeName: typeName,
+      name: (_optionalString(json['name']) ?? '').trim(),
+      icon: _optionalString(json['icon']),
+      publicInfo: _optionalString(json['publicInfo']) ?? '',
+      isVisible: json['isVisible'] == null || _bool(json['isVisible']),
+      ownerId: _optionalString(json['owner']),
+      dateLastChanged: _optionalDateTime(
+        json['dateLastChanged'],
+        'the last change of $what',
+      ),
+      dateStateChanged: _optionalDateTime(
+        json['dateStateChanged'],
+        'the state change of $what',
+      ),
+      courses: _objects(
+        json['courses'],
+        'the courses of $what',
+        LessonContentCourse.fromJson,
+      ),
+      labels: _objects(
+        json['labels'],
+        'the labels of $what',
+        LessonContentLabel.fromJson,
+      ),
+      assignmentType: assignmentType == null
+          ? null
+          : _assignmentType(assignmentType, what),
+      attachmentCount: _list(
+        json['attachments'],
+        'the attachments of $what',
+      ).length,
+      weblinkCount: _list(json['weblinks'], 'the weblinks of $what').length,
+      partnerWeblinkCount: _list(
+        json['partnerWeblinks'],
+        'the partner weblinks of $what',
+      ).length,
+      deeplinkCount: _list(json['deeplinks'], 'the deeplinks of $what').length,
+      capabilities: Map.unmodifiable({
+        for (final MapEntry(:key, :value) in capabilities.entries)
+          if (value is bool) key: value,
+      }),
+      raw: Map.unmodifiable(json),
+    );
+  }
+
+  /// Capability [flag] (such as `canUserEdit`); `false` when the module left
+  /// it out.
+  bool can(String flag) => capabilities[flag] ?? false;
+
+  @override
+  String toString() => 'LessonContentItem($typeName $id "$name")';
+}
+
+// ---------------------------------------------------------------------------
+// Parsing helpers
+// ---------------------------------------------------------------------------
+
+/// [json] as a [PlannerAssignmentType]: the same object as the planner's.
+PlannerAssignmentType _assignmentType(Map<String, dynamic> json, String what) {
+  try {
+    return PlannerAssignmentType.fromJson(json);
+  } on SmartschoolPlannerError catch (e) {
+    throw SmartschoolLessonContentError(
+      'The Lesfiches module gave the assignment type of $what in an unknown '
+      'shape: ${e.message}',
+    );
+  }
+}
+
+String _kind(Object? value) => switch (value) {
+  null => 'null',
+  String() => 'a string',
+  num() => 'a number',
+  bool() => 'a boolean',
+  List() => 'a list',
+  Map() => 'an object',
+  _ => value.runtimeType.toString(),
+};
+
+Map<String, dynamic> _map(Object? value, String what) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return {for (final e in value.entries) '${e.key}': e.value};
+  throw SmartschoolLessonContentError(
+    'The Lesfiches module gave $what as ${_kind(value)} instead of an object.',
+  );
+}
+
+Map<String, dynamic>? _optionalMap(Object? value, String what) =>
+    value == null ? null : _map(value, what);
+
+List<dynamic> _list(Object? value, String what) {
+  if (value == null) return const [];
+  if (value is List) return value;
+  throw SmartschoolLessonContentError(
+    'The Lesfiches module gave $what as ${_kind(value)} instead of a list.',
+  );
+}
+
+/// The objects in list [value], each parsed with [parse].
+List<T> _objects<T>(
+  Object? value,
+  String what,
+  T Function(Map<String, dynamic>) parse,
+) => List.unmodifiable([
+  for (final item in _list(value, what)) parse(_map(item, 'one of $what')),
+]);
+
+String _requiredString(Map<String, dynamic> json, String key, String what) {
+  final value = json[key];
+  if (value is String && value.trim().isNotEmpty) return value;
+  if (value is int) return '$value';
+  throw SmartschoolLessonContentError(
+    'The Lesfiches module gave $what without its $key (${_kind(value)}).',
+  );
+}
+
+String? _optionalString(Object? value) => switch (value) {
+  null => null,
+  String() => value,
+  num() || bool() => '$value',
+  _ => throw SmartschoolLessonContentError(
+    'The Lesfiches module gave ${_kind(value)} where it gives a text.',
+  ),
+};
+
+int _requiredInt(Map<String, dynamic> json, String key, String what) {
+  final value = json[key];
+  final number = switch (value) {
+    int() => value,
+    String() => int.tryParse(value.trim()),
+    _ => null,
+  };
+  if (number != null) return number;
+  throw SmartschoolLessonContentError(
+    'The Lesfiches module gave $what without a numeric $key (${_kind(value)}).',
+  );
+}
+
+bool _bool(Object? value) => value == true || value == 1 || value == 'true';
+
+/// The date of [value] (`2025-09-01 19:51:25`, without an offset: read as
+/// local time; with an offset, moved to local time), or `null` for none.
+DateTime? _optionalDateTime(Object? value, String what) {
+  if (value == null || value is String && value.trim().isEmpty) return null;
+  final parsed = value is String ? DateTime.tryParse(value.trim()) : null;
+  if (parsed == null) {
+    throw SmartschoolLessonContentError(
+      'The Lesfiches module gave $what as "$value", which is not a date and '
+      'time.',
+    );
+  }
+  return parsed.toLocal();
+}

@@ -511,7 +511,8 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
 /// [SmartschoolPlannerWriteRefusedError], another one.
 ///
 /// From the writes of `PlannerService` (`planLesson`, `renameElement`,
-/// `changePublicInfo`, `changePrivateInfo`, `clearLesson`, #87), this type
+/// `changePublicInfo`, `changePrivateInfo`, `clearLesson`, #87;
+/// `planLessonContent`, #88), this type
 /// and its subtypes always mean that **nothing was sent**: the read before
 /// the write failed, or a check refused it. A write that went out without
 /// the planner confirming it is a [SmartschoolPlannerSaveUnconfirmedError]
@@ -565,8 +566,9 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// must allow the change (`canUserReplace` to fill a timetable slot,
 /// `canUserEdit` with `canUserRename`, `canUserChangePublicInfo` or
 /// `canUserChangePrivateInfo` to edit, `canUserEdit` to clear). A slot must
-/// still be a slot, in the period it was read with; the method says which
-/// check refused.
+/// still be a slot, in the period it was read with. A lesfiche planned into
+/// a slot (`planLessonContent`, #88) must be a lesson lesfiche among the
+/// user's lesfiches. The method says which check refused.
 ///
 /// A [SmartschoolPlannerError] (without a [statusCode]), so that from the
 /// writes that type always means nothing was sent. An element that is gone
@@ -582,7 +584,8 @@ class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
 ///
 /// **The change may or may not have been made.** Read the element again
 /// (`PlannerService.getDetail`) before trying again; the message says what
-/// to read. For the fill of a timetable slot (`planLesson`) and the clear of
+/// to read. For the fill of a timetable slot (`planLesson`,
+/// `planLessonContent`) and the clear of
 /// a lesson (`clearLesson`), the planner answers the element they replaced
 /// with `404` once the change went through. Calling the method again is safe
 /// in itself: it reads the element first, so a fill or a clear that did go
@@ -619,6 +622,32 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
     this.statusCode,
     this.cause,
   });
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown when Smartschool's Lesfiches module (lesson content) answers a
+/// request with something `LessonContentService` cannot use (#88): another
+/// HTTP status than `200` (in [statusCode]), an HTML page instead of data
+/// (the module answers a route it does not know with its web app), an
+/// answer that is not valid JSON, or data in a shape it does not recognise
+/// (such as a lesfiche without its `id` or `type`).
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept is a [SmartschoolSessionExpiredError]
+/// instead.
+///
+/// `PlannerService.planLessonContent` reads the lesfiches before it plans
+/// one; this error from it means that **nothing was sent** to the planner.
+class SmartschoolLessonContentError extends SmartschoolException {
+  /// The HTTP status of the module's answer when it was not `200`; `null`
+  /// when the answer had status `200` but could not be used.
+  final int? statusCode;
+
+  const SmartschoolLessonContentError(super.message, {this.statusCode});
 
   @override
   String toString() => statusCode == null

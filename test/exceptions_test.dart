@@ -219,6 +219,23 @@ void main() {
     });
   });
 
+  group('lesson content errors (#88)', () {
+    test('SmartschoolLessonContentError is a SmartschoolException, not a '
+        'session problem nor a planner error, and shows its status when it '
+        'has one', () {
+      const error = SmartschoolLessonContentError('refused', statusCode: 500);
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error, isNot(isA<SmartschoolPlannerError>()));
+      expect(error.statusCode, 500);
+      expect(error.toString(), 'SmartschoolLessonContentError(500): refused');
+      expect(
+        const SmartschoolLessonContentError('unknown shape').toString(),
+        'SmartschoolLessonContentError: unknown shape',
+      );
+    });
+  });
+
   group('SmartschoolClientDisposedError (#73)', () {
     const message = 'SmartschoolClient was disposed: it sends no more requests';
 

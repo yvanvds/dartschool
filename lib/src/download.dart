@@ -17,9 +17,13 @@ import 'exceptions.dart';
 /// as the file), answered with HTTP `200`, and did not announce a size above
 /// the `maxBytes` asked for.
 ///
-/// Read [stream] once, or call [cancel] to leave the rest unread. Until
-/// [stream] is listened to, the HTTP client keeps what comes in in memory,
-/// so listen to it right away.
+/// Read [stream] once, or call [cancel] to leave the rest unread: until
+/// either, the download keeps its connection open. Until [stream] is
+/// listened to, the transfer waits, as while it is paused: no more of the
+/// content comes in than the few chunks that arrived while the client
+/// handled the headers (#81). So it may be listened to later, such as once
+/// the file it is written to is open, and `maxBytes` limits what comes in,
+/// not only what is read.
 ///
 /// ```dart
 /// final download = await IntradeskService(client).downloadFileStream(
@@ -45,9 +49,10 @@ class SmartschoolDownload {
   /// file: `stream.pipe(file.openWrite())`, which also closes the file when
   /// the stream fails, and then completes with the stream's error.
   ///
-  /// Pausing the subscription pauses the transfer. Cancelling it stops the
-  /// transfer and closes the connection, and so does an error: the stream
-  /// ends at the first one.
+  /// Pausing the subscription pauses the transfer, and until the stream is
+  /// listened to, the transfer waits as well. Cancelling the subscription
+  /// stops the transfer and closes the connection, and so does an error: the
+  /// stream ends at the first one.
   ///
   /// The errors, from the client's downloads:
   /// - a [SmartschoolDownloadTooLargeError] once more than `maxBytes` bytes

@@ -2,10 +2,18 @@
 // `SmartschoolAuthenticationError`, so callers can match on the type instead
 // of on the message text.
 //
+// Issue #79: a TOTP secret that was not plain Base32 (copied in groups with
+// spaces, or the 6-digit code of the authenticator app) failed the login with
+// a bare `FormatException` of the otp package, after the password was posted.
+// The secret is now normalised, and one that is not a key is a
+// `SmartschoolInvalidTotpSecretError`, before the password when it is not a
+// date either.
+//
 // The tests drive the real auth interceptor against a fake Smartschool
 // (`HttpClientAdapter`) that walks the login chain the way the live platform
 // does: the login POST and the account-verification POST are answered with a
 // 302 the client follows itself (see #6), and the 2FA API answers with JSON.
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -13,6 +21,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/src/credentials.dart';
 import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/session.dart';
+import 'package:otp/otp.dart';
 import 'package:test/test.dart';
 
 import 'support/no_network.dart';
@@ -52,8 +61,9 @@ const _accountVerificationPage = '''
 </body></html>
 ''';
 
-/// The step Smartschool asks for after an accepted password.
-enum _SecondStep { twoFactor, accountVerification }
+/// The step Smartschool asks for after an accepted password: none (an
+/// account without 2FA, such as a pupil's), 2FA or account verification.
+enum _SecondStep { none, twoFactor, accountVerification }
 
 /// How the 2FA API answers the code the client posts.
 enum _TwoFactorAnswer {
@@ -83,10 +93,13 @@ class _FakeSmartschool implements HttpClientAdapter {
   final bool verificationAccepted;
 
   bool _passwordDone = false;
-  bool _secondStepDone = false;
+  late bool _secondStepDone = secondStep == _SecondStep.none;
 
   /// Every request the client made, as `METHOD path`.
   final List<String> log = <String>[];
+
+  /// Every 2FA code the client posted.
+  final List<String> postedCodes = <String>[];
 
   @override
   Future<ResponseBody> fetch(
@@ -108,6 +121,8 @@ class _FakeSmartschool implements HttpClientAdapter {
     }
 
     if (path == '/2fa/api/v1/google-authenticator') {
+      final body = jsonDecode(options.data as String) as Map<String, dynamic>;
+      postedCodes.add(body['google2fa'] as String);
       switch (twoFactorAnswer) {
         case _TwoFactorAnswer.accept:
           _secondStepDone = true;
@@ -131,6 +146,7 @@ class _FakeSmartschool implements HttpClientAdapter {
     if (!_passwordDone) return _page(path, '/login', _loginPage);
     if (!_secondStepDone) {
       return switch (secondStep) {
+        _SecondStep.none => throw StateError('no second step to show'),
         _SecondStep.twoFactor => _page(
           path,
           '/2fa',
@@ -416,6 +432,168 @@ void main() {
         client.ensureAuthenticated(),
         throwsA(isA<SmartschoolTwoFactorRejectedError>()),
       );
+    });
+  });
+
+  group('a TOTP secret that is not plain Base32 (#79)', () {
+    const secret = _totpSecret;
+
+    /// The code an authenticator app set up with [secret] shows now.
+    String codeNow() => OTP.generateTOTPCodeString(
+      secret,
+      DateTime.now().millisecondsSinceEpoch,
+      length: 6,
+      interval: 30,
+      algorithm: Algorithm.SHA1,
+      isGoogle: true,
+    );
+
+    final copies = <String, String>{
+      'in groups with spaces': 'JBSW Y3DP EHPK 3PXP',
+      'in groups with hyphens': 'JBSW-Y3DP-EHPK-3PXP',
+      'in lower case, with = padding': 'jbswy3dpehpk3pxp====',
+    };
+    for (final MapEntry(key: copy, value: key) in copies.entries) {
+      test('a key copied $copy logs in with the code of the key', () async {
+        final server = _FakeSmartschool();
+        await clientFor(server, mfa: key);
+
+        final before = codeNow();
+        expect(await client.getRaw('/index'), contains('home'));
+        final after = codeNow();
+
+        // The code of the key itself (the 30-second window may have turned
+        // during the login).
+        expect(server.postedCodes, [anyOf(before, after)]);
+      });
+    }
+
+    final notKeys = <String, String>{
+      'the 6-digit code of the authenticator app': '123456',
+      'a key with a character that is not Base32': 'JBSW Y3DP EHPK 3PX1',
+    };
+    for (final MapEntry(key: what, value: mfa) in notKeys.entries) {
+      test('$what fails the login with a SmartschoolInvalidTotpSecretError, '
+          'before the password is posted', () async {
+        final server = _FakeSmartschool();
+        await clientFor(server, mfa: mfa);
+
+        await expectLater(
+          client.getRaw('/index'),
+          throwsA(
+            isA<SmartschoolInvalidTotpSecretError>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                contains('did not post the password'),
+                contains('not the 6-digit code'),
+              ),
+            ),
+          ),
+        );
+        // Only the request that found the session cold: the login neither
+        // loaded the login form nor posted the password.
+        expect(server.log, ['GET /index']);
+      });
+    }
+
+    test('ensureAuthenticated() and platformId throw it as itself', () async {
+      final server = _FakeSmartschool();
+      await clientFor(server, mfa: '123456');
+
+      await expectLater(
+        client.ensureAuthenticated(),
+        throwsA(isA<SmartschoolInvalidTotpSecretError>()),
+      );
+      await expectLater(
+        client.platformId,
+        throwsA(isA<SmartschoolInvalidTotpSecretError>()),
+      );
+      expect(server.log, isNot(contains('POST /login')));
+    });
+
+    test('a request on client.dio gets it as the error of the DioException, '
+        'not a FormatException', () async {
+      await clientFor(_FakeSmartschool(), mfa: '123456');
+
+      await expectLater(
+        client.dio.get<String>('/index'),
+        throwsA(
+          isA<DioException>().having(
+            (e) => e.error,
+            'error',
+            isA<SmartschoolInvalidTotpSecretError>(),
+          ),
+        ),
+      );
+    });
+
+    test('every login fails that way without sending anything, so none '
+        'counts toward the limit on logins in a row', () async {
+      final server = _FakeSmartschool();
+      await clientFor(server, mfa: '123456');
+
+      for (var i = 1; i <= 4; i++) {
+        await expectLater(
+          client.getRaw('/index'),
+          throwsA(isA<SmartschoolInvalidTotpSecretError>()),
+          reason: '#$i',
+        );
+      }
+      expect(server.log, List.filled(4, 'GET /index'));
+    });
+
+    // An mfa that is empty once trimmed is no key, at the check before the
+    // password as at the steps after it: an account without 2FA (a pupil's)
+    // logs in with one, as before.
+    final blanks = <String, String>{
+      'spaces': '   ',
+      'a tab and a line break': '\t\n',
+      'a non-breaking space': '\u00a0',
+    };
+    for (final MapEntry(key: what, value: mfa) in blanks.entries) {
+      test('an mfa of only $what is no key: an account without a second step '
+          'logs in', () async {
+        final server = _FakeSmartschool(secondStep: _SecondStep.none);
+        await clientFor(server, mfa: mfa);
+
+        expect(await client.getRaw('/index'), contains('home'));
+        expect(server.log, contains('POST /login'));
+      });
+
+      test('an mfa of only $what is no key: 2FA is a '
+          'SmartschoolTwoFactorRequiredError', () async {
+        final server = _FakeSmartschool();
+        await clientFor(server, mfa: mfa);
+
+        await expectLater(
+          client.getRaw('/index'),
+          throwsA(isA<SmartschoolTwoFactorRequiredError>()),
+        );
+        expect(server.log, contains('POST /login'));
+        expect(server.log.where((l) => l.contains('/2fa/api/')), isEmpty);
+      });
+    }
+
+    test('a date on an account with 2FA fails at the 2FA step, before any '
+        'request of it', () async {
+      // A date passes the check before the password: it is the answer to
+      // account verification. At the 2FA step it is no key.
+      final server = _FakeSmartschool();
+      await clientFor(server, mfa: '2010-05-15');
+
+      await expectLater(
+        client.getRaw('/index'),
+        throwsA(
+          isA<SmartschoolInvalidTotpSecretError>().having(
+            (e) => e.message,
+            'message',
+            contains('not a Base32 key'),
+          ),
+        ),
+      );
+      expect(server.log, contains('POST /login'));
+      expect(server.log.where((l) => l.contains('/2fa/api/')), isEmpty);
     });
   });
 }

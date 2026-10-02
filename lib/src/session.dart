@@ -396,6 +396,14 @@ class SmartschoolClient {
   /// itself: Dio would read a response to its end after its reader stopped
   /// listening.
   ///
+  /// Until the stream is listened to, the transfer waits, as while it is
+  /// paused: no more of the content comes in than the few chunks that
+  /// arrived while the client handled the headers, however late the stream
+  /// is listened to (#81). So it can be listened to once the file it is
+  /// written to is open. A download that is neither read nor cancelled keeps
+  /// its connection open. (A `receiveTimeout` set on [dio] counts that wait,
+  /// as it counts a pause.)
+  ///
   /// A session that Smartschool refuses is handled as for every request: it
   /// answers the download with its login chain (or `401`) instead of the
   /// file, the client logs in again and retries the download once, and the
@@ -410,7 +418,10 @@ class SmartschoolClient {
   /// (`Content-Length`), this throws it and nothing is read. Otherwise the
   /// bytes are counted as they come in, and the stream ends with it once
   /// more than [maxBytes] came in, after at most [maxBytes] bytes. Either way
-  /// the client stops the transfer. Must not be negative.
+  /// the client stops the transfer. Every byte of the content counts, also
+  /// one that came in before the stream was listened to: whenever it is
+  /// listened to, the transfer, and what the client holds of it in memory,
+  /// stays within [maxBytes] and a few chunks (#81). Must not be negative.
   ///
   /// Throws a [SmartschoolDownloadError] when Smartschool answers with
   /// another status than `200` (such as `404` for an Intradesk file that
@@ -939,7 +950,7 @@ class SmartschoolClient {
       'form[name="account_verification_form"] input[name*="_security_question_answer"]',
     );
     final expectsDate = answerInput?.attributes['type'] == 'date';
-    final dateLike = RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(mfa.trim());
+    final dateLike = _dateAnswer.hasMatch(mfa.trim());
     if (expectsDate && !dateLike) {
       throw const SmartschoolAccountVerificationRequiredError(
         'Account verification expects a date (yyyy-mm-dd), but mfa looks like '
@@ -960,12 +971,46 @@ class SmartschoolClient {
     );
   }
 
+  /// An account verification answer as Smartschool's date field takes it.
+  static final _dateAnswer = RegExp(r'^\d{4}-\d{2}-\d{2}$');
+
+  /// Throws a [SmartschoolInvalidTotpSecretError] when [Credentials.mfa] can
+  /// answer neither step that may follow the password: it is not a date for
+  /// the account verification, and not a TOTP secret for the 2FA step (#79).
+  ///
+  /// Run before a login loads the login form, so that an `mfa` that cannot
+  /// work does not cost a password login, on every login. An `mfa` that is
+  /// empty once trimmed (no `mfa`, as the steps after the password take it)
+  /// or a date passes: the steps after the password check it as they use it.
+  void _checkMfaBeforeLogin() {
+    final mfa = credentials.mfa?.trim();
+    if (mfa == null || mfa.isEmpty || _dateAnswer.hasMatch(mfa)) return;
+    try {
+      Credentials.normalizeTotpSecret(mfa);
+    } on SmartschoolInvalidTotpSecretError {
+      throw const SmartschoolInvalidTotpSecretError(
+        'mfa is neither a TOTP secret nor a date (yyyy-mm-dd) for account '
+        'verification, so the login did not post the password. As a TOTP '
+        'secret, use the key Smartschool shows when an authenticator app is '
+        'added (the letters A-Z and the digits 2-7; spaces and hyphens are '
+        'ignored), not the 6-digit code the app shows.',
+      );
+    }
+  }
+
   /// Handles the `/2fa` page: generates a TOTP code and POSTs it.
+  ///
+  /// The code is generated from [Credentials.mfa] as
+  /// [Credentials.normalizeTotpSecret] returns it, so a secret copied in
+  /// groups works; one that is not a TOTP secret throws its
+  /// [SmartschoolInvalidTotpSecretError] before anything of this step is sent
+  /// (#79).
   Future<Response<String>> do2fa() async {
     final mfa = credentials.mfa;
     if (mfa == null || mfa.trim().isEmpty) {
       throw const SmartschoolTwoFactorRequiredError();
     }
+    final secret = Credentials.normalizeTotpSecret(mfa);
 
     // Verify TOTP is configured on this account
     final configResp = await _rawGet('/2fa/api/v1/config');
@@ -980,7 +1025,7 @@ class SmartschoolClient {
     }
 
     final code = OTP.generateTOTPCodeString(
-      mfa,
+      secret,
       DateTime.now().millisecondsSinceEpoch,
       length: 6,
       interval: 30,
@@ -1378,16 +1423,23 @@ class SmartschoolClient {
 /// client throws for it, and stops the transfer when the content is not
 /// read to its end.
 ///
-/// Dio subscribes to the body of a response as soon as it comes in, and
-/// keeps reading it to its end when the reader of a `ResponseType.stream`
-/// body cancels its subscription; only cancelling the request (its
-/// [CancelToken]) closes the connection. So the transfer is stopped by
-/// cancelling the download's token: when the reader cancels its
+/// Dio subscribes to the body of a response as soon as its headers are in,
+/// and keeps what comes in in memory until the body is listened to. So the
+/// body is taken over as soon as the download has its answer, and held
+/// until the reader listens: its subscription is paused, which pauses the
+/// transfer (#81). What came in before then is no more than the chunks that
+/// arrived while the client handled the headers, and every byte of the
+/// content is counted against `maxBytes`, whenever the reader listens.
+///
+/// Dio also keeps reading a body to its end when the reader of a
+/// `ResponseType.stream` body cancels its subscription; only cancelling the
+/// request (its [CancelToken]) closes the connection. So the transfer is
+/// stopped by cancelling the download's token: when the reader cancels its
 /// subscription before the end, when more than `maxBytes` bytes came in,
 /// on [cancel], and when the transfer fails.
 class _DownloadContent {
   _DownloadContent(
-    this._source, {
+    Stream<List<int>> source, {
     required CancelToken cancelToken,
     required int? maxBytes,
     required Object Function() tooLarge,
@@ -1397,10 +1449,15 @@ class _DownloadContent {
        _maxBytes = maxBytes,
        _tooLarge = tooLarge,
        _failure = failure,
-       _cancelled = cancelled;
-
-  /// The body of the response, as Dio hands it on.
-  final Stream<Uint8List> _source;
+       _cancelled = cancelled {
+    // Held until the reader listens (see [_listen]).
+    _subscription = source.listen(
+      _onData,
+      onError: _onError,
+      onDone: _onDone,
+      cancelOnError: true,
+    )..pause();
+  }
 
   /// The token of the download's request, and of its retry after a login.
   final CancelToken _cancelToken;
@@ -1418,12 +1475,13 @@ class _DownloadContent {
 
   late final StreamController<List<int>> _reader = StreamController(
     onListen: _listen,
-    onPause: () => _subscription?.pause(),
-    onResume: () => _subscription?.resume(),
+    onPause: () => _subscription.pause(),
+    onResume: () => _subscription.resume(),
     onCancel: _readerCancelled,
   );
 
-  StreamSubscription<List<int>>? _subscription;
+  /// The subscription to the body of the response, as Dio hands it on.
+  late final StreamSubscription<List<int>> _subscription;
   int _received = 0;
 
   /// Whether the content ended: it was read to its end, the transfer failed
@@ -1439,12 +1497,8 @@ class _DownloadContent {
   void _listen() {
     // Cancelled before it was read: the error is waiting for the reader.
     if (_finished) return;
-    _subscription = _source.listen(
-      _onData,
-      onError: _onError,
-      onDone: _onDone,
-      cancelOnError: true,
-    );
+    // The transfer, held until now, goes on.
+    _subscription.resume();
   }
 
   void _onData(List<int> chunk) {
@@ -1478,7 +1532,7 @@ class _DownloadContent {
     if (_finished) return;
     _finished = true;
     _cancelToken.cancel();
-    _subscription?.cancel();
+    _subscription.cancel();
     _reader
       ..addError(error)
       ..close();
@@ -1490,7 +1544,7 @@ class _DownloadContent {
     if (_finished) return null;
     _finished = true;
     _cancelToken.cancel();
-    return _subscription?.cancel();
+    return _subscription.cancel();
   }
 }
 
@@ -1955,17 +2009,25 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// Counts the login toward [_maxLoginAttempts] and in [_loginsStarted]
   /// and, when it completes, moves the client to the next
   /// [_sessionGeneration].
+  ///
+  /// A login that would post the password first checks that the credentials'
+  /// `mfa` can answer a step after it (#79): when it cannot, it throws the
+  /// [SmartschoolInvalidTotpSecretError] before it sends anything, so it is
+  /// not counted.
   Future<void> _logIn(Response<dynamic> response, Uri? loginChain) async {
+    final realUri = response.realUri;
+    final landedOnChain = _client.isAuthUri(realUri);
+    final start = landedOnChain ? realUri : loginChain;
+    final fromLoginForm = start == null || start.path.endsWith('/login');
+    if (fromLoginForm) _client._checkMfaBeforeLogin();
+
     _loginsStarted++;
     _loginAttempts++;
     _lastLoginAt = _clock();
     _rejectedCredentials = null;
 
     try {
-      final realUri = response.realUri;
-      final landedOnChain = _client.isAuthUri(realUri);
-      final start = landedOnChain ? realUri : loginChain;
-      if (start == null || start.path.endsWith('/login')) {
+      if (fromLoginForm) {
         final loginPage = await _client._rawGet(
           start?.toString() ?? '/login',
           newSession: true,
@@ -2013,12 +2075,14 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// Whether [e] says that the credentials do not get past the login chain:
   /// Smartschool rejected the password, the 2FA code or the account
   /// verification answer, or asked for a 2FA code or verification answer they
-  /// do not hold (#11). Logging in with them again does not help, and every
-  /// rejected attempt brings the account closer to being locked (#32).
+  /// do not hold (#11), or a 2FA code while their TOTP secret is not one
+  /// (#79). Logging in with them again does not help, and every rejected
+  /// attempt brings the account closer to being locked (#32).
   static bool _rejectsCredentials(SmartschoolAuthenticationError e) =>
       e is SmartschoolInvalidCredentialsError ||
       e is SmartschoolTwoFactorRequiredError ||
       e is SmartschoolTwoFactorRejectedError ||
+      e is SmartschoolInvalidTotpSecretError ||
       e is SmartschoolUnsupportedTwoFactorMethodError ||
       e is SmartschoolAccountVerificationRequiredError ||
       e is SmartschoolAccountVerificationRejectedError;

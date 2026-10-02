@@ -142,14 +142,21 @@ typedef _Request = ({String label, Map<String, String> fields, List params});
 /// A Smartschool that answers the assignments page of a class, and the RPC
 /// methods getTeachers, getMyGroups and saveOwner of owners.php.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool({String? page, String? myGroups, _Answer? save, this.failSave})
-    : page = _ok(page ?? _pageBeforeAdd),
-      myGroups = _ok(myGroups ?? _noGroups),
-      save = save ?? _ok(_addAnswer);
+  _Smartschool({
+    String? page,
+    String? myGroups,
+    _Answer? save,
+    this.failSave,
+    _Answer? teachers,
+  }) : page = _ok(page ?? _pageBeforeAdd),
+       myGroups = _ok(myGroups ?? _noGroups),
+       save = save ?? _ok(_addAnswer),
+       teachers = teachers ?? _ok(_teachersAnswer);
 
   final _Answer page;
   final _Answer myGroups;
   final _Answer save;
+  final _Answer teachers;
 
   /// When set, saveOwner fails with what it returns, after it went out.
   final Object Function(RequestOptions options)? failSave;
@@ -193,7 +200,7 @@ class _Smartschool implements HttpClientAdapter {
       ));
       switch (method) {
         case 'getTeachers':
-          return _respond(_ok(_teachersAnswer));
+          return _respond(teachers);
         case 'getMyGroups':
           return _respond(myGroups);
         case 'saveOwner':
@@ -224,11 +231,34 @@ class _Smartschool implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-/// A refusal before the save: a [SmartschoolSkoreError] that says nothing was
-/// saved.
-Matcher _refused(Object? message) => isA<SmartschoolSkoreError>()
-    .having((e) => e.message, 'message', message)
-    .having((e) => e.message, 'message', contains('Nothing was saved'));
+/// A refusal before the save: a [SmartschoolSkoreChangeRefusedError] (#83),
+/// still a [SmartschoolSkoreError], that says nothing was saved.
+Matcher _refused(Object? message) => allOf(
+  isA<SmartschoolSkoreError>(),
+  isA<SmartschoolSkoreChangeRefusedError>()
+      .having((e) => e.message, 'message', message)
+      .having((e) => e.message, 'message', contains('Nothing was saved')),
+);
+
+/// An answer the service cannot use: a plain [SmartschoolSkoreError] (#83),
+/// neither a missing right nor a refused change, that says nothing was saved.
+Matcher _unusable(Object? message) => allOf(
+  isNot(isA<SmartschoolSkoreAccessDeniedError>()),
+  isNot(isA<SmartschoolSkoreChangeRefusedError>()),
+  isA<SmartschoolSkoreError>()
+      .having((e) => e.message, 'message', message)
+      .having((e) => e.message, 'message', contains('Nothing was saved')),
+);
+
+/// Skore's refusal of a request to an account without the rights, as HTTP
+/// defines it (403 Forbidden), with a page that names the user. What Skore
+/// really answers such an account has not been captured (#91).
+const _forbidden = (
+  status: 403,
+  body:
+      '<!DOCTYPE html><html><body><h1>Geen toegang</h1>'
+      '<p>Jan Janssens heeft geen rechten voor deze pagina.</p></body></html>',
+);
 
 /// A save that went out without Skore confirming it.
 Matcher _unconfirmed(Object? message, {Object? cause = isNull}) => allOf(
@@ -422,15 +452,14 @@ void main() {
               teacherId: 1006,
             ),
             throwsA(
-              isA<SmartschoolSkoreMyGroupsError>()
-                  .having((e) => e.classId, 'classId', 2516)
-                  .having((e) => e.courseId, 'courseId', 1588)
-                  .having((e) => e.teacherId, 'teacherId', 1005)
-                  .having(
-                    (e) => e.message,
-                    'message',
-                    contains('Nothing was saved'),
-                  ),
+              allOf(
+                // A refused change, like the other checks (#83).
+                _refused(contains('Mijn lesgroepen')),
+                isA<SmartschoolSkoreMyGroupsError>()
+                    .having((e) => e.classId, 'classId', 2516)
+                    .having((e) => e.courseId, 'courseId', 1588)
+                    .having((e) => e.teacherId, 'teacherId', 1005),
+              ),
             ),
           );
           expect(server.log, [_readClass, _getTeachers, _getMyGroups]);
@@ -462,12 +491,7 @@ void main() {
               assignmentId: 34826,
               teacherId: 1006,
             ),
-            throwsA(
-              allOf(
-                isNot(isA<SmartschoolSkoreMyGroupsError>()),
-                _refused(contains('getMyGroups')),
-              ),
-            ),
+            throwsA(_unusable(contains('getMyGroups'))),
           );
           expect(server.log, [_readClass, _getTeachers, _getMyGroups]);
         });
@@ -645,6 +669,34 @@ void main() {
       expect(server.log, [_readClass, _getTeachers, _readClass, _getTeachers]);
     });
 
+    test('Skore refusing the teachers with HTTP 403: a missing right in '
+        'report management, not a refused change (#83)', () async {
+      final server = _Smartschool(teachers: _forbidden);
+      final skore = await serve(server);
+
+      await expectLater(
+        skore.addTeacher(classId: 2516, courseId: 1588, teacherId: 1005),
+        throwsA(
+          allOf(
+            isA<SmartschoolSkoreError>(),
+            isNot(isA<SmartschoolSkoreChangeRefusedError>()),
+            isA<SmartschoolSkoreAccessDeniedError>()
+                .having((e) => e.area, 'area', SkoreAccessArea.reportManagement)
+                .having(
+                  (e) => e.message,
+                  'message',
+                  allOf(
+                    contains('getTeachers'),
+                    contains('report management'),
+                    isNot(contains('Janssens')),
+                  ),
+                ),
+          ),
+        ),
+      );
+      expect(server.log, [_readClass, _getTeachers]);
+    });
+
     test('Smartschool cannot be reached for the class: a '
         'SmartschoolConnectionError, not unconfirmed', () async {
       final server = _UnreachableClassPage();
@@ -746,6 +798,27 @@ void main() {
         expect(server.log, [_readClass, _getTeachers, _saveOwner]);
       });
     }
+
+    test('HTTP 403 to the save: unconfirmed, with the missing right as its '
+        'cause (#83)', () async {
+      final server = _Smartschool(save: _forbidden);
+      final skore = await serve(server);
+
+      await expectLater(
+        skore.addTeacher(classId: 2516, courseId: 1588, teacherId: 1005),
+        throwsA(
+          _unconfirmed(
+            contains('no usable answer'),
+            cause: isA<SmartschoolSkoreAccessDeniedError>().having(
+              (e) => e.area,
+              'area',
+              SkoreAccessArea.reportManagement,
+            ),
+          ),
+        ),
+      );
+      expect(server.log, [_readClass, _getTeachers, _saveOwner]);
+    });
 
     test('the connection drops after the save went out', () async {
       final server = _Smartschool(

@@ -1,3 +1,5 @@
+import 'models/skore_models.dart' show SkoreAccessArea;
+
 /// Base exception for all Smartschool API errors.
 class SmartschoolException implements Exception {
   final String message;
@@ -18,6 +20,8 @@ class SmartschoolException implements Exception {
 /// - [SmartschoolTwoFactorRequiredError]: Smartschool asks for a 2FA code, but
 ///   the credentials hold no TOTP secret (`mfa`).
 /// - [SmartschoolTwoFactorRejectedError]: the 2FA code was rejected.
+/// - [SmartschoolInvalidTotpSecretError]: the TOTP secret (`mfa`) is not a
+///   Base32 key, such as the 6-digit code of the authenticator app.
 /// - [SmartschoolUnsupportedTwoFactorMethodError]: the account uses a 2FA
 ///   method other than an authenticator app (Google Authenticator).
 /// - [SmartschoolAccountVerificationRequiredError]: Smartschool asks for
@@ -88,6 +92,40 @@ class SmartschoolTwoFactorRejectedError extends SmartschoolAuthenticationError {
     super.message =
         '2FA verification failed. Check your TOTP secret (mfa) and '
         'ensure your device time is synchronized.',
+  ]);
+}
+
+/// Thrown when the TOTP secret in `mfa` is not one (#79): with white space
+/// and hyphens removed, it is empty, holds a character that is not Base32
+/// (the letters A-Z and the digits 2-7, with `=` padding only at the end), or
+/// holds only digits, such as the 6-digit code an authenticator app shows
+/// rather than the key it was set up with. Lower case is fine.
+///
+/// The login checks `mfa` before it loads the login form and posts the
+/// password, when `mfa` is not a date (`yyyy-mm-dd`, the answer to
+/// Smartschool's account verification) and not empty once trimmed (an `mfa`
+/// of only white space is no `mfa`, there as at the steps after the
+/// password, which throw [SmartschoolTwoFactorRequiredError] and
+/// [SmartschoolAccountVerificationRequiredError] for it): such an `mfa` can
+/// answer neither
+/// the 2FA step nor the account verification, so the login sends nothing,
+/// and every login fails this way until the credentials are fixed. That
+/// holds for an account that would not ask for either step too: set `mfa`
+/// only to a date or a TOTP secret. An `mfa` that is a date is checked when
+/// Smartschool asks for a 2FA code: after the password, before anything of
+/// the 2FA step is sent; the client then counts it as rejected credentials
+/// (see [SmartschoolSessionExpiredError]).
+///
+/// `Credentials.normalizeTotpSecret` runs the same check without a client,
+/// for instance where a user enters the key. The message never holds the
+/// secret.
+class SmartschoolInvalidTotpSecretError extends SmartschoolAuthenticationError {
+  const SmartschoolInvalidTotpSecretError([
+    super.message =
+        'The TOTP secret (mfa) is not a Base32 key. Use the key Smartschool '
+        'shows when an authenticator app is added (the letters A-Z and the '
+        'digits 2-7; spaces and hyphens are ignored), not the 6-digit code '
+        'the app shows.',
   ]);
 }
 
@@ -183,8 +221,8 @@ class SmartschoolAccountVerificationRejectedError
 ///
 /// It is not a missing access right: when the session is accepted but the
 /// account may not make the request, the service reports that in its own
-/// error type (e.g. [SmartschoolPresenceError], or a
-/// [SmartschoolPlannerError] with the planner's HTTP status).
+/// error type (e.g. [SmartschoolPresenceError], a [SmartschoolPlannerError]
+/// with the planner's HTTP status, or a [SmartschoolSkoreAccessDeniedError]).
 class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
   const SmartschoolSessionExpiredError([
     super.message = 'Smartschool did not accept the session.',
@@ -443,29 +481,92 @@ class SmartschoolPresenceError extends SmartschoolException {
       : '$runtimeType: $message (${errors.join('; ')})';
 }
 
-/// Thrown when Smartschool's Skore module (grading and reports) answers a
-/// request with something `SkoreService` cannot use: an HTML page instead of
-/// data, an answer that is not valid JSON, an RPC answer without its
-/// `result`, or data in a shape it does not recognise (such as an assignments
-/// page without its table of courses, or a non-numeric ID).
+/// Thrown by `SkoreService` when Smartschool's Skore module (grading and
+/// reports) does not give what was asked for. The session was accepted:
+/// signing in again does not help. A Skore RPC answer that carries no session
+/// is reported as a [SmartschoolSessionExpiredError] instead.
 ///
-/// The session was accepted: signing in again does not help. A Skore RPC
-/// answer that carries no session is reported as a
-/// [SmartschoolSessionExpiredError] instead.
+/// Three cases, which a caller handles differently, have a type each (#83):
+/// - [SmartschoolSkoreAccessDeniedError]: Skore refused the request to the
+///   account, which lacks the rights for that part of Skore (its `area`).
+/// - [SmartschoolSkoreChangeRefusedError]: a check before a save refused the
+///   change (its subtype [SmartschoolSkoreMyGroupsError] too). Its message
+///   says why, so the call can be corrected.
+/// - This type itself (none of its subtypes): Skore answered with something
+///   the service cannot use: another HTTP status than `200`, an HTML page
+///   instead of data, an answer that is not valid JSON, an RPC answer without
+///   its `result`, or data in a shape it does not recognise (such as an
+///   assignments page without its table of courses, a non-numeric ID, or a
+///   `getMyGroups` answer it does not know). Its message may quote the
+///   answer, which can hold names: keep it in a log.
 ///
-/// `SkoreService.addTeacher` and `replaceTeacher` also throw it when a check
-/// before the save refuses the change (#71): the course is not in the class
-/// or is a group header, the assignment is not one of that course, the
-/// teacher already has an assignment on that course or is not one Skore lets
-/// assign. So do `SkoreService.shareGradebook` and `unshareGradebook` (#74):
-/// the teacher is the owner of the gradebook, the gradebook is not one of the
-/// owner's, or (to share) the teacher is not one of Skore's teachers. From
-/// those four methods, this type (and its subtype
-/// [SmartschoolSkoreMyGroupsError]) always means that **nothing was saved**.
-/// A save that went out without Skore confirming it is a
-/// [SmartschoolSkoreSaveUnconfirmedError] instead.
+/// What Skore answers an account without the rights has not been captured
+/// yet (#91): only an answer with HTTP 403 is reported as a
+/// [SmartschoolSkoreAccessDeniedError]. Until then, such an account may get
+/// this type itself (most likely about an HTML page instead of data), or
+/// even an empty list.
+///
+/// From the writes (`SkoreService.addTeacher`, `replaceTeacher`, #71;
+/// `shareGradebook`, `unshareGradebook`, #74), this type and all its subtypes
+/// always mean that **nothing was saved**: a read before the save failed, or
+/// a check refused the change. A save that went out without Skore confirming
+/// it is a [SmartschoolSkoreSaveUnconfirmedError] instead.
 class SmartschoolSkoreError extends SmartschoolException {
   const SmartschoolSkoreError(super.message);
+}
+
+/// Thrown by `SkoreService` when Skore refuses a request because the account
+/// lacks the rights for the part of Skore it belongs to ([area]) (#83):
+/// report management (Rapporten > Modellen) or gradebook management
+/// (Puntenboeken). An account can have one without the other. Ask the
+/// school's Smartschool administrator for the rights.
+///
+/// Thrown when Skore answers a request with HTTP 403 (Forbidden). That is
+/// HTTP's own answer for a request the server refuses to the account; it has
+/// not been seen from Skore. What Skore answers an account without the
+/// rights has not been captured yet (#91), so such an account may still get
+/// a plain [SmartschoolSkoreError] instead, until it is.
+///
+/// Its message names the request and the part of Skore, and quotes nothing
+/// of the answer, so it can be shown to the user. A
+/// [SmartschoolSkoreError], so `catch` clauses for that type keep catching
+/// it. From the writes, it comes from a read before the save: nothing was
+/// saved. When Skore answers a save itself with HTTP 403, the write throws a
+/// [SmartschoolSkoreSaveUnconfirmedError] with this error as its `cause`.
+class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
+  /// The part of Skore the refused request belongs to.
+  final SkoreAccessArea area;
+
+  const SmartschoolSkoreAccessDeniedError(super.message, {required this.area});
+
+  @override
+  String toString() => '$runtimeType(${area.name}): $message';
+}
+
+/// Thrown by the writes of `SkoreService` when a check before the save
+/// refuses the change, after reading Skore again (#83). **Nothing was
+/// saved.**
+///
+/// The checks of `addTeacher` and `replaceTeacher` (#71): the course is not
+/// in the class (also for a class ID Skore does not know) or is a group
+/// header; the assignment is not one of that course; the teacher already has
+/// an assignment on that course (for a replace, the current teacher of the
+/// assignment too), or is not one Skore lets assign (`getTeachers`); the
+/// current teacher works with "Mijn lesgroepen" for the course
+/// ([SmartschoolSkoreMyGroupsError], a subtype). The checks of
+/// `shareGradebook` and `unshareGradebook` (#74): the teacher is the owner of
+/// the gradebook, the gradebook is not one of the owner's (also for a user ID
+/// Skore does not know), or (to share) the teacher is not one of Skore's
+/// teachers.
+///
+/// Its message says which check refused and why, with the IDs (and the
+/// course label or teacher name it read), and quotes nothing else of Skore's
+/// answers, so it can be passed on to correct the call. A
+/// [SmartschoolSkoreError], so `catch` clauses for that type keep catching
+/// it. A `getMyGroups` answer the service does not recognise is not a
+/// refused change but a plain [SmartschoolSkoreError] (nothing saved either).
+class SmartschoolSkoreChangeRefusedError extends SmartschoolSkoreError {
+  const SmartschoolSkoreChangeRefusedError(super.message);
 }
 
 /// Thrown by `SkoreService.replaceTeacher` when the current teacher of the
@@ -475,7 +576,10 @@ class SmartschoolSkoreError extends SmartschoolException {
 /// Skore's web client offers to delete those groups before it gives the
 /// course another teacher, which cannot be undone. The service never deletes
 /// them: handle the groups in Skore itself first.
-class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreError {
+///
+/// A [SmartschoolSkoreChangeRefusedError] (#83), like the other checks
+/// before the save.
+class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreChangeRefusedError {
   /// The Skore class ID of the assignment.
   final int classId;
 
@@ -696,7 +800,8 @@ class SmartschoolLessonContentError extends SmartschoolException {
 class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
   /// The failure of the save when no usable answer came in, such as a
   /// [SmartschoolConnectionError] or a [SmartschoolSkoreError] about the
-  /// answer, or of the read that checks a gradebook share afterwards; `null`
+  /// answer (a [SmartschoolSkoreAccessDeniedError] for an answer with HTTP
+  /// 403), or of the read that checks a gradebook share afterwards; `null`
   /// when Skore answered with a result that does not confirm the save.
   final Object? cause;
 

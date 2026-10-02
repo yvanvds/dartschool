@@ -153,6 +153,27 @@ class SkoreTeacher {
   String toString() => 'SkoreTeacher(id: $id, name: $name)';
 }
 
+/// A part of Skore that an account needs rights for, to use the
+/// `SkoreService` calls in it (#83). An account can have the rights for one
+/// part without the other.
+///
+/// A `SmartschoolSkoreAccessDeniedError` names the part it was refused. Each
+/// request is given the part of the Skore screen that uses it; which right
+/// Skore itself checks for each request was not seen.
+enum SkoreAccessArea {
+  /// Report management (Rapporten > Modellen): the report models with their
+  /// classes, and the courses of a class with their teachers. What
+  /// `getClasses`, `getCourses` and `getTeachers` read, and what
+  /// `addTeacher` and `replaceTeacher` read and save. `shareGradebook` reads
+  /// `getTeachers` too.
+  reportManagement,
+
+  /// Gradebook management (Puntenboeken): the gradebooks of a teacher and
+  /// whom they are shared with. What `getGradebookShares` reads, and what
+  /// `shareGradebook` and `unshareGradebook` read and save.
+  gradebookManagement,
+}
+
 /// The access a teacher gets to a gradebook shared with them.
 enum SkoreShareAccess {
   /// May read the gradebook (Skore's `readers`).

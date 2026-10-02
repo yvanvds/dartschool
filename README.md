@@ -123,6 +123,8 @@ mfa: 2010-05-15   # date for account-verification, or Base32 secret for TOTP
 If you need mfa, open your smartschool profile, two-factor authentication, add authenticator app.
 When a QR code is displayed, choose 'I do not have a camera'. A code is shown and that's the one you need.
 
+That code is the TOTP secret (letters A-Z and digits 2-7), not the 6-digit code the authenticator app shows afterwards. It may be copied as shown, in groups: white space and hyphens are ignored, as are lower case and `=` padding (`JBSW Y3DP EHPK 3PXP` works as `JBSWY3DPEHPK3PXP`). An `mfa` that is empty or only white space counts as none (an account without 2FA logs in with it). When a login is needed and `mfa` is neither that, a date (`yyyy-mm-dd`), nor such a key, the login throws `SmartschoolInvalidTotpSecretError` before it posts the password; set `mfa` only when the account asks for one of the two. `Credentials.normalizeTotpSecret(key)` checks a key the same way without logging in (for instance where a user types it): it returns the key as the login uses it, or throws that error.
+
 ---
 
 ## `SmartschoolClient`
@@ -180,7 +182,7 @@ An app can keep its own per-user data in the folder, so it is found and cleaned 
 
 ### Logging in again
 
-When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. Requests on one client share that login: a request that Smartschool refuses while a login runs waits for it and is then retried in the new session, and fails with the same error when the login fails, so concurrent requests on an expired session send the password and the 2FA code once, and the login counts once toward the limit below. The login loads Smartschool's login page itself, in a new session, and the answers that Smartschool refused do not change the cookie cache, so the password always goes out in the session its login form belongs to. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
+When Smartschool refuses the session for a request (it expired, or was never there), the client logs in and retries the request once; a retry that Smartschool refuses too throws `SmartschoolSessionExpiredError`. Requests on one client share that login: a request that Smartschool refuses while a login runs waits for it and is then retried in the new session, and fails with the same error when the login fails, so concurrent requests on an expired session send the password and the 2FA code once, and the login counts once toward the limit below. The login loads Smartschool's login page itself, in a new session, and the answers that Smartschool refused do not change the cookie cache, so the password always goes out in the session its login form belongs to. After three logins in a row that did not get the session accepted, the client stops logging in on its own: a refused request throws `SmartschoolSessionExpiredError` at once, without logging in. So that a long-lived client (a daemon, a background queue) gets out of that state by itself, it tries one login again once `loginCooldown` has passed since the last one (5 minutes by default); when the session is accepted it counts from zero again, and when it is not, it waits another cooldown. It does not when Smartschool rejected the credentials at the last login (the password, the 2FA code or the account-verification answer, or the TOTP secret turned out not to be a key at the 2FA step): trying them again every few minutes could get the account locked. Call `resetLoginAttempts()` to let it log in again at once, for instance once the credentials are fixed. A test can pass a fake `clock` to `create` and move it forward instead of waiting.
 
 Pass `retryAfterLogin: false` to `postFormRaw`, `postFormResponse`, `postMultipartRaw` or `postMultipartResponse` for a request that carries state of the session it was prepared in, such as the tokens of Smartschool's compose form: a retry would send that state in a session it does not belong to. When Smartschool refuses the session for such a request, it is neither retried nor used to log in again: it throws `SmartschoolSessionExpiredError` at once, and the next refused request logs in. `MessagesService.sendMessage` sends its steps after loading the compose form this way.
 
@@ -193,9 +195,9 @@ That covers the request being refused. A login replaces the client's session whi
 - `contentLength`: the size Smartschool announces (`Content-Length`), or `null` when it announces none (or the content comes in encoded, such as gzip);
 - `fileName`: the name in `Content-Disposition` (`filename*` in UTF-8 or ISO-8859-1 when there is one, else `filename`), as Smartschool sends it: check it before using it as a path;
 - `contentType`: as Smartschool gives it. Intradesk answers `application/x-www-form-urlencoded` for every file, so tell the type from the name;
-- `stream`: the content, as it comes in. Pausing the subscription pauses the transfer; cancelling it, or calling `cancel()` on the download, stops the transfer and closes the connection (Dio alone would read the answer to its end). Listen to it right away: until then, what comes in is held in memory.
+- `stream`: the content, as it comes in. Pausing the subscription pauses the transfer; cancelling it, or calling `cancel()` on the download, stops the transfer and closes the connection (Dio alone would read the answer to its end). Until it is listened to, the transfer waits, as while it is paused: no more comes in than the few chunks that arrived while the client handled the headers, so it may be listened to later, such as once the file it is written to is open. Read it or cancel it: until then, the download keeps its connection open.
 
-Pass `maxBytes` to any of them to refuse a larger file: the download fails with a `SmartschoolDownloadTooLargeError` (carrying `maxBytes` and the announced `contentLength`) as soon as the file turns out larger. When Smartschool announces a larger size, that happens before any of it is read (`downloadStream` throws it); otherwise the bytes are counted as they come in, and the download fails once more than `maxBytes` came in (`stream` ends with the error, after at most `maxBytes` bytes). Either way the client stops the transfer. The size in an Intradesk listing may be out of date; `maxBytes` checks the file itself.
+Pass `maxBytes` to any of them to refuse a larger file: the download fails with a `SmartschoolDownloadTooLargeError` (carrying `maxBytes` and the announced `contentLength`) as soon as the file turns out larger. When Smartschool announces a larger size, that happens before any of it is read (`downloadStream` throws it); otherwise the bytes are counted as they come in, and the download fails once more than `maxBytes` came in (`stream` ends with the error, after at most `maxBytes` bytes). Either way the client stops the transfer. Every byte counts, also one that came in before `stream` was listened to, so `maxBytes` bounds what comes in, and what the client holds in memory, to `maxBytes` and a few chunks, whenever the stream is listened to. The size in an Intradesk listing may be out of date; `maxBytes` checks the file itself.
 
 ```dart
 final download = await IntradeskService(client).downloadFileStream(
@@ -635,7 +637,7 @@ dart run example/set_late_example.dart
 
 Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). And assigns a teacher to a course of a class there (`addTeacher`, `replaceTeacher`). It also reads the gradebooks of a teacher with the teachers they are shared with, and shares a gradebook or stops sharing it (`shareGradebook`, `unshareGradebook`), as Skore's "share gradebooks" manager does (Puntenboeken > the share button next to a teacher). Nothing else changes Skore, and nothing deletes an assignment or a gradebook.
 
-> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has.
+> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has. An account can have one without the other (`SkoreAccessArea.reportManagement`, `.gradebookManagement`). When Skore refuses a request with HTTP 403, the call throws a `SmartschoolSkoreAccessDeniedError` that names the part of Skore. What Skore answers an account without the rights has not been captured yet (#91): until it is, such an account may get a plain `SmartschoolSkoreError` instead (most likely about an HTML page instead of data), or even an empty list.
 
 > **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`). A gradebook ID is the ID of the assignment that holds the gradebook (`SkoreAssignment.id`); its owner is that assignment's teacher.
 
@@ -679,14 +681,14 @@ final replaced = await skore.replaceTeacher(
     classId: 2516, courseId: 1588, assignmentId: added.id, teacherId: 320);
 ```
 
-Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreError`, saving nothing:
+Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreChangeRefusedError`, saving nothing:
 
 - a course that is not in the class (also for a class ID Skore does not know), or that is a group header;
 - for `replaceTeacher`, an `assignmentId` that is not one of that course in that class;
 - a teacher who already has an assignment on the course (for `replaceTeacher`, the current teacher of the assignment too);
 - a teacher who is not in `getTeachers()`.
 
-`replaceTeacher` then asks Skore whether the current teacher works with "Mijn lesgroepen" for the course, as Skore's web client does, and refuses with a `SmartschoolSkoreMyGroupsError` when they do. Skore's web client offers to delete those groups, which cannot be undone; the service never does: handle them in Skore first.
+`replaceTeacher` then asks Skore whether the current teacher works with "Mijn lesgroepen" for the course, as Skore's web client does, and refuses with a `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) when they do. Skore's web client offers to delete those groups, which cannot be undone; the service never does: handle them in Skore first.
 
 The save is sent **once**: it is never retried, not even after logging in again, since a repeated add adds a second assignment. Skore answers it with the assignment and its teacher; when the answer does not confirm the save (another teacher, for a replace another assignment, or no usable answer at all), the call throws a `SmartschoolSkoreSaveUnconfirmedError`: the change may or may not have been saved, so read the class again before trying again. Calling the method again is safe in itself: it reads the class first, and refuses a teacher who already has an assignment on the course. The checks and the save are separate requests, so do not change the same course from two places at once.
 
@@ -714,7 +716,7 @@ await skore.unshareGradebook(ownerId: 146, gradebookId: 34826, teacherId: 320);
 
 Both go through Skore's `saveShared`. The save holds **this gradebook only**, with its complete new readers and writers: the teachers it is already shared with keep their access, unless the change is about them, and the owner's other gradebooks are not touched. A teacher has one kind of access: sharing with write access takes them off the readers, and the other way round.
 
-Before the save, they read the owner's gradebooks again, and refuse with a `SmartschoolSkoreError`, saving nothing:
+Before the save, they read the owner's gradebooks again, and refuse with a `SmartschoolSkoreChangeRefusedError`, saving nothing:
 
 - the owner as the teacher (Skore never offers the owner as a reader or a writer);
 - a gradebook that is not one of the owner's (also for a user ID Skore does not know), so a gradebook is never saved under another owner;
@@ -732,8 +734,12 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ### Errors
 
-- `SmartschoolSkoreError` — Skore answered with something the service cannot use: an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers). The session was accepted: signing in again does not help. `addTeacher`, `replaceTeacher`, `shareGradebook` and `unshareGradebook` also throw it when a check before the save refuses the change; from them, it always means nothing was saved.
-- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+`SmartschoolSkoreError` has a type for each case a caller handles differently (#83): a missing right, a refused change, and (the type itself) an answer the service cannot use. A `catch` of `SmartschoolSkoreError` catches all of them, and from `addTeacher`, `replaceTeacher`, `shareGradebook` and `unshareGradebook` every `SmartschoolSkoreError` means nothing was saved.
+
+- `SmartschoolSkoreAccessDeniedError` — Skore refused the request to the account, which lacks the rights for that part of Skore (carries `area`: `SkoreAccessArea.reportManagement` or `.gradebookManagement`). Thrown for an answer with HTTP 403; see the access requirement above for what is not known yet. Its message quotes nothing of the answer, so it can be shown to the user.
+- `SmartschoolSkoreChangeRefusedError` — a check before the save refused the change (the checks are listed above). Nothing was saved. Its message says which check refused and why, so the call can be corrected.
+- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+- `SmartschoolSkoreError` itself (none of the types above) — Skore answered with something the service cannot use: another HTTP status than `200`, an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers, or a `getMyGroups` answer it does not recognise). The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log.
 - `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher`, `replaceTeacher`, `shareGradebook` or `unshareGradebook` sent the save, but Skore's answer (for a share, also the read afterwards) does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read again. Not a `SmartschoolSkoreError`.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry. The save of `addTeacher` and `replaceTeacher` is not retried: it fails at once.
 
@@ -1178,6 +1184,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolInvalidCredentialsError` | Smartschool rejects the username or password (also SSO-only accounts). In rare cases a rejected login form token instead, which Smartschool answers with the same page (#46); do not log in again automatically |
 | `SmartschoolTwoFactorRequiredError` | Smartschool asks for a 2FA code, but `mfa` holds no TOTP secret |
 | `SmartschoolTwoFactorRejectedError` | Smartschool rejects the 2FA code (wrong TOTP secret, or the device clock is off) |
+| `SmartschoolInvalidTotpSecretError` | The TOTP secret in `mfa` is not a key: not Base32 once white space and hyphens are removed, or only digits (such as the 6-digit code of the authenticator app). Thrown before the password is posted when `mfa` is not a date either, so nothing of the login is sent; otherwise at the 2FA step, before its code is sent |
 | `SmartschoolUnsupportedTwoFactorMethodError` | The account's 2FA does not offer an authenticator app (carries the `availableMethods`) |
 | `SmartschoolAccountVerificationRequiredError` | Smartschool asks for account verification (date of birth), but `mfa` is empty or not a date |
 | `SmartschoolAccountVerificationRejectedError` | Smartschool rejects the account verification answer |
@@ -1210,6 +1217,8 @@ try {
   // Ask the user to check their username and password.
 } on SmartschoolTwoFactorRejectedError {
   // Ask the user to check their TOTP secret and device clock.
+} on SmartschoolInvalidTotpSecretError {
+  // Ask the user for the key of the authenticator app, not its 6-digit code.
 } on SmartschoolAuthenticationError catch (e) {
   // Any other authentication failure.
 } on SmartschoolConnectionError {

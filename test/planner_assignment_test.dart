@@ -413,10 +413,21 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
         allowMalformed: true,
       );
 
-/// A check before the write refused it: nothing was sent.
-Matcher _refused(Object? message) => isA<SmartschoolPlannerWriteRefusedError>()
+/// A check before the write refused it: nothing was sent. The error gives
+/// the check as [reason] (#100), with the ID of the [element] it read again
+/// (`null` for a new assignment) and the capability [flags] it refused on.
+Matcher _refused(
+  Object? message, {
+  required PlannerWriteRefusalReason reason,
+  Object? element = anything,
+  Object? flags = isEmpty,
+}) => isA<SmartschoolPlannerWriteRefusedError>()
     .having((e) => e.message, 'message', message)
-    .having((e) => e.message, 'message', contains('Nothing was sent'));
+    .having((e) => e.message, 'message', contains('Nothing was sent'))
+    .having((e) => e.reason, 'reason', reason)
+    .having((e) => e.element?.id, 'element', element)
+    .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
+    .having((e) => e.lessonContent, 'lessonContent', isNull);
 
 /// The write went out without the planner confirming it.
 Matcher _unconfirmed(
@@ -660,6 +671,9 @@ void main() {
                 contains('a0000000-0000-4000-8000-000000000099 "Examen"'),
                 contains('not one of the school\'s 6 assignment types'),
               ),
+              reason: PlannerWriteRefusalReason.unknownAssignmentType,
+              // A new assignment: no element was read.
+              element: isNull,
             ),
           ),
         );
@@ -992,11 +1006,21 @@ void main() {
           await expectLater(
             edit(planner, _listed(_other)),
             throwsA(
-              _refused(
-                allOf(
-                  contains(name),
-                  contains('not in your own planner'),
-                  contains('Wim Willems (4069_1003_0)'),
+              allOf(
+                _refused(
+                  allOf(
+                    contains(name),
+                    contains('not in your own planner'),
+                    contains('Wim Willems (4069_1003_0)'),
+                  ),
+                  reason: PlannerWriteRefusalReason.notOwn,
+                  element: _otherId,
+                ),
+                // The colleague's test as read again, with its organiser.
+                isA<SmartschoolPlannerWriteRefusedError>().having(
+                  (e) => e.element!.organiserUsers.map((u) => u.name),
+                  'organisers',
+                  ['Wim Willems'],
                 ),
               ),
             ),
@@ -1011,7 +1035,13 @@ void main() {
 
           await expectLater(
             edit(planner, _listed(_assignment)),
-            throwsA(_refused(contains('not in your own planner'))),
+            throwsA(
+              _refused(
+                contains('not in your own planner'),
+                reason: PlannerWriteRefusalReason.notOwn,
+                element: _assignmentId,
+              ),
+            ),
           );
           expect(server.apiLog, [_readAssignment]);
         });
@@ -1055,7 +1085,14 @@ void main() {
 
         await expectLater(
           planner.trashAssignment(_listed(_assignment)),
-          throwsA(_refused(contains('canUserTrash not set'))),
+          throwsA(
+            _refused(
+              contains('canUserTrash not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _assignmentId,
+              flags: ['canUserTrash'],
+            ),
+          ),
         );
         expect(server.apiLog, [_readAssignment]);
       });
@@ -1069,7 +1106,13 @@ void main() {
 
         await expectLater(
           planner.trashAssignment(_listed(_assignment)),
-          throwsA(_refused(contains('linked Skore evaluation'))),
+          throwsA(
+            _refused(
+              contains('linked Skore evaluation'),
+              reason: PlannerWriteRefusalReason.linkedEvaluation,
+              element: _assignmentId,
+            ),
+          ),
         );
         expect(server.apiLog, [_readAssignment]);
       });
@@ -1350,16 +1393,22 @@ void main() {
     expect(informed.name, 'Test: lussen (H3)');
     expect(informed.publicInfo, '<p>Leerstof: hoofdstuk 3 en 4</p>');
 
-    // The colleague's test in the same calendar is left alone.
+    // The colleague's test in the same calendar is left alone, and the
+    // refusal says whose test it is (#100).
     final colleagues = withTest.singleWhere((e) => e.id == _otherId);
+    final notOwn = isA<SmartschoolPlannerWriteRefusedError>()
+        .having((e) => e.reason, 'reason', PlannerWriteRefusalReason.notOwn)
+        .having((e) => e.element?.id, 'element', _otherId)
+        .having(
+          (e) => e.element?.organiserUsers.map((u) => u.name),
+          'organisers',
+          ['Wim Willems'],
+        );
     await expectLater(
       service.renameElement(colleagues, 'Nieuw'),
-      throwsA(isA<SmartschoolPlannerWriteRefusedError>()),
+      throwsA(notOwn),
     );
-    await expectLater(
-      service.trashAssignment(colleagues),
-      throwsA(isA<SmartschoolPlannerWriteRefusedError>()),
-    );
+    await expectLater(service.trashAssignment(colleagues), throwsA(notOwn));
 
     await service.trashAssignment(informed);
     await expectLater(

@@ -923,6 +923,41 @@ Each call reads the element again first (its detail, which is up to date at once
 
 An element that is gone throws a `SmartschoolPlannedElementNotFoundError`, also before anything is sent: a slot that was filled since it was read is gone under its ID. The fill body is built from the slot as read again, not from the listed element. `planLesson` and `planLessonContent` refuse an element that is not a slot, and the calls refuse an empty name, icon or lesfiche ID, with an `ArgumentError` before any request. When `planLessonContent` cannot read the lesfiches, it throws the `SmartschoolLessonContentError` of `LessonContentService`, also before anything is sent. An edit to the value the element has already sends nothing.
 
+**Why a write was refused.** The error says which check refused as a value, so that an app can tell its user why in its own words instead of passing on the library's message (a sentence for a log, which names the method and the element by its type and ID, and ends with "Nothing was sent."):
+
+```dart
+try {
+  await planner.planLesson(placeholder: slot, name: 'Lussen');
+} on SmartschoolPlannerWriteRefusedError catch (e) {
+  final hour = e.element;                          // the slot as read again (null when none was read)
+  final why = switch (e.reason) {
+    PlannerWriteRefusalReason.notOwn =>
+      'that hour belongs to ${hour!.organiserUsers.map((u) => u.name).join(', ')}',
+    PlannerWriteRefusalReason.notAllowed =>
+      'Smartschool does not allow it (${e.capabilityFlags.join(', ')} not set)',
+    PlannerWriteRefusalReason.periodChanged =>
+      'the hour is at ${hour!.period.from} now',
+    _ => e.message,
+  };
+  print('Not planned: $why.');                     // nothing was sent
+}
+```
+
+| `reason` (`PlannerWriteRefusalReason`) | From | Adds |
+|---|---|---|
+| `notOwn` — not organised by the authenticated user | every write that changes an element | `element` (with its `organiserUsers`) |
+| `notAllowed` — the capabilities do not allow the change | every write that changes an element | `element`; `capabilityFlags`: the flags the write needs that are not set |
+| `noLongerASlot` — the slot to fill is another kind of element now | `planLesson`, `planLessonContent` | `element` |
+| `periodChanged` — the slot is no longer in the period it was read with | `planLesson`, `planLessonContent` | `element`, in the period it has now |
+| `participantRoles` — the slot has participant roles or group filters | `planLesson`, `planLessonContent` | `element` |
+| `trashable` — the planner lets the user trash or delete the lesson | `clearLesson` | `element`; `capabilityFlags`: those set of `canUserTrash`, `canUserDelete` |
+| `unknownLessonContent` — the lesfiche is not among the user's lesfiches | `planLessonContent` | — |
+| `notALessonLessonContent` — the lesfiche is not a lesson one | `planLessonContent` | `lessonContent`: the lesfiche (`LessonContentItem`) |
+| `unknownAssignmentType` — the type is not one of the school's | `planAssignment` | — |
+| `linkedEvaluation` — the assignment has a linked Skore evaluation | `trashAssignment` | `element` |
+
+`element` is the element as the write read it again (its detail, a `PlannedElementDetail`), so its name, period (a `DateTime`), classes, course and organisers are at hand; it is `null` when the check refused before an element was read (a lesfiche, a new assignment's type). `reason` is `null` only for an error made without it (its constructor takes the new fields as optional ones).
+
 The fill and the clear are sent **once**: never again after logging in again (a second fill could plan a second lesson). The edits set a value, so they are retried once after logging in again, as a read is. When the planner's answer does not confirm a write (a lesson with the name asked for, or the lesfiche's name, in the slot's period; the element with the new value; a slot of the own planner in the lesson's period), or no usable answer comes in, the call throws a `SmartschoolPlannerSaveUnconfirmedError`: the change may or may not have been made, so read the element again (`getDetail`; it answers `404` for a slot that was filled or a lesson that was cleared) before trying again. Calling the method again is safe in itself: it reads the element first.
 
 Of the planner's trash, the service only uses the move of one own assignment (`trashAssignment`, see *Assignments in the own planner*). It never uses the planner's `DELETE` of an element (which deletes it for good), the restore from the trash, or its bulk endpoints (`planned-elements/trash`, `planned-elements/delete`, `planned-elements/bulk/...`, `planned-elements/replace-with-...`, and `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which moves everything in a period to the trash). Attachments, weblinks, goals, labels, the icon of an existing lesson, rescheduling and lessons outside the timetable are not covered.
@@ -1020,7 +1055,7 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 
 - `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID). The session was accepted: signing in again does not help.
 - `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash, or a `typeName` the planner does not have (carries `elementType`, `platformId`, `elementId`). Also from a write, for the element it reads again first (such as a slot that was filled since it was read): nothing was sent.
-- `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, an assignment type the school does not have, ...). Nothing was sent. From the writes, every `SmartschoolPlannerError` means nothing was sent.
+- `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, an assignment type the school does not have, ...). Nothing was sent. Carries the check as `reason` (a `PlannerWriteRefusalReason`), the `element` as read again, the `capabilityFlags` and, for a lesfiche that is not a lesson one, the `lessonContent` (see *Why a write was refused*). From the writes, every `SmartschoolPlannerError` means nothing was sent.
 - `SmartschoolLessonContentError` — `planLessonContent` could not read the lesfiches before planning one (see `LessonContentService`). Nothing was sent.
 - `SmartschoolPlannerSaveUnconfirmedError` — a write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again before trying again; for `planAssignment`, look for the assignment in the calendar of one of its classes, since calling it again adds another one. Not a `SmartschoolPlannerError`.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; for `planLesson`, `planLessonContent`, `clearLesson`, `planAssignment` and `trashAssignment`, which are not retried, at once. Nothing was changed: sign in again and retry.

@@ -193,7 +193,12 @@ export '../models/planner_models.dart';
 ///   does not have (`404`); so did a write, for the element it reads again
 ///   first (such as a slot that was filled since it was read).
 /// - [SmartschoolPlannerWriteRefusedError] (a [SmartschoolPlannerError]): a
-///   check before a write refused it. Nothing was sent.
+///   check before a write refused it. Nothing was sent. Its
+///   [SmartschoolPlannerWriteRefusedError.reason] says which check (a
+///   [PlannerWriteRefusalReason], such as
+///   [PlannerWriteRefusalReason.notOwn]), and its
+///   [SmartschoolPlannerWriteRefusedError.element] is the element as read
+///   again, so an app can say why in its own words.
 /// - [SmartschoolLessonContentError]: [planLessonContent] could not read the
 ///   lesfiches before it planned one. Nothing was sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
@@ -732,6 +737,7 @@ class PlannerService {
         '$operation: there is no lesfiche $sourceId among your '
         '${fiches.length} lesfiches (LessonContentService.getItems). Nothing '
         'was sent.',
+        reason: PlannerWriteRefusalReason.unknownLessonContent,
       );
     }
     if (fiche.type != LessonContentType.lesson) {
@@ -742,6 +748,8 @@ class PlannerService {
         '$operation: lesfiche ${fiche.id} "${fiche.name}" is $kind lesfiche '
         '(${fiche.typeName}), not a lesson one (lessons): planning it would '
         'not make a lesson. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.notALessonLessonContent,
+        lessonContent: fiche,
       );
     }
     final icon = fiche.icon?.trim() ?? '';
@@ -905,14 +913,20 @@ class PlannerService {
     final what = _describe(current);
     _refuseUnlessOwn(operation, current, me);
     _refuseUnlessCapable(operation, current, const ['canUserEdit']);
-    for (final flag in const ['canUserTrash', 'canUserDelete']) {
-      if (current.capabilities.can(flag)) {
-        throw SmartschoolPlannerWriteRefusedError(
-          '$operation: the planner lets you trash or delete $what ($flag), '
-          'so it is not a lesson in a timetable hour as the service knows '
-          'them, which only clearing removes. Nothing was sent.',
-        );
-      }
+    final removable = [
+      for (final flag in const ['canUserTrash', 'canUserDelete'])
+        if (current.capabilities.can(flag)) flag,
+    ];
+    if (removable.isNotEmpty) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: the planner lets you trash or delete $what '
+        '(${removable.first}), so it is not a lesson in a timetable hour as '
+        'the service knows them, which only clearing removes. Nothing was '
+        'sent.',
+        reason: PlannerWriteRefusalReason.trashable,
+        element: current,
+        capabilityFlags: List.unmodifiable(removable),
+      );
     }
     return _write(
       operation,
@@ -1061,6 +1075,7 @@ class PlannerService {
         '$operation: assignment type ${type.id} "${type.name}" is not one of '
         'the school\'s ${types.length} assignment types '
         '(getAssignmentTypes). Nothing was sent.',
+        reason: PlannerWriteRefusalReason.unknownAssignmentType,
       );
     }
     final dueAt = formatDateTime(due);
@@ -1199,6 +1214,8 @@ class PlannerService {
         '$operation: $what has a linked Skore evaluation '
         '(hasLinkedEvaluation); the trash of such an assignment was not '
         'tried, so the service does not send it. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.linkedEvaluation,
+        element: current,
       );
     }
 
@@ -1293,6 +1310,8 @@ class PlannerService {
       throw SmartschoolPlannerWriteRefusedError(
         '$operation: ${slot.id} is a ${slot.typeName} now, not a timetable '
         'slot. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.noLongerASlot,
+        element: slot,
       );
     }
     if (!_samePeriod(slot.period, placeholder.period)) {
@@ -1300,6 +1319,8 @@ class PlannerService {
         '$operation: $what is no longer in the period it was read with '
         '(${placeholder.period.from} - ${placeholder.period.to}): read the '
         'calendar again. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.periodChanged,
+        element: slot,
       );
     }
     _refuseUnlessOwn(operation, slot, me);
@@ -1314,6 +1335,8 @@ class PlannerService {
       throw SmartschoolPlannerWriteRefusedError(
         '$operation: $what has participant roles or group filters, which '
         'the service does not know how to send on. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.participantRoles,
+        element: slot,
       );
     }
 
@@ -1516,6 +1539,8 @@ class PlannerService {
       '$operation: ${_describe(element)} is not in your own planner: it is '
       'organised by ${organisers.isEmpty ? 'no user' : organisers.join(', ')}'
       ', not by $me. Nothing was sent.',
+      reason: PlannerWriteRefusalReason.notOwn,
+      element: element,
     );
   }
 
@@ -1534,6 +1559,9 @@ class PlannerService {
       '$operation: the planner does not let you change '
       '${_describe(element)} (${missing.join(', ')} not set). Nothing was '
       'sent.',
+      reason: PlannerWriteRefusalReason.notAllowed,
+      element: element,
+      capabilityFlags: List.unmodifiable(missing),
     );
   }
 

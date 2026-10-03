@@ -1,3 +1,6 @@
+import 'models/lesson_content_models.dart' show LessonContentItem;
+import 'models/planner_models.dart'
+    show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
 import 'models/skore_models.dart' show SkoreAccessArea;
 
 /// Base exception for all Smartschool API errors.
@@ -687,8 +690,15 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// (`planLessonContent`, #88) must be a lesson lesfiche among the user's
 /// lesfiches. A new assignment (`planAssignment`, #89) must be of one of the
 /// school's assignment types, and an assignment moved to the trash
-/// (`trashAssignment`, #89) must not have a linked Skore evaluation. The
-/// method says which check refused.
+/// (`trashAssignment`, #89) must not have a linked Skore evaluation.
+///
+/// Which check refused is a value an app can switch on (#100): [reason],
+/// with the [element] the check read (to name it in the app's own words:
+/// its period, name, classes, course and organisers), the
+/// [capabilityFlags] it missed or found, and for a lesfiche that is not a
+/// lesson one the [lessonContent]. The [message] says the same for a log,
+/// in the library's words: it names the method, the element by its type,
+/// ID and period, and ends with "Nothing was sent.".
 ///
 /// A [SmartschoolPlannerError] (without a [statusCode]), so that from the
 /// writes that type always means nothing was sent. An element that is gone
@@ -696,7 +706,47 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// is a [SmartschoolPlannedElementNotFoundError] instead, also before
 /// anything was sent.
 class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
-  const SmartschoolPlannerWriteRefusedError(super.message);
+  /// Which check refused the write (#100). `PlannerService` always sets it;
+  /// `null` only for an error made without it.
+  final PlannerWriteRefusalReason? reason;
+
+  /// The element the write was for, as the write read it again before the
+  /// check (its detail, a [PlannedElementDetail]): the slot to fill, the
+  /// element to edit, the lesson to clear, the assignment to trash. For
+  /// [PlannerWriteRefusalReason.periodChanged] it has the period the slot
+  /// has now, for [PlannerWriteRefusalReason.notOwn] its organisers.
+  ///
+  /// `null` when the check refused before an element was read
+  /// ([PlannerWriteRefusalReason.unknownLessonContent],
+  /// [PlannerWriteRefusalReason.notALessonLessonContent],
+  /// [PlannerWriteRefusalReason.unknownAssignmentType]), and for an error
+  /// made without it.
+  final PlannedElement? element;
+
+  /// The capability flags of [element] the check refused on, by the
+  /// planner's names: for [PlannerWriteRefusalReason.notAllowed] the flags
+  /// the write needs that are not set (such as `canUserReplace`), for
+  /// [PlannerWriteRefusalReason.trashable] the ones set of `canUserTrash`
+  /// and `canUserDelete`. Empty for the other reasons.
+  final List<String> capabilityFlags;
+
+  /// For [PlannerWriteRefusalReason.notALessonLessonContent], the lesfiche
+  /// that is not a lesson one, as `planLessonContent` read it again; `null`
+  /// otherwise.
+  final LessonContentItem? lessonContent;
+
+  const SmartschoolPlannerWriteRefusedError(
+    super.message, {
+    this.reason,
+    this.element,
+    this.capabilityFlags = const [],
+    this.lessonContent,
+  });
+
+  @override
+  String toString() => reason == null
+      ? super.toString()
+      : '$runtimeType(${reason!.name}): $message';
 }
 
 /// Thrown by the writes of `PlannerService` (#87) when the write went out to

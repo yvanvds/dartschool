@@ -1485,6 +1485,83 @@ class PlannerGroupWorkload {
 }
 
 // ---------------------------------------------------------------------------
+// Writes
+// ---------------------------------------------------------------------------
+
+/// Why a check of `PlannerService` refused a write before it was sent: the
+/// [SmartschoolPlannerWriteRefusedError.reason] (#100). Nothing was sent.
+///
+/// The error's [SmartschoolPlannerWriteRefusedError.element] is the element
+/// as the write read it again (its detail), for every reason that is about
+/// an element; [SmartschoolPlannerWriteRefusedError.capabilityFlags] and
+/// [SmartschoolPlannerWriteRefusedError.lessonContent] hold what some
+/// reasons add.
+enum PlannerWriteRefusalReason {
+  /// The element is not in the authenticated user's own planner: it is not
+  /// organised by the authenticated user (`organisers.users`), such as a
+  /// colleague's slot, lesson or assignment in a class calendar. The service
+  /// never changes those, even when the planner would let the user. The
+  /// error's `element` has the organisers ([PlannedElement.organiserUsers]).
+  ///
+  /// From every write that changes an element: `planLesson`,
+  /// `planLessonContent`, `renameElement`, `changePublicInfo`,
+  /// `changePrivateInfo`, `clearLesson` and `trashAssignment`.
+  notOwn,
+
+  /// The planner's capabilities of the element do not allow the change. The
+  /// error's `capabilityFlags` are the flags the write needs that are not
+  /// set: `canUserReplace` to fill a slot (`planLesson`,
+  /// `planLessonContent`); `canUserEdit` and `canUserRename`,
+  /// `canUserChangePublicInfo` or `canUserChangePrivateInfo` to edit;
+  /// `canUserEdit` to clear a lesson; `canUserTrash` to move an assignment
+  /// to the trash.
+  notAllowed,
+
+  /// The slot to fill (`planLesson`, `planLessonContent`) is no longer a
+  /// timetable slot: the planner answered its detail with an element of
+  /// another type (the error's `element`).
+  noLongerASlot,
+
+  /// The slot to fill (`planLesson`, `planLessonContent`) is no longer in
+  /// the period it was read with: the error's `element` has the period it
+  /// has now. Read the calendar again.
+  periodChanged,
+
+  /// The slot to fill (`planLesson`, `planLessonContent`) has participant
+  /// roles or group filters, which the timetable slots seen live never had
+  /// and which the service does not know how to send on.
+  participantRoles,
+
+  /// The lesson to clear (`clearLesson`) is one the planner lets the user
+  /// trash or delete: the error's `capabilityFlags` are those of
+  /// `canUserTrash` and `canUserDelete` that are set. The lessons in a
+  /// timetable hour seen live allowed neither, clearing being the planner's
+  /// way to remove them; the clear of another lesson was not tried.
+  trashable,
+
+  /// The lesfiche to plan (`planLessonContent`) is not among the user's
+  /// lesfiches (`LessonContentService.getItems`, read again first). Refused
+  /// before the slot was read: the error has no `element`.
+  unknownLessonContent,
+
+  /// The lesfiche to plan (`planLessonContent`) is not a lesson lesfiche:
+  /// an assignment lesfiche, or one of a kind the library does not know.
+  /// The error's `lessonContent` is the lesfiche as read again. Refused
+  /// before the slot was read: the error has no `element`.
+  notALessonLessonContent,
+
+  /// The type of a new assignment (`planAssignment`) is not one of the
+  /// school's assignment types (`getAssignmentTypes`, read again first). A
+  /// new assignment has no element yet: the error has no `element`.
+  unknownAssignmentType,
+
+  /// The assignment to move to the trash (`trashAssignment`) has a linked
+  /// Skore evaluation ([PlannedElementDetail.hasLinkedEvaluation]): the
+  /// trash of such an assignment was not tried.
+  linkedEvaluation,
+}
+
+// ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
 

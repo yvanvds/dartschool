@@ -365,11 +365,25 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
         allowMalformed: true,
       );
 
-/// A check before the plan refused it: nothing was sent.
-Matcher _refused(Object? message) => isA<SmartschoolPlannerWriteRefusedError>()
+/// A check before the plan refused it: nothing was sent. The error gives the
+/// check as [reason] (#100), with the ID of the [element] it read again
+/// (`null` when it refused the lesfiche before reading the slot), the
+/// capability [flags] it refused on and the ID of the [lessonContent] that
+/// is not a lesson one.
+Matcher _refused(
+  Object? message, {
+  required PlannerWriteRefusalReason reason,
+  Object? element = anything,
+  Object? flags = isEmpty,
+  Object? lessonContent = isNull,
+}) => isA<SmartschoolPlannerWriteRefusedError>()
     .having((e) => e.message, 'message', message)
     .having((e) => e.message, 'message', contains('planLessonContent'))
-    .having((e) => e.message, 'message', contains('Nothing was sent'));
+    .having((e) => e.message, 'message', contains('Nothing was sent'))
+    .having((e) => e.reason, 'reason', reason)
+    .having((e) => e.element?.id, 'element', element)
+    .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
+    .having((e) => e.lessonContent?.id, 'lessonContent', lessonContent);
 
 /// The plan went out without the planner confirming it.
 Matcher _unconfirmed(
@@ -548,6 +562,8 @@ void main() {
           throwsA(
             _refused(
               allOf(contains('no lesfiche $unknown'), contains('2 lesfiches')),
+              reason: PlannerWriteRefusalReason.unknownLessonContent,
+              element: isNull,
             ),
           ),
         );
@@ -565,12 +581,29 @@ void main() {
             lessonContentId: _assignmentFicheId,
           ),
           throwsA(
-            _refused(
-              allOf(
-                contains('"Taak: een eigen spel"'),
-                contains('an assignment lesfiche (assignments)'),
-                contains('not a lesson one'),
+            allOf(
+              _refused(
+                allOf(
+                  contains('"Taak: een eigen spel"'),
+                  contains('an assignment lesfiche (assignments)'),
+                  contains('not a lesson one'),
+                ),
+                reason: PlannerWriteRefusalReason.notALessonLessonContent,
+                element: isNull,
+                lessonContent: _assignmentFicheId,
               ),
+              // The lesfiche as read again, to name it in the app's words.
+              isA<SmartschoolPlannerWriteRefusedError>()
+                  .having(
+                    (e) => e.lessonContent?.name,
+                    'lessonContent.name',
+                    'Taak: een eigen spel',
+                  )
+                  .having(
+                    (e) => e.lessonContent?.type,
+                    'lessonContent.type',
+                    LessonContentType.assignment,
+                  ),
             ),
           ),
         );
@@ -587,7 +620,14 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('a "activities" lesfiche'))),
+          throwsA(
+            _refused(
+              contains('a "activities" lesfiche'),
+              reason: PlannerWriteRefusalReason.notALessonLessonContent,
+              element: isNull,
+              lessonContent: _ficheId,
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches]);
       });
@@ -644,6 +684,8 @@ void main() {
                   contains('not in your own planner'),
                   contains('Wim Willems (4069_1003_0)'),
                 ),
+                reason: PlannerWriteRefusalReason.notOwn,
+                element: _slotId,
               ),
             ),
           );
@@ -665,7 +707,14 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('canUserReplace not set'))),
+          throwsA(
+            _refused(
+              contains('canUserReplace not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _slotId,
+              flags: ['canUserReplace'],
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches, _readSlot]);
       });
@@ -683,7 +732,13 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('no longer in the period'))),
+          throwsA(
+            _refused(
+              contains('no longer in the period'),
+              reason: PlannerWriteRefusalReason.periodChanged,
+              element: _slotId,
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches, _readSlot]);
       });
@@ -716,7 +771,13 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('participant roles or group filters'))),
+          throwsA(
+            _refused(
+              contains('participant roles or group filters'),
+              reason: PlannerWriteRefusalReason.participantRoles,
+              element: _slotId,
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches, _readSlot]);
       });
@@ -966,13 +1027,27 @@ void main() {
     final hour = await hourOfWeek();
     expect(hour.type, PlannedElementType.placeholder);
 
-    // An assignment lesfiche is refused before the slot is read.
+    // An assignment lesfiche is refused before the slot is read, with the
+    // lesfiche (#100).
     await expectLater(
       service.planLessonContent(
         placeholder: hour,
         lessonContentId: assignmentFiche.id,
       ),
-      throwsA(isA<SmartschoolPlannerWriteRefusedError>()),
+      throwsA(
+        isA<SmartschoolPlannerWriteRefusedError>()
+            .having(
+              (e) => e.reason,
+              'reason',
+              PlannerWriteRefusalReason.notALessonLessonContent,
+            )
+            .having(
+              (e) => e.lessonContent?.name,
+              'lesfiche',
+              assignmentFiche.name,
+            )
+            .having((e) => e.element, 'element', isNull),
+      ),
     );
 
     final planned = await service.planLessonContent(

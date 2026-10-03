@@ -181,7 +181,9 @@ class SkoreService {
 
   /// Assigns teacher [teacherId] to course [courseId] of class [classId]: a
   /// new assignment, as the green **+** on the class's assignments page adds.
-  /// Returns the new assignment.
+  /// Returns the new assignment, with the course as read before the save
+  /// ([SkoreSavedAssignment.course]: its label, and its teachers before the
+  /// change); its [SkoreSavedAssignment.replaced] is `null`.
   ///
   /// A new assignment holds all pupils of the class.
   ///
@@ -205,7 +207,7 @@ class SkoreService {
   ///
   /// The checks and the save are separate requests: do not change the same
   /// course from two places at once.
-  Future<SkoreAssignment> addTeacher({
+  Future<SkoreSavedAssignment> addTeacher({
     required int classId,
     required int courseId,
     required int teacherId,
@@ -216,9 +218,8 @@ class SkoreService {
     final teacher = await _knownTeacher(operation, teacherId);
     return _saveOwner(
       operation,
-      classId: classId,
-      courseId: courseId,
-      assignmentId: null,
+      course: course,
+      replaced: null,
       teacher: teacher,
     );
   }
@@ -228,6 +229,11 @@ class SkoreService {
   /// drop-down of the class's assignments page does. Returns the assignment,
   /// which keeps its ID: the assignment, and its gradebook, stay; only the
   /// teacher changes.
+  ///
+  /// The result also holds what was read before the save: the course
+  /// ([SkoreSavedAssignment.course]: its label, and its teachers before the
+  /// change) and the assignment as it was ([SkoreSavedAssignment.replaced]:
+  /// the teacher it had).
   ///
   /// Before it saves, it reads the class ([getCourses]) and the teachers
   /// ([getTeachers]), and refuses with a
@@ -242,7 +248,8 @@ class SkoreService {
   /// It then asks Skore whether the current teacher works with "Mijn
   /// lesgroepen" (their own groups of pupils) for the course, as Skore's web
   /// client does, and throws a [SmartschoolSkoreMyGroupsError] when they do,
-  /// saving nothing. The web client offers to delete those groups; this
+  /// saving nothing; the error names the current teacher (its `teacherId`
+  /// and `teacherName`). The web client offers to delete those groups; this
   /// never deletes them. An answer it does not recognise is refused with a
   /// plain [SmartschoolSkoreError] (an answer it cannot use, not a refused
   /// change), also saving nothing.
@@ -255,7 +262,7 @@ class SkoreService {
   ///
   /// The checks and the save are separate requests: do not change the same
   /// course from two places at once.
-  Future<SkoreAssignment> replaceTeacher({
+  Future<SkoreSavedAssignment> replaceTeacher({
     required int classId,
     required int courseId,
     required int assignmentId,
@@ -274,17 +281,11 @@ class SkoreService {
     }
     _refuseAssignedTeacher(operation, course, teacherId);
     final teacher = await _knownTeacher(operation, teacherId);
-    await _refuseMyGroups(
-      operation,
-      classId: classId,
-      courseId: courseId,
-      teacherId: assignment.teacherId,
-    );
+    await _refuseMyGroups(operation, course: course, current: assignment);
     return _saveOwner(
       operation,
-      classId: classId,
-      courseId: courseId,
-      assignmentId: assignmentId,
+      course: course,
+      replaced: assignment,
       teacher: teacher,
     );
   }
@@ -348,9 +349,9 @@ class SkoreService {
     return teacher;
   }
 
-  /// Asks Skore (`getMyGroups`) whether teacher [teacherId] works with "Mijn
-  /// lesgroepen" for course [courseId] of class [classId], and refuses when
-  /// they do, or when the answer is not one it recognises.
+  /// Asks Skore (`getMyGroups`) whether the teacher of [current], an
+  /// assignment of [course], works with "Mijn lesgroepen" for the course, and
+  /// refuses when they do, or when the answer is not one it recognises.
   ///
   /// Skore answers `{"mygroups": null}` when the teacher has none. The answer
   /// when they have some has not been seen; Skore's web client takes a
@@ -359,10 +360,12 @@ class SkoreService {
   /// or an empty list is refused as unknown.
   Future<void> _refuseMyGroups(
     String operation, {
-    required int classId,
-    required int courseId,
-    required int teacherId,
+    required SkoreCourse course,
+    required SkoreAssignment current,
   }) async {
+    final classId = course.classId;
+    final courseId = course.id;
+    final teacherId = current.teacherId;
     final result = await _ownersRpc('getMyGroups', [
       '$teacherId',
       '$classId',
@@ -373,12 +376,14 @@ class SkoreService {
     if (known && (groups == null || groups is List && groups.isEmpty)) return;
     if (known && (groups is List || groups is Map && groups.isNotEmpty)) {
       throw SmartschoolSkoreMyGroupsError(
-        '$operation: the current teacher ($teacherId) works with "Mijn '
-        'lesgroepen" for course $courseId of class $classId. Handle those '
+        '$operation: the current teacher, $teacherId '
+        '(${current.teacherName}), works with "Mijn lesgroepen" for course '
+        '$courseId of class $classId ("${course.label}"). Handle those '
         'groups in Skore first; this does not delete them. Nothing was saved.',
         classId: classId,
         courseId: courseId,
         teacherId: teacherId,
+        teacherName: current.teacherName,
       );
     }
     throw SmartschoolSkoreError(
@@ -388,21 +393,24 @@ class SkoreService {
     );
   }
 
-  /// Saves the assignment: Skore's `saveOwner(classID, courseID, ownerID,
-  /// userID)`, with an empty `ownerID` for a new assignment
-  /// ([assignmentId] `null`). Sent once, never retried (not even after
-  /// logging in again); returns the assignment once Skore's answer confirms
-  /// it.
+  /// Saves an assignment of [course] with [teacher]: Skore's
+  /// `saveOwner(classID, courseID, ownerID, userID)`, with the `ownerID` of
+  /// [replaced], or an empty one for a new assignment ([replaced] `null`).
+  /// Sent once, never retried (not even after logging in again); returns the
+  /// assignment, with [course] and [replaced] as read before the save, once
+  /// Skore's answer confirms it.
   ///
   /// Skore answers `{"ownerID": 34826, "userID": 146}`: the assignment
   /// (new, or the same for a replace) and its teacher.
-  Future<SkoreAssignment> _saveOwner(
+  Future<SkoreSavedAssignment> _saveOwner(
     String operation, {
-    required int classId,
-    required int courseId,
-    required int? assignmentId,
+    required SkoreCourse course,
+    required SkoreAssignment? replaced,
     required SkoreTeacher teacher,
   }) async {
+    final classId = course.classId;
+    final courseId = course.id;
+    final assignmentId = replaced?.id;
     const unconfirmed =
         'It may or may not have been saved: read the class again '
         '(getCourses) before trying again.';
@@ -451,10 +459,12 @@ class SkoreService {
         '${_jsonPreview(result)} $problem. $unconfirmed',
       );
     }
-    return SkoreAssignment(
+    return SkoreSavedAssignment(
       id: ownerId!,
       teacherId: userId!,
       teacherName: teacher.name,
+      course: course,
+      replaced: replaced,
     );
   }
 
@@ -464,7 +474,11 @@ class SkoreService {
 
   /// Shares gradebook [gradebookId] of teacher [ownerId] with teacher
   /// [teacherId], with [access]: read, or read and write. Returns the
-  /// gradebook as Skore holds it after the save.
+  /// gradebook as Skore holds it after the save, with what the call read
+  /// before it and whether it saved anything (#103):
+  /// [SkoreGradebookShareChange.before] (the gradebook as read before the
+  /// change, so [SkoreGradebookShareChange.accessBefore] is the access
+  /// [teacherId] had) and [SkoreGradebookShareChange.saved].
   ///
   /// The teachers the gradebook is already shared with keep their access. A
   /// teacher has one kind of access: sharing with write access takes
@@ -481,7 +495,7 @@ class SkoreService {
   ///
   /// When the gradebook is already shared with [teacherId] with [access], it
   /// saves nothing and returns the gradebook as read (without reading the
-  /// teachers).
+  /// teachers), with [SkoreGradebookShareChange.saved] `false`.
   ///
   /// The save (Skore's `saveShared`) holds this gradebook only, with its
   /// complete new readers and writers; Skore leaves the owner's other
@@ -494,7 +508,7 @@ class SkoreService {
   ///
   /// The checks and the save are separate requests: do not change the shares
   /// of the same gradebook from two places at once.
-  Future<SkoreGradebookShares> shareGradebook({
+  Future<SkoreGradebookShareChange> shareGradebook({
     required int ownerId,
     required int gradebookId,
     required int teacherId,
@@ -513,12 +527,13 @@ class SkoreService {
     ];
     if (_sameIds(readers, gradebook.readerIds) &&
         _sameIds(writers, gradebook.writerIds)) {
-      return gradebook;
+      return _shareChange(gradebook, gradebook, teacherId, saved: false);
     }
     await _knownTeacher(operation, teacherId);
     return _saveShared(
       operation,
       gradebook: gradebook,
+      teacherId: teacherId,
       readers: readers,
       writers: writers,
       change: 'sharing it with teacher $teacherId (${access.name})',
@@ -527,7 +542,11 @@ class SkoreService {
 
   /// Stops sharing gradebook [gradebookId] of teacher [ownerId] with teacher
   /// [teacherId]: takes them off its readers and its writers. Returns the
-  /// gradebook as Skore holds it after the save.
+  /// gradebook as Skore holds it after the save, with what the call read
+  /// before it and whether it saved anything (#103):
+  /// [SkoreGradebookShareChange.before] (so
+  /// [SkoreGradebookShareChange.accessBefore] is the access [teacherId] had)
+  /// and [SkoreGradebookShareChange.saved].
   ///
   /// The other teachers the gradebook is shared with keep their access.
   ///
@@ -540,10 +559,11 @@ class SkoreService {
   ///
   /// [teacherId] need not be in [getTeachers]: a teacher who has left the
   /// school can still be taken off. When the gradebook is not shared with
-  /// them, it saves nothing and returns the gradebook as read.
+  /// them, it saves nothing and returns the gradebook as read, with
+  /// [SkoreGradebookShareChange.saved] `false`.
   ///
   /// The save and its checks afterwards are those of [shareGradebook].
-  Future<SkoreGradebookShares> unshareGradebook({
+  Future<SkoreGradebookShareChange> unshareGradebook({
     required int ownerId,
     required int gradebookId,
     required int teacherId,
@@ -551,10 +571,13 @@ class SkoreService {
     const operation = 'unshareGradebook';
     _refuseOwnerAsTeacher(operation, ownerId, teacherId);
     final gradebook = await _gradebookToShare(operation, ownerId, gradebookId);
-    if (gradebook.accessOf(teacherId) == null) return gradebook;
+    if (gradebook.accessOf(teacherId) == null) {
+      return _shareChange(gradebook, gradebook, teacherId, saved: false);
+    }
     return _saveShared(
       operation,
       gradebook: gradebook,
+      teacherId: teacherId,
       readers: [...gradebook.readerIds.where((id) => id != teacherId)],
       writers: [...gradebook.writerIds.where((id) => id != teacherId)],
       change: 'no longer sharing it with teacher $teacherId',
@@ -597,15 +620,17 @@ class SkoreService {
     return gradebook;
   }
 
-  /// Saves the [readers] and [writers] of [gradebook]: Skore's
-  /// `saveShared(userID, readers, writers)`, with only this gradebook in the
-  /// two maps. Returns the gradebook as read again, once Skore's answer
-  /// (`state` 1) and that read confirm it.
+  /// Saves the [readers] and [writers] of [gradebook], the change of the
+  /// access of [teacherId]: Skore's `saveShared(userID, readers, writers)`,
+  /// with only this gradebook in the two maps. Returns the gradebook as read
+  /// again, with [gradebook] as it was before, once Skore's answer (`state`
+  /// 1) and that read confirm it.
   ///
   /// Skore answers `{"state": 1}`.
-  Future<SkoreGradebookShares> _saveShared(
+  Future<SkoreGradebookShareChange> _saveShared(
     String operation, {
     required SkoreGradebookShares gradebook,
+    required int teacherId,
     required List<int> readers,
     required List<int> writers,
     required String change,
@@ -679,8 +704,28 @@ class SkoreService {
         '$problem. $unconfirmed',
       );
     }
-    return after!;
+    return _shareChange(gradebook, after!, teacherId, saved: true);
   }
+
+  /// [after], the gradebook after a change of the access of [teacherId], with
+  /// [before], the gradebook as read before it, and whether it was [saved].
+  static SkoreGradebookShareChange _shareChange(
+    SkoreGradebookShares before,
+    SkoreGradebookShares after,
+    int teacherId, {
+    required bool saved,
+  }) => SkoreGradebookShareChange(
+    gradebookId: after.gradebookId,
+    ownerId: after.ownerId,
+    className: after.className,
+    courseName: after.courseName,
+    icon: after.icon,
+    readerIds: after.readerIds,
+    writerIds: after.writerIds,
+    teacherId: teacherId,
+    before: before,
+    saved: saved,
+  );
 
   /// Whether [a] and [b] hold the same IDs, in any order.
   static bool _sameIds(Iterable<int> a, Iterable<int> b) {

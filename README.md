@@ -88,7 +88,7 @@ Future<void> main() async {
 }
 ```
 
-See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow, on a message it sends to the own account only. It changes that account: it moves both copies of the message to the trash with `moveToTrashFrom`, the sent-box copy first and then the archived inbox copy (`boxType: BoxType.inbox`, with the archive folder's ID from `getArchiveBoxId()` as `boxId`), and checks the trash, archive, inbox and sent-box listings, since Smartschool's answer to a move says nothing about it. It never empties the trash.
+See [example/send_message_lifecycle_example.dart](example/send_message_lifecycle_example.dart) for a complete send → inbox poll → archive → trash flow, on a message it sends to the own account only. It changes that account: it moves both copies of the message to the trash with `moveToTrashFrom`, the sent-box copy first and then the archived inbox copy (`boxType: BoxType.inbox`, with the archive folder's ID from `getArchiveBoxId()` as `boxId`), prints whether each move took the copy out of its box (what `moveToTrashFrom` returns, #96), and checks the trash, archive, inbox and sent-box listings. It never empties the trash.
 
 See [example/mark_read_toggle_example.dart](example/mark_read_toggle_example.dart) for toggling the read/unread status of a message.
 
@@ -231,7 +231,7 @@ final messages = MessagesService(client);
 | `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. On one client, the `getAllHeaders` and `getAllArchiveHeaders` calls of a box run one at a time. Fails with `SmartschoolPagingRestartedError` rather than return part of the box when the paging is restarted. |
 | `getAllArchiveHeaders({boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | `getAllHeaders` for the archive folder. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
-| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. For a message in the sent box, `toRecipients`/`ccRecipients`/`bccRecipients` also say whether each recipient has read it. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). |
+| `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. For a message in the sent box, `toRecipients`/`ccRecipients`/`bccRecipients` also say whether each recipient has read it. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). It names no folder: it finds a message in the archive with `BoxType.inbox`. It returns `null` for a message moved to the trash, in the box it left, and the message with `BoxType.trash` (seen live, #96). |
 | `getReplyRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the recipient of a plain reply, the sender of the message, with their numeric user ID by parsing Smartschool's reply compose page (`composeType=1`), as `(to, cc, bcc)`: the sender in `to`, `cc` and `bcc` empty. Pass the lists to `sendReply` to send the reply; the To list of `getReplyAllRecipients` holds the sender too, but among the other recipients, unmarked. For a message in the sent box, or one you sent to yourself, the sender is you. |
 | `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To, CC and BCC recipients with their numeric user IDs by parsing the reply-all compose page, as `(to, cc, bcc)`. Pass the lists to `sendReply(…, all: true)` to send the reply to all. The page of a received message is not expected to name BCC recipients. |
 | `getSentMessageRecipients(msgId)` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the original recipients of a **sent** message with their numeric user IDs. The outbox reply-all compose page includes the authenticated user (sender) alongside the recipients, once, whether or not they were a recipient too; this method also fetches the message (`getMessage` with all recipients) and keeps the authenticated user only where its recipient names include them, so a message sent to yourself returns you. Returns `(to, cc, bcc)`: the BCC recipients are in `bcc`, so a reply-all built from `to` and `cc` does not reveal them (#33). Use this instead of `getReplyAllRecipients` for messages in `BoxType.sent`. |
@@ -283,11 +283,11 @@ for (final attachment in attachments) {
 
 | Method | Returns | Description |
 |---|---|---|
-| `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. |
-| `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. |
-| `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. |
+| `markRead(msgId, {boxType})` | `Future<MessageChanged?>` | Marks a message as read. `getMessage` does not flip the read state; call this after (or alongside) `getMessage` when you want the server to record the message as opened. Idempotent — safe to call on an already-read message. Names no folder, as the web client's request does, also for a message in the archive: tried live there (2026-10-03, #94), the archive then listed it as read. `null` when the answer gives no message ID or read state (#95). |
+| `markUnread(msgId, {boxType, boxId})` | `Future<MessageChanged?>` | Marks a message as unread. For a message in a folder, such as the archive, pass the folder's `boxId` (`getArchiveBoxId()`), as the web client does: tried live in the archive (2026-10-03, #94). `null` when the answer gives no message ID or read state (#95), so a `newValue` of `0` is an "unread" Smartschool confirmed. |
+| `setLabel(msgId, label, {boxType})` | `Future<MessageChanged?>` | Applies a colour flag (`MessageLabel`). Use `noFlag` to clear. Names no folder, as the web client's requests do, also for a message in the archive: tried live there (2026-10-03, #94), the archive then listed the flag set and cleared. `newValue` is the answer's `<label>`; `null` when the answer gives no message ID or label (#95), so a `newValue` of `0` is a "no flag" Smartschool confirmed. |
 | `moveToTrash(msgId)` | `Future<MessageDeletionStatus?>` | Moves a message to the trash, or deletes it for good: prefer `moveToTrashFrom`. It sends Smartschool's `quick delete`, which names the ID only, not the box: Smartschool acts on whichever copy of the ID its own session state points to. That can be a copy in the trash, which a `quick delete` deletes for good, so this is never a guaranteed no-op, not even for an ID that names no message such as `0` (#61). For a message you sent to yourself (the same ID in the inbox and the sent box) it moved the inbox copy; `moveToTrashFrom` moves the sent-box copy. `null` when Smartschool does not confirm it, as when it deleted nothing (it then answered with an empty body). |
-| `moveToTrashFrom(msgId, {boxType, boxId})` | `Future<void>` | Moves the copy of a message in `boxType`, `BoxType.inbox` or `BoxType.sent`, to the trash, and leaves its other copy where it is, as dragging it onto the trash in Smartschool's web client does. A move, not a deletion: safe while another copy of the ID is in the trash. Smartschool's answer says nothing about the move, so list the boxes to check. Pass `boxId` for a folder of the box, such as the archive: tried live once (2026-10-01, #64), it took an archived message out of the archive, and the trash then listed it. Another `boxType` throws an `ArgumentError`. |
+| `moveToTrashFrom(msgId, {boxType, boxId})` | `Future<bool?>` | Moves the copy of a message in `boxType`, `BoxType.inbox` or `BoxType.sent`, to the trash, and leaves its other copy where it is, as dragging it onto the trash in Smartschool's web client does. A move, not a deletion: safe while another copy of the ID is in the trash. Smartschool's answer says nothing about the move, so it checks the move with a `show message` in `boxType` (as `getMessage` does, #96): `true` when the box (none of its folders) no longer holds the message, also for an ID it never held; `false` when it still does; `null` when the answer says neither. Seen live: `true` for each move out of the inbox, the sent box and the archive, as the box listings showed. Pass `boxId` for a folder of the box, such as the archive: tried live (#64), it took an archived message out of the archive, and the trash then listed it. Another `boxType` throws an `ArgumentError`. |
 | `moveToArchive(msgIds)` | `Future<List<MessageChanged>>` | Archives one or more messages (REST endpoint). |
 
 ### Composing & searching
@@ -296,7 +296,7 @@ for (final attachment in attachments) {
 |---|---|---|
 | `getCurrentUserAsRecipient()` | `Future<MessageSearchUser>` | Returns the currently-logged-in user as a compose recipient (reads IDs from compose page JS — safe and reliable). |
 | `searchRecipients(query)` | `Future<List<MessageSearchResult>>` | JSON-based recipient search; results lack `ssId` — use `searchRecipientsForCompose` when sending. |
-| `searchRecipientsForCompose(query)` | `Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>` | Compose-form XML search; results carry `ssId`/`userLt` required by `sendMessage`. |
+| `searchRecipientsForCompose(query)` | `Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>` | Compose-form XML search; results carry `ssId`/`userLt` required by `sendMessage`. Loads a compose form for its `uniqueUsc` and searches only in that form's session (#97): when Smartschool refuses that session for the search, or the client logged in again meanwhile (for another request), it loads a new form and searches once more; it throws a `SmartschoolSessionExpiredError` when that search cannot go out in its form's session either. |
 | `sendMessage(params)` | `Future<void>` | Sends `params` (a `SendMessageParams`, see below) as a new message. Full multi-step send: loads compose form, registers recipients (checking that Smartschool registers each), uploads attachments, submits. Returns normally only when Smartschool confirms the send; see below for what a failure means. |
 | `sendReply(msgId, params, {boxType, all})` | `Future<void>` | Sends `params` (a `SendMessageParams`) as a reply that Smartschool links to message `msgId`: the same steps as `sendMessage`, on the message's reply form (`composeType=1`, or the reply-all form with `all: true`), submitted with its `origMsgID` and `composeAction`. The reply goes to the recipients of `params`: those the form names and `params` keep are not registered again, those `params` leave out are taken off the form first; see below. |
 
@@ -660,11 +660,11 @@ final teachers = await skore.getTeachers();        // List<SkoreTeacher>
 | `getClasses()` | `Future<List<SkoreClass>>` | The classes of all report models, with their model and group. |
 | `getCourses(classId)` | `Future<List<SkoreCourse>>` | The courses of a class, in Skore's order, each with its `assignments`. Empty for a class without a course structure, and for a class ID Skore does not know (Skore answers both the same way). |
 | `getTeachers()` | `Future<List<SkoreTeacher>>` | The teachers that can be assigned to a course. |
-| `addTeacher({classId, courseId, teacherId})` | `Future<SkoreAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it. |
-| `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it. |
+| `addTeacher({classId, courseId, teacherId})` | `Future<SkoreSavedAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it, with the course as read before the save. |
+| `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreSavedAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it, with the course and the assignment as it was (`replaced`: the previous teacher), as read before the save. |
 | `getGradebookShares(ownerId)` | `Future<List<SkoreGradebookShares>>` | The gradebooks of a teacher, each with the teachers who may read it and those who may read and change it. Empty for a teacher without gradebooks, and for a user ID Skore does not know. |
-| `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShares>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again. |
-| `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShares>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again. |
+| `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShareChange>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again, with the gradebook as read before the change and whether anything was saved. |
+| `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShareChange>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again, with the gradebook as read before the change and whether anything was saved. |
 
 A course code is **not** unique within a class: a course and its sub-course can both end in the same `[CODE]`. Tell them apart by `id` (or `label`). Group headers (`isGroupHeader`) are headings for the courses under them and cannot get a teacher.
 
@@ -677,9 +677,15 @@ A course code is **not** unique within a class: a course and its sub-course can 
 final added = await skore.addTeacher(classId: 2516, courseId: 1588, teacherId: 146);
 
 // Another teacher on an existing assignment: the assignment and its gradebook stay.
-final replaced = await skore.replaceTeacher(
+final saved = await skore.replaceTeacher(
     classId: 2516, courseId: 1588, assignmentId: added.id, teacherId: 320);
+
+// The change in its context, as read before the save: no second read needed.
+print('${saved.teacherName} instead of ${saved.replaced?.teacherName} '
+    'on course "${saved.course.label}" of class ${saved.course.classId}');
 ```
+
+Both return a `SkoreSavedAssignment`: the assignment saved (a `SkoreAssignment`: `id`, `teacherId`, `teacherName` of its new teacher), with what the call read before the save (#102): `course`, the `SkoreCourse` as it was (its `label`, `code`, `depth`, and its `assignments` before the change), and, for `replaceTeacher`, `replaced`, the assignment with the teacher it had (`null` for `addTeacher`). So reporting the change needs no second read of the class, which could differ from what the call checked.
 
 Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreChangeRefusedError`, saving nothing:
 
@@ -710,9 +716,16 @@ final shared = await skore.shareGradebook(
     ownerId: 146, gradebookId: 34826, teacherId: 320, access: SkoreShareAccess.write);
 print('${shared.readerIds} ${shared.writerIds}');
 
+// The change in its context, as the call read it: no read of your own needed.
+print(shared.saved
+    ? 'now ${shared.accessAfter?.name} access (had: ${shared.accessBefore?.name ?? 'none'})'
+    : 'already had ${shared.accessBefore?.name} access; nothing saved');
+
 // And undo it.
 await skore.unshareGradebook(ownerId: 146, gradebookId: 34826, teacherId: 320);
 ```
+
+Both return a `SkoreGradebookShareChange`: the gradebook as read again after the save (a `SkoreGradebookShares`: `readerIds`, `writerIds`, ...), with what the call read and did (#103): `before`, the gradebook as it read it before the change (the one it checked), `teacherId`, the teacher whose access it changed, with their `accessBefore` and `accessAfter` (`SkoreShareAccess?`, `null` for none), and `saved`, whether it sent a save (and Skore confirmed it). So reporting the change ("now write access instead of read access", "already had write access; nothing saved", "unshared (had read access)") needs no read of the owner's gradebooks of your own, which could differ from what the call checked.
 
 Both go through Skore's `saveShared`. The save holds **this gradebook only**, with its complete new readers and writers: the teachers it is already shared with keep their access, unless the change is about them, and the owner's other gradebooks are not touched. A teacher has one kind of access: sharing with write access takes them off the readers, and the other way round.
 
@@ -722,11 +735,11 @@ Before the save, they read the owner's gradebooks again, and refuse with a `Smar
 - a gradebook that is not one of the owner's (also for a user ID Skore does not know), so a gradebook is never saved under another owner;
 - for `shareGradebook`, a teacher who is not in `getTeachers()`. `unshareGradebook` can take off a teacher who is no longer in it, such as one who has left the school.
 
-When nothing changes (already shared with that access, or not shared when unsharing), nothing is saved and the gradebook is returned as read.
+When nothing changes (already shared with that access, or not shared when unsharing), nothing is saved and the gradebook is returned as read, with `saved` `false` (and `before` the same gradebook).
 
 Skore answers the save with `state` 1. The call then reads the owner's gradebooks again and checks that the gradebook has exactly the readers and writers saved; when the answer or that read does not confirm the save, it throws a `SmartschoolSkoreSaveUnconfirmedError`: read the gradebooks again before trying again. Since the save holds the complete lists, sending it again does not change the outcome, so (unlike `addTeacher` and `replaceTeacher`) it is retried once after logging in again, as a read is. The checks and the save are separate requests, so do not change the shares of the same gradebook from two places at once.
 
-The example shows the gradebook, asks for confirmation before it saves, and reads the gradebooks again afterwards:
+The example shows the gradebook, asks for confirmation before it saves, and prints the change from the result (it reads the gradebooks again only when the save was not confirmed):
 
 ```bash
 dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHER_ID read|write|remove
@@ -738,7 +751,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 - `SmartschoolSkoreAccessDeniedError` — Skore refused the request to the account, which lacks the rights for that part of Skore (carries `area`: `SkoreAccessArea.reportManagement` or `.gradebookManagement`). Thrown for an answer with HTTP 403; see the access requirement above for what is not known yet. Its message quotes nothing of the answer, so it can be shown to the user.
 - `SmartschoolSkoreChangeRefusedError` — a check before the save refused the change (the checks are listed above). Nothing was saved. Its message says which check refused and why, so the call can be corrected.
-- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, and `teacherName` as read from the class). Nothing was saved.
 - `SmartschoolSkoreError` itself (none of the types above) — Skore answered with something the service cannot use: another HTTP status than `200`, an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers, or a `getMyGroups` answer it does not recognise). The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log.
 - `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher`, `replaceTeacher`, `shareGradebook` or `unshareGradebook` sent the save, but Skore's answer (for a share, also the read afterwards) does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read again. Not a `SmartschoolSkoreError`.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry. The save of `addTeacher` and `replaceTeacher` is not retried: it fails at once.
@@ -1063,7 +1076,7 @@ Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompo
 Returned by `SmartschoolClient.getCurrentUser()`. Fields: `id` (int — server-assigned numeric user ID), `displayName` (String), `avatarUrl` (String? — profile picture URL).
 
 ### `MessageChanged` / `MessageDeletionStatus`
-Returned by mutation operations. `MessageChanged` carries the `id` of the affected message and its `newValue`. `MessageDeletionStatus` (from `moveToTrash`) carries the `msgId`, the `boxType` it was in, `isDeleted` (`true` when Smartschool confirms the deletion) and `unread`, the read state of the message.
+Returned by mutation operations. `MessageChanged` carries the `id` of the affected message and its `newValue`. `MessageChanged.fromStatusXml` and `fromLabelXml` read the answer to a mark (its `<status>`) and to a flag change (its `<label>`), and return `null` when it gives no usable ID or state (#95); `MessageChanged.fromXml` is deprecated, as it read a missing state as `0`. `MessageDeletionStatus` (from `moveToTrash`) carries the `msgId`, the `boxType` it was in, `isDeleted` (`true` when Smartschool confirms the deletion) and `unread`, the read state of the message.
 
 ### `NotificationCounterUpdate`
 Transport-agnostic event produced by any notification source (WebSocket, polling bridge, or manual emit).
@@ -1122,11 +1135,17 @@ Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `nam
 ### `SkoreCourse` / `SkoreAssignment`
 Returned by `SkoreService.getCourses()`. A course row (`id`, `classId`, `name`, `label` — as Skore shows it, code included, `code` (`String?`, the last `[...]` of the label), `isGroupHeader`, `depth` — `0` for a top-level row, `assignments`) and the teachers assigned to it (`id` — the assignment ID, `ownerID` in Skore, `teacherId`, `teacherName`).
 
+### `SkoreSavedAssignment`
+Returned by `SkoreService.addTeacher()` and `replaceTeacher()`. The assignment saved, a `SkoreAssignment` (`id`, `teacherId`, `teacherName` of the teacher it has now), with `course` (the `SkoreCourse` as read before the save, its `assignments` before the change) and `replaced` (`SkoreAssignment?`: for `replaceTeacher`, the assignment with the teacher it had; `null` for `addTeacher`).
+
 ### `SkoreTeacher`
 Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID), `name` (`"Last, First"`).
 
 ### `SkoreGradebookShares`
-Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshareGradebook()`. A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
+Returned by `SkoreService.getGradebookShares()` (and, as a `SkoreGradebookShareChange`, by `shareGradebook()` and `unshareGradebook()`). A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
+
+### `SkoreGradebookShareChange`
+Returned by `SkoreService.shareGradebook()` and `unshareGradebook()`. The gradebook after the call, a `SkoreGradebookShares` (as read again after a save, or as read before it when nothing was saved), with `teacherId` (the teacher whose access the call changed), `before` (the `SkoreGradebookShares` as the call read it before the change), `saved` (`true` when it sent the save and Skore confirmed it, `false` when the teacher already had that access, or none for an unshare), and the getters `accessBefore` and `accessAfter` (the teacher's `SkoreShareAccess?` in `before` and after the call).
 
 ### `PlannerCalendar`
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
@@ -1194,7 +1213,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
-| `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
+| `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, `teacherName`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError` |
 | `SmartschoolPlannerError` | The planner answers `PlannerService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. Not a session problem |
 | `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`); also a planner write, for the element it reads again first (nothing was sent). A `SmartschoolPlannerError` |
@@ -1284,7 +1303,9 @@ dart test -P live test/live/messages_live_test.dart
 
 The `live` preset runs the tests tagged `live` only, in the paths named on the command line: it names no paths of its own, since a preset's paths replace those of the command line (#62). Without a path, `dart test -P live` loads every test file under `test/` to find the live ones. The preset runs one test file at a time (`concurrency: 1`, which a `-j` on the command line does not override), so that live files take turns in the session. Do not pass `--run-skipped` to a plain `dart test`: that runs the live suite too.
 
-What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; `moveToTrashFrom` out of the archive folder: a message moved to the archive with `moveToArchive` is listed by `getArchiveHeaders`, and after its sent-box copy, `moveToTrashFrom(id, boxType: BoxType.inbox, boxId: <getArchiveBoxId()>)` takes it out of the archive and leaves it in the trash (#64); and `moveToTrashFrom`, which cleans up: moving the sent-box copy of each message to the trash leaves its inbox copy in the inbox, and moving the inbox copy then takes it out of the inbox and leaves the message in the trash (#60).
+What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; `moveToTrashFrom` out of the archive folder: a message moved to the archive with `moveToArchive` is listed by `getArchiveHeaders`, and after its sent-box copy, `moveToTrashFrom(id, boxType: BoxType.inbox, boxId: <getArchiveBoxId()>)` takes it out of the archive and leaves it in the trash (#64); and `moveToTrashFrom`, which cleans up: moving the sent-box copy of each message to the trash leaves its inbox copy in the inbox, and moving the inbox copy then takes it out of the inbox and leaves the message in the trash (#60). For each move, `moveToTrashFrom` returns `true`, and `getMessage` agrees with the listings: `null` in the box the copy left, the other copy in its box (the inbox copy also in the archive folder), the message in the trash (#96).
+
+`test/live/messages_search_live_test.dart` only reads: `searchRecipientsForCompose` finds the own account by its name, with one search on its compose form (#97). The guard lets a recipient search out only on a compose form loaded through it, with the empty selection the library sends; a search registers no one on the form.
 
 Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
 

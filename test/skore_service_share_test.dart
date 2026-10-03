@@ -1,6 +1,8 @@
 // Tests for issue #74: sharing a teacher's gradebook with other teachers in
 // Skore, as an admin (`SkoreService.getGradebookShares`, `shareGradebook`,
-// `unshareGradebook`).
+// `unshareGradebook`), and for #103: those two writes return the change in its
+// context (`SkoreGradebookShareChange`: the gradebook before it, and whether
+// it saved anything).
 //
 // These go through Skore's gradebooks RPC service
 // (/modules/Skore/modules/rapportbeheer/rpc/data.php), the one behind its
@@ -460,6 +462,49 @@ void main() {
     });
   });
 
+  group('SkoreGradebookShareChange (#103)', () {
+    const before = SkoreGradebookShares(
+      gradebookId: 31886,
+      ownerId: _owner,
+      className: '5WW1',
+      courseName: 'Esthetica (1 uur)',
+      icon: 'palette2',
+      readerIds: [1001],
+      writerIds: [1003],
+    );
+    const change = SkoreGradebookShareChange(
+      gradebookId: 31886,
+      ownerId: _owner,
+      className: '5WW1',
+      courseName: 'Esthetica (1 uur)',
+      icon: 'palette2',
+      writerIds: [1003, 1001],
+      teacherId: 1001,
+      before: before,
+      saved: true,
+    );
+
+    test('gives the access of its teacher before and after the change', () {
+      expect(change.accessBefore, SkoreShareAccess.read);
+      expect(change.accessAfter, SkoreShareAccess.write);
+      expect(change.accessOf(1003), SkoreShareAccess.write);
+      expect(change.readerIds, isEmpty);
+    });
+
+    test('is a SkoreGradebookShares, and says what it changed', () {
+      expect(change, isA<SkoreGradebookShares>());
+      expect(
+        change.toString(),
+        allOf(
+          contains('SkoreGradebookShareChange(gradebookId: 31886'),
+          contains('teacherId: 1001'),
+          contains('accessBefore: read'),
+          contains('saved: true'),
+        ),
+      );
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // shareGradebook
   // ---------------------------------------------------------------------------
@@ -897,6 +942,219 @@ void main() {
 
       expect(gradebook.gradebookId, 34582);
       expect(server.log, [_getCourses]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The change in its context (#103)
+  // ---------------------------------------------------------------------------
+
+  group('returns the change in its context: the gradebook before it, and '
+      'whether it saved anything (#103)', () {
+    test('a share that saves: the gradebook after it, with the one read '
+        'before it and saved true', () async {
+      final server = _Smartschool();
+      final skore = await serve(server);
+
+      final change = await skore.shareGradebook(
+        ownerId: _owner,
+        gradebookId: 34826,
+        teacherId: 1007,
+        access: SkoreShareAccess.read,
+      );
+
+      // Still the gradebook after the save, as before #103.
+      final SkoreGradebookShares after = change;
+      expect(after.readerIds, [1007]);
+      expect(after.writerIds, [1006]);
+      expect(change.saved, isTrue);
+      expect(change.teacherId, 1007);
+      expect(change.before.gradebookId, 34826);
+      expect(change.before.ownerId, _owner);
+      expect(change.before.courseName, 'Digitale vaardigheden');
+      expect(change.before.readerIds, isEmpty);
+      expect(change.before.writerIds, [1006]);
+      expect(change.accessBefore, isNull);
+      expect(change.accessAfter, SkoreShareAccess.read);
+      // Nothing more is read for it.
+      expect(server.log, [_getCourses, _getTeachers, _saveShared, _getCourses]);
+    });
+
+    test('a reader moved to the writers had read access', () async {
+      final server = _Smartschool();
+      final skore = await serve(server);
+
+      final change = await skore.shareGradebook(
+        ownerId: _owner,
+        gradebookId: 31886,
+        teacherId: 1002,
+        access: SkoreShareAccess.write,
+      );
+
+      expect(change.saved, isTrue);
+      expect(change.accessBefore, SkoreShareAccess.read);
+      expect(change.accessAfter, SkoreShareAccess.write);
+      expect(change.before.readerIds, [1001, 1002]);
+      expect(change.before.writerIds, [1003]);
+      expect(change.readerIds, [1001]);
+      expect(change.writerIds, [1003, 1002]);
+    });
+
+    test('before is the read the call checked, not the read after the '
+        'save', () async {
+      final server = _Smartschool(
+        reread: _ok(
+          _rpcAnswer(
+            'getCourses',
+            '[{"id":"31886","icon":"palette2","name":"Esthetica (1 uur)",'
+                '"class":"5WW1","readers":[1002,1001],"writers":["1004",1003]}]',
+          ),
+        ),
+      );
+      final skore = await serve(server);
+
+      final change = await skore.shareGradebook(
+        ownerId: _owner,
+        gradebookId: 31886,
+        teacherId: 1004,
+        access: SkoreShareAccess.write,
+      );
+
+      expect(change.before.readerIds, [1001, 1002]);
+      expect(change.before.writerIds, [1003]);
+      expect(change.readerIds, [1002, 1001]);
+      expect(change.writerIds, [1004, 1003]);
+    });
+
+    test('a share that saves nothing: saved false, before as read, and no '
+        'other request', () async {
+      final server = _Smartschool();
+      final skore = await serve(server);
+
+      final change = await skore.shareGradebook(
+        ownerId: _owner,
+        gradebookId: 34826,
+        teacherId: 1006,
+        access: SkoreShareAccess.write,
+      );
+
+      expect(change.saved, isFalse);
+      expect(change.teacherId, 1006);
+      expect(change.accessBefore, SkoreShareAccess.write);
+      expect(change.accessAfter, SkoreShareAccess.write);
+      expect(change.before.writerIds, [1006]);
+      expect(change.writerIds, [1006]);
+      expect(change.readerIds, isEmpty);
+      expect(server.log, [_getCourses]);
+    });
+
+    test('an unshare that saves: saved true, with the access the teacher '
+        'had', () async {
+      final server = _Smartschool();
+      final skore = await serve(server);
+
+      final change = await skore.unshareGradebook(
+        ownerId: _owner,
+        gradebookId: 31886,
+        teacherId: 1001,
+      );
+
+      expect(change.saved, isTrue);
+      expect(change.teacherId, 1001);
+      expect(change.accessBefore, SkoreShareAccess.read);
+      expect(change.accessAfter, isNull);
+      expect(change.before.readerIds, [1001, 1002]);
+      expect(change.readerIds, [1002]);
+      expect(server.log, [_getCourses, _saveShared, _getCourses]);
+    });
+
+    test('an unshare that saves nothing: saved false, the teacher had no '
+        'access', () async {
+      final server = _Smartschool();
+      final skore = await serve(server);
+
+      final change = await skore.unshareGradebook(
+        ownerId: _owner,
+        gradebookId: 34582,
+        teacherId: 1006,
+      );
+
+      expect(change.saved, isFalse);
+      expect(change.accessBefore, isNull);
+      expect(change.accessAfter, isNull);
+      expect(change.before.gradebookId, 34582);
+      expect(server.log, [_getCourses]);
+    });
+
+    test("the issue's calls: a caller reports each teacher's change from the "
+        'results alone, without reading the gradebooks itself', () async {
+      // Gradebook 34826 of teacher 1005: teacher 1006 is a writer, 1001 a
+      // reader.
+      final server = _Smartschool(
+        gradebooks:
+            '[{"id":"34826","icon":"IconLib:laptop",'
+            '"name":"Digitale vaardigheden","class":"5WW1",'
+            '"readers":[1001],"writers":[1006]}]',
+      );
+      final skore = await serve(server);
+
+      // What smartschool-mcp reports per teacher, from the result only.
+      String report(SkoreGradebookShareChange change) {
+        final before = change.accessBefore?.name;
+        final after = change.accessAfter?.name;
+        if (!change.saved) {
+          return after == null
+              ? 'was not shared; nothing saved'
+              : 'already had $after access; nothing saved';
+        }
+        if (after == null) return 'unshared (had $before access)';
+        if (before == null) return 'shared with $after access';
+        return 'now $after access instead of $before access';
+      }
+
+      Future<SkoreGradebookShareChange> share(int teacherId) =>
+          skore.shareGradebook(
+            ownerId: _owner,
+            gradebookId: 34826,
+            teacherId: teacherId,
+            access: SkoreShareAccess.write,
+          );
+      Future<SkoreGradebookShareChange> unshare(int teacherId) =>
+          skore.unshareGradebook(
+            ownerId: _owner,
+            gradebookId: 34826,
+            teacherId: teacherId,
+          );
+
+      final a = await share(1006); // saves nothing: 1006 already writes
+      expect(server.log, [_getCourses]);
+      final b = await share(1001); // saves: 1001 moves from read to write
+      final c = await share(1007); // saves: 1007 had no access
+      final d = await unshare(1002); // saves nothing: never shared
+      final e = await unshare(1006); // saves: 1006 had write access
+
+      expect([a, b, c, d, e].map(report), [
+        'already had write access; nothing saved',
+        'now write access instead of read access',
+        'shared with write access',
+        'was not shared; nothing saved',
+        'unshared (had write access)',
+      ]);
+      // Each write read the owner's gradebooks once before it (and once
+      // after a save): the caller read nothing itself.
+      expect(server.log, [
+        _getCourses, // a
+        _getCourses, _getTeachers, _saveShared, _getCourses, // b
+        _getCourses, _getTeachers, _saveShared, _getCourses, // c
+        _getCourses, // d
+        _getCourses, _saveShared, _getCourses, // e
+      ]);
+      // Each result's before is the gradebook after the previous call.
+      expect(b.before.writerIds, a.writerIds);
+      expect(c.before.writerIds, b.writerIds);
+      expect(e.before.writerIds, d.writerIds);
+      expect(e.readerIds, isEmpty);
+      expect(e.writerIds, [1001, 1007]);
     });
   });
 

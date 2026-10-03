@@ -22,18 +22,23 @@ class Arrival {
 }
 
 /// What the cleanup did with the copy of message [id] of the run in [box]
-/// (in its folder [boxId]): moved it to the trash, or left it alone
-/// ([leftAlone] says why).
+/// (in its folder [boxId]): moved it to the trash ([left] says whether it
+/// left the box), or left it alone ([leftAlone] says why).
 class Trashing {
-  Trashing.moved(this.id, this.subject, this.box, {this.boxId = 0})
-    : leftAlone = null;
+  Trashing.moved(
+    this.id,
+    this.subject,
+    this.box, {
+    required this.left,
+    this.boxId = 0,
+  }) : leftAlone = null;
   Trashing.leftAlone(
     this.id,
     this.subject,
     this.box,
     String this.leftAlone, {
     this.boxId = 0,
-  });
+  }) : left = null;
 
   final int id;
   final String subject;
@@ -46,13 +51,20 @@ class Trashing {
   final int boxId;
   final String? leftAlone;
 
+  /// For a moved copy, what `moveToTrashFrom` returned (#96): `true` when,
+  /// right after the move, [box] held no message [id] any more, `false` when
+  /// it still did, `null` when Smartschool's answer said neither. `null` for
+  /// a copy left alone.
+  final bool? left;
+
   @override
   String toString() {
     final copy = boxId == 0
         ? '${box.value} copy'
         : '${box.value} copy in folder $boxId';
     return leftAlone == null
-        ? 'message $id ("$subject"), $copy: moved to the trash'
+        ? 'message $id ("$subject"), $copy: moved to the trash, left the '
+              '${box.value}: $left'
         : 'message $id ("$subject"), $copy: left alone, $leftAlone';
   }
 }
@@ -333,7 +345,7 @@ class LiveRun {
   /// Moves the copy of message [id] of the run, with [subject], in [box] (in
   /// its folder [boxId]: `0` for the box itself, the archive folder for an
   /// archived inbox copy) to the trash with `moveToTrashFrom`, and returns
-  /// what it did with it.
+  /// what it did with it, with what `moveToTrashFrom` returned (#96).
   ///
   /// It moves the copy only when:
   /// - the run did not ask to move that copy before (from any folder);
@@ -380,8 +392,8 @@ class LiveRun {
     }
     _trashed.add((id, box));
     guard.allowTrashFrom(id, box, boxId: boxId);
-    await messages.moveToTrashFrom(id, boxType: box, boxId: boxId);
-    return Trashing.moved(id, subject, box, boxId: boxId);
+    final left = await messages.moveToTrashFrom(id, boxType: box, boxId: boxId);
+    return Trashing.moved(id, subject, box, left: left, boxId: boxId);
   }
 
   /// Moves the inbox copy of message [id] of the run, with [subject], to the

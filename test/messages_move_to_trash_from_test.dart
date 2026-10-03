@@ -19,6 +19,19 @@
 // move of ID 0 (no message, #61), with the same `silent` action:
 // `quickmove messages.xml`.
 //
+// That answer says nothing about the move, so `moveToTrashFrom` checks it
+// itself (#96): right after it, it sends `show message` for the message in
+// the box it moved the copy out of, as `getMessage` does, and returns `true`
+// for Smartschool's placeholder (the box holds no such message, #16), `false`
+// for the message, and `null` for an answer that says neither. Seen live
+// (2026-10-03), by the live suite, on messages sent to the own account: after
+// the move of the sent-box copy, `show message` in the sent box answered with
+// the placeholder and in the inbox with the message; after the move of the
+// inbox copy, or of an archived one out of the archive folder, in the inbox
+// with the placeholder; and in the trash with the message. The answer for a
+// message moved to the trash (`show message moved to trash.xml`, asked in the
+// inbox) is the placeholder, with the ID asked.
+//
 // The fake Smartschool below records each XML command and answers it.
 import 'dart:io';
 import 'dart:typed_data';
@@ -47,21 +60,60 @@ class _Credentials extends Credentials {
   String? get mfa => 'JBSWY3DPEHPK3PXP';
 }
 
-/// Smartschool's answer to `quickmove messages`, as recorded live.
-final _moveAnswer = File(
-  'test/fixtures/smartschool/requests/post/postboxes/quickmove messages.xml',
+String _fixture(String name) => File(
+  'test/fixtures/smartschool/requests/post/postboxes/$name',
 ).readAsStringSync();
+
+/// Smartschool's answer to `quickmove messages`, as recorded live.
+final _moveAnswer = _fixture('quickmove messages.xml');
+
+/// Smartschool's answer to `show message` in a box that holds no message
+/// [id], as recorded live for a message moved to the trash out of the inbox
+/// (#96): the placeholder, which echoes the ID asked.
+String _gone(int id) => _fixture(
+  'show message moved to trash.xml',
+).replaceFirst('<id>6484136</id>', '<id>$id</id>');
+
+/// Smartschool's answer to `show message` in a box that holds message [id].
+String _held(int id) => _fixture(
+  'show message.xml',
+).replaceFirst('<id>123456</id>', '<id>$id</id>');
+
+/// A `show message` answer whose `<data>` holds [data].
+String _shown(String data) =>
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    '<server><response><status>ok</status><actions><action>'
+    '<subsystem>show message</subsystem><command>rebuild</command>'
+    '<data>$data</data></action></actions></response></server>';
+
+/// The `<message>` element of [_held], with [id] as the text of its `<id>`.
+String _heldWithId(String id) {
+  final held = _held(4242);
+  final end = held.indexOf('</message>') + '</message>'.length;
+  return held
+      .substring(held.indexOf('<message>'), end)
+      .replaceFirst('<id>4242</id>', '<id>$id</id>');
+}
 
 /// An XML command as it reached the fake Smartschool.
 typedef _Command = ({String path, String action, Map<String, String> params});
 
-/// A Smartschool whose XML dispatcher answers every command with [answer]
-/// (HTTP `200`, [contentType]).
+/// A Smartschool whose XML dispatcher answers `show message` with [shown]
+/// (HTTP `200`, [shownContentType]; by default the placeholder for message
+/// `4242`) and every other command with [answer] (HTTP `200`,
+/// [contentType]).
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(this.answer, {this.contentType = 'application/xml'});
+  _Smartschool(
+    this.answer, {
+    this.contentType = 'application/xml',
+    String? shown,
+    this.shownContentType = 'application/xml',
+  }) : shown = shown ?? _gone(4242);
 
   final String answer;
   final String contentType;
+  final String shown;
+  final String shownContentType;
 
   /// Every command that reached it, in order.
   final List<_Command> commands = [];
@@ -75,9 +127,12 @@ class _Smartschool implements HttpClientAdapter {
     expect(options.method, 'POST');
     final command = (options.data as Map)['command'] as String;
     expect(command, contains('<subsystem>postboxes</subsystem>'));
+    final action = RegExp(
+      r'<action>(.*?)</action>',
+    ).firstMatch(command)!.group(1)!;
     commands.add((
       path: '${options.uri.path}?${options.uri.query}',
-      action: RegExp(r'<action>(.*?)</action>').firstMatch(command)!.group(1)!,
+      action: action,
       params: {
         for (final m in RegExp(
           r'<param name="([^"]+)"><!\[CDATA\[(.*?)\]\]></param>',
@@ -85,11 +140,12 @@ class _Smartschool implements HttpClientAdapter {
           m.group(1)!: m.group(2)!,
       },
     ));
+    final show = action == 'show message';
     return ResponseBody.fromString(
-      answer,
+      show ? shown : answer,
       200,
       headers: {
-        Headers.contentTypeHeader: [contentType],
+        Headers.contentTypeHeader: [show ? shownContentType : contentType],
       },
     );
   }
@@ -106,12 +162,19 @@ void main() {
   Future<_Smartschool> serve(
     String answer, {
     String contentType = 'application/xml',
+    String? shown,
+    String shownContentType = 'application/xml',
   }) async {
     client = await SmartschoolClient.create(
       _Credentials(),
       cacheDir: tempCacheDir(),
     );
-    final server = _Smartschool(answer, contentType: contentType);
+    final server = _Smartschool(
+      answer,
+      contentType: contentType,
+      shown: shown,
+      shownContentType: shownContentType,
+    );
     client.dio.httpClientAdapter = server;
     return server;
   }
@@ -127,8 +190,11 @@ void main() {
         client,
       ).moveToTrashFrom(4242, boxType: BoxType.sent);
 
-      expect(server.commands, hasLength(1));
-      final command = server.commands.single;
+      expect(server.commands.map((c) => c.action), [
+        'quickmove messages',
+        'show message',
+      ]);
+      final command = server.commands.first;
       expect(command.path, '/?module=Messages&file=dispatcher');
       expect(command.action, 'quickmove messages');
       expect(command.params, {
@@ -147,8 +213,8 @@ void main() {
         client,
       ).moveToTrashFrom(4242, boxType: BoxType.inbox);
 
-      expect(server.commands.single.action, 'quickmove messages');
-      expect(server.commands.single.params, {
+      expect(server.commands.first.action, 'quickmove messages');
+      expect(server.commands.first.params, {
         'boxType': 'inbox',
         'boxID': '0',
         'msgID': '4242',
@@ -164,7 +230,8 @@ void main() {
         client,
       ).moveToTrashFrom(4242, boxType: BoxType.inbox, boxId: 208);
 
-      expect(server.commands.single.params, {
+      expect(server.commands.first.action, 'quickmove messages');
+      expect(server.commands.first.params, {
         'boxType': 'inbox',
         'boxID': '208',
         'msgID': '4242',
@@ -205,7 +272,7 @@ void main() {
 
   group('moveToTrashFrom throws for an answer that is not XML (#60)', () {
     test('an HTML page', () async {
-      await serve(
+      final server = await serve(
         '<!DOCTYPE html><html><body>login</body></html>',
         contentType: 'text/html',
       );
@@ -214,15 +281,171 @@ void main() {
         MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
         throwsA(isA<SmartschoolAuthenticationError>()),
       );
+      expect(server.commands.map((c) => c.action), [
+        'quickmove messages',
+      ], reason: 'a move that failed is not checked');
     });
 
     test('an empty answer', () async {
-      await serve('', contentType: 'text/html');
+      final server = await serve('', contentType: 'text/html');
 
       await expectLater(
         MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
         throwsA(isA<SmartschoolParsingError>()),
       );
+      expect(server.commands.map((c) => c.action), [
+        'quickmove messages',
+      ], reason: 'a move that failed is not checked');
+    });
+  });
+
+  group('moveToTrashFrom checks its move with show message in the box it '
+      'moved the copy out of, and says whether that box still holds the '
+      'message (#96)', () {
+    for (final (box, boxId, value) in [
+      (BoxType.sent, 0, 'outbox'),
+      (BoxType.inbox, 0, 'inbox'),
+      (BoxType.inbox, 208, 'inbox'),
+    ]) {
+      test('the check of a move out of the $value (folder $boxId) names the '
+          'box and the message, and no folder, as getMessage does', () async {
+        final server = await serve(_moveAnswer);
+
+        await MessagesService(
+          client,
+        ).moveToTrashFrom(4242, boxType: box, boxId: boxId);
+
+        expect(server.commands, hasLength(2));
+        final check = server.commands.last;
+        expect(check.path, '/?module=Messages&file=dispatcher');
+        expect(check.action, 'show message');
+        expect(check.params, {
+          'msgID': '4242',
+          'boxType': value,
+          'limitList': 'true',
+        });
+      });
+    }
+
+    for (final (box, boxId) in [
+      (BoxType.sent, 0),
+      (BoxType.inbox, 0),
+      (BoxType.inbox, 208),
+    ]) {
+      test('true: the ${box.value} (folder $boxId) answers with the '
+          'placeholder, as the inbox did live for a message moved to the '
+          'trash', () async {
+        await serve(_moveAnswer, shown: _gone(4242));
+
+        expect(
+          await MessagesService(
+            client,
+          ).moveToTrashFrom(4242, boxType: box, boxId: boxId),
+          isTrue,
+        );
+      });
+    }
+
+    test('false: the box answers with the message, which it still '
+        'holds', () async {
+      await serve(_moveAnswer, shown: _held(4242));
+
+      expect(
+        await MessagesService(
+          client,
+        ).moveToTrashFrom(4242, boxType: BoxType.sent),
+        isFalse,
+      );
+    });
+
+    test('false for the message with white space around its ID', () async {
+      await serve(_moveAnswer, shown: _shown(_heldWithId(' 4242\n')));
+
+      expect(
+        await MessagesService(
+          client,
+        ).moveToTrashFrom(4242, boxType: BoxType.inbox, boxId: 208),
+        isFalse,
+      );
+    });
+
+    for (final (name, shown) in [
+      ('no <message>', _shown('')),
+      ('an empty <message />', _moveAnswer),
+      ('no <data>', _moveAnswer.replaceFirst('<data><message /></data>', '')),
+      ('the placeholder of another message', _gone(4343)),
+      ('another message', _held(4343)),
+      ('two messages', _shown(_heldWithId('4242') + _heldWithId('4242'))),
+      (
+        'a message without an <id>',
+        _shown(_heldWithId('').replaceFirst('<id></id>', '')),
+      ),
+      ('a message with an empty <id>', _shown(_heldWithId(''))),
+      ('a message with a non-numeric <id>', _shown(_heldWithId('4242a'))),
+      ('a message with a hexadecimal <id>', _shown(_heldWithId('0x1092'))),
+      (
+        'a message with a repeated <id>',
+        _shown(
+          _heldWithId(
+            '4242',
+          ).replaceFirst('<id>4242</id>', '<id>4242</id><id>4242</id>'),
+        ),
+      ),
+    ]) {
+      test('null: an answer with $name says neither', () async {
+        final server = await serve(_moveAnswer, shown: shown);
+
+        expect(
+          await MessagesService(
+            client,
+          ).moveToTrashFrom(4242, boxType: BoxType.sent),
+          isNull,
+        );
+        expect(server.commands.map((c) => c.action), [
+          'quickmove messages',
+          'show message',
+        ]);
+      });
+    }
+
+    test('a check answered with an HTML page throws, after the move went '
+        'out', () async {
+      final server = await serve(
+        _moveAnswer,
+        shown: '<!DOCTYPE html><html><body>login</body></html>',
+        shownContentType: 'text/html',
+      );
+
+      await expectLater(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
+        throwsA(isA<SmartschoolAuthenticationError>()),
+      );
+      expect(server.commands.map((c) => c.action), [
+        'quickmove messages',
+        'show message',
+      ]);
+    });
+
+    test('a check answered with an empty body throws', () async {
+      await serve(_moveAnswer, shown: '', shownContentType: 'text/html');
+
+      await expectLater(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
+        throwsA(isA<SmartschoolParsingError>()),
+      );
+    });
+
+    test('getMessage, which sends the same show message, returns null for '
+        'the placeholder of a moved message, and the message for one the '
+        'box holds', () async {
+      await serve(_moveAnswer, shown: _gone(4242));
+      expect(await MessagesService(client).getMessage(4242), isNull);
+      await client.dispose();
+
+      await serve(_moveAnswer, shown: _held(4242));
+      final message = await MessagesService(client).getMessage(4242);
+      expect(message?.id, 4242);
+      expect(message?.subject, 'Griezelfestijn');
     });
   });
 }

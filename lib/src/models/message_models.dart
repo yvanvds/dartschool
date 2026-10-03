@@ -452,7 +452,8 @@ class MessageAttachment {
   String toString() => 'MessageAttachment(fileId: $fileId, name: "$name")';
 }
 
-/// Result model for mutation operations (mark unread, adjust label).
+/// Result model for mutation operations (mark read or unread, adjust label,
+/// archive).
 ///
 /// Corresponds to Python's `MessageChanged` dataclass.
 class MessageChanged {
@@ -463,11 +464,51 @@ class MessageChanged {
 
   const MessageChanged({required this.id, required this.newValue});
 
+  /// Reads the `<message>` of Smartschool's answer to `mark message read` or
+  /// `mark message unread` ([MessagesService.markRead],
+  /// [MessagesService.markUnread]): the message's `<id>` and its new read
+  /// state, `<status>` (`1` read, `0` unread) as [newValue].
+  ///
+  /// Returns `null` when the answer gives no usable ID or read state: either
+  /// element missing, empty, repeated or not a whole number (#95). A
+  /// `<label>` is not read: it is not the read state.
+  static MessageChanged? fromStatusXml(Map<String, dynamic> xml) =>
+      _changed(xml, 'status');
+
+  /// Reads the `<message>` of Smartschool's answer to `save msglabel`
+  /// ([MessagesService.setLabel]): the message's `<id>` and its new flag,
+  /// `<label>` ([MessageLabel.value]) as [newValue].
+  ///
+  /// Returns `null` when the answer gives no usable ID or flag: either
+  /// element missing, empty, repeated or not a whole number (#95). A
+  /// `<status>` is not read: it is the read state, not the flag.
+  static MessageChanged? fromLabelXml(Map<String, dynamic> xml) =>
+      _changed(xml, 'label');
+
+  /// Reads `<id>` and the `<status>`, or else the `<label>`, of [xml].
+  ///
+  /// A missing, empty or non-numeric value reads as `0`, which is also a
+  /// confirmed state: unread after [MessagesService.markUnread], no flag
+  /// after [MessagesService.setLabel] with [MessageLabel.noFlag]. And when
+  /// [xml] holds both, [newValue] is the `<status>`, also for an answer to
+  /// `save msglabel`.
+  @Deprecated(
+    'Reads a missing or unusable ID or state as 0, which also means unread '
+    'or no flag: use fromStatusXml or fromLabelXml, which return null for it '
+    '(#95)',
+  )
   factory MessageChanged.fromXml(Map<String, dynamic> xml) {
     return MessageChanged(
       id: _int(xml, 'id'),
       newValue: _intOr(xml, 'status', orKey: 'label', fallback: 0),
     );
+  }
+
+  static MessageChanged? _changed(Map<String, dynamic> xml, String key) {
+    final id = _strictInt(xml, 'id');
+    final value = _strictInt(xml, key);
+    if (id == null || value == null) return null;
+    return MessageChanged(id: id, newValue: value);
   }
 }
 
@@ -669,6 +710,15 @@ int _int(Map<String, dynamic> xml, String key) {
   if (v == null) return 0;
   if (v is int) return v;
   return int.tryParse(v.toString()) ?? 0;
+}
+
+/// The whole (decimal) number in the element [key] of [xml], or `null` when
+/// [xml] has no such element, or one that is empty, repeated, has child
+/// elements or holds anything else than a whole number (surrounding
+/// whitespace aside).
+int? _strictInt(Map<String, dynamic> xml, String key) {
+  final v = xml[key];
+  return v is String ? int.tryParse(v.trim(), radix: 10) : null;
 }
 
 int _intOr(

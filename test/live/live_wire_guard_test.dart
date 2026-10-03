@@ -41,6 +41,7 @@ final _newMessageForm = _fixture('get/composemessage/new-message.html');
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
 final _quickDeleteAnswer = _fixture('post/postboxes/quick delete.xml');
 final _moveAnswer = _fixture('post/postboxes/quickmove messages.xml');
+final _searchAnswer = _fixture('post/composemessage/search-user.xml');
 
 /// The reply form of received message 900030, from [_other].
 final _replyFormFromOther = _fixture('get/composemessage/reply.html');
@@ -119,6 +120,9 @@ class _Smartschool implements HttpClientAdapter {
   /// The fields of each `addUserToSelected` that reached it.
   final List<Map<dynamic, dynamic>> registered = [];
 
+  /// The fields of each recipient search that reached it (#97).
+  final List<Map<dynamic, dynamic>> searched = [];
+
   /// The fields of each submit that reached it.
   final List<Map<String, String>> submits = [];
 
@@ -131,6 +135,11 @@ class _Smartschool implements HttpClientAdapter {
 
   /// The IDs of each move to the archive that reached it.
   final List<List<int>> archived = [];
+
+  /// Each change of the read state or the flag of a message that reached it,
+  /// as `<action> <boxType> <msgID>` for a command that names no folder, or
+  /// `<action> <boxType>/<boxID> <msgID>` for one that names it (#94).
+  final List<String> marked = [];
 
   @override
   Future<ResponseBody> fetch(
@@ -167,6 +176,9 @@ class _Smartschool implements HttpClientAdapter {
           removedRecipientsAnswer((options.data as Map)['xml'] as String),
           contentType: removedRecipientContentType,
         );
+      case (true, '/', 'searchUsers', null):
+        searched.add(options.data as Map);
+        return _answer(_searchAnswer, contentType: 'text/xml');
       case (true, '/Upload/Upload/Index', _, _):
         return _answer('true');
       case (false, '/', 'index', 'main'):
@@ -216,6 +228,14 @@ class _Smartschool implements HttpClientAdapter {
             _messageList(boxes['$box/$folder'] ?? const []),
             contentType: 'text/xml',
           );
+        }
+        final mark = RegExp(
+          '<action>(mark message read|mark message unread|save msglabel)'
+          '</action>',
+        ).firstMatch(command)?.group(1);
+        if (mark != null) {
+          final where = folder == null ? '$box' : '$box/$folder';
+          marked.add('$mark $where ${id!.group(1)}');
         }
         return _answer(
           '<server><response><status>ok</status><actions><action><data>'
@@ -460,6 +480,55 @@ void main() {
       expect(guard.violations, isEmpty);
     });
 
+    test('marking the inbox copy of a message the run sent unread and read, '
+        'and flagging it, listed and checked in the inbox, and after a move '
+        'to the archive in the archive folder that the Messages page names; '
+        'markUnread names the folder, markRead and setLabel name none '
+        '(#94)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        archiveFolder: 312,
+        boxes: {
+          'inbox/0': [(4242, _runSubject), (5555, 'Hello')],
+          'inbox/312': [(4242, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      guard
+        ..allowMark(4242)
+        ..allowArchive(4242);
+
+      await messages.markUnread(4242);
+      await messages.markRead(4242);
+      await messages.setLabel(4242, MessageLabel.redFlag);
+      final archiveBoxId = await messages.getArchiveBoxId();
+      await messages.moveToArchive([4242]);
+      // The inbox no longer lists it: only the archive folder's list does.
+      await messages.getArchiveHeaders(boxId: archiveBoxId);
+      await messages.markUnread(4242, boxId: archiveBoxId);
+      await messages.markRead(4242);
+      await messages.setLabel(4242, MessageLabel.noFlag);
+
+      expect(server.marked, [
+        'mark message unread inbox/0 4242',
+        'mark message read inbox 4242',
+        'save msglabel inbox 4242',
+        'mark message unread inbox/312 4242',
+        'mark message read inbox 4242',
+        'save msglabel inbox 4242',
+      ]);
+      expect(guard.markAnswers.map((a) => (a.action, a.id)), [
+        ('mark message unread', 4242),
+        ('mark message read', 4242),
+        ('save msglabel', 4242),
+        ('mark message unread', 4242),
+        ('mark message read', 4242),
+        ('save msglabel', 4242),
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
     test('reading: message lists, messages, attachments', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (messages, guard) = await _guarded(server);
@@ -472,6 +541,25 @@ void main() {
 
       expect(server.log, hasLength(5));
       expect(guard.requestsSent, 5);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('a recipient search on a compose form loaded through it, which '
+        'registers no one (#97)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+
+      final (users, _) = await messages.searchRecipientsForCompose('John');
+
+      expect(users.map((u) => u.userId), contains(146));
+      expect(server.log, [
+        'GET /?module=Messages&file=composeMessage&boxType=inbox'
+            '&composeType=0&msgID=undefined',
+        'POST /?module=Messages&file=searchUsers',
+      ]);
+      expect(server.searched.single['val'], 'John');
+      expect(server.registered, isEmpty);
+      expect(guard.searches, 1);
       expect(guard.violations, isEmpty);
     });
   });
@@ -1047,24 +1135,168 @@ void main() {
       ]);
     });
 
+    test('marking read or unread, or flagging, ID 0, a message that '
+        "Smartschool did not list in the inbox or its archive folder with the "
+        "run's subject, one the run did not check, a copy in another box or "
+        'in another folder, or in the archive folder while no Messages page '
+        'names it, and a copy the run moved to the trash (#94)', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        archiveFolder: 312,
+        boxes: {
+          'inbox/0': [
+            (4242, _runSubject),
+            (5555, 'Hello'),
+            (6666, _runSubject),
+            (9999, _runSubject),
+          ],
+          'outbox/0': [(4242, _runSubject)],
+          'inbox/312': [(7777, _runSubject)],
+          'inbox/400': [(8888, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      await messages.getHeaders();
+      await messages.getHeaders(boxType: BoxType.sent);
+      await messages.getHeaders(boxId: 312);
+      await messages.getHeaders(boxId: 400);
+      guard
+        ..allowMark(0)
+        ..allowMark(4242)
+        ..allowMark(5555)
+        ..allowMark(7777)
+        ..allowMark(8888)
+        ..allowMark(9999)
+        ..allowTrashFrom(9999, BoxType.inbox);
+      Future<void> refused(Future<Object?> change, String reason) =>
+          expectLater(change, throwsA(anything), reason: reason);
+
+      // No Messages page named the archive folder yet.
+      await refused(messages.markUnread(7777, boxId: 312), 'archive unknown');
+      await refused(messages.markRead(7777), 'archive unknown: inbox only');
+      expect(await messages.getArchiveBoxId(), 312);
+      await refused(messages.markRead(0), 'ID 0');
+      await refused(
+        messages.setLabel(5555, MessageLabel.redFlag),
+        'another subject',
+      );
+      await refused(messages.markRead(6666), 'not checked');
+      await refused(
+        messages.markRead(4242, boxType: BoxType.sent),
+        'the sent box',
+      );
+      await refused(
+        messages.markUnread(8888, boxId: 400),
+        'not the archive folder',
+      );
+      await refused(
+        messages.markUnread(4242, boxId: 312),
+        'listed in the inbox, not in the archive folder',
+      );
+      await messages.moveToTrashFrom(9999, boxType: BoxType.inbox);
+      await refused(
+        messages.setLabel(9999, MessageLabel.redFlag),
+        'moved to the trash',
+      );
+      // What it lets out: a copy listed in the archive folder (a command
+      // without a folder), and one listed in the inbox (with folder 0).
+      await messages.markRead(7777);
+      await messages.markUnread(4242);
+
+      expect(server.moved, ['inbox 9999']);
+      expect(server.marked, [
+        'mark message read inbox 7777',
+        'mark message unread inbox/0 4242',
+      ]);
+      const notArchive = 'in a folder of the inbox that is not the archive';
+      String notListed(int id, String where) =>
+          "Smartschool did not list message $id in $where with the run's "
+          'subject';
+      expect(_violations(guard), [
+        contains('it changes message 7777 $notArchive'),
+        contains(notListed(7777, 'the inbox')),
+        contains('it changes message 0, which names no message'),
+        contains(notListed(5555, 'the inbox or its archive folder (312)')),
+        contains(
+          'message 6666 is not one this run sent and checked to change its '
+          'read state and flag',
+        ),
+        contains('it changes the outbox copy of message 4242'),
+        contains('it changes message 8888 $notArchive'),
+        contains(notListed(4242, 'the archive folder (312) of the inbox')),
+        contains(
+          'the inbox copy of message 9999 was moved to the trash already',
+        ),
+      ]);
+    });
+
     test('any other request that changes something', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
-      final (messages, guard) = await _guarded(server);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
 
-      await expectLater(messages.markUnread(4242), throwsA(anything));
       await expectLater(
-        messages.searchRecipientsForCompose('Piet'),
-        throwsA(anything),
+        dio.post<String>(
+          '/?module=Messages&file=dispatcher',
+          data: {
+            'command': XmlInterface.buildCommand(
+              'postboxes',
+              'empty_trash',
+              {},
+            ),
+          },
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
+      );
+      await expectLater(
+        dio.post<String>(
+          '/?module=Messages&file=index&function=main',
+          data: {'folder': '1'},
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
       );
 
-      // Only the compose form of the search went out.
-      expect(server.log, [
-        'GET /?module=Messages&file=composeMessage&boxType=inbox'
-            '&composeType=0&msgID=undefined',
-      ]);
+      expect(server.log, isEmpty);
       expect(_violations(guard), [
-        contains('no "mark message unread" command'),
+        contains('no "empty_trash" command'),
         contains('not a request the live suite sends'),
+      ]);
+    });
+
+    test('a recipient search on a compose form not loaded through it, or with '
+        'a selection (#97)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
+      final form = await dio.get<String>(
+        '/?module=Messages&file=composeMessage&boxType=inbox&composeType=0'
+        '&msgID=undefined',
+      );
+      final uniqueUsc = MessagesService.parseHiddenFields(
+        form.data!,
+      )['uniqueUsc']!;
+      Future<void> search(String uniqueUsc, String xml) => expectLater(
+        dio.post<String>(
+          '/?module=Messages&file=searchUsers',
+          data: {'val': 'Piet', 'xml': xml, 'uniqueUsc': uniqueUsc},
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
+      );
+
+      await search('not-a-loaded-form', '<results></results>');
+      await search(
+        uniqueUsc,
+        '<results><users><user><userID>201</userID></user></users></results>',
+      );
+
+      expect(server.searched, isEmpty);
+      expect(guard.searches, 0);
+      expect(_violations(guard), [
+        contains('its compose form was not loaded through the guard'),
+        contains('its selection (xml) is not the empty one'),
       ]);
     });
 

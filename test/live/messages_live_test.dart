@@ -24,6 +24,10 @@
 //   never empties the trash;
 // - it archives (moveToArchive) only the inbox copy of a message it sent,
 //   once, while the inbox lists it with the run's subject (#64);
+// - it marks read or unread (markRead, markUnread) and flags (setLabel) only
+//   the inbox copy of a message it sent, while the inbox or its archive
+//   folder lists it with the run's subject, and never one it moved to the
+//   trash (#94);
 // - it sends no quick delete (moveToTrash) at all: that names the ID only,
 //   Smartschool acts on whichever copy of the ID its session state points
 //   to, and one of a copy in the trash deletes it for good (#19), so it is
@@ -248,7 +252,8 @@ void main() {
 
       test('moveToTrashFrom moves an archived message out of the archive '
           'folder (a boxId other than 0) to the trash, after its sent-box '
-          'copy (#64)', () async {
+          'copy (#64), and says that each move took it out of its box, as '
+          'getMessage in that box does (#96)', () async {
         final subject = run.subject('archive');
         final arrival = await run.send(
           subject,
@@ -302,19 +307,53 @@ void main() {
           reason: 'the inbox',
         );
 
+        // What getMessage (Smartschool's `show message`, which names no
+        // folder) finds of the message in each box, as moveToTrashFrom checks
+        // its move (#96): the subject of what it returns, or null.
+        Future<String?> shown(BoxType box) async =>
+            (await messages.getMessage(id, boxType: box))?.subject;
+        final inboxBefore = await shown(BoxType.inbox);
+        final sentBefore = await shown(BoxType.sent);
+
         // The sent-box copy first, then the archived inbox copy, each while
         // its box (folder) lists it with the run's subject.
         final sentCopy = await run.trash(id, subject, BoxType.sent);
+        final sentAfterSent = await shown(BoxType.sent);
+        final inboxAfterSent = await shown(BoxType.inbox);
         final archivedCopy = await run.trash(
           id,
           subject,
           BoxType.inbox,
           boxId: archiveBoxId,
         );
+        final inboxAtEnd = await shown(BoxType.inbox);
+        final trashAtEnd = await shown(BoxType.trash);
         print('archive scenario: $sentCopy');
         print('archive scenario: $archivedCopy');
+        print(
+          'archive scenario: getMessage of $id, before the moves: inbox '
+          '"$inboxBefore", sent box "$sentBefore"; after the sent-box copy: '
+          'sent box "$sentAfterSent", inbox "$inboxAfterSent"; after the '
+          'archived copy: inbox "$inboxAtEnd", trash "$trashAtEnd"',
+        );
         expect(sentCopy.leftAlone, isNull, reason: '$sentCopy');
         expect(archivedCopy.leftAlone, isNull, reason: '$archivedCopy');
+
+        // getMessage in the inbox finds the archived copy (#96), and none in
+        // a box that the move took the message out of: moveToTrashFrom says
+        // so. The trash holds it.
+        expect(inboxBefore, subject, reason: 'inbox (archive), before');
+        expect(sentBefore, subject, reason: 'sent box, before');
+        expect(sentCopy.left, isTrue, reason: 'moveToTrashFrom, sent box');
+        expect(sentAfterSent, isNull, reason: 'sent box, after its move');
+        expect(
+          inboxAfterSent,
+          subject,
+          reason: 'inbox (archive), after the move of the sent-box copy',
+        );
+        expect(archivedCopy.left, isTrue, reason: 'moveToTrashFrom, archive');
+        expect(inboxAtEnd, isNull, reason: 'inbox (archive), after its move');
+        expect(trashAtEnd, subject, reason: 'trash, at the end');
         expect(
           run.guard.trashMoveAnswers[(id, BoxType.inbox.value)],
           contains('<command>silent</command>'),
@@ -341,9 +380,144 @@ void main() {
         );
       });
 
+      test('markRead and setLabel, which name no folder, change a message in '
+          'the archive folder, as markUnread, which names it, does '
+          '(#94)', () async {
+        final subject = run.subject('archive-mark');
+        final arrival = await run.send(
+          subject,
+          () => messages.sendMessage(
+            SendMessageParams(
+              to: [run.own],
+              subject: subject,
+              bodyHtml: run.body('archive-mark'),
+            ),
+          ),
+        );
+        expect(arrival.inbox, hasLength(1), reason: 'copies in the inbox');
+        expect(arrival.sent, hasLength(1), reason: 'copies in the sent box');
+        final id = arrival.inbox.single.id;
+        expect(arrival.sent.single.id, id);
+
+        // Archives the inbox copy (resolving the archive folder first).
+        final archived = await run.archive(id, subject);
+        final archiveBoxId = await messages.getArchiveBoxId();
+        expect(archived.map((c) => (c.id, c.newValue)), [(id, 1)]);
+
+        // The archive's header of the message, once the archive lists it and
+        // [until] holds for it (waiting up to half a minute), or the last one
+        // the archive listed.
+        Future<ShortMessage?> inArchive({
+          bool Function(ShortMessage header)? until,
+        }) async {
+          final deadline = DateTime.now().add(const Duration(seconds: 30));
+          while (true) {
+            final header = (await run.listed(
+              BoxType.inbox,
+              subject,
+              boxId: archiveBoxId,
+            )).where((m) => m.id == id).firstOrNull;
+            final done = header != null && (until == null || until(header));
+            if (done || DateTime.now().isAfter(deadline)) return header;
+            await Future<void>.delayed(const Duration(seconds: 2));
+          }
+        }
+
+        final before = await inArchive();
+        expect(before, isNotNull, reason: 'the archive lists it');
+        expect(
+          await run.listed(BoxType.inbox, subject),
+          isEmpty,
+          reason: 'the inbox',
+        );
+        print(
+          'archive-mark scenario: message $id in archive folder $archiveBoxId, '
+          'unread ${before!.unread}, flag ${before.coloredFlag}',
+        );
+        run.guard.allowMark(id);
+        final red = MessageLabel.redFlag.value;
+        final none = MessageLabel.noFlag.value;
+
+        // Each change, as the library returns Smartschool's answer, and the
+        // archive's header of the message after it. markUnread names the
+        // archive folder, as the web client does; markRead and setLabel name
+        // none, as the web client's requests do for a message in the archive
+        // too (the one it sends when it opens an unread message, and those
+        // of its flag buttons).
+        final unread = await messages.markUnread(id, boxId: archiveBoxId);
+        final afterUnread = await inArchive(until: (m) => m.unread);
+        final read = await messages.markRead(id);
+        final afterRead = await inArchive(until: (m) => !m.unread);
+        final flagged = await messages.setLabel(id, MessageLabel.redFlag);
+        final afterFlag = await inArchive(until: (m) => m.coloredFlag == red);
+        final cleared = await messages.setLabel(id, MessageLabel.noFlag);
+        final afterClear = await inArchive(until: (m) => m.coloredFlag == none);
+        final inboxAfter = await run.listed(BoxType.inbox, subject);
+
+        for (final answer in run.guard.markAnswers.where((a) => a.id == id)) {
+          print(
+            'archive-mark scenario: Smartschool answered ${answer.action} '
+            'with ${answer.answer}',
+          );
+        }
+        for (final (step, header) in [
+          ('markUnread(boxId: $archiveBoxId)', afterUnread),
+          ('markRead', afterRead),
+          ('setLabel(redFlag)', afterFlag),
+          ('setLabel(noFlag)', afterClear),
+        ]) {
+          print(
+            'archive-mark scenario: after $step, the archive lists it '
+            '${header != null} (unread ${header?.unread}, flag '
+            '${header?.coloredFlag})',
+          );
+        }
+
+        // The sent-box copy first, then the archived inbox copy, before the
+        // checks: a failed check leaves nothing of it for the cleanup test.
+        final sentCopy = await run.trash(id, subject, BoxType.sent);
+        final archivedCopy = await run.trash(
+          id,
+          subject,
+          BoxType.inbox,
+          boxId: archiveBoxId,
+        );
+        print('archive-mark scenario: $sentCopy');
+        print('archive-mark scenario: $archivedCopy');
+
+        expect((unread?.id, unread?.newValue), (id, 0), reason: 'markUnread');
+        expect(
+          afterUnread?.unread,
+          isTrue,
+          reason: 'the archive, after markUnread with the archive folder',
+        );
+        expect((read?.id, read?.newValue), (id, 1), reason: 'markRead');
+        expect(
+          afterRead?.unread,
+          isFalse,
+          reason: 'the archive, after markRead without a folder',
+        );
+        expect((flagged?.id, flagged?.newValue), (id, red), reason: 'setLabel');
+        expect(
+          afterFlag?.coloredFlag,
+          red,
+          reason: 'the archive, after setLabel(redFlag) without a folder',
+        );
+        expect((cleared?.id, cleared?.newValue), (id, none), reason: 'noFlag');
+        expect(
+          afterClear?.coloredFlag,
+          none,
+          reason: 'the archive, after setLabel(noFlag) without a folder',
+        );
+        expect(inboxAfter, isEmpty, reason: 'none of it unarchived it');
+        expect(sentCopy.leftAlone, isNull, reason: '$sentCopy');
+        expect(archivedCopy.leftAlone, isNull, reason: '$archivedCopy');
+      });
+
       test('moveToTrashFrom moves both copies of every message of the run to '
           'the trash, the sent-box copy first, and each move leaves the other '
-          'copy alone (#60)', () async {
+          'copy alone (#60); it says that the move took the copy out of its '
+          'box, as getMessage in that box does (#96)', () async {
         // Where the run's messages are: the IDs that each box lists, and the
         // trash's header of each (the trash lists an ID once).
         Future<(Map<int, ShortMessage>, Set<int>, Set<int>)> boxes() async => (
@@ -357,12 +531,29 @@ void main() {
           )).map((m) => m.id).toSet(),
         );
 
+        // What getMessage (Smartschool's `show message`) finds of message
+        // [id] in the inbox, the sent box and the trash, as moveToTrashFrom
+        // checks its move (#96): the subject of what it returns, or null.
+        Future<({String? inbox, String? sent, String? trash})> shown(
+          int id,
+        ) async => (
+          inbox: (await messages.getMessage(id))?.subject,
+          sent: (await messages.getMessage(id, boxType: BoxType.sent))?.subject,
+          trash: (await messages.getMessage(
+            id,
+            boxType: BoxType.trash,
+          ))?.subject,
+        );
+
         final sentCopies = await run.cleanUp(boxes: const [BoxType.sent]);
         if (sentCopies.isEmpty) {
           markTestSkipped('this run sent no message');
           return;
         }
         final (trashAfterSent, inboxAfterSent, sentAfterSent) = await boxes();
+        final shownAfterSent = {
+          for (final t in sentCopies) t.id: await shown(t.id),
+        };
         final inboxCopies = await run.cleanUp();
         final done = [...sentCopies, ...inboxCopies];
         for (final trashing in done) {
@@ -386,17 +577,37 @@ void main() {
             contains('<command>silent</command>'),
             reason: "Smartschool's answer to the move of $t",
           );
+          // What moveToTrashFrom made of the box it moved the copy out of.
+          expect(t.left, isTrue, reason: 'moveToTrashFrom: $t');
         }
         final (trash, inbox, sent) = await boxes();
+        final shownAtEnd = {for (final id in ids) id: await shown(id)};
         for (final id in ids) {
+          final subject = sentCopies.firstWhere((t) => t.id == id).subject;
+          final afterSent = shownAfterSent[id]!;
+          final atEnd = shownAtEnd[id]!;
+          print(
+            'message $id: getMessage after the sent-box copies: $afterSent; '
+            'at the end: $atEnd',
+          );
           // The move of the sent-box copy left the inbox copy in the inbox.
           expect(trashAfterSent.keys, contains(id), reason: '$id: trash');
           expect(inboxAfterSent, contains(id), reason: '$id: inbox');
           expect(sentAfterSent, isNot(contains(id)), reason: '$id: sent box');
+          // getMessage agrees, box by box (#96): it finds no message in the
+          // sent box, the inbox copy in the inbox, the sent-box copy in the
+          // trash.
+          expect(afterSent.sent, isNull, reason: '$id: getMessage, sent box');
+          expect(afterSent.inbox, subject, reason: '$id: getMessage, inbox');
+          expect(afterSent.trash, subject, reason: '$id: getMessage, trash');
           // The move of the inbox copy left the message in the trash.
           expect(trash.keys, contains(id), reason: '$id: trash, at the end');
           expect(inbox, isNot(contains(id)), reason: '$id: inbox, at the end');
           expect(sent, isNot(contains(id)), reason: '$id: sent, at the end');
+          // And getMessage finds it in the trash only.
+          expect(atEnd.inbox, isNull, reason: '$id: getMessage, inbox, end');
+          expect(atEnd.sent, isNull, reason: '$id: getMessage, sent box, end');
+          expect(atEnd.trash, subject, reason: '$id: getMessage, trash, end');
           // A reply marks the inbox copy of the message it answers
           // (hasReply), not its sent-box copy: the trash's header shows which
           // copy the trash lists.

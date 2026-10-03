@@ -666,21 +666,21 @@ class MessagesService {
   /// request with a placeholder message (sender `Niet beschikbaar`, no read
   /// state, no date) rather than none; this method recognises it and does
   /// not return it.
+  ///
+  /// The request names no folder: a message in a folder of [boxType], such
+  /// as the archive of the inbox, is found too. A message moved to the trash
+  /// out of [boxType] is not: seen live (2026-10-03, #96), this returned
+  /// `null` for it in the box it left, and the message in [BoxType.trash].
+  /// [moveToTrashFrom] checks its move this way.
   Future<FullMessage?> getMessage(
     int msgId, {
     BoxType boxType = BoxType.inbox,
     bool includeAllRecipients = false,
   }) async {
-    final entries = await _client.postXml(
-      url: _messagesXmlUrl,
-      subsystem: 'postboxes',
-      action: 'show message',
-      params: {
-        'msgID': '$msgId',
-        'boxType': boxType.value,
-        'limitList': includeAllRecipients ? 'false' : 'true',
-      },
-      xpath: _xpathMessage,
+    final entries = await _showMessage(
+      msgId,
+      boxType: boxType,
+      includeAllRecipients: includeAllRecipients,
     );
 
     if (entries.isEmpty || _isPlaceholderMessage(entries.first)) return null;
@@ -695,6 +695,47 @@ class MessagesService {
     }
 
     return FullMessage.fromXml(xml, boxType: boxType);
+  }
+
+  /// Sends Smartschool's `show message` for message [msgId] in [boxType], as
+  /// [getMessage] and [moveToTrashFrom] do, and returns the `<message>`
+  /// elements of its answer.
+  Future<List<Map<String, dynamic>>> _showMessage(
+    int msgId, {
+    required BoxType boxType,
+    required bool includeAllRecipients,
+  }) => _client.postXml(
+    url: _messagesXmlUrl,
+    subsystem: 'postboxes',
+    action: 'show message',
+    params: {
+      'msgID': '$msgId',
+      'boxType': boxType.value,
+      'limitList': includeAllRecipients ? 'false' : 'true',
+    },
+    xpath: _xpathMessage,
+  );
+
+  /// Whether [entries], the `<message>` elements of Smartschool's answer to a
+  /// `show message` of message [msgId], say that the box asked holds it
+  /// (`true`) or holds no message [msgId] (`false`), or `null` when they say
+  /// neither (#96).
+  ///
+  /// Only one `<message>` with [msgId] as its `<id>` (a whole decimal number,
+  /// white space around it aside) says either: the placeholder that
+  /// Smartschool answers for a message the box does not hold (see
+  /// [_isPlaceholderMessage]), which echoes the ID asked, says `false`, and a
+  /// message that is no placeholder says `true`. No `<message>`, more than
+  /// one, or one with another `<id>`, or with a missing, empty, repeated or
+  /// non-numeric one, says neither.
+  static bool? _boxHolds(List<Map<String, dynamic>> entries, int msgId) {
+    if (entries.length != 1) return null;
+    final xml = entries.single;
+    final id = xml['id'];
+    if (id is! String || int.tryParse(id.trim(), radix: 10) != msgId) {
+      return null;
+    }
+    return !_isPlaceholderMessage(xml);
   }
 
   /// Whether [xml], the `<message>` of a `show message` answer, is the
@@ -743,10 +784,20 @@ class MessagesService {
 
   /// Marks message [msgId] in [boxType] as unread.
   ///
-  /// For messages in the archive folder pass the same [boxId] you used when
-  /// retrieving them (usually `208`).  Defaults to `0` (primary mailbox).
+  /// For a message in a folder of [boxType], such as the archive (see
+  /// [getArchiveBoxId]), pass the [boxId] of the folder, as the web client
+  /// does: its request names the folder of the message, where those of
+  /// [markRead] and [setLabel] name none. Defaults to `0` (the box itself).
+  /// Tried live (2026-10-03, #94) with the archive's [boxId] on a message in
+  /// the archive: the archive then listed it as unread (it was unread
+  /// before too).
   ///
-  /// Returns the updated [MessageChanged] record from the server.
+  /// Returns the updated [MessageChanged] record from the server: the
+  /// message's ID and its new read state (`0`, unread), its `<id>` and
+  /// `<status>`. Returns `null` when the answer holds no `<message>`, or one
+  /// without a usable ID or read state (missing, empty or not a whole
+  /// number), so that `0` always is a state Smartschool confirmed (#95).
+  /// See [MessageChanged.fromStatusXml].
   Future<MessageChanged?> markUnread(
     int msgId, {
     BoxType boxType = BoxType.inbox,
@@ -765,7 +816,7 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+    return entries.isEmpty ? null : MessageChanged.fromStatusXml(entries.first);
   }
 
   /// Marks message [msgId] in [boxType] as read.
@@ -775,8 +826,20 @@ class MessagesService {
   /// message as opened. The call is idempotent — invoking it on an
   /// already-read message is a no-op.
   ///
+  /// It names no folder of [boxType], as the web client's request does (the
+  /// one it sends when it opens an unread message), also for a message in a
+  /// folder such as the archive: Smartschool finds a message in a folder of
+  /// [boxType] by its ID alone. Tried live (2026-10-03, #94) on a message in
+  /// the archive folder, marked unread first with [markUnread] and the
+  /// archive's box ID: Smartschool answered with the message's ID and status
+  /// `1`, and the archive ([getArchiveHeaders]) then listed it as read, still
+  /// in the archive.
+  ///
   /// Returns the updated [MessageChanged] record from the server. The server
   /// responds with `<status>1</status>` to indicate the message is now read.
+  /// Returns `null` when the answer holds no `<message>`, or one without a
+  /// usable `<id>` or `<status>` (missing, empty or not a whole number), as
+  /// [markUnread] does (#95). See [MessageChanged.fromStatusXml].
   Future<MessageChanged?> markRead(
     int msgId, {
     BoxType boxType = BoxType.inbox,
@@ -793,12 +856,30 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+    return entries.isEmpty ? null : MessageChanged.fromStatusXml(entries.first);
   }
 
   /// Sets the colour [label] on message [msgId] in [boxType].
   ///
   /// Use [MessageLabel.noFlag] to clear the flag.
+  ///
+  /// It names no folder of [boxType], as the web client's requests do (those
+  /// of the flag buttons of the message list and of an opened message), also
+  /// for a message in a folder such as the archive: Smartschool finds a
+  /// message in a folder of [boxType] by its ID alone. Tried live
+  /// (2026-10-03, #94) on a message in the archive folder: Smartschool
+  /// answered [MessageLabel.redFlag] and then [MessageLabel.noFlag] with the
+  /// message's ID and the new label (`3`, then `0`), and the archive
+  /// ([getArchiveHeaders]) listed it with that flag after each, still in the
+  /// archive.
+  ///
+  /// Returns the updated [MessageChanged] record from the server: the
+  /// message's ID and its new label ([MessageLabel.value]), its `<id>` and
+  /// `<label>` (not its `<status>`, the read state, should it hold one).
+  /// Returns `null` when the answer holds no `<message>`, or one without a
+  /// usable ID or label (missing, empty or not a whole number), so that `0`
+  /// always is a "no flag" Smartschool confirmed (#95). See
+  /// [MessageChanged.fromLabelXml].
   Future<MessageChanged?> setLabel(
     int msgId,
     MessageLabel label, {
@@ -817,7 +898,7 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+    return entries.isEmpty ? null : MessageChanged.fromLabelXml(entries.first);
   }
 
   /// Moves message [msgId] to the trash, or deletes it for good: prefer
@@ -908,19 +989,46 @@ class MessagesService {
   /// below). Afterwards the trash listed the ID, and the archive, the inbox
   /// and the sent box did not.
   ///
-  /// Smartschool answers the same whether it moved a message or not: an
-  /// acknowledgement without details (a `silent` action), also for ID `0`,
-  /// which names no message (do not move ID `0` to the trash: see #61). So
-  /// this returns nothing; list the boxes to see where the message is. An
-  /// answer that is not XML throws, as for every command: a
-  /// [SmartschoolAuthenticationError] for an HTML page, a
-  /// [SmartschoolParsingError] otherwise.
+  /// Smartschool answers the move the same whether it moved a message or
+  /// not: an acknowledgement without details (a `silent` action), also for
+  /// ID `0`, which names no message (do not move ID `0` to the trash: see
+  /// #61). So this checks the move itself (#96): right after it, it asks
+  /// [boxType] for message [msgId] with Smartschool's `show message`, as
+  /// [getMessage] does (without the full recipient lists), which names no
+  /// folder and finds a message in any folder of the box, the archive too.
+  /// It returns:
+  /// - `true` when Smartschool answers with its placeholder for a message
+  ///   the box does not hold (for which [getMessage] returns `null`):
+  ///   [boxType] holds no message [msgId] any more, in none of its folders.
+  ///   That is also the answer for an ID that the box did not hold before
+  ///   the move: check that first with [getMessage] when it matters;
+  /// - `false` when Smartschool answers with the message: [boxType] (one of
+  ///   its folders) still holds a message [msgId], so the move did not take
+  ///   it out of the box (not seen live: every move tried took it);
+  /// - `null` when its answer says neither: no `<message>`, more than one,
+  ///   or one without [msgId] as its ID.
+  ///
+  /// Seen live (2026-10-03, #96), by the live suite, on messages sent to
+  /// oneself: after the move of the sent-box copy, `show message` in the
+  /// sent box answered with the placeholder, and in the inbox with the inbox
+  /// copy (also one in the archive folder); after the move of the inbox
+  /// copy, or of the archived one out of the archive folder, it answered in
+  /// the inbox with the placeholder too; and in the trash with the message
+  /// throughout. Each time the box listings agreed. So `show message` does
+  /// not find the copy in the trash by its ID, and this returned `true` for
+  /// each of those moves. Listing the boxes to check a move (to their end,
+  /// as a moved message is no longer in them) is not needed.
+  ///
+  /// An answer that is not XML throws, to the move or to the check, as for
+  /// every command: a [SmartschoolAuthenticationError] for an HTML page, a
+  /// [SmartschoolParsingError] otherwise. When the check throws, the move
+  /// went out and may have been made: [getMessage] in [boxType] tells.
   ///
   /// Throws an [ArgumentError], before any request, for a [boxType] other
   /// than [BoxType.inbox] and [BoxType.sent]: the web client moves no
   /// message of the drafts or the scheduled box this way, and a message in
   /// the trash is there already.
-  Future<void> moveToTrashFrom(
+  Future<bool?> moveToTrashFrom(
     int msgId, {
     required BoxType boxType,
     int boxId = 0,
@@ -946,6 +1054,11 @@ class MessagesService {
       },
       xpath: './/actions/action',
     );
+    final held = _boxHolds(
+      await _showMessage(msgId, boxType: boxType, includeAllRecipients: false),
+      msgId,
+    );
+    return held == null ? null : !held;
   }
 
   /// Archives one or more messages identified by [msgIds].
@@ -1009,17 +1122,48 @@ class MessagesService {
   /// required by the search endpoint.  If you intend to call [sendMessage]
   /// immediately after, that call will perform its own form load — two
   /// lightweight page requests total, which is acceptable for normal use.
+  ///
+  /// The `uniqueUsc` belongs to the session the compose page was loaded in,
+  /// so the search goes out only in that session, as the steps of
+  /// [sendMessage] do (#97): it is not retried after logging in again when
+  /// Smartschool refuses the session for it (#25), and it is not sent when
+  /// the client logged in again since the page was loaded, or is logging in,
+  /// for instance for another request on the same [SmartschoolClient] (#38).
+  /// In either case this method loads a new compose page, logging in first
+  /// when Smartschool refuses the session for it, and searches once more,
+  /// with the new page's `uniqueUsc`, in its session. When that search cannot
+  /// go out in the session of its page either, it throws a
+  /// [SmartschoolSessionExpiredError], and no search went out with a
+  /// `uniqueUsc` of another session.
+  ///
+  /// Throws a [SmartschoolComposeError] when the compose page holds no
+  /// `uniqueUsc`.
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
   searchRecipientsForCompose(String query) async {
-    final hidden = await _loadComposeFields();
-    final uniqueUsc = hidden['uniqueUsc'] ?? '';
+    final form = await _loadSearchForm();
+    try {
+      return await _searchUsers(query, form);
+    } on SmartschoolSessionExpiredError {
+      // The search was refused, or not sent, in the session of its form
+      // (#97). A new form loads in a session the client accepts, logging in
+      // first when Smartschool refuses it, and the search goes once more.
+    }
+    return _searchUsers(query, await _loadSearchForm());
+  }
+
+  /// Loads the new-message compose form for [searchRecipientsForCompose]:
+  /// its answer, which the search goes out in the session of, and its
+  /// `uniqueUsc`.
+  Future<({Response<String> form, String uniqueUsc})> _loadSearchForm() async {
+    final form = await _client.getResponse(_composeUrl());
+    final uniqueUsc = parseHiddenFields(form.data ?? '')['uniqueUsc'] ?? '';
     if (uniqueUsc.isEmpty) {
       throw const SmartschoolComposeError(
         'searchRecipientsForCompose: could not extract uniqueUsc from the '
         'compose form. Check that the account has permission to send messages.',
       );
     }
-    return _searchUsers(query, uniqueUsc);
+    return (form: form, uniqueUsc: uniqueUsc);
   }
 
   /// Fetches the recipient of a plain reply to [msgId] with their platform
@@ -1899,12 +2043,6 @@ class MessagesService {
   }) =>
       _composeUrl(boxType: boxType, composeType: all ? 2 : 1, msgId: '$msgId');
 
-  /// GETs the compose page and returns all hidden `<input>` field values.
-  Future<Map<String, String>> _loadComposeFields() async {
-    final html = await _client.getRaw(_composeUrl());
-    return parseHiddenFields(html);
-  }
-
   /// Extracts all `<input type="hidden">` fields from an HTML document.
   ///
   /// Exposed as a public static for testing compose-form parsing.
@@ -2018,19 +2156,29 @@ class MessagesService {
     return '$cleanedPrefix $root';
   }
 
-  /// POSTs the compose-form search endpoint and returns parsed results.
+  /// POSTs the compose-form search endpoint with the `uniqueUsc` of
+  /// [compose] and returns parsed results.
+  ///
+  /// Like every step of [sendMessage] after loading the compose form, it is
+  /// not retried after logging in again, and goes out only in the session
+  /// the form was loaded in: `uniqueUsc` belongs to that session (#25, #38,
+  /// #97).
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)> _searchUsers(
     String query,
-    String uniqueUsc,
+    ({Response<String> form, String uniqueUsc}) compose,
   ) async {
-    final xml = await _client
-        .postFormRaw('/?module=Messages&file=searchUsers', {
-          'val': query,
-          'type': RecipientType.to.requestType,
-          'parentNodeId': RecipientType.to.parentNodeId,
-          'xml': '<results></results>',
-          'uniqueUsc': uniqueUsc,
-        });
+    final xml = await _client.postFormRaw(
+      '/?module=Messages&file=searchUsers',
+      {
+        'val': query,
+        'type': RecipientType.to.requestType,
+        'parentNodeId': RecipientType.to.parentNodeId,
+        'xml': '<results></results>',
+        'uniqueUsc': compose.uniqueUsc,
+      },
+      retryAfterLogin: false,
+      sameSessionAs: compose.form,
+    );
 
     final users = XmlInterface.parseResponse(
       xml,

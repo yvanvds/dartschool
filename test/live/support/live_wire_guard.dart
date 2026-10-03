@@ -11,6 +11,11 @@
 // - a request to another host than the one of credentials.yml;
 // - registering anyone but the own account on a compose form
 //   (`addUserToSelected`), or an answer that registers anyone else;
+// - a recipient search (`searchUsers` without a `function`,
+//   MessagesService.searchRecipientsForCompose, #97) on a compose form that
+//   was not loaded through the guard, or with another selection (`xml`)
+//   than the empty one the library sends. A search only reads: it registers
+//   no one on the form;
 // - submitting a compose form that has anyone but the own account
 //   registered, that stores the message in the LVS or schedules it, whose
 //   subject lacks the run's tag, or that replies to a message the run did not
@@ -35,6 +40,12 @@
 //   with the run's subject and checked there, one per request; a second
 //   archive move of a message, and one of a copy the run moved to the trash
 //   (#64);
+// - changing the read state or the flag of a message (`mark message read`,
+//   `mark message unread`, `save msglabel`: MessagesService.markRead,
+//   markUnread, setLabel) unless it is the inbox copy of a message this run
+//   sent, listed in the inbox or in its archive folder with the run's subject
+//   and checked there, and not moved to the trash; and one in a folder of the
+//   inbox other than the archive folder (#94);
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -73,9 +84,9 @@ class LiveWireGuard extends Interceptor {
   LiveWireGuard({
     required this.host,
     required this.runTag,
-    // One per message of messages_live_test.dart: six sends, and the
+    // One per message of messages_live_test.dart: seven sends, and the
     // read-receipt one, which throws before any request (#43).
-    this.maxSubmits = 7,
+    this.maxSubmits = 8,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -103,6 +114,9 @@ class LiveWireGuard extends Interceptor {
 
   /// How many messages (submits of a compose form) it let out.
   int submits = 0;
+
+  /// How many recipient searches it let out (#97).
+  int searches = 0;
 
   /// The own account: the only recipient a message may have.
   MessageSearchUser? get own => _own;
@@ -145,6 +159,10 @@ class LiveWireGuard extends Interceptor {
   /// The messages whose inbox copy the run asked to move to the archive.
   final Set<int> _archiveRequested = {};
 
+  /// The messages whose inbox copy the run may mark read or unread and flag
+  /// (#94): those it sent and checked in the inbox or its archive folder.
+  final Set<int> _markable = {};
+
   /// The archive folders that Smartschool's Messages page named (#64): one,
   /// unless pages named different ones.
   final Set<int> _archiveFolders = {};
@@ -159,6 +177,10 @@ class LiveWireGuard extends Interceptor {
   /// Smartschool's answers to the moves to the archive, by message ID, as
   /// they came in.
   final Map<int, String> archiveAnswers = {};
+
+  /// Smartschool's answers to the changes of the read state and the flag of
+  /// a message (#94), in order, with the command and the message ID.
+  final List<({String action, int id, String answer})> markAnswers = [];
 
   /// The archive folder of the inbox, as Smartschool's Messages page names it
   /// (MessagesService.getArchiveBoxId loads that page), or `null` while no
@@ -188,6 +210,15 @@ class LiveWireGuard extends Interceptor {
   /// The guard lets the move out only for a copy that Smartschool listed in
   /// the inbox with the run's subject too, whatever this allows.
   void allowArchive(int msgId) => _archivable.add(msgId);
+
+  /// Lets the run mark the inbox copy of message [msgId] read or unread and
+  /// set its flag, in the inbox or in its archive folder: a message it sent
+  /// and checked there (#94).
+  ///
+  /// The guard lets such a change out only for a copy that Smartschool
+  /// listed there with the run's subject too, whatever this allows, and that
+  /// the run did not move to the trash.
+  void allowMark(int msgId) => _markable.add(msgId);
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
@@ -280,6 +311,8 @@ class LiveWireGuard extends Interceptor {
       switch ((query['file'], query['function'])) {
         case ('dispatcher', _):
           return _commandRefusal(options.data);
+        case ('searchUsers', null):
+          return _searchRefusal(options.data);
         case ('searchUsers', 'addUserToSelected'):
           return _addRefusal(options.data);
         case ('searchUsers', 'deleteUsersFromSelected'):
@@ -320,6 +353,7 @@ class LiveWireGuard extends Interceptor {
     }
     if (_readActions.contains(action)) return null;
     if (action == 'quickmove messages') return _moveRefusal(xml);
+    if (_markActions.contains(action)) return _markRefusal(action, xml);
     if (action == 'quick delete') {
       return 'the live suite sends no quick delete (moveToTrash), of any '
           'ID: it names no box, Smartschool acts on whichever copy of the ID '
@@ -387,6 +421,70 @@ class LiveWireGuard extends Interceptor {
     return null;
   }
 
+  /// The XML commands that change the read state (`mark message read`,
+  /// `mark message unread`) or the flag (`save msglabel`) of a message.
+  static const _markActions = {
+    'mark message read',
+    'mark message unread',
+    'save msglabel',
+  };
+
+  /// Why the [action] command [xml], which changes the read state or the
+  /// flag of a message, may not go out, or `null` (#94).
+  ///
+  /// The live suite sends it only for the inbox copy of a message it sent,
+  /// in the inbox or in its archive folder: a copy that Smartschool listed
+  /// there with the run's subject, that the run checked there, and that it
+  /// did not move to the trash. `mark message unread` names the folder of
+  /// the copy (`boxID`), as the web client sends it; `mark message read` and
+  /// `save msglabel` name none, as the web client sends them for a message
+  /// in a folder too, so the copy may then be in the inbox or in its archive
+  /// folder.
+  String? _markRefusal(String action, XmlDocument xml) {
+    final id = int.tryParse(_param(xml, 'msgID') ?? '');
+    if (id == null) return 'its $action names no message';
+    if (id <= 0) {
+      return 'it changes message $id, which names no message: the live suite '
+          'changes only messages it sent (#61)';
+    }
+    final box = _param(xml, 'boxType') ?? '';
+    if (box != BoxType.inbox.value) {
+      return 'it changes the $box copy of message $id: the live suite changes '
+          'the read state and the flag of inbox copies only';
+    }
+    final archive = archiveBoxId;
+    final List<int> folders;
+    switch (_param(xml, 'boxID')) {
+      case null:
+        folders = [0, ?archive];
+      case '0':
+        folders = [0];
+      case final named when archive != null && named == '$archive':
+        folders = [archive];
+      default:
+        return 'it changes message $id in a folder of the inbox that is not '
+            'the archive folder, as a Messages page named it';
+    }
+    if (!folders.any((folder) => _listed.contains((id, box, folder)))) {
+      final where = switch (folders) {
+        [0] => 'the inbox',
+        [final folder] => 'the archive folder ($folder) of the inbox',
+        _ => 'the inbox or its archive folder (${folders.last})',
+      };
+      return "Smartschool did not list message $id in $where with the run's "
+          'subject: it is not a message this run sent (#61)';
+    }
+    if (!_markable.contains(id)) {
+      return 'message $id is not one this run sent and checked to change its '
+          'read state and flag';
+    }
+    if (_moveRequested.contains((id, box))) {
+      return 'the inbox copy of message $id was moved to the trash already in '
+          'this run';
+    }
+    return null;
+  }
+
   /// The path of MessagesService.moveToArchive's request.
   static const _archivePath = '/Messages/Xhr/archivemessages';
 
@@ -437,6 +535,25 @@ class LiveWireGuard extends Interceptor {
     }
     _archiveRequested.add(id);
     _listed.remove((id, inbox, 0));
+    return null;
+  }
+
+  /// The selection that MessagesService.searchRecipientsForCompose sends
+  /// with a search: none.
+  static const _emptySelection = '<results></results>';
+
+  /// Why the recipient search with the fields [data] may not go out, or
+  /// `null` (#97): only on a compose form loaded through the guard, and with
+  /// the empty selection the library sends.
+  String? _searchRefusal(Object? data) {
+    if (data is! Map) return 'it carries no form fields';
+    final form = _formRefusal(data['uniqueUsc']);
+    if (form != null) return form;
+    if (data['xml'] != _emptySelection) {
+      return 'its selection (xml) is not the empty one the library sends '
+          '($_emptySelection)';
+    }
+    searches++;
     return null;
   }
 
@@ -673,6 +790,10 @@ class LiveWireGuard extends Interceptor {
         final id = int.tryParse(_param(xml, 'msgID') ?? '');
         if (id == null) return;
         trashMoveAnswers[(id, _param(xml, 'boxType') ?? '')] = body;
+      case final action when _markActions.contains(action):
+        final id = int.tryParse(_param(xml, 'msgID') ?? '');
+        if (id == null) return;
+        markAnswers.add((action: action, id: id, answer: body));
     }
   }
 

@@ -35,9 +35,11 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///      "yes", or no answer, saves nothing).
 ///   4. Save it. The service reads the gradebooks again and checks the
 ///      change before it saves, and reads them again afterwards to check the
-///      save.
-///   5. Read the owner's gradebooks again and print the gradebook as it is
-///      then.
+///      save. Print the change from the result: the teacher's access before
+///      it as the service read it, whether it saved anything, and the
+///      gradebook after it.
+///   5. Only when the save was not confirmed: read the owner's gradebooks
+///      again and print the gradebook as it is then.
 ///
 /// Credentials are read from `credentials.yml` next to the workspace root
 /// (see [PathCredentials]).
@@ -116,7 +118,7 @@ Future<void> main(List<String> args) async {
     // ── 4. Save ───────────────────────────────────────────────────────────
 
     try {
-      final saved = access == null
+      final change = access == null
           ? await skore.unshareGradebook(
               ownerId: ownerId,
               gradebookId: gradebookId,
@@ -128,7 +130,21 @@ Future<void> main(List<String> args) async {
               teacherId: teacherId,
               access: access,
             );
-      print('✓ Saved: readers ${saved.readerIds}, writers ${saved.writerIds}.');
+      // The result holds the gradebook as the service read it before the
+      // change (the access the teacher had then), whether it saved anything,
+      // and the gradebook after it: no need to read the gradebooks again to
+      // report the change.
+      final before = change.accessBefore?.name ?? 'not shared';
+      final after = change.accessAfter?.name ?? 'not shared';
+      print(
+        change.saved
+            ? '✓ Saved: ${name(teacherId)} now $after (was $before).'
+            : 'Nothing saved: ${name(teacherId)} was already $before when '
+                  'the service checked.',
+      );
+      print('');
+      _printGradebook('After:  ', change, name);
+      return;
     } on SmartschoolSkoreError catch (e) {
       // A check before the save refused it: nothing was saved.
       print('Not saved: ${e.message}');
@@ -141,7 +157,7 @@ Future<void> main(List<String> args) async {
       exitCode = 1;
     }
 
-    // ── 5. Read the gradebooks again ──────────────────────────────────────
+    // ── 5. Unconfirmed: read the gradebooks again ─────────────────────────
 
     final after = (await skore.getGradebookShares(
       ownerId,

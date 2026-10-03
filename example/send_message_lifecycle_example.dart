@@ -30,7 +30,9 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///   7. Move both copies to the trash with `moveToTrashFrom`, the sent-box
 ///      copy first (`boxType: BoxType.sent`), then the archived inbox copy
 ///      (`boxType: BoxType.inbox`, with the archive folder's ID as `boxId`):
-///      each one only while its box lists it with the test subject.
+///      each one only while its box lists it with the test subject. Print
+///      whether each move took the copy out of its box: what
+///      `moveToTrashFrom` returns (#96).
 ///   8. Check the listings: poll the trash until it lists the message, then
 ///      confirm the archive, the inbox and the sent box no longer do.
 ///
@@ -39,8 +41,11 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 /// whichever copy of the ID its own session state points to. For a copy in
 /// the trash, that deletes the message for good (#19, #61). `moveToTrashFrom`
 /// names the box of the copy it moves, and that box is never the trash
-/// (#60). Smartschool's answer to it does not say what it moved, so step 8
-/// reads the listings instead.
+/// (#60). Smartschool's answer to it does not say what it moved, so
+/// `moveToTrashFrom` checks the move itself: it asks the box it moved the
+/// copy out of for the message (`show message`, as `getMessage` does) and
+/// returns `true` when the box no longer holds it (#96). Step 8 reads the
+/// listings as well.
 ///
 /// The move out of the archive folder (a `boxId` other than `0`) was tried
 /// live once, by the live suite (2026-10-01, #64): after the sent-box copy,
@@ -206,8 +211,11 @@ Future<void> main() async {
       testSubject,
     )) {
       print('Moving the sent-box copy #${sentCopy.id} to trash …');
-      await messages.moveToTrashFrom(sentCopy.id, boxType: BoxType.sent);
-      print('✓ Move sent; step 8 checks where the message is.\n');
+      final left = await messages.moveToTrashFrom(
+        sentCopy.id,
+        boxType: BoxType.sent,
+      );
+      _printMove(left, 'sent box');
     } else {
       print(
         'WARNING: The sent box no longer lists #${sentCopy.id} with the test '
@@ -226,12 +234,12 @@ Future<void> main() async {
         'Moving the archived inbox copy #${archivedMessage.id} '
         '(boxId=$archiveBoxId) to trash …',
       );
-      await messages.moveToTrashFrom(
+      final left = await messages.moveToTrashFrom(
         archivedMessage.id,
         boxType: BoxType.inbox,
         boxId: archiveBoxId,
       );
-      print('✓ Move sent; step 8 checks where the message is.\n');
+      _printMove(left, 'inbox (its archive folder)');
     } else {
       print(
         'WARNING: The archive no longer lists #${archivedMessage.id} with the '
@@ -242,9 +250,9 @@ Future<void> main() async {
 
   // ── 8. Check the listings ────────────────────────────────────────────────
   //
-  // moveToTrashFrom returns nothing: Smartschool answers every move the same,
-  // whether it moved a message or not. The listings show where it is. The
-  // trash lists a message ID once, also when both copies are in it.
+  // moveToTrashFrom said whether each copy left its box (#96). The listings
+  // show where the message is too. The trash lists a message ID once, also
+  // when both copies are in it.
 
   print('Polling trash to confirm the message arrived …');
   final trashedMessage = await _pollUntil(
@@ -287,6 +295,25 @@ Future<void> main() async {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Prints what `moveToTrashFrom` returned for a move out of [box] (#96):
+/// whether the box still holds the message after the move.
+void _printMove(bool? left, String box) {
+  switch (left) {
+    case true:
+      print('✓ Moved: the $box no longer holds it.\n');
+    case false:
+      print(
+        'WARNING: The $box still holds it after the move. Move it to the '
+        "trash in Smartschool's web client.\n",
+      );
+    case null:
+      print(
+        "Move sent, but Smartschool's answer to the check said nothing; step "
+        '8 checks where the message is.\n',
+      );
+  }
+}
 
 /// Whether the headers that [fetch] returns list message [id] with
 /// [subject]: checked right before a copy is moved, so that only a copy of

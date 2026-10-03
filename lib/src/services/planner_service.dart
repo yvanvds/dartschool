@@ -61,6 +61,12 @@ export '../models/planner_models.dart';
 /// );
 /// final detail = await planner.getDetail(tests.first);
 /// print(detail.publicInfo);
+/// for (final file in detail.attachments ?? const <PlannerAttachment>[]) {
+///   print('${file.name} (${file.size} bytes)');
+/// }
+/// for (final link in detail.weblinks ?? const <PlannerWeblink>[]) {
+///   print('${link.name}: ${link.url}');
+/// }
 ///
 /// // The assignments of the class in that week, of all its teachers, and
 /// // the planner's workload figures per day.
@@ -360,7 +366,12 @@ class PlannerService {
   /// [PlannedElement.platformId] and [PlannedElement.id] of a listed
   /// element; [getDetail] takes the element itself).
   ///
-  /// The detail is up to date at once after a change, unlike the list.
+  /// The detail holds what the list does not: the info texts, and the
+  /// element's labels, attachments and weblinks
+  /// ([PlannedElementDetail.labels], [PlannedElementDetail.attachments],
+  /// [PlannedElementDetail.weblinks]; the files themselves are not
+  /// downloaded). The detail is up to date at once after a change, unlike
+  /// the list.
   ///
   /// Throws a [SmartschoolPlannedElementNotFoundError] when the planner has
   /// no such element (`404`), and an [ArgumentError], without sending

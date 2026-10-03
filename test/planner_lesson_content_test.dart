@@ -448,11 +448,12 @@ void main() {
         lesson.period.from.isAtSameMomentAs(DateTime.utc(2026, 11, 20, 10, 10)),
         isTrue,
       );
-      // The lesfiche's labels and goals came along (seen live).
-      expect(
-        [for (final label in lesson.raw['labels'] as List) label['text']],
-        ['JAAR 6', 'TRIMESTER 1'],
-      );
+      // The lesfiche's labels and goals came along (seen live); the labels
+      // are typed (#98), the goals are only in raw.
+      expect(lesson.labels!.map((l) => l.text), ['JAAR 6', 'TRIMESTER 1']);
+      expect(lesson.labels!.every((l) => l.isSchoolLabel), isTrue);
+      expect(lesson.attachments, isEmpty);
+      expect(lesson.weblinks, isEmpty);
       expect(lesson.raw['goals'] as List, hasLength(2));
     });
 

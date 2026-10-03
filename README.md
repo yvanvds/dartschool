@@ -792,6 +792,12 @@ for (final test in tests) {
   final detail = await planner.getDetail(test);    // PlannedElementDetail
   print('${test.period.from} ${test.assignmentType?.abbreviation} '
       '${test.name} (${test.organiserUsers.first.name}): ${detail.publicInfo}');
+  for (final file in detail.attachments ?? const <PlannerAttachment>[]) {
+    print('  ${file.name} (${file.size} bytes)');  // the files are not downloaded
+  }
+  for (final link in detail.weblinks ?? const <PlannerWeblink>[]) {
+    print('  ${link.name}: ${link.url}');
+  }
 }
 ```
 
@@ -1157,7 +1163,10 @@ Returned by `PlannerService.searchCalendars()`. Fields: `id` (the planner's ID, 
 Returned by `PlannerService.getPlannedElements()`. Fields: `id` (a UUID), `platformId`, `type` (`PlannedElementType`; `other` for a type the library does not know), `typeName` (the planner's name of the type, such as `planned-lessons`), `name` (`String?`; `null` on a timetable slot), `period` (`PlannerPeriod`: `from`, `to` in local time, `wholeDay`, `deadline`), `organiserUsers` / `organiserGroups`, `participantUsers` / `participantGroups`, `isParticipant`, `capabilities` (`PlannedElementCapabilities`), `icon` (`String?`), `courses`, `locations`, `assignmentType` (`PlannerAssignmentType?`, assignments only), `resolvedStatus` (`String?`, assignments only), `pinned`, `unconfirmed`, `color`, and `raw` (the element as the planner gave it, read-only, for the fields the model does not cover).
 
 ### `PlannedElementDetail`
-Returned by `PlannerService.getPlannedElement()` and `getDetail()`. A `PlannedElement` with `info`, `privateInfo` and `publicInfo` (HTML, `""` when empty), and for assignments `isAnnounced`, `visibleFrom` (from when pupils see it), `hasLinkedEvaluation` and `dateCreated` (`null` on other elements).
+Returned by `PlannerService.getPlannedElement()` and `getDetail()`. A `PlannedElement` with `info`, `privateInfo` and `publicInfo` (HTML, `""` when empty), for assignments `isAnnounced`, `visibleFrom` (from when pupils see it), `hasLinkedEvaluation` and `dateCreated` (`null` on other elements), and the element's `labels` (`List<PlannerLabel>?`), `attachments` (`List<PlannerAttachment>?`) and `weblinks` (`List<PlannerWeblink>?`), in the planner's order: `[]` when it has none, `null` when the planner gave no such list for the element (a timetable slot has no attachments or weblinks). Partner weblinks, deeplinks and goals are only in `raw`.
+
+### `PlannerLabel` / `PlannerAttachment` / `PlannerWeblink` / `PlannerVisibility`
+What the detail of an element lists. A label (`id`, `text`, `color` — `String?`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`; the same label as a lesfiche's `LessonContentLabel`); an attachment (`id`, `name` — the file name, `size` — bytes, `int?`, `mimeType` — `String?`, `visibility`; the file itself is not downloaded); a weblink (`id`, `name`, `url`, `icon` — `String?`, `visibility`). A `visibility` (`PlannerVisibility?`, `null` when the planner gave none) says from when pupils see the file or link: `option` (`PlannerVisibilityOption`), `optionName` (the planner's name), and `daysAfterEnd` (`int?`, for `daysAfterEnd`).
 
 ### `PlannerUser` / `PlannerGroup` / `PlannerCourse` / `PlannerLocation`
 What an element names. A user (`id` — the whole planner ID `{platformId}_{userId}_{coaccount}`, `name`, `nameLastFirst`, `pictureUrl`, `isDeleted`, `calendar`); a group (`id` — `{platformId}_{groupId}`, `platformId`, `name`, `type` — `K` for a class, `icon`, `calendar`); a course (`id`, `platformId`, `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`); a location (`id` — the item UUID, `platformId`, `platformName`, `number`, `title` — the room, `icon`, `type`, `selectable`, `calendar`).
@@ -1192,6 +1201,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found) |
 | `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
 | `LessonContentType` | `lesson` (`lessons`), `assignment` (`assignments`), `other` (`wireName`: the Lesfiches module's name; `null` for `other`) |
+| `PlannerVisibilityOption` | `always`, `never`, `atStart` (`at-start`), `atEnd` (`at-end`), `daysAfterEnd` (`days-after-end`), `other` (`wireName`: the planner's name; `null` for `other`). From when pupils see an attachment or weblink of a planned element; only `always` was seen live |
 
 ---
 

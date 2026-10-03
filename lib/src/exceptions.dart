@@ -4,7 +4,8 @@ import 'package:html/parser.dart' as html_parser;
 import 'models/lesson_content_models.dart' show LessonContentItem;
 import 'models/planner_models.dart'
     show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
-import 'models/presence_models.dart' show DayPart, PresenceHalfDay;
+import 'models/presence_models.dart'
+    show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'models/skore_models.dart' show SkoreAccessArea;
 
 /// Base exception for all Smartschool API errors.
@@ -687,12 +688,13 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// Thrown when a Presence (attendance) operation fails.
 ///
 /// This covers a rejected save (the server returns a non-empty `errors[]`
-/// array, exposed via [errors]), a request the Presence module refuses or
-/// cannot handle (it answers with an HTML page instead of JSON, such as its
-/// generic `500` error page: the request is invalid, or the account may lack
-/// Presence access), and precondition failures such as an unknown class, an
-/// unresolvable status code, or a pupil not present in the class. The session
-/// was accepted for all of them, so signing in again does not help.
+/// array, exposed via [saveErrors], typed, and [errors], as text), a request
+/// the Presence module refuses or cannot handle (it answers with an HTML page
+/// instead of JSON, such as its generic `500` error page: the request is
+/// invalid, or the account may lack Presence access), and precondition
+/// failures such as an unknown class, an unresolvable status code, or a pupil
+/// not present in the class. The session was accepted for all of them, so
+/// signing in again does not help.
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
@@ -702,12 +704,26 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// but as a [SmartschoolSessionExpiredError] (a
 /// [SmartschoolAuthenticationError]), like any other authentication failure.
 class SmartschoolPresenceError extends SmartschoolException {
-  /// The server-reported error strings, when the failure originated from a
-  /// non-empty `errors[]` in the save response. Empty for precondition
-  /// failures raised client-side.
+  /// The errors of a save the Presence module refused, as text: the
+  /// [PresenceSaveError.message] of each of [saveErrors], the module's reason
+  /// (#109). Empty for precondition failures raised client-side.
+  ///
+  /// The pupil's name, which the module gives with the record of each error,
+  /// is not in them, nor in [toString], which shows them.
   final List<String> errors;
 
-  const SmartschoolPresenceError(super.message, {this.errors = const []});
+  /// The errors of a save the Presence module refused (the `errors[]` of its
+  /// answer), typed (#109): each with the module's reason and the record that
+  /// was not saved (its day, half of the day, the pupil's `userID`, and the
+  /// pupil's name, which is in no message). Empty for precondition failures
+  /// raised client-side, and for an error made without them.
+  final List<PresenceSaveError> saveErrors;
+
+  const SmartschoolPresenceError(
+    super.message, {
+    this.errors = const [],
+    this.saveErrors = const [],
+  });
 
   @override
   String toString() => errors.isEmpty

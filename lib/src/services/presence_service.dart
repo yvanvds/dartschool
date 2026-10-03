@@ -221,7 +221,9 @@ class PresenceService {
   /// read the class to see what it holds.
   ///
   /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
-  /// the server rejects the save.
+  /// the server rejects the save: then its
+  /// [SmartschoolPresenceError.saveErrors] has the module's errors, each with
+  /// its reason and the record that was not saved (#109).
   Future<PresenceSavedHalfDay?> setLate({
     required int userId,
     required int classGroupId,
@@ -371,11 +373,12 @@ class PresenceService {
       'pupils': payload,
     });
     final answer = _decode(response, _savePath);
-    final errors = parseSaveErrors(answer);
-    if (errors.isNotEmpty) {
+    final saveErrors = parseSaveErrorDetails(answer);
+    if (saveErrors.isNotEmpty) {
       throw SmartschoolPresenceError(
         'Saving the presence for userID $userId failed.',
-        errors: errors,
+        errors: [for (final error in saveErrors) error.message],
+        saveErrors: saveErrors,
       );
     }
     final stored = parseSavedHalfDay(
@@ -681,22 +684,50 @@ class PresenceService {
     ]);
   }
 
-  /// Extracts the server-reported error strings from a `savePupilsPresences`
-  /// response.
+  /// Extracts the server-reported errors from a `savePupilsPresences`
+  /// response, as text: the [PresenceSaveError.message] of each error that
+  /// [parseSaveErrorDetails] gives, the module's reason, without the pupil's
+  /// name (#109).
   ///
   /// On success the response carries an empty `errors` array (and the saved
   /// records), so an empty list is returned. A non-empty list means the save
   /// was rejected. An unrecognisable body (e.g. an HTML error page) is itself
   /// reported as an error.
-  static List<String> parseSaveErrors(dynamic json) {
+  static List<String> parseSaveErrors(dynamic json) => [
+    for (final error in parseSaveErrorDetails(json)) error.message,
+  ];
+
+  /// Extracts the server-reported errors from a `savePupilsPresences`
+  /// response, typed (#109).
+  ///
+  /// The module answers a refused save with an `errors` array of objects,
+  /// which its web client reads (its Presence JavaScript, read-only): the
+  /// reason in `message`, and the record that was not saved in `presence`,
+  /// with its `presenceDate`, `partOfDay`, `studentID` and `pupil` (the
+  /// pupil's name). Each becomes a [PresenceSaveError] with the `message`
+  /// (trimmed; [PresenceSaveError.noReason] when it has none) and the
+  /// record's day, half of the day, `studentID` and pupil's name. An error
+  /// that is a text is kept as its message; an error in another shape gets a
+  /// message that says so, without its content, which can name a pupil.
+  ///
+  /// On success the response carries an empty `errors` array (and the saved
+  /// records), so an empty list is returned. A non-empty list means the save
+  /// was rejected. An answer flagged `hasErrors` without an `errors` array,
+  /// and an unrecognisable body, are each reported as one error with a
+  /// message of the library's.
+  static List<PresenceSaveError> parseSaveErrorDetails(dynamic json) {
     if (json is Map<String, dynamic>) {
       final raw = json['errors'];
       if (raw is List) {
-        return raw.map((e) => e.toString()).toList();
+        return [for (final error in raw) _parseSaveError(error)];
       }
       // No errors key but flagged as failed.
       if (json['hasErrors'] == true) {
-        return const ['Save reported hasErrors with no error detail.'];
+        return const [
+          PresenceSaveError(
+            message: 'Save reported hasErrors with no error detail.',
+          ),
+        ];
       }
       return const [];
     }
@@ -704,7 +735,45 @@ class PresenceService {
       // A bare array of saved records — success with no errors envelope.
       return const [];
     }
-    return ['Unexpected save response (${json.runtimeType}).'];
+    return [
+      PresenceSaveError(
+        message: 'Unexpected save response (${json.runtimeType}).',
+      ),
+    ];
+  }
+
+  /// One entry of a save answer's `errors`, as [parseSaveErrorDetails]
+  /// describes.
+  static PresenceSaveError _parseSaveError(Object? error) {
+    if (error is String) {
+      final text = error.trim();
+      return PresenceSaveError(
+        message: text.isEmpty ? PresenceSaveError.noReason : text,
+      );
+    }
+    if (error is! Map) {
+      return PresenceSaveError(
+        message:
+            'The Presence module refused the save with an error the library '
+            'does not recognise (${error.runtimeType}).',
+      );
+    }
+    final message = error['message'];
+    final text = message is String ? message.trim() : '';
+    final presence = error['presence'];
+    final record = presence is Map ? presence : const {};
+    final date = record['presenceDate'];
+    final partOfDay = record['partOfDay'];
+    final pupil = record['pupil'];
+    return PresenceSaveError(
+      message: text.isEmpty ? PresenceSaveError.noReason : text,
+      userId: _asInt(record['studentID']),
+      date: date is String && date.isNotEmpty ? date : null,
+      part: DayPart.fromWire(partOfDay is String ? partOfDay : null),
+      pupilName: pupil is String && pupil.trim().isNotEmpty
+          ? pupil.trim()
+          : null,
+    );
   }
 
   /// Formats [date] as `yyyy-MM-dd` (the format the Presence API expects).

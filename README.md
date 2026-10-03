@@ -619,7 +619,7 @@ Status codes are **not hard-coded** — their numeric IDs are per-school/per-str
 
 An expired session and a missing access right need opposite actions, so they arrive as different types:
 
-- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help. Its subtype `SmartschoolPresenceChangeRefusedError`: the half-day holds a status that `onlyReplacing` does not allow; nothing was sent (#105).
+- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help. For a refused save, `saveErrors` has the module's errors typed (#109): each a `PresenceSaveError` with the module's reason (`message`, in Dutch, as its web client shows it) and the record that was not saved (`date`, `part`, `userId`, and `pupilName`, the pupil's name); `errors` has their messages as text. The pupil's name is in neither `errors` nor the error's message or `toString()`, so not in a log of it. Its subtype `SmartschoolPresenceChangeRefusedError`: the half-day holds a status that `onlyReplacing` does not allow; nothing was sent (#105).
 - `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again and retried the request once. The request was not carried out: sign in again and retry.
 
 ```dart
@@ -632,7 +632,8 @@ try {
 } on SmartschoolPresenceChangeRefusedError catch (e) {
   // onlyReplacing left the half-day alone: it holds e.heldStatus.
 } on SmartschoolPresenceError catch (e) {
-  // Permanent: show e.message (and e.errors) to the operator.
+  // Permanent: show e.message (and e.errors, the module's reasons) to the
+  // operator; e.saveErrors names the half-days a refused save did not store.
 } on SmartschoolConnectionError {
   // Smartschool is unreachable: retry later.
 }
@@ -1207,6 +1208,9 @@ Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pu
 ### `PresenceSavedHalfDay`
 Returned by `PresenceService.setLate()` / `setPresent()` (#105): a `PresenceHalfDay`, the record the Presence module answered the save with (a new `presenceId` for a half-day that had no record; `codeId` `null` for an alias), with `before` (`PresenceHalfDay?`), the half-day as the call read it right before the save. The calls return `null` when the save's answer holds no record of the half-day.
 
+### `PresenceSaveError`
+In `SmartschoolPresenceError.saveErrors` (#109): an error of a save the Presence module refused, one entry of the `errors` of its answer. `message` (the module's reason, trimmed, in Dutch as its web client shows it; `PresenceSaveError.noReason` when it gave none), and the record that was not saved: `date` (`yyyy-MM-dd`), `part` (`DayPart?`), `userId` (the pupil's internal `userID`, the record's `studentID`) and `pupilName` (the pupil's name as the module gives it), each `null` when the error does not name it. `toString()` shows the message, day, half of the day and `userID`, not the pupil's name. `PresenceService.parseSaveErrorDetails(answer)` reads them from an answer; `parseSaveErrors` gives their messages. The shape is the one the module's web client reads (`{"message", "presence": {"presenceDate", "partOfDay", "studentID", "pupil", ...}}`); it was not captured from a live save.
+
 ### `SkoreClass`
 Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `name`, `modelId`, `modelName`, `groupId` (`int?`), `groupName` (`String?`).
 
@@ -1303,7 +1307,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolPlannerWriteRefusedError` | `PlannerService.planLesson` / `planLessonContent` / `renameElement` / `changePublicInfo` / `changePrivateInfo` / `clearLesson`: a check before the write refused it (the element is not organised by the authenticated user, a capability is not set, the lesfiche is not a lesson lesfiche of the user, ...). Nothing was sent. A `SmartschoolPlannerError` |
 | `SmartschoolPlannerSaveUnconfirmedError` | A planner write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again (`getDetail`) before trying again. Not a `SmartschoolPlannerError` |
 | `SmartschoolLessonContentError` | The Lesfiches module, or the course list, answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
-| `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
+| `SmartschoolPresenceError` | A presence save is rejected (carries the server's errors: typed in `saveErrors`, their messages in `errors`, #109), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolPresenceChangeRefusedError` | `PresenceService.setLate` / `setPresent` with `onlyReplacing`: the half-day, as read right before the save, holds a status it does not allow (carries `userId`, `part`, `date`, `halfDay`, `heldStatus`, `onlyReplacing`). Nothing was sent. A `SmartschoolPresenceError` (#105) |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

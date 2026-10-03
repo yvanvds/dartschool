@@ -432,11 +432,136 @@ void main() {
       );
     });
 
-    test('non-empty errors array => surfaced strings', () {
+    // A refused save, in the shape the module's web client reads (its
+    // Presence JavaScript, read-only): each error an object with the reason
+    // in `message` and the record that was not saved in `presence`, with the
+    // pupil's name in `pupil` (#109). Not captured live: no live save.
+    const refusedJson = '''
+    {"hasErrors":true,"errors":[
+      {"message":" De afwezigheid kon niet worden opgeslagen. ",
+       "presence":{"presenceID":90001,"presenceDate":"2026-06-01",
+         "studentID":1001,"hourID":null,"partOfDay":"am","codeID":497,
+         "aliasID":null,"motivation":"","deleteStatus":0,
+         "pupil":"Peeters, Lotte"}},
+      {"message":"De afwezigheid kon niet worden opgeslagen.",
+       "presence":{"presenceID":null,"presenceDate":"2026-06-01",
+         "studentID":"1002","hourID":null,"partOfDay":"pm","codeID":497,
+         "aliasID":null,"motivation":"","deleteStatus":0,
+         "pupil":"Janssens, Emma"}}
+    ],"pupils":[]}
+    ''';
+
+    test("error objects => the module's message each, without the pupil's "
+        'name (#109)', () {
+      // The issue's example. Before the fix: each error as its
+      // Map.toString(), "{message: ..., presence: {..., pupil: Peeters,
+      // Lotte}}".
       final errs = PresenceService.parseSaveErrors(
-        _obj('{"hasErrors":true,"errors":["geen rechten","ongeldige datum"]}'),
+        _obj('''
+        {"hasErrors":true,"errors":[{
+          "message":"De afwezigheid kon niet worden opgeslagen.",
+          "presence":{"presenceDate":"2026-06-01","partOfDay":"am",
+            "studentID":1001,"pupil":"Peeters, Lotte"}}]}
+        '''),
       );
-      expect(errs, ['geen rechten', 'ongeldige datum']);
+      expect(errs, ['De afwezigheid kon niet worden opgeslagen.']);
+
+      final both = PresenceService.parseSaveErrors(_obj(refusedJson));
+      expect(both, [
+        'De afwezigheid kon niet worden opgeslagen.',
+        'De afwezigheid kon niet worden opgeslagen.',
+      ]);
+      for (final name in ['Peeters', 'Lotte', 'Janssens', 'Emma']) {
+        expect(both.join(), isNot(contains(name)));
+      }
+    });
+
+    test('parseSaveErrorDetails types the record of each error (#109)', () {
+      final errs = PresenceService.parseSaveErrorDetails(_obj(refusedJson));
+      expect(errs, hasLength(2));
+      expect(
+        [
+          for (final e in errs)
+            (e.message, e.userId, e.date, e.part, e.pupilName),
+        ],
+        [
+          (
+            'De afwezigheid kon niet worden opgeslagen.',
+            1001,
+            '2026-06-01',
+            DayPart.morning,
+            'Peeters, Lotte',
+          ),
+          (
+            'De afwezigheid kon niet worden opgeslagen.',
+            1002,
+            '2026-06-01',
+            DayPart.afternoon,
+            'Janssens, Emma',
+          ),
+        ],
+      );
+      expect(
+        errs.first.toString(),
+        'PresenceSaveError: De afwezigheid kon niet worden opgeslagen. '
+        '(2026-06-01, morning, userID 1001)',
+      );
+      expect(errs.join(), isNot(contains('Peeters')));
+    });
+
+    test('an error object without a message, or a record in another shape: '
+        'noReason, and null for what it does not name (#109)', () {
+      final errs = PresenceService.parseSaveErrorDetails(
+        _obj('''
+        {"hasErrors":true,"errors":[
+          {"presence":{"presenceDate":"2026-06-01","partOfDay":"none",
+            "studentID":"x","pupil":"  "}},
+          {"message":"   ","presence":"Peeters, Lotte"},
+          {"message":42,"presence":{"presenceDate":20260601,"partOfDay":1,
+            "studentID":null,"pupil":7}}
+        ]}
+        '''),
+      );
+      expect(
+        [
+          for (final e in errs)
+            (e.message, e.userId, e.date, e.part, e.pupilName),
+        ],
+        [
+          (PresenceSaveError.noReason, null, '2026-06-01', null, null),
+          (PresenceSaveError.noReason, null, null, null, null),
+          (PresenceSaveError.noReason, null, null, null, null),
+        ],
+      );
+      expect(errs.join(), isNot(contains('Peeters')));
+    });
+
+    test('error texts are kept as they are, trimmed', () {
+      final errs = PresenceService.parseSaveErrors(
+        _obj(
+          '{"hasErrors":true,"errors":[" geen rechten","ongeldige datum",""]}',
+        ),
+      );
+      expect(errs, [
+        'geen rechten',
+        'ongeldige datum',
+        PresenceSaveError.noReason,
+      ]);
+      expect(
+        PresenceService.parseSaveErrorDetails(
+          _obj('{"errors":["geen rechten"]}'),
+        ).single.userId,
+        isNull,
+      );
+    });
+
+    test('an error in another shape says so, without its content (#109)', () {
+      final errs = PresenceService.parseSaveErrors(
+        _obj('{"hasErrors":true,"errors":[["Peeters, Lotte"],42,null]}'),
+      );
+      expect(errs, hasLength(3));
+      expect(errs.first, contains('does not recognise'));
+      expect(errs.join(), isNot(contains('Peeters')));
     });
 
     test('bare saved-records array => no errors', () {
@@ -451,10 +576,20 @@ void main() {
         PresenceService.parseSaveErrors(_obj('{"hasErrors":true}')),
         isNotEmpty,
       );
+      expect(
+        PresenceService.parseSaveErrorDetails(
+          _obj('{"hasErrors":true}'),
+        ).single.message,
+        'Save reported hasErrors with no error detail.',
+      );
     });
 
     test('unexpected type => reported as an error', () {
       expect(PresenceService.parseSaveErrors(42), isNotEmpty);
+      expect(
+        PresenceService.parseSaveErrorDetails(42).single.message,
+        'Unexpected save response (int).',
+      );
     });
   });
 

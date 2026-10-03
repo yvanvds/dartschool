@@ -314,6 +314,74 @@ class PresenceSavedHalfDay extends PresenceHalfDay {
       'codeId: $codeId, aliasId: $aliasId, before: $before)';
 }
 
+/// An error of a save that the Presence module refused (#109): one entry of
+/// the `errors` of its answer to `Presence/Class/savePupilsPresences`, as
+/// `SmartschoolPresenceError.saveErrors` holds it.
+///
+/// The module gives each error as an object, which its web client reads
+/// (its Presence JavaScript, read-only) for its error dialog: `message`, the
+/// reason, which it shows once at the top, and `presence`, the record that
+/// was not saved, which it lists per line by its `presenceDate`,
+/// `partOfDay` and `pupil` (the pupil's name), and finds the pupil's record
+/// by its `studentID`. The fields here are those, typed. What the module
+/// answers a refused save with was not captured live: no save was sent to
+/// the live module for this.
+///
+/// [toString] shows the [message] and the record's day, half of the day and
+/// [userId], not the pupil's name: [pupilName] is personal data, kept out of
+/// the error's text and so out of logs.
+class PresenceSaveError {
+  /// The text an error without a reason of its own gets as its [message]: an
+  /// error object without a `message`, or with an empty one.
+  static const noReason =
+      'The Presence module refused the save without a reason.';
+
+  /// The module's reason (the error's `message`, trimmed), as its web client
+  /// shows it (in Dutch); [noReason] when it gave none. For an error that
+  /// is not an object, a text that says what it is, without its content.
+  final String message;
+
+  /// The internal `userID` of the pupil whose record was not saved (the
+  /// record's `studentID`), or `null` when the error does not name one.
+  final int? userId;
+
+  /// The day of the record that was not saved (`yyyy-MM-dd`, its
+  /// `presenceDate`), or `null` when the error does not name one.
+  final String? date;
+
+  /// The half of the day of the record that was not saved (its
+  /// `partOfDay`), or `null` when the error names none, or a per-lesson
+  /// record (`"none"`).
+  final DayPart? part;
+
+  /// The pupil's name as the module gives it with the record (its `pupil`,
+  /// such as "Peeters, Lotte"), or `null` when it gives none.
+  ///
+  /// Personal data: it is in neither [toString] nor the message of the
+  /// `SmartschoolPresenceError` that holds this error.
+  final String? pupilName;
+
+  const PresenceSaveError({
+    required this.message,
+    this.userId,
+    this.date,
+    this.part,
+    this.pupilName,
+  });
+
+  @override
+  String toString() {
+    final record = [
+      if (date != null) date,
+      if (part != null) part!.name,
+      if (userId != null) 'userID $userId',
+    ];
+    return record.isEmpty
+        ? 'PresenceSaveError: $message'
+        : 'PresenceSaveError: $message (${record.join(', ')})';
+  }
+}
+
 /// A pupil as returned by `Presence/Class/getClass`, with the resolved half-day
 /// cells for the requested date range.
 class PresencePupil {

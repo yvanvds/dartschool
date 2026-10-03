@@ -2,7 +2,7 @@ import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/models/planner_models.dart'
     show PlannedElement, PlannerWriteRefusalReason;
 import 'package:flutter_smartschool/src/models/presence_models.dart'
-    show DayPart, PresenceHalfDay;
+    show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
     show SkoreAccessArea;
 import 'package:test/test.dart';
@@ -127,6 +127,49 @@ void main() {
     });
   });
 
+  group('SmartschoolPresenceError of a refused save (#109)', () {
+    test('keeps the typed errors; its text shows their messages, without the '
+        "pupil's name", () {
+      const saveError = PresenceSaveError(
+        message: 'De afwezigheid kon niet worden opgeslagen.',
+        userId: 1001,
+        date: '2026-06-01',
+        part: DayPart.morning,
+        pupilName: 'Peeters, Lotte',
+      );
+      const error = SmartschoolPresenceError(
+        'Saving the presence for userID 1001 failed.',
+        errors: ['De afwezigheid kon niet worden opgeslagen.'],
+        saveErrors: [saveError],
+      );
+      expect(error.saveErrors.single, same(saveError));
+      expect(
+        error.toString(),
+        'SmartschoolPresenceError: Saving the presence for userID 1001 '
+        'failed. (De afwezigheid kon niet worden opgeslagen.)',
+      );
+      expect(
+        saveError.toString(),
+        'PresenceSaveError: De afwezigheid kon niet worden opgeslagen. '
+        '(2026-06-01, morning, userID 1001)',
+      );
+      expect('$error$saveError', isNot(contains('Peeters')));
+      expect('$error$saveError', isNot(contains('Lotte')));
+    });
+
+    test('made without errors: both empty; an error without a record shows '
+        'its message only', () {
+      const error = SmartschoolPresenceError('failed');
+      expect(error.errors, isEmpty);
+      expect(error.saveErrors, isEmpty);
+      expect(error.toString(), 'SmartschoolPresenceError: failed');
+      expect(
+        const PresenceSaveError(message: 'geen rechten').toString(),
+        'PresenceSaveError: geen rechten',
+      );
+    });
+  });
+
   group('SmartschoolPresenceChangeRefusedError (#105)', () {
     test('is a SmartschoolPresenceError without server errors, not a session '
         'problem, and keeps what the half-day held', () {
@@ -150,6 +193,7 @@ void main() {
       expect(error, isA<SmartschoolPresenceError>());
       expect(error, isNot(isA<SmartschoolAuthenticationError>()));
       expect(error.errors, isEmpty);
+      expect(error.saveErrors, isEmpty);
       expect(
         (error.userId, error.part, error.date),
         (1003, DayPart.morning, '2026-06-01'),

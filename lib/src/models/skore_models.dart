@@ -1,7 +1,8 @@
 /// Models for Smartschool's Skore module (grading and reports): the classes
 /// of its report models, the courses of a class with the teachers assigned to
 /// them, the teachers that can be assigned, an assignment as a write saved it,
-/// and the gradebooks of a teacher with the teachers they are shared with.
+/// the gradebooks of a teacher with the teachers they are shared with, and a
+/// gradebook as a write changed its shares.
 ///
 /// Skore is an **internal** Smartschool module, not part of the official
 /// (public) API. Its IDs are its own: a [SkoreClass.id] is a Skore class ID
@@ -281,4 +282,68 @@ class SkoreGradebookShares {
       'SkoreGradebookShares(gradebookId: $gradebookId, ownerId: $ownerId, '
       'className: $className, courseName: $courseName, '
       'readerIds: $readerIds, writerIds: $writerIds)';
+}
+
+/// The gradebook that `SkoreService.shareGradebook` or `unshareGradebook`
+/// changed, in its context: the gradebook as the call read it before the
+/// change, and whether it saved anything (#103).
+///
+/// It is the gradebook after the call (its [gradebookId], [ownerId], names,
+/// [readerIds] and [writerIds]), so a caller that takes it as a
+/// [SkoreGradebookShares] needs no change. [before] and [saved] say what the
+/// call read and did: reporting the change ("now write access instead of
+/// read access", "already had write access; nothing saved") needs no read of
+/// the owner's gradebooks of its own, which could differ from what the call
+/// checked.
+class SkoreGradebookShareChange extends SkoreGradebookShares {
+  /// The Smartschool user ID of the teacher whose access the call changed
+  /// (its `teacherId`).
+  final int teacherId;
+
+  /// The gradebook as the call read it before the change, with the readers
+  /// and writers it had then (the owner's gradebooks, as
+  /// `SkoreService.getGradebookShares` reads them).
+  ///
+  /// When nothing was saved ([saved] `false`), this is the gradebook as it
+  /// is returned: the call made no other read.
+  final SkoreGradebookShares before;
+
+  /// Whether the call saved the change: `true` when it sent the save and
+  /// Skore confirmed it (the gradebook as read again after the save is this
+  /// one); `false` when the teacher already had the access asked
+  /// (`shareGradebook`) or had none (`unshareGradebook`), so nothing was
+  /// sent.
+  ///
+  /// A save that was sent but not confirmed is not returned: it throws a
+  /// `SmartschoolSkoreSaveUnconfirmedError`.
+  final bool saved;
+
+  const SkoreGradebookShareChange({
+    required super.gradebookId,
+    required super.ownerId,
+    required super.className,
+    required super.courseName,
+    required super.icon,
+    super.readerIds,
+    super.writerIds,
+    required this.teacherId,
+    required this.before,
+    required this.saved,
+  });
+
+  /// The access [teacherId] had before the change, or `null` when the
+  /// gradebook was not shared with them: [before]'s [accessOf].
+  SkoreShareAccess? get accessBefore => before.accessOf(teacherId);
+
+  /// The access [teacherId] has after the change, or `null` when the
+  /// gradebook is not shared with them (always after `unshareGradebook`):
+  /// this gradebook's [accessOf].
+  SkoreShareAccess? get accessAfter => accessOf(teacherId);
+
+  @override
+  String toString() =>
+      'SkoreGradebookShareChange(gradebookId: $gradebookId, '
+      'ownerId: $ownerId, className: $className, courseName: $courseName, '
+      'readerIds: $readerIds, writerIds: $writerIds, teacherId: $teacherId, '
+      'accessBefore: ${accessBefore?.name}, saved: $saved)';
 }

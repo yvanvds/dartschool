@@ -663,8 +663,8 @@ final teachers = await skore.getTeachers();        // List<SkoreTeacher>
 | `addTeacher({classId, courseId, teacherId})` | `Future<SkoreSavedAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it, with the course as read before the save. |
 | `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreSavedAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it, with the course and the assignment as it was (`replaced`: the previous teacher), as read before the save. |
 | `getGradebookShares(ownerId)` | `Future<List<SkoreGradebookShares>>` | The gradebooks of a teacher, each with the teachers who may read it and those who may read and change it. Empty for a teacher without gradebooks, and for a user ID Skore does not know. |
-| `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShares>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again. |
-| `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShares>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again. |
+| `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShareChange>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again, with the gradebook as read before the change and whether anything was saved. |
+| `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShareChange>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again, with the gradebook as read before the change and whether anything was saved. |
 
 A course code is **not** unique within a class: a course and its sub-course can both end in the same `[CODE]`. Tell them apart by `id` (or `label`). Group headers (`isGroupHeader`) are headings for the courses under them and cannot get a teacher.
 
@@ -716,9 +716,16 @@ final shared = await skore.shareGradebook(
     ownerId: 146, gradebookId: 34826, teacherId: 320, access: SkoreShareAccess.write);
 print('${shared.readerIds} ${shared.writerIds}');
 
+// The change in its context, as the call read it: no read of your own needed.
+print(shared.saved
+    ? 'now ${shared.accessAfter?.name} access (had: ${shared.accessBefore?.name ?? 'none'})'
+    : 'already had ${shared.accessBefore?.name} access; nothing saved');
+
 // And undo it.
 await skore.unshareGradebook(ownerId: 146, gradebookId: 34826, teacherId: 320);
 ```
+
+Both return a `SkoreGradebookShareChange`: the gradebook as read again after the save (a `SkoreGradebookShares`: `readerIds`, `writerIds`, ...), with what the call read and did (#103): `before`, the gradebook as it read it before the change (the one it checked), `teacherId`, the teacher whose access it changed, with their `accessBefore` and `accessAfter` (`SkoreShareAccess?`, `null` for none), and `saved`, whether it sent a save (and Skore confirmed it). So reporting the change ("now write access instead of read access", "already had write access; nothing saved", "unshared (had read access)") needs no read of the owner's gradebooks of your own, which could differ from what the call checked.
 
 Both go through Skore's `saveShared`. The save holds **this gradebook only**, with its complete new readers and writers: the teachers it is already shared with keep their access, unless the change is about them, and the owner's other gradebooks are not touched. A teacher has one kind of access: sharing with write access takes them off the readers, and the other way round.
 
@@ -728,11 +735,11 @@ Before the save, they read the owner's gradebooks again, and refuse with a `Smar
 - a gradebook that is not one of the owner's (also for a user ID Skore does not know), so a gradebook is never saved under another owner;
 - for `shareGradebook`, a teacher who is not in `getTeachers()`. `unshareGradebook` can take off a teacher who is no longer in it, such as one who has left the school.
 
-When nothing changes (already shared with that access, or not shared when unsharing), nothing is saved and the gradebook is returned as read.
+When nothing changes (already shared with that access, or not shared when unsharing), nothing is saved and the gradebook is returned as read, with `saved` `false` (and `before` the same gradebook).
 
 Skore answers the save with `state` 1. The call then reads the owner's gradebooks again and checks that the gradebook has exactly the readers and writers saved; when the answer or that read does not confirm the save, it throws a `SmartschoolSkoreSaveUnconfirmedError`: read the gradebooks again before trying again. Since the save holds the complete lists, sending it again does not change the outcome, so (unlike `addTeacher` and `replaceTeacher`) it is retried once after logging in again, as a read is. The checks and the save are separate requests, so do not change the shares of the same gradebook from two places at once.
 
-The example shows the gradebook, asks for confirmation before it saves, and reads the gradebooks again afterwards:
+The example shows the gradebook, asks for confirmation before it saves, and prints the change from the result (it reads the gradebooks again only when the save was not confirmed):
 
 ```bash
 dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHER_ID read|write|remove
@@ -1135,7 +1142,10 @@ Returned by `SkoreService.addTeacher()` and `replaceTeacher()`. The assignment s
 Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID), `name` (`"Last, First"`).
 
 ### `SkoreGradebookShares`
-Returned by `SkoreService.getGradebookShares()`, `shareGradebook()` and `unshareGradebook()`. A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
+Returned by `SkoreService.getGradebookShares()` (and, as a `SkoreGradebookShareChange`, by `shareGradebook()` and `unshareGradebook()`). A gradebook of a teacher: `gradebookId` (the assignment ID), `ownerId`, `className`, `courseName`, `icon`, `readerIds` and `writerIds` (Smartschool user IDs of the teachers who may read it, and of those who may read and change it). `accessOf(teacherId)` gives a teacher's `SkoreShareAccess`, or `null` when it is not shared with them.
+
+### `SkoreGradebookShareChange`
+Returned by `SkoreService.shareGradebook()` and `unshareGradebook()`. The gradebook after the call, a `SkoreGradebookShares` (as read again after a save, or as read before it when nothing was saved), with `teacherId` (the teacher whose access the call changed), `before` (the `SkoreGradebookShares` as the call read it before the change), `saved` (`true` when it sent the save and Skore confirmed it, `false` when the teacher already had that access, or none for an unshare), and the getters `accessBefore` and `accessAfter` (the teacher's `SkoreShareAccess?` in `before` and after the call).
 
 ### `PlannerCalendar`
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.

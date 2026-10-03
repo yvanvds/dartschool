@@ -6,6 +6,12 @@
   - `SmartschoolSkoreMyGroupsError` also carries the name of the current teacher (`teacherName`, as read from the class), and its message names the teacher and the course label. The parameter is optional: an error made without it has `teacherName` `null`.
 
   Code that takes the result as a `SkoreAssignment`, or makes a `SmartschoolSkoreMyGroupsError`, needs no change; only a class that overrides `addTeacher` or `replaceTeacher` must now return a `SkoreSavedAssignment`. The example `skore_assign_teacher_example.dart` prints the change from the result. Tested offline only: the saves are not run against the live Skore.
+- Skore: `shareGradebook` and `unshareGradebook` say whether they saved anything, and what access the teacher had before (#103). They read the owner's gradebooks before they save and save nothing when the teacher already has the access asked (to unshare: none), but returned only the `SkoreGradebookShares` after the call, the same for a save and for a no-op. A caller that reports per teacher "shared with write access", "now write access instead of read access", "already had write access; nothing saved" or "unshared (had read access)" (smartschool-mcp's `share_skore_gradebook` and `unshare_skore_gradebook`) had to read the owner's gradebooks itself first, a read that could differ from the one the call checked. Now both return the new `SkoreGradebookShareChange`, which extends `SkoreGradebookShares` (the gradebook after the call, as before: as read again after a save, or as read before it when nothing was saved), with:
+  - `before`, the `SkoreGradebookShares` as the call read it before the change (the one it checked), and `teacherId`, the teacher whose access it changed;
+  - `saved`: `true` when it sent the save and Skore confirmed it, `false` when nothing was sent (then `before` is the gradebook returned: the call made no other read);
+  - the getters `accessBefore` and `accessAfter`, the teacher's `SkoreShareAccess?` before and after the call (`null` for none).
+
+  Nothing more is read for it. Code that takes the result as a `SkoreGradebookShares` needs no change; only a class that overrides `shareGradebook` or `unshareGradebook` must now return a `SkoreGradebookShareChange`. The example `skore_share_gradebook_example.dart` prints the change from the result, and reads the gradebooks again only when the save was not confirmed. Tested offline only: the saves are not run against the live Skore.
 
 ## 0.3.2 - 2026-10-02
 

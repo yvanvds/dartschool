@@ -731,7 +731,8 @@ class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
   final List<String> capabilityFlags;
 
   /// For [PlannerWriteRefusalReason.notALessonLessonContent], the lesfiche
-  /// that is not a lesson one, as `planLessonContent` read it again; `null`
+  /// that is not a lesson one, as `planLessonContent` read it again (without
+  /// the names of its courses: `LessonContentCourse.name` is `null`); `null`
   /// otherwise.
   final LessonContentItem? lessonContent;
 
@@ -805,12 +806,14 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
       : '$runtimeType($statusCode): $message';
 }
 
-/// Thrown when Smartschool's Lesfiches module (lesson content) answers a
-/// request with something `LessonContentService` cannot use (#88): another
-/// HTTP status than `200` (in [statusCode]), an HTML page instead of data
-/// (the module answers a route it does not know with its web app), an
-/// answer that is not valid JSON, or data in a shape it does not recognise
-/// (such as a lesfiche without its `id` or `type`).
+/// Thrown when Smartschool's Lesfiches module (lesson content), or the
+/// school's course list that names the courses of the lesfiches (#101),
+/// answers a request with something `LessonContentService` cannot use
+/// (#88): another HTTP status than `200` (in [statusCode]), an HTML page
+/// instead of data (the module answers a route it does not know with its web
+/// app), an answer that is not valid JSON, or data in a shape it does not
+/// recognise (such as a lesfiche without its `id` or `type`, or a course
+/// without its `id`).
 ///
 /// The session was accepted: signing in again does not help. A session that
 /// Smartschool does not accept is a [SmartschoolSessionExpiredError]

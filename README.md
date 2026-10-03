@@ -18,7 +18,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
-- Lesfiches read support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses, to plan into the planner.
+- Lesfiches read support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner.
 
 ---
 
@@ -1065,13 +1065,14 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 
 ## `LessonContentService`
 
-Reads Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lesfiches a teacher keeps there, lessons and assignments, with their labels (such as `JAAR 6`, `TRIMESTER 1`) and courses, to plan into the planner. It only reads, with a GET to the module's JSON API (`/lesson-content/api/v1/`). A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent` (see *Lessons in the own planner*).
+Reads Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lesfiches a teacher keeps there, lessons and assignments, with their labels (such as `JAAR 6`, `TRIMESTER 1`) and courses, to plan into the planner. It only reads, with GETs to the module's JSON API (`/lesson-content/api/v1/`) and to the school's course list (`/course-list/api/v1/courses`), which names the courses: the module's list gives them by ID only. A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent` (see *Lessons in the own planner*).
 
 ```dart
 final lessonContent = LessonContentService(client);
 final fiches = await lessonContent.getItems();       // List<LessonContentItem>
 for (final fiche in fiches.where((f) => f.type == LessonContentType.lesson)) {
-  print('${fiche.name}  ${fiche.labels.map((l) => l.text).join(', ')}');
+  print('${fiche.name}  ${fiche.courses.map((c) => c.name).join(', ')}  '
+      '${fiche.labels.map((l) => l.text).join(', ')}');
 }
 ```
 
@@ -1079,14 +1080,18 @@ for (final fiche in fiches.where((f) => f.type == LessonContentType.lesson)) {
 
 | Method | Returns | Description |
 |---|---|---|
-| `getItems()` | `Future<List<LessonContentItem>>` | The lesfiches of the authenticated user, lessons and assignments, hidden ones included, in the module's order (`GET lesson-content/`). |
-| `parseItems(json)` (static) | `List<LessonContentItem>` | Parses the module's list. |
+| `getItems({withCourseNames = true})` | `Future<List<LessonContentItem>>` | The lesfiches of the authenticated user, lessons and assignments, hidden ones included, in the module's order (`GET lesson-content/`). With `withCourseNames` (the default) and a lesfiche with a course, it then reads the course list (`getCourses`, one request more) and names each course after the course with the same ID in it; `false` sends the one request, and leaves every course name `null`. |
+| `getCourses()` | `Future<List<PlannerCourse>>` | The school's courses (all of them, not only the teacher's), in the course list's order (`GET /course-list/api/v1/courses`): `id` (the ID of a lesfiche's course and of a planner course), `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`. The list the Lesfiches web client names its course filter from. |
+| `parseItems(json, {courses})` (static) | `List<LessonContentItem>` | Parses the module's list, naming the courses after `courses` (the school's courses). |
+| `parseCourses(json)` (static) | `List<PlannerCourse>` | Parses the course list. |
+
+A course of a lesfiche that the course list does not have (or names with an empty name) keeps a `null` name. `PlannerService.planLessonContent` reads the lesfiches without the course names.
 
 The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, unlike the planner): the school's local time, read as the local time of the machine. The detail of one lesfiche is not read: the module answers `lesson-content/{id}` with its web app, not with JSON. Creating, changing, sharing or trashing lesfiches is not covered. The school's assignment types, which the planner also reads from this module, come from `PlannerService.getAssignmentTypes()`.
 
 ### Errors
 
-- `SmartschoolLessonContentError` — the module answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page (its web app, for a route it does not know), invalid JSON, or data in an unknown shape (such as a lesfiche without its `id` or `type`). The session was accepted: signing in again does not help.
+- `SmartschoolLessonContentError` — the module, or the course list, answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page (its web app, for a route it does not know), invalid JSON, or data in an unknown shape (such as a lesfiche without its `id` or `type`, or a course without its `id`). The session was accepted: signing in again does not help.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once.
 
 ---
@@ -1216,7 +1221,7 @@ Returned by `PlannerService.getWorkloadSchedule()` (per day) and `calculateWorkl
 What the authenticated user may do with an element: `flags` (every `canUser...` flag by name), `visibleProperties` (the properties the user may see), `can(name)` (`false` for a flag the planner left out), and the getters `canEdit`, `canRename`, `canReplace`, `canReschedule`, `canChangePublicInfo`, `canChangePrivateInfo`, `canTrash`, `canDelete`.
 
 ### `LessonContentItem`
-Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `lessonContentId` of `PlannerService.planLessonContent`), `platformId`, `type` (`LessonContentType`; `other` for a kind the library does not know), `typeName` (`lessons`, `assignments`), `name`, `icon` (`String?`), `publicInfo` (HTML, `""` when empty), `isVisible`, `ownerId` (`String?`, the whole user ID), `dateLastChanged` / `dateStateChanged` (`DateTime?`, local time), `courses` (`LessonContentCourse`: `id`, `platformId`; the name is not in the list), `labels` (`LessonContentLabel`: `id`, `text`, `color`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`), `assignmentType` (`PlannerAssignmentType?`, assignment lesfiches only), `attachmentCount`, `weblinkCount`, `partnerWeblinkCount`, `deeplinkCount`, `capabilities` (every `canUser...` flag by name; `can(flag)`), and `raw` (as the module gave it, read-only).
+Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `lessonContentId` of `PlannerService.planLessonContent`), `platformId`, `type` (`LessonContentType`; `other` for a kind the library does not know), `typeName` (`lessons`, `assignments`), `name`, `icon` (`String?`), `publicInfo` (HTML, `""` when empty), `isVisible`, `ownerId` (`String?`, the whole user ID), `dateLastChanged` / `dateStateChanged` (`DateTime?`, local time), `courses` (`LessonContentCourse`: `id`, `platformId`, `name` — `String?`, from the school's course list, `null` when not known), `labels` (`LessonContentLabel`: `id`, `text`, `color`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`), `assignmentType` (`PlannerAssignmentType?`, assignment lesfiches only), `attachmentCount`, `weblinkCount`, `partnerWeblinkCount`, `deeplinkCount`, `capabilities` (every `canUser...` flag by name; `can(flag)`), and `raw` (as the module gave it, read-only).
 
 ---
 
@@ -1264,7 +1269,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`); also a planner write, for the element it reads again first (nothing was sent). A `SmartschoolPlannerError` |
 | `SmartschoolPlannerWriteRefusedError` | `PlannerService.planLesson` / `planLessonContent` / `renameElement` / `changePublicInfo` / `changePrivateInfo` / `clearLesson`: a check before the write refused it (the element is not organised by the authenticated user, a capability is not set, the lesfiche is not a lesson lesfiche of the user, ...). Nothing was sent. A `SmartschoolPlannerError` |
 | `SmartschoolPlannerSaveUnconfirmedError` | A planner write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again (`getDetail`) before trying again. Not a `SmartschoolPlannerError` |
-| `SmartschoolLessonContentError` | The Lesfiches module answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
+| `SmartschoolLessonContentError` | The Lesfiches module, or the course list, answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |

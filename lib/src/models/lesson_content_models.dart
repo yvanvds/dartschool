@@ -41,26 +41,54 @@ enum LessonContentType {
   }
 }
 
-/// A course a lesfiche is for, as the Lesfiches list names it: its ID and
-/// platform only (the course's name is not in the list; a planned lesson
-/// names its course in full, as a `PlannerCourse`).
+/// A course a lesfiche is for: its ID and platform, as the Lesfiches list
+/// gives them, and its [name], which the list does not give (#101).
+///
+/// `LessonContentService.getItems` names the course after the course with the
+/// same ID in the school's course list (`LessonContentService.getCourses`),
+/// as the Lesfiches web client does.
 class LessonContentCourse {
-  /// The course ID (a UUID): the [PlannerCourse.id] of the same course.
+  /// The course ID (a UUID): the [PlannerCourse.id] of the same course, and
+  /// the ID of the course in the school's course list.
   final String id;
 
   /// The platform (school) the course belongs to.
   final int platformId;
 
-  const LessonContentCourse({required this.id, required this.platformId});
+  /// The name of the course (`informatica`), as the school's course list
+  /// gives it (the [PlannerCourse.name] of the course with this [id]).
+  ///
+  /// `null` when it is not known: the lesfiches were read without the course
+  /// list (`LessonContentService.getItems(withCourseNames: false)`, or
+  /// `LessonContentService.parseItems` without `courses`), or the course list
+  /// has no course with this ID, or one without a name.
+  final String? name;
 
-  factory LessonContentCourse.fromJson(Map<String, dynamic> json) =>
-      LessonContentCourse(
-        id: _requiredString(json, 'id', 'a course'),
-        platformId: _requiredInt(json, 'platformId', 'a course'),
-      );
+  const LessonContentCourse({
+    required this.id,
+    required this.platformId,
+    this.name,
+  });
+
+  /// Parses a course as the Lesfiches list gives it (`{platformId, id}`),
+  /// named after its ID in [names] (course names by course ID); `null` for a
+  /// course not in it.
+  factory LessonContentCourse.fromJson(
+    Map<String, dynamic> json, {
+    Map<String, String> names = const {},
+  }) {
+    final id = _requiredString(json, 'id', 'a course');
+    return LessonContentCourse(
+      id: id,
+      platformId: _requiredInt(json, 'platformId', 'a course'),
+      name: names[id],
+    );
+  }
 
   @override
-  String toString() => 'LessonContentCourse($id)';
+  String toString() => name == null
+      ? 'LessonContentCourse($id)'
+      : 'LessonContentCourse($id, $name)';
 }
 
 /// A label of a lesfiche: a school label (such as `JAAR 6` or `TRIMESTER 1`)
@@ -160,7 +188,8 @@ class LessonContentItem {
   /// [dateLastChanged] gives it; `null` when the module gave no such date.
   final DateTime? dateStateChanged;
 
-  /// The courses the lesfiche is for.
+  /// The courses the lesfiche is for, each with its name when it is known
+  /// ([LessonContentCourse.name]).
   final List<LessonContentCourse> courses;
 
   /// The labels of the lesfiche, school labels and own labels.
@@ -216,10 +245,15 @@ class LessonContentItem {
     this.raw = const {},
   });
 
-  /// Parses a lesfiche as the Lesfiches list gives it. Throws a
-  /// [SmartschoolLessonContentError] when it lacks its `id`, `platformId` or
-  /// `type`, or holds a part in an unknown shape.
-  factory LessonContentItem.fromJson(Map<String, dynamic> json) {
+  /// Parses a lesfiche as the Lesfiches list gives it, with its courses named
+  /// after [courseNames] (course names by course ID; a course not in it has
+  /// no [LessonContentCourse.name]). Throws a [SmartschoolLessonContentError]
+  /// when it lacks its `id`, `platformId` or `type`, or holds a part in an
+  /// unknown shape.
+  factory LessonContentItem.fromJson(
+    Map<String, dynamic> json, {
+    Map<String, String> courseNames = const {},
+  }) {
     final id = _requiredString(json, 'id', 'a lesfiche');
     final what = 'lesfiche $id';
     final typeName = _requiredString(json, 'type', what);
@@ -251,7 +285,7 @@ class LessonContentItem {
       courses: _objects(
         json['courses'],
         'the courses of $what',
-        LessonContentCourse.fromJson,
+        (course) => LessonContentCourse.fromJson(course, names: courseNames),
       ),
       labels: _objects(
         json['labels'],

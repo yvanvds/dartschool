@@ -690,7 +690,8 @@ class PlannerService {
   /// other.
   ///
   /// Before it sends anything, it reads the lesfiches again
-  /// (`LessonContentService.getItems`) and refuses with a
+  /// (`LessonContentService.getItems`, without the course names: one
+  /// request) and refuses with a
   /// [SmartschoolPlannerWriteRefusedError] a [lessonContentId] that is not
   /// among them, or that is not a lesson lesfiche
   /// ([LessonContentType.lesson]): an assignment lesfiche is planned as
@@ -728,7 +729,11 @@ class PlannerService {
     if (sourceId.isEmpty) {
       throw ArgumentError.value(lessonContentId, 'lessonContentId', 'is empty');
     }
-    final fiches = await LessonContentService(_client).getItems();
+    // The lesfiche's ID and kind are all it needs: no course names, so no
+    // read of the course list (#101).
+    final fiches = await LessonContentService(
+      _client,
+    ).getItems(withCourseNames: false);
     final fiche = fiches
         .where((item) => item.id.toLowerCase() == sourceId.toLowerCase())
         .firstOrNull;

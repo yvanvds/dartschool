@@ -1,22 +1,29 @@
 // Tests for issue #88: the lesfiches of the Lesfiches module (lesson content,
 // `LessonContentService.getItems`), which `PlannerService.planLessonContent`
-// plans into a lesson hour.
+// plans into a lesson hour; and for issue #101: the names of their courses,
+// from the school's course list (`LessonContentService.getCourses`).
 //
-// The list below is a trimmed capture of the live module (read-only,
-// 2026-10-02):
-//   - GET /lesson-content/api/v1/lesson-content/ -> 200 with a JSON array of
-//       all the teacher's lesfiches (84 there: 74 lessons, 10 assignments),
-//       dates without an offset from UTC (`2025-09-01 19:51:25`);
-// trimmed to three lesfiches, with every lesfiche, course, label and
-// assignment type ID, every lesfiche title, own label text and weblink
-// replaced by obvious fakes (the owner is the fake authenticated user
+// The lists below are trimmed captures of the live API (read-only):
+//   - GET /lesson-content/api/v1/lesson-content/ (2026-10-02) -> 200 with a
+//       JSON array of all the teacher's lesfiches (84 there: 74 lessons, 10
+//       assignments), dates without an offset from UTC
+//       (`2025-09-01 19:51:25`), courses as `{platformId, id}` only;
+//   - GET /course-list/api/v1/courses (2026-10-03) -> 200 with a JSON array
+//       of all the school's courses (100 there), each in the shape of a
+//       planner course, among them every course of the lesfiches (the
+//       Lesfiches web client names the courses of its course filter from it);
+// trimmed to three lesfiches and three courses, with every lesfiche, course,
+// label and assignment type ID, every lesfiche title, own label text and
+// weblink replaced by obvious fakes (the owner is the fake authenticated user
 // `4069_1001_0`, "Jan Janssens"; `JAAR 6` and `TRIMESTER 1` are the
-// school's labels as they are). The capture had no attachments: the
-// attachment of the third lesfiche is made up, and so are the answers that
-// the module did not give live (unknown kinds, unusable answers).
+// school's labels as they are, and the course names are generic ones). The
+// capture had no attachments: the attachment of the third lesfiche is made
+// up, and so are the answers that the module did not give live (unknown
+// kinds, unusable answers, a course of a lesfiche that the course list does
+// not have).
 //
-// Everything here reads: the fake Smartschool answers the GET of the list
-// (and the login chain), and fails the test on any other request.
+// Everything here reads: the fake Smartschool answers the GETs of the two
+// lists (and the login chain), and fails the test on any other request.
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -42,6 +49,13 @@ class _Credentials extends Credentials {
 
 const _listPath = '/lesson-content/api/v1/lesson-content/';
 const _list = 'GET $_listPath';
+const _coursesPath = '/course-list/api/v1/courses';
+const _courses = 'GET $_coursesPath';
+
+/// The courses of the lesfiches: informatica (in the course list), and a
+/// course that is not in it.
+const _informaticaId = 'c0000000-0000-4000-8000-000000000005';
+const _unlistedId = 'c0000000-0000-4000-8000-000000000006';
 
 const _lessonId = 'b0000000-0000-4000-8000-000000000001';
 const _assignmentId = 'b0000000-0000-4000-8000-000000000002';
@@ -55,6 +69,15 @@ const _fiches = r'''
 [{"id":"b0000000-0000-4000-8000-000000000001","platformId":4069,"name":"Herhaling: lussen","icon":"document_observation","publicInfo":"","isVisible":false,"owner":"4069_1001_0","dateStateChanged":"2025-09-01 08:15:00","dateLastChanged":"2026-09-07 19:51:25","courses":[{"platformId":4069,"id":"c0000000-0000-4000-8000-000000000005"}],"labels":[{"identifier":"4069_d0000000-0000-4000-8000-000000000001","type":"platform","text":"JAAR 6","color":"aqua","isVisible":true,"id":"4069_d0000000-0000-4000-8000-000000000001","platformId":4069,"ssId":4069,"locations":["planner_routines","planner_activities","navigator","lesson_content","planner"]},{"identifier":"4069_d0000000-0000-4000-8000-000000000002","type":"platform","text":"TRIMESTER 1","color":"yellow","isVisible":true,"id":"4069_d0000000-0000-4000-8000-000000000002","platformId":4069,"ssId":4069,"locations":["planner_routines","planner_activities","navigator","lesson_content","planner"]}],"weblinks":[],"partnerWeblinks":[],"attachments":[],"deeplinks":[],"capabilities":{"canUserSeeDetails":true,"canUserEdit":true,"canUserTrash":true,"canUserTrashAsAdmin":false},"type":"lessons"},
 {"id":"b0000000-0000-4000-8000-000000000002","platformId":4069,"assignmentType":{"id":"a0000000-0000-4000-8000-000000000004","platformId":4069,"name":"Kleine Taak","abbreviation":"KT","isVisible":true,"defaultTiming":"deadline","weight":0},"name":"Taak: een eigen spel","icon":"flags_red_yellow","publicInfo":"<p>Dien je taak in via de digitale klas.<\/p>","isVisible":true,"owner":"4069_1001_0","dateStateChanged":"2025-09-05 11:30:28","dateLastChanged":"2025-09-05 11:30:28","courses":[{"platformId":4069,"id":"c0000000-0000-4000-8000-000000000005"}],"labels":[{"identifier":"4069_1001_0_d0000000-0000-4000-8000-000000000003","type":"user","text":"Lussen","color":"steel","isVisible":true,"id":"4069_1001_0_d0000000-0000-4000-8000-000000000003","userId":"4069_1001_0"}],"weblinks":[{"id":"e0000000-0000-4000-8000-000000000020","name":"Opdracht","url":"https:\/\/example.com\/opdracht","icon":"earth","visibility":{"option":"always","daysAfterEnd":null}}],"partnerWeblinks":[],"attachments":[],"deeplinks":[],"capabilities":{"canUserSeeDetails":true,"canUserEdit":true,"canUserTrash":true,"canUserTrashAsAdmin":false,"canUserChangeAssignmentTypeAsAdmin":false},"type":"assignments"},
 {"id":"b0000000-0000-4000-8000-000000000003","platformId":4069,"name":"Functies","icon":"document_observation","publicInfo":"<p>Hoofdstuk 4<\/p>","isVisible":true,"owner":"4069_1001_0","dateStateChanged":"2025-09-02 10:00:00","dateLastChanged":"2025-09-12 12:24:59","courses":[{"platformId":4069,"id":"c0000000-0000-4000-8000-000000000005"},{"platformId":4069,"id":"c0000000-0000-4000-8000-000000000006"}],"labels":[],"weblinks":[],"partnerWeblinks":[],"attachments":[{"id":"f0000000-0000-4000-8000-000000000030","name":"hoofdstuk4.pdf"}],"deeplinks":[],"capabilities":{"canUserSeeDetails":true,"canUserEdit":true,"canUserTrash":true,"canUserTrashAsAdmin":false},"type":"lessons"}]
+''';
+
+/// The school's courses as the course list gives them: informatica (the
+/// course of the lesfiches), wiskunde and a course without a cluster. Not
+/// [_unlistedId].
+const _courseList = r'''
+[{"id":"c0000000-0000-4000-8000-000000000005","platformId":4069,"name":"informatica","scheduleCodes":["INFO","INFO2"],"icon":"schoolbord","courseCluster":{"id":35,"name":"Informatica"},"isVisible":true},
+{"id":"c0000000-0000-4000-8000-000000000007","platformId":4069,"name":"wiskunde","scheduleCodes":["WISKU"],"icon":"schoolbord","courseCluster":{"id":69,"name":"Wiskunde"},"isVisible":true},
+{"id":"c0000000-0000-4000-8000-000000000008","platformId":4069,"name":"project","scheduleCodes":[],"icon":"schoolbord","courseCluster":null,"isVisible":true}]
 ''';
 
 /// The lesfiches of [_fiches], decoded, to change one in a test.
@@ -110,13 +133,17 @@ const _Answer _toLogin = (
   location: '/login',
 );
 
-/// A Smartschool whose session is accepted, that answers the GET of the list
-/// with [answers] in turn (its last answer for every later request) and the
-/// login chain, and fails the test on any other request.
+/// A Smartschool whose session is accepted, that answers the GET of the
+/// lesfiches with [answers] and the GET of the course list with [courses],
+/// each in turn (its last answer for every later request), and the login
+/// chain, and fails the test on any other request.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(List<_Answer> answers) : _answers = [...answers];
+  _Smartschool(List<_Answer> answers, List<_Answer> courses)
+    : _answers = [...answers],
+      _courseAnswers = [...courses];
 
   final List<_Answer> _answers;
+  final List<_Answer> _courseAnswers;
   bool _passwordDone = false;
 
   /// Every request that reached it, in order (`METHOD path?query`).
@@ -155,12 +182,16 @@ class _Smartschool implements HttpClientAdapter {
         _passwordDone = false;
         return _respond(_json('{"success":true,"redirectTo":"/"}'));
       case _list:
-        if (_answers.isEmpty) fail('Unexpected request: $label');
-        return _respond(
-          _answers.length > 1 ? _answers.removeAt(0) : _answers.single,
-        );
+        return _respond(_next(_answers, label));
+      case _courses:
+        return _respond(_next(_courseAnswers, label));
     }
     fail('Unexpected request: ${options.method} $uri');
+  }
+
+  static _Answer _next(List<_Answer> answers, String label) {
+    if (answers.isEmpty) fail('Unexpected request: $label');
+    return answers.length > 1 ? answers.removeAt(0) : answers.single;
   }
 
   static ResponseBody _respond(_Answer answer) => ResponseBody.fromString(
@@ -196,14 +227,15 @@ void main() {
   forbidRealNetwork();
 
   Future<(_Smartschool, LessonContentService)> serve(
-    List<_Answer> answers,
-  ) async {
+    List<_Answer> answers, {
+    List<_Answer> courses = const [],
+  }) async {
     final client = await SmartschoolClient.create(
       _Credentials(),
       cacheDir: tempCacheDir(),
     );
     addTearDown(client.dispose);
-    final server = _Smartschool(answers);
+    final server = _Smartschool(answers, courses);
     client.dio.httpClientAdapter = server;
     return (server, LessonContentService(client));
   }
@@ -215,11 +247,14 @@ void main() {
   group('LessonContentService.getItems', () {
     test('GETs lesson-content/ of the lesson-content API (with the slash, '
         'no query) and returns every lesfiche, both kinds, in order', () async {
-      final (server, lessonContent) = await serve([_json(_fiches)]);
+      final (server, lessonContent) = await serve(
+        [_json(_fiches)],
+        courses: [_json(_courseList)],
+      );
 
       final fiches = await lessonContent.getItems();
 
-      expect(server.log, [_list]);
+      expect(server.log, [_list, _courses]);
       expect(fiches.map((f) => f.id), [_lessonId, _assignmentId, _thirdId]);
       expect(fiches.map((f) => f.type), [
         LessonContentType.lesson,
@@ -228,17 +263,158 @@ void main() {
       ]);
     });
 
+    test(
+      'names the courses of every lesfiche after the course with the same '
+      'ID in the course list, read once after the lesfiches (#101)',
+      () async {
+        final (server, lessonContent) = await serve(
+          [_json(_fiches)],
+          courses: [_json(_courseList)],
+        );
+
+        final fiches = await lessonContent.getItems();
+
+        expect(server.log, [_list, _courses]);
+        expect(
+          [
+            for (final fiche in fiches)
+              [
+                for (final course in fiche.courses)
+                  '${course.id} ${course.name}',
+              ],
+          ],
+          [
+            ['$_informaticaId informatica'],
+            ['$_informaticaId informatica'],
+            ['$_informaticaId informatica', '$_unlistedId null'],
+          ],
+        );
+        expect(fiches.first.courses.single.platformId, 4069);
+      },
+    );
+
+    test('a course the course list does not have keeps a null name; the '
+        'other courses are named (#101)', () async {
+      final (_, lessonContent) = await serve(
+        [_json(_fiches)],
+        courses: [_json(_courseList)],
+      );
+
+      final third = (await lessonContent.getItems())[2];
+
+      final unlisted = third.courses.singleWhere((c) => c.id == _unlistedId);
+      expect(unlisted.name, isNull);
+      expect(unlisted.platformId, 4069);
+      expect(third.courses.first.name, 'informatica');
+    });
+
+    test('with withCourseNames false it sends the one request and every '
+        'course has a null name (#101)', () async {
+      final (server, lessonContent) = await serve([_json(_fiches)]);
+
+      final fiches = await lessonContent.getItems(withCourseNames: false);
+
+      expect(server.log, [_list]);
+      expect(fiches, hasLength(3));
+      expect(
+        fiches.expand((f) => f.courses).map((c) => c.name),
+        everyElement(isNull),
+      );
+      expect(fiches[2].courses.map((c) => c.id), [_informaticaId, _unlistedId]);
+    });
+
+    test('does not read the course list when no lesfiche has a course '
+        '(#101)', () async {
+      final noCourses = jsonEncode([
+        for (final fiche in _decoded()) {...fiche, 'courses': <Object>[]},
+      ]);
+      final (server, lessonContent) = await serve([_json(noCourses)]);
+
+      final fiches = await lessonContent.getItems();
+
+      expect(server.log, [_list]);
+      expect(fiches, hasLength(3));
+      expect(fiches.expand((f) => f.courses), isEmpty);
+    });
+
     test('a session refused for the list is retried once after logging in '
         'again, as every read', () async {
-      final (server, lessonContent) = await serve([_toLogin, _json(_fiches)]);
+      final (server, lessonContent) = await serve(
+        [_toLogin, _json(_fiches)],
+        courses: [_json(_courseList)],
+      );
 
       final fiches = await lessonContent.getItems();
 
       expect(fiches, hasLength(3));
       expect(server.log.first, _list);
-      expect(server.log.last, _list);
+      expect(server.log.last, _courses);
       expect(server.log, contains('POST /login'));
       expect(server.log.where((l) => l == _list), hasLength(2));
+      expect(server.log.where((l) => l == _courses), hasLength(1));
+    });
+
+    test('a session refused for the course list is retried once after '
+        'logging in again, and the courses are named (#101)', () async {
+      final (server, lessonContent) = await serve(
+        [_json(_fiches)],
+        courses: [_toLogin, _json(_courseList)],
+      );
+
+      final fiches = await lessonContent.getItems();
+
+      expect(fiches.first.courses.single.name, 'informatica');
+      expect(server.log.first, _list);
+      expect(server.log.last, _courses);
+      expect(server.log, contains('POST /login'));
+      expect(server.log.where((l) => l == _list), hasLength(1));
+      expect(server.log.where((l) => l == _courses), hasLength(2));
+    });
+
+    group('a course list the service cannot use is a '
+        'SmartschoolLessonContentError: no lesfiches without the names '
+        '(#101)', () {
+      final answers = <String, (_Answer, Object?, Object?)>{
+        'HTTP 500': (
+          _json(_errorPage, status: 500),
+          startsWith('The course list answered the courses with HTTP 500'),
+          500,
+        ),
+        'an HTML page': (
+          _json(_webApp),
+          contains('The course list answered the courses with an HTML page'),
+          isNull,
+        ),
+        'invalid JSON': (_json('[{"id":'), contains('invalid JSON'), isNull),
+        'not a list': (
+          _json('{"courses":[]}'),
+          contains('The course list gave the courses as'),
+          isNull,
+        ),
+        'a course without its id': (
+          _json('[{"platformId":4069,"name":"informatica"}]'),
+          allOf(
+            contains('The course list gave course 0 in an unknown shape'),
+            contains('without its id'),
+          ),
+          isNull,
+        ),
+      };
+      for (final MapEntry(key: name, value: (answer, message, status))
+          in answers.entries) {
+        test(name, () async {
+          final (server, lessonContent) = await serve(
+            [_json(_fiches)],
+            courses: [answer],
+          );
+
+          await expectLater(
+            lessonContent.getItems(),
+            throwsA(_lessonContentError(message, status)),
+          );
+          expect(server.log, [_list, _courses]);
+        });
+      }
     });
 
     group('an answer the service cannot use is a '
@@ -284,6 +460,56 @@ void main() {
         });
       }
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getCourses
+  // ---------------------------------------------------------------------------
+
+  group('LessonContentService.getCourses', () {
+    test('GETs the course list and returns every course of the school, in '
+        'order, as planner courses (#101)', () async {
+      final (server, lessonContent) = await serve(
+        const [],
+        courses: [_json(_courseList)],
+      );
+
+      final courses = await lessonContent.getCourses();
+
+      expect(server.log, [_courses]);
+      expect(courses, everyElement(isA<PlannerCourse>()));
+      expect(courses.map((c) => c.name), [
+        'informatica',
+        'wiskunde',
+        'project',
+      ]);
+      final informatica = courses.first;
+      expect(informatica.id, _informaticaId);
+      expect(informatica.platformId, 4069);
+      expect(informatica.scheduleCodes, ['INFO', 'INFO2']);
+      expect(informatica.icon, 'schoolbord');
+      expect(informatica.clusterId, 35);
+      expect(informatica.clusterName, 'Informatica');
+      expect(informatica.isVisible, isTrue);
+      expect(courses.last.clusterId, isNull);
+      expect(courses.last.scheduleCodes, isEmpty);
+      expect(() => courses.add(informatica), throwsUnsupportedError);
+    });
+
+    test(
+      'HTTP 404 is a SmartschoolLessonContentError with the status',
+      () async {
+        final (_, lessonContent) = await serve(
+          const [],
+          courses: [_json('{"status":404}', status: 404)],
+        );
+
+        await expectLater(
+          lessonContent.getCourses(),
+          throwsA(_lessonContentError(contains('HTTP 404'), 404)),
+        );
+      },
+    );
   });
 
   // ---------------------------------------------------------------------------
@@ -399,6 +625,64 @@ void main() {
       expect(third.labels, isEmpty);
     });
 
+    test('without courses, no course has a name (#101)', () {
+      expect(
+        fiches.expand((f) => f.courses).map((c) => c.name),
+        everyElement(isNull),
+      );
+      expect(
+        fiches.first.courses.single.toString(),
+        'LessonContentCourse($_informaticaId)',
+      );
+    });
+
+    test("with the school's courses, each course is named after the course "
+        'with its ID; one not among them, or one without a name, has none '
+        '(#101)', () {
+      final courses = [
+        ...LessonContentService.parseCourses(jsonDecode(_courseList)),
+        const PlannerCourse(id: _unlistedId, platformId: 4069, name: ''),
+      ];
+      final named = LessonContentService.parseItems(
+        jsonDecode(_fiches),
+        courses: courses,
+      );
+      expect(named[2].courses.map((c) => c.name), ['informatica', null]);
+      expect(
+        named.first.courses.single.toString(),
+        'LessonContentCourse($_informaticaId, informatica)',
+      );
+      // Everything else is as parsed without the courses.
+      expect(named.map((f) => f.toString()), fiches.map((f) => f.toString()));
+      expect(
+        named.map((f) => f.courses.map((c) => c.id).toList()),
+        fiches.map((f) => f.courses.map((c) => c.id).toList()),
+      );
+    });
+
+    test('a course named in the constructor or by fromJson', () {
+      const course = LessonContentCourse(
+        id: _informaticaId,
+        platformId: 4069,
+        name: 'informatica',
+      );
+      expect(course.name, 'informatica');
+      expect(
+        LessonContentCourse.fromJson(
+          {'platformId': 4069, 'id': _informaticaId},
+          names: {_informaticaId: 'informatica'},
+        ).name,
+        'informatica',
+      );
+      expect(
+        LessonContentCourse.fromJson(
+          {'platformId': 4069, 'id': _unlistedId},
+          names: {_informaticaId: 'informatica'},
+        ).name,
+        isNull,
+      );
+    });
+
     test('raw keeps the fields the model does not cover, read-only', () {
       final assignment = fiches[1];
       final weblink = (assignment.raw['weblinks'] as List).single as Map;
@@ -499,6 +783,50 @@ void main() {
         test(name, () {
           expect(
             () => LessonContentService.parseItems(json),
+            throwsA(_lessonContentError(message, isNull)),
+          );
+        });
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // parseCourses
+  // ---------------------------------------------------------------------------
+
+  group('LessonContentService.parseCourses', () {
+    test('an empty list has no courses', () {
+      expect(LessonContentService.parseCourses(jsonDecode('[]')), isEmpty);
+    });
+
+    group('refuses', () {
+      final shapes = <String, (Object?, Object?)>{
+        'an answer that is not a list': (
+          {'courses': <Object>[]},
+          contains('The course list gave the courses as'),
+        ),
+        'a course that is not an object': (
+          [_informaticaId],
+          contains('The course list gave course 0 as String'),
+        ),
+        'a course without its id': (
+          [
+            {'platformId': 4069, 'name': 'informatica'},
+          ],
+          contains('course 0 in an unknown shape'),
+        ),
+        'a course without its platform': (
+          [
+            {'id': _informaticaId, 'name': 'informatica'},
+          ],
+          contains('course 0 in an unknown shape'),
+        ),
+      };
+      for (final MapEntry(key: name, value: (json, message))
+          in shapes.entries) {
+        test(name, () {
+          expect(
+            () => LessonContentService.parseCourses(json),
             throwsA(_lessonContentError(message, isNull)),
           );
         });

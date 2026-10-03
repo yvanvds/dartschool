@@ -22,6 +22,17 @@
 // and the archive listed it after each with that state, still in the archive.
 // So nothing changes in the library: these tests keep the requests as the
 // web client sends them and as they were tried.
+//
+// Issue #95: the three calls read their answer's `<message>` with
+// `MessageChanged.fromXml`, which read a missing, empty or non-numeric
+// `<id>`, `<status>` or `<label>` as `0`: for `markUnread` and for
+// `setLabel(..., MessageLabel.noFlag)` the very state asked for, so a caller
+// (smartschool-mcp's mark and flag tools) took such an answer as confirmed.
+// And it read the `<status>` (the read state) when an answer held both, also
+// for `setLabel`. The calls now return `null` for such an answer, as for one
+// without a `<message>`; the mark calls read the `<status>` only and
+// `setLabel` the `<label>` only. The fake below answers as the live run did
+// unless a test gives it another answer.
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -56,21 +67,29 @@ class _Credentials extends Credentials {
 /// replaced): [kind] `status` with the new read state, or `label` with the
 /// new flag, as its `<command>` and the element that holds [value].
 String _answer(String kind, int value) =>
+    _answerWith(kind, '<id>4242</id><$kind>$value</$kind>');
+
+/// Smartschool's answer of [kind] (`status` or `label`) to a change of a
+/// message, with [message] as the content of its `<message>`.
+String _answerWith(String kind, String message) =>
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     '<server><response><status>ok</status><actions><action>'
     '<subsystem>message list</subsystem><command>$kind</command>'
-    '<data><message><id>4242</id><$kind>$value</$kind></message></data>'
+    '<data><message>$message</message></data>'
     '</action></actions></response></server>';
 
 /// An XML command as it reached the fake Smartschool.
 typedef _Command = ({String action, Map<String, String> params});
 
 /// A Smartschool whose XML dispatcher answers `mark message read`, `mark
-/// message unread` and `save msglabel` as the live one did, and records each
-/// command.
+/// message unread` and `save msglabel` as the live one did, or with
+/// [answer] when a test sets it, and records each command.
 class _Smartschool implements HttpClientAdapter {
   /// Every command that reached it, in order.
   final List<_Command> commands = [];
+
+  /// The answer to every command, instead of the live run's, when set.
+  String? answer;
 
   @override
   Future<ResponseBody> fetch(
@@ -95,14 +114,16 @@ class _Smartschool implements HttpClientAdapter {
       r'<action>(.*?)</action>',
     ).firstMatch(command)!.group(1)!;
     commands.add((action: action, params: params));
-    final answer = switch (action) {
-      'mark message read' => _answer('status', 1),
-      'mark message unread' => _answer('status', 0),
-      'save msglabel' => _answer('label', int.parse(params['msgLabel']!)),
-      _ => throw StateError('unexpected command $action'),
-    };
+    final body =
+        answer ??
+        switch (action) {
+          'mark message read' => _answer('status', 1),
+          'mark message unread' => _answer('status', 0),
+          'save msglabel' => _answer('label', int.parse(params['msgLabel']!)),
+          _ => throw StateError('unexpected command $action'),
+        };
     return ResponseBody.fromString(
-      answer,
+      body,
       200,
       headers: {
         Headers.contentTypeHeader: ['text/xml'],
@@ -184,6 +205,82 @@ void main() {
       ]);
       expect((flagged?.id, flagged?.newValue), (4242, 3));
       expect((cleared?.id, cleared?.newValue), (4242, 0));
+    });
+  });
+
+  group('an answer that confirms no state (#95)', () {
+    // The content of the answer's `<message>`, with `$kind` for its kind:
+    // `status` for the mark calls, `label` for setLabel.
+    const unusable = {
+      'no state': '<id>4242</id>',
+      'an empty state': r'<id>4242</id><$kind/>',
+      'a state that is not a number': r'<id>4242</id><$kind>none</$kind>',
+      'no ID': r'<$kind>0</$kind>',
+      'an empty ID': r'<id/><$kind>0</$kind>',
+    };
+
+    for (final MapEntry(key: what, value: message) in unusable.entries) {
+      test('markRead, markUnread and setLabel return null for $what', () async {
+        String answerOf(String kind) =>
+            _answerWith(kind, message.replaceAll(r'$kind', kind));
+
+        server.answer = answerOf('status');
+        final read = await messages.markRead(4242);
+        final unread = await messages.markUnread(4242, boxId: _archive);
+        server.answer = answerOf('label');
+        final cleared = await messages.setLabel(4242, MessageLabel.noFlag);
+
+        expect(server.commands.map((c) => c.action), [
+          'mark message read',
+          'mark message unread',
+          'save msglabel',
+        ]);
+        expect(read, isNull, reason: 'markRead');
+        expect(unread, isNull, reason: 'markUnread: no confirmed unread');
+        expect(cleared, isNull, reason: 'setLabel: no confirmed "no flag"');
+      });
+    }
+
+    test(
+      'markUnread returns null for a label alone: it is no read state',
+      () async {
+        server.answer = _answerWith('status', '<id>4242</id><label>0</label>');
+
+        expect(await messages.markUnread(4242), isNull);
+      },
+    );
+
+    test('setLabel returns null for a status alone: it is no flag', () async {
+      server.answer = _answerWith('label', '<id>4242</id><status>0</status>');
+
+      expect(await messages.setLabel(4242, MessageLabel.noFlag), isNull);
+    });
+
+    test('with both a status and a label, setLabel reads the label and the '
+        'mark calls the status', () async {
+      server.answer = _answerWith(
+        'label',
+        '<id>4242</id><status>1</status><label>0</label>',
+      );
+      final cleared = await messages.setLabel(4242, MessageLabel.noFlag);
+      server.answer = _answerWith(
+        'status',
+        '<id>4242</id><status>0</status><label>3</label>',
+      );
+      final unread = await messages.markUnread(4242);
+
+      expect((cleared?.id, cleared?.newValue), (4242, 0));
+      expect((unread?.id, unread?.newValue), (4242, 0));
+    });
+
+    test('an answer without a <message> still returns null', () async {
+      server.answer =
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+          '<server><response><status>ok</status><actions/></response>'
+          '</server>';
+
+      expect(await messages.markRead(4242), isNull);
+      expect(await messages.setLabel(4242, MessageLabel.redFlag), isNull);
     });
   });
 }

@@ -66,7 +66,7 @@ void main() {
       final xml = _readFixture('post/postboxes/mark message unread.xml');
 
       final entries = XmlInterface.parseResponse(xml, './/data/message');
-      final changed = MessageChanged.fromXml(entries.single);
+      final changed = MessageChanged.fromStatusXml(entries.single)!;
 
       expect(changed.id, 123);
       expect(changed.newValue, 0);
@@ -76,7 +76,7 @@ void main() {
       final xml = _readFixture('post/postboxes/mark message read.xml');
 
       final entries = XmlInterface.parseResponse(xml, './/data/message');
-      final changed = MessageChanged.fromXml(entries.single);
+      final changed = MessageChanged.fromStatusXml(entries.single)!;
 
       expect(changed.id, 123);
       expect(changed.newValue, 1);
@@ -98,8 +98,8 @@ void main() {
         './/data/message',
       );
 
-      final readChanged = MessageChanged.fromXml(readEntries.single);
-      final unreadChanged = MessageChanged.fromXml(unreadEntries.single);
+      final readChanged = MessageChanged.fromStatusXml(readEntries.single)!;
+      final unreadChanged = MessageChanged.fromStatusXml(unreadEntries.single)!;
 
       expect(readChanged.id, unreadChanged.id);
       expect(readChanged.newValue, 1);
@@ -110,7 +110,7 @@ void main() {
       final xml = _readFixture('post/postboxes/save msglabel.xml');
 
       final entries = XmlInterface.parseResponse(xml, './/data/message');
-      final changed = MessageChanged.fromXml(entries.single);
+      final changed = MessageChanged.fromLabelXml(entries.single)!;
 
       expect(changed.id, 123);
       expect(changed.newValue, 1);
@@ -559,7 +559,104 @@ window.tinymceInitConfig = { userID : '146', ssID : '4069', userLT : '0' };
       },
     );
   });
+
+  // #95: a `<message>` without a usable ID or state read as `0`, which is
+  // also a confirmed "unread" or "no flag"; and an answer with both a
+  // `<status>` and a `<label>` gave the status, also for a label change.
+  group('MessageChanged.fromStatusXml and fromLabelXml (#95)', () {
+    const unusable = {
+      'no state': '<id>123</id>',
+      'an empty state': '<id>123</id><status/><label/>',
+      'a blank state': '<id>123</id><status> </status><label> </label>',
+      'a state that is not a number':
+          '<id>123</id><status>read</status><label>red</label>',
+      'a hexadecimal state':
+          '<id>123</id><status>0x0</status><label>0x0</label>',
+      'a repeated state':
+          '<id>123</id><status>0</status><status>1</status>'
+          '<label>0</label><label>3</label>',
+      'a state with child elements':
+          '<id>123</id><status><value>0</value></status>'
+          '<label><value>0</value></label>',
+      'no ID': '<status>0</status><label>0</label>',
+      'an empty ID': '<id/><status>0</status><label>0</label>',
+      'an ID that is not a number':
+          '<id>abc</id><status>0</status><label>0</label>',
+    };
+
+    for (final MapEntry(key: what, value: inner) in unusable.entries) {
+      test('read null for $what', () {
+        final message = _changeMessage(inner);
+
+        expect(MessageChanged.fromStatusXml(message), isNull);
+        expect(MessageChanged.fromLabelXml(message), isNull);
+      });
+    }
+
+    test('read a confirmed 0 as 0', () {
+      final unread = MessageChanged.fromStatusXml(
+        _changeMessage('<id>123</id><status>0</status>'),
+      );
+      final noFlag = MessageChanged.fromLabelXml(
+        _changeMessage('<id>123</id><label>0</label>'),
+      );
+
+      expect((unread?.id, unread?.newValue), (123, 0));
+      expect((noFlag?.id, noFlag?.newValue), (123, 0));
+    });
+
+    test('read a value with whitespace around it', () {
+      final changed = MessageChanged.fromStatusXml(
+        _changeMessage('<id> 123 </id><status>\n  1\n</status>'),
+      );
+
+      expect((changed?.id, changed?.newValue), (123, 1));
+    });
+
+    test('read only their own element when the answer holds both', () {
+      final message = _changeMessage(
+        '<id>123</id><status>1</status><label>3</label>',
+      );
+
+      expect(MessageChanged.fromStatusXml(message)?.newValue, 1);
+      expect(MessageChanged.fromLabelXml(message)?.newValue, 3);
+    });
+
+    test('do not take the other element for their own', () {
+      expect(
+        MessageChanged.fromStatusXml(
+          _changeMessage('<id>123</id><label>0</label>'),
+        ),
+        isNull,
+        reason: 'a label is not a read state',
+      );
+      expect(
+        MessageChanged.fromLabelXml(
+          _changeMessage('<id>123</id><status>0</status>'),
+        ),
+        isNull,
+        reason: 'a read state is not a label',
+      );
+    });
+
+    test('the deprecated fromXml still reads a missing state as 0', () {
+      // ignore: deprecated_member_use_from_same_package
+      final changed = MessageChanged.fromXml(_changeMessage('<id>123</id>'));
+
+      expect((changed.id, changed.newValue), (123, 0));
+    });
+  });
 }
+
+/// The `<message>` of Smartschool's answer to a change of a message, with
+/// [inner] as its content, as the service reads it.
+Map<String, dynamic> _changeMessage(String inner) => XmlInterface.parseResponse(
+  '<server><response><status>ok</status><actions><action>'
+      '<subsystem>message list</subsystem><command>status</command>'
+      '<data><message>$inner</message></data>'
+      '</action></actions></response></server>',
+  './/data/message',
+).single;
 
 String _readFixture(String name) {
   final file = File('test/fixtures/smartschool/requests/$name');

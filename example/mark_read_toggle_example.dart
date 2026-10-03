@@ -69,12 +69,14 @@ Future<void> main() async {
   // [MessageChanged.newValue] from the mutation call:
   //   newValue=0 → message is now unread
   //   newValue=1 → message is now read
+  // The call returns null when Smartschool's answer gives no message ID or
+  // read state (#95), so a 0 is always an "unread" it confirmed.
 
   if (first.unread) {
     print('Message is unread → calling markRead(${first.id}) …');
     final result = await messages.markRead(first.id);
     if (result == null) {
-      print('  WARNING: server returned no data.');
+      print('  WARNING: the answer confirmed no read state (#95).');
     } else {
       print('  Server newValue: ${result.newValue}  (1 = read)');
       print(
@@ -87,7 +89,7 @@ Future<void> main() async {
     print('Message is read → calling markUnread(${first.id}) …');
     final result = await messages.markUnread(first.id);
     if (result == null) {
-      print('  WARNING: server returned no data.');
+      print('  WARNING: the answer confirmed no read state (#95).');
     } else {
       print('  Server newValue: ${result.newValue}  (0 = unread)');
       print(

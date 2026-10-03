@@ -752,7 +752,11 @@ class MessagesService {
   /// before too).
   ///
   /// Returns the updated [MessageChanged] record from the server: the
-  /// message's ID and its new read state (`0`, unread).
+  /// message's ID and its new read state (`0`, unread), its `<id>` and
+  /// `<status>`. Returns `null` when the answer holds no `<message>`, or one
+  /// without a usable ID or read state (missing, empty or not a whole
+  /// number), so that `0` always is a state Smartschool confirmed (#95).
+  /// See [MessageChanged.fromStatusXml].
   Future<MessageChanged?> markUnread(
     int msgId, {
     BoxType boxType = BoxType.inbox,
@@ -771,7 +775,7 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+    return entries.isEmpty ? null : MessageChanged.fromStatusXml(entries.first);
   }
 
   /// Marks message [msgId] in [boxType] as read.
@@ -792,6 +796,9 @@ class MessagesService {
   ///
   /// Returns the updated [MessageChanged] record from the server. The server
   /// responds with `<status>1</status>` to indicate the message is now read.
+  /// Returns `null` when the answer holds no `<message>`, or one without a
+  /// usable `<id>` or `<status>` (missing, empty or not a whole number), as
+  /// [markUnread] does (#95). See [MessageChanged.fromStatusXml].
   Future<MessageChanged?> markRead(
     int msgId, {
     BoxType boxType = BoxType.inbox,
@@ -808,7 +815,7 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+    return entries.isEmpty ? null : MessageChanged.fromStatusXml(entries.first);
   }
 
   /// Sets the colour [label] on message [msgId] in [boxType].
@@ -826,7 +833,12 @@ class MessagesService {
   /// archive.
   ///
   /// Returns the updated [MessageChanged] record from the server: the
-  /// message's ID and its new label ([MessageLabel.value]).
+  /// message's ID and its new label ([MessageLabel.value]), its `<id>` and
+  /// `<label>` (not its `<status>`, the read state, should it hold one).
+  /// Returns `null` when the answer holds no `<message>`, or one without a
+  /// usable ID or label (missing, empty or not a whole number), so that `0`
+  /// always is a "no flag" Smartschool confirmed (#95). See
+  /// [MessageChanged.fromLabelXml].
   Future<MessageChanged?> setLabel(
     int msgId,
     MessageLabel label, {
@@ -845,7 +857,7 @@ class MessagesService {
       xpath: _xpathMessage,
     );
 
-    return entries.isEmpty ? null : MessageChanged.fromXml(entries.first);
+    return entries.isEmpty ? null : MessageChanged.fromLabelXml(entries.first);
   }
 
   /// Moves message [msgId] to the trash, or deletes it for good: prefer

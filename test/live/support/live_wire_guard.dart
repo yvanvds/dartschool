@@ -11,6 +11,11 @@
 // - a request to another host than the one of credentials.yml;
 // - registering anyone but the own account on a compose form
 //   (`addUserToSelected`), or an answer that registers anyone else;
+// - a recipient search (`searchUsers` without a `function`,
+//   MessagesService.searchRecipientsForCompose, #97) on a compose form that
+//   was not loaded through the guard, or with another selection (`xml`)
+//   than the empty one the library sends. A search only reads: it registers
+//   no one on the form;
 // - submitting a compose form that has anyone but the own account
 //   registered, that stores the message in the LVS or schedules it, whose
 //   subject lacks the run's tag, or that replies to a message the run did not
@@ -109,6 +114,9 @@ class LiveWireGuard extends Interceptor {
 
   /// How many messages (submits of a compose form) it let out.
   int submits = 0;
+
+  /// How many recipient searches it let out (#97).
+  int searches = 0;
 
   /// The own account: the only recipient a message may have.
   MessageSearchUser? get own => _own;
@@ -303,6 +311,8 @@ class LiveWireGuard extends Interceptor {
       switch ((query['file'], query['function'])) {
         case ('dispatcher', _):
           return _commandRefusal(options.data);
+        case ('searchUsers', null):
+          return _searchRefusal(options.data);
         case ('searchUsers', 'addUserToSelected'):
           return _addRefusal(options.data);
         case ('searchUsers', 'deleteUsersFromSelected'):
@@ -525,6 +535,25 @@ class LiveWireGuard extends Interceptor {
     }
     _archiveRequested.add(id);
     _listed.remove((id, inbox, 0));
+    return null;
+  }
+
+  /// The selection that MessagesService.searchRecipientsForCompose sends
+  /// with a search: none.
+  static const _emptySelection = '<results></results>';
+
+  /// Why the recipient search with the fields [data] may not go out, or
+  /// `null` (#97): only on a compose form loaded through the guard, and with
+  /// the empty selection the library sends.
+  String? _searchRefusal(Object? data) {
+    if (data is! Map) return 'it carries no form fields';
+    final form = _formRefusal(data['uniqueUsc']);
+    if (form != null) return form;
+    if (data['xml'] != _emptySelection) {
+      return 'its selection (xml) is not the empty one the library sends '
+          '($_emptySelection)';
+    }
+    searches++;
     return null;
   }
 

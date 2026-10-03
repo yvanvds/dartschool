@@ -1122,17 +1122,48 @@ class MessagesService {
   /// required by the search endpoint.  If you intend to call [sendMessage]
   /// immediately after, that call will perform its own form load — two
   /// lightweight page requests total, which is acceptable for normal use.
+  ///
+  /// The `uniqueUsc` belongs to the session the compose page was loaded in,
+  /// so the search goes out only in that session, as the steps of
+  /// [sendMessage] do (#97): it is not retried after logging in again when
+  /// Smartschool refuses the session for it (#25), and it is not sent when
+  /// the client logged in again since the page was loaded, or is logging in,
+  /// for instance for another request on the same [SmartschoolClient] (#38).
+  /// In either case this method loads a new compose page, logging in first
+  /// when Smartschool refuses the session for it, and searches once more,
+  /// with the new page's `uniqueUsc`, in its session. When that search cannot
+  /// go out in the session of its page either, it throws a
+  /// [SmartschoolSessionExpiredError], and no search went out with a
+  /// `uniqueUsc` of another session.
+  ///
+  /// Throws a [SmartschoolComposeError] when the compose page holds no
+  /// `uniqueUsc`.
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
   searchRecipientsForCompose(String query) async {
-    final hidden = await _loadComposeFields();
-    final uniqueUsc = hidden['uniqueUsc'] ?? '';
+    final form = await _loadSearchForm();
+    try {
+      return await _searchUsers(query, form);
+    } on SmartschoolSessionExpiredError {
+      // The search was refused, or not sent, in the session of its form
+      // (#97). A new form loads in a session the client accepts, logging in
+      // first when Smartschool refuses it, and the search goes once more.
+    }
+    return _searchUsers(query, await _loadSearchForm());
+  }
+
+  /// Loads the new-message compose form for [searchRecipientsForCompose]:
+  /// its answer, which the search goes out in the session of, and its
+  /// `uniqueUsc`.
+  Future<({Response<String> form, String uniqueUsc})> _loadSearchForm() async {
+    final form = await _client.getResponse(_composeUrl());
+    final uniqueUsc = parseHiddenFields(form.data ?? '')['uniqueUsc'] ?? '';
     if (uniqueUsc.isEmpty) {
       throw const SmartschoolComposeError(
         'searchRecipientsForCompose: could not extract uniqueUsc from the '
         'compose form. Check that the account has permission to send messages.',
       );
     }
-    return _searchUsers(query, uniqueUsc);
+    return (form: form, uniqueUsc: uniqueUsc);
   }
 
   /// Fetches the recipient of a plain reply to [msgId] with their platform
@@ -2012,12 +2043,6 @@ class MessagesService {
   }) =>
       _composeUrl(boxType: boxType, composeType: all ? 2 : 1, msgId: '$msgId');
 
-  /// GETs the compose page and returns all hidden `<input>` field values.
-  Future<Map<String, String>> _loadComposeFields() async {
-    final html = await _client.getRaw(_composeUrl());
-    return parseHiddenFields(html);
-  }
-
   /// Extracts all `<input type="hidden">` fields from an HTML document.
   ///
   /// Exposed as a public static for testing compose-form parsing.
@@ -2131,19 +2156,29 @@ class MessagesService {
     return '$cleanedPrefix $root';
   }
 
-  /// POSTs the compose-form search endpoint and returns parsed results.
+  /// POSTs the compose-form search endpoint with the `uniqueUsc` of
+  /// [compose] and returns parsed results.
+  ///
+  /// Like every step of [sendMessage] after loading the compose form, it is
+  /// not retried after logging in again, and goes out only in the session
+  /// the form was loaded in: `uniqueUsc` belongs to that session (#25, #38,
+  /// #97).
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)> _searchUsers(
     String query,
-    String uniqueUsc,
+    ({Response<String> form, String uniqueUsc}) compose,
   ) async {
-    final xml = await _client
-        .postFormRaw('/?module=Messages&file=searchUsers', {
-          'val': query,
-          'type': RecipientType.to.requestType,
-          'parentNodeId': RecipientType.to.parentNodeId,
-          'xml': '<results></results>',
-          'uniqueUsc': uniqueUsc,
-        });
+    final xml = await _client.postFormRaw(
+      '/?module=Messages&file=searchUsers',
+      {
+        'val': query,
+        'type': RecipientType.to.requestType,
+        'parentNodeId': RecipientType.to.parentNodeId,
+        'xml': '<results></results>',
+        'uniqueUsc': compose.uniqueUsc,
+      },
+      retryAfterLogin: false,
+      sameSessionAs: compose.form,
+    );
 
     final users = XmlInterface.parseResponse(
       xml,

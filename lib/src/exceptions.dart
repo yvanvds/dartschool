@@ -214,6 +214,10 @@ class SmartschoolAccountVerificationRejectedError
 /// `sendReply` send every step after loading the compose form that way too:
 /// the send stops before the submit, nothing was sent, and calling the method
 /// again starts from a new compose form in the new session.
+/// `MessagesService.searchRecipientsForCompose` sends its search both ways
+/// (#97): when the search is refused or not sent, it loads a new compose form
+/// and searches once more itself, and throws this error only when that search
+/// cannot go out in the session of its form either.
 ///
 /// Also thrown, without logging in again and without a retry, by
 /// `SkoreService` when Smartschool's Skore module answers an RPC without a

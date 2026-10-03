@@ -41,6 +41,7 @@ final _newMessageForm = _fixture('get/composemessage/new-message.html');
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
 final _quickDeleteAnswer = _fixture('post/postboxes/quick delete.xml');
 final _moveAnswer = _fixture('post/postboxes/quickmove messages.xml');
+final _searchAnswer = _fixture('post/composemessage/search-user.xml');
 
 /// The reply form of received message 900030, from [_other].
 final _replyFormFromOther = _fixture('get/composemessage/reply.html');
@@ -119,6 +120,9 @@ class _Smartschool implements HttpClientAdapter {
   /// The fields of each `addUserToSelected` that reached it.
   final List<Map<dynamic, dynamic>> registered = [];
 
+  /// The fields of each recipient search that reached it (#97).
+  final List<Map<dynamic, dynamic>> searched = [];
+
   /// The fields of each submit that reached it.
   final List<Map<String, String>> submits = [];
 
@@ -172,6 +176,9 @@ class _Smartschool implements HttpClientAdapter {
           removedRecipientsAnswer((options.data as Map)['xml'] as String),
           contentType: removedRecipientContentType,
         );
+      case (true, '/', 'searchUsers', null):
+        searched.add(options.data as Map);
+        return _answer(_searchAnswer, contentType: 'text/xml');
       case (true, '/Upload/Upload/Index', _, _):
         return _answer('true');
       case (false, '/', 'index', 'main'):
@@ -534,6 +541,25 @@ void main() {
 
       expect(server.log, hasLength(5));
       expect(guard.requestsSent, 5);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('a recipient search on a compose form loaded through it, which '
+        'registers no one (#97)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+
+      final (users, _) = await messages.searchRecipientsForCompose('John');
+
+      expect(users.map((u) => u.userId), contains(146));
+      expect(server.log, [
+        'GET /?module=Messages&file=composeMessage&boxType=inbox'
+            '&composeType=0&msgID=undefined',
+        'POST /?module=Messages&file=searchUsers',
+      ]);
+      expect(server.searched.single['val'], 'John');
+      expect(server.registered, isEmpty);
+      expect(guard.searches, 1);
       expect(guard.violations, isEmpty);
     });
   });
@@ -1206,10 +1232,11 @@ void main() {
 
     test('any other request that changes something', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
-      final (messages, guard) = await _guarded(server);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
 
       await expectLater(
-        _dio(server, guard).post<String>(
+        dio.post<String>(
           '/?module=Messages&file=dispatcher',
           data: {
             'command': XmlInterface.buildCommand(
@@ -1223,18 +1250,53 @@ void main() {
         throwsA(isA<DioException>()),
       );
       await expectLater(
-        messages.searchRecipientsForCompose('Piet'),
-        throwsA(anything),
+        dio.post<String>(
+          '/?module=Messages&file=index&function=main',
+          data: {'folder': '1'},
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
       );
 
-      // Only the compose form of the search went out.
-      expect(server.log, [
-        'GET /?module=Messages&file=composeMessage&boxType=inbox'
-            '&composeType=0&msgID=undefined',
-      ]);
+      expect(server.log, isEmpty);
       expect(_violations(guard), [
         contains('no "empty_trash" command'),
         contains('not a request the live suite sends'),
+      ]);
+    });
+
+    test('a recipient search on a compose form not loaded through it, or with '
+        'a selection (#97)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
+      final form = await dio.get<String>(
+        '/?module=Messages&file=composeMessage&boxType=inbox&composeType=0'
+        '&msgID=undefined',
+      );
+      final uniqueUsc = MessagesService.parseHiddenFields(
+        form.data!,
+      )['uniqueUsc']!;
+      Future<void> search(String uniqueUsc, String xml) => expectLater(
+        dio.post<String>(
+          '/?module=Messages&file=searchUsers',
+          data: {'val': 'Piet', 'xml': xml, 'uniqueUsc': uniqueUsc},
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
+      );
+
+      await search('not-a-loaded-form', '<results></results>');
+      await search(
+        uniqueUsc,
+        '<results><users><user><userID>201</userID></user></users></results>',
+      );
+
+      expect(server.searched, isEmpty);
+      expect(guard.searches, 0);
+      expect(_violations(guard), [
+        contains('its compose form was not loaded through the guard'),
+        contains('its selection (xml) is not the empty one'),
       ]);
     });
 

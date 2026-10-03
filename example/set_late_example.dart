@@ -34,9 +34,13 @@ Future<void> main() async {
   );
   final pupil = pupils.where((p) => p.userId == userId).firstOrNull;
   if (pupil == null) {
+    // When the Presence module lists no pupils (a day after today, a class
+    // without pupils or a class ID it does not know), it says why (#104).
+    final reason = pupils.isEmpty ? pupils.errorMessage : null;
     print(
       'Pupil $userId not found in class $classGroupId on '
-      '${PresenceService.formatDate(date)}.',
+      '${PresenceService.formatDate(date)}'
+      '${reason == null ? '' : ' (the Presence module: $reason)'}.',
     );
     await client.dispose();
     return;

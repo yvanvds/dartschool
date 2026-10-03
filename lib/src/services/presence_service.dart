@@ -122,11 +122,22 @@ class PresenceService {
   }
 
   /// Returns the pupils (with their half-day cells) of class [classGroupId] for
-  /// the single day [date].
+  /// the single day [date], with what the Presence module said about the
+  /// class on that day (#104).
   ///
   /// [schoolyearRefDate] is the reference date from [getConfig]
   /// ([PresenceConfig.schoolyearRefDate]).
-  Future<List<PresencePupil>> getClassPupils({
+  ///
+  /// The result is a `List<PresencePupil>`. When it is empty, the module says
+  /// why: [PresenceClassPupils.saveIsAllowed] is `false` and
+  /// [PresenceClassPupils.errorMessage] has its reason, such as a day after
+  /// today ("Het is niet mogelijk om in de toekomst afwezigheden op te
+  /// nemen.") or a class without pupils ("Deze klas bevat geen
+  /// leerlingen."). [PresenceClassPupils.classRef] is `null` for a class ID
+  /// the module does not know, which it answers with that same reason. See
+  /// [PresenceClassPupils] for what was seen live. A class the module lists
+  /// no pupils for is not an error: nothing is thrown for it.
+  Future<PresenceClassPupils> getClassPupils({
     required int classGroupId,
     required DateTime date,
     required String schoolyearRefDate,
@@ -251,9 +262,15 @@ class PresenceService {
       }
     }
     if (pupil == null) {
+      // The module's reason when it listed no pupils (#104), such as a day
+      // after today.
+      final reason = pupils.isEmpty ? pupils.errorMessage : null;
+      final why = reason == null
+          ? ''
+          : ': the Presence module listed no pupils ("$reason")';
       throw SmartschoolPresenceError(
         'Pupil userID $userId was not found in class groupID $classGroupId on '
-        '${formatDate(date)}.',
+        '${formatDate(date)}$why.',
       );
     }
 
@@ -324,13 +341,29 @@ class PresenceService {
     return codes;
   }
 
-  /// Parses a `getClass` response into its pupils and their half-day cells.
+  /// Parses a `getClass` response into its pupils and their half-day cells,
+  /// with what the module said about the class (#104): the class it names
+  /// ([PresenceClassRef], `null` when it names none), `saveIsAllowed` and
+  /// `errorMessage` (`null` when absent or empty).
   ///
   /// Only the half-day cells (`partOfDay: "am"|"pm"` with `hourID: null`) are
   /// retained; per-lesson rows (`partOfDay: "none"`) are ignored.
-  static List<PresencePupil> parsePupils(Map<String, dynamic> json) {
+  static PresenceClassPupils parsePupils(Map<String, dynamic> json) {
+    final saveIsAllowed = json['saveIsAllowed'];
+    final errorMessage = json['errorMessage'];
+    final trimmedMessage = errorMessage is String ? errorMessage.trim() : '';
+    return PresenceClassPupils(
+      _parsePupilList(json['pupils']),
+      classRef: _asInt(json['groupID']) == null
+          ? null
+          : PresenceClassRef.fromJson(json),
+      saveIsAllowed: saveIsAllowed is bool ? saveIsAllowed : null,
+      errorMessage: trimmedMessage.isEmpty ? null : trimmedMessage,
+    );
+  }
+
+  static List<PresencePupil> _parsePupilList(Object? pupilsRaw) {
     final result = <PresencePupil>[];
-    final pupilsRaw = json['pupils'];
     if (pupilsRaw is! List) return result;
 
     for (final p in pupilsRaw) {
@@ -488,7 +521,9 @@ class PresenceService {
   /// may also lack Presence access). The session was accepted, so signing in
   /// again does not help: this is a [SmartschoolPresenceError]. (A class the
   /// account may not record for is answered in JSON, not here: `getConfig`
-  /// does not list it, and `setLate` / `setPresent` check that first.)
+  /// does not list it, and `setLate` / `setPresent` check that first. So is
+  /// a class `getClass` lists no pupils for: [getClassPupils] returns the
+  /// module's reason with the empty list, #104.)
   ///
   /// The login chain answering never gets here (#5, #22): for a request that
   /// is answered with `401` or redirected to `/login`, `/2fa` or

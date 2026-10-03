@@ -46,6 +46,10 @@
 //   sent, listed in the inbox or in its archive folder with the run's subject
 //   and checked there, and not moved to the trash; and one in a folder of the
 //   inbox other than the archive folder (#94);
+// - any request to the Presence module but its two POSTs that only read,
+//   `getConfig` and `getClass` (PresenceService.getConfig and
+//   getClassPupils, #104): the live suite changes no presence, so a save of
+//   presences (`savePupilsPresences`: setLate, setPresent) never goes out;
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -305,6 +309,7 @@ class LiveWireGuard extends Interceptor {
     }
     if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
     if (path == _archivePath) return _archiveRefusal(options.data);
+    if (path.startsWith('/Presence/')) return _presenceRefusal(path);
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -332,6 +337,21 @@ class LiveWireGuard extends Interceptor {
     if (count == 1) return null;
     return 'it would log in a second time in this run (its $step); the live '
         'suite logs in at most once per run';
+  }
+
+  /// The Presence module's POSTs that only read (#104): its config, and the
+  /// pupils of a class on a day.
+  static const _presenceReads = {
+    '/Presence/Main/getConfig',
+    '/Presence/Class/getClass',
+  };
+
+  /// Why the Presence request to [path] may not go out, or `null`: only the
+  /// reads go out, never a save of presences.
+  String? _presenceRefusal(String path) {
+    if (_presenceReads.contains(path)) return null;
+    return 'the live suite changes no presence: it sends no Presence request '
+        'but the reads getConfig and getClass (#104)';
   }
 
   /// The XML commands that only read.

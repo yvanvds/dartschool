@@ -249,7 +249,7 @@ void main() {
     }
     ''';
 
-    late List<PresencePupil> pupils;
+    late PresenceClassPupils pupils;
     setUpAll(() => pupils = PresenceService.parsePupils(_obj(classJson)));
 
     test('parses both pupils', () {
@@ -287,6 +287,59 @@ void main() {
 
     test('handles a body without pupils', () {
       expect(PresenceService.parsePupils({}), isEmpty);
+    });
+
+    test('reads the class of the answer; no saveIsAllowed or errorMessage in '
+        'it gives null (#104)', () {
+      expect(pupils.classRef?.groupId, 298);
+      expect(pupils.classRef?.structId, 311);
+      expect(pupils.saveIsAllowed, isNull);
+      expect(pupils.errorMessage, isNull);
+
+      final none = PresenceService.parsePupils({});
+      expect(none.classRef, isNull);
+      expect(none.saveIsAllowed, isNull);
+      expect(none.errorMessage, isNull);
+    });
+
+    test('reads saveIsAllowed and the module\'s errorMessage (#104)', () {
+      final refused = PresenceService.parsePupils(
+        _obj('''
+        {"groupID":298,"name":"1A  ","userCanRecord":true,"structID":311,
+         "errorMessage":" Het is niet mogelijk om in de toekomst afwezigheden op te nemen. ",
+         "pupils":[],"saveIsAllowed":false}
+        '''),
+      );
+      expect(refused, isEmpty);
+      expect(refused.saveIsAllowed, isFalse);
+      expect(
+        refused.errorMessage,
+        'Het is niet mogelijk om in de toekomst afwezigheden op te nemen.',
+      );
+      expect(refused.classRef?.name, '1A');
+      expect(refused.classRef?.userCanRecord, isTrue);
+
+      final listed = PresenceService.parsePupils(
+        _obj('{"errorMessage":"","pupils":[],"saveIsAllowed":true}'),
+      );
+      expect(listed.saveIsAllowed, isTrue);
+      expect(listed.errorMessage, isNull, reason: '"" is no reason');
+      expect(listed.classRef, isNull, reason: 'no groupID in the answer');
+    });
+
+    test('a saveIsAllowed that is no bool, or an errorMessage that is no '
+        'text, is null (#104)', () {
+      final odd = PresenceService.parsePupils(
+        _obj('{"errorMessage":42,"pupils":[],"saveIsAllowed":"0"}'),
+      );
+      expect(odd.saveIsAllowed, isNull);
+      expect(odd.errorMessage, isNull);
+      expect(
+        PresenceService.parsePupils(
+          _obj('{"errorMessage":"   "}'),
+        ).errorMessage,
+        isNull,
+      );
     });
   });
 

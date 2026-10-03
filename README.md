@@ -600,7 +600,7 @@ await presence.setPresent(
 | `setPresent({userId, classGroupId, date, part, motivation})` | `Future<void>` | Mark a pupil present ("Aanwezig") — useful to clear a status. |
 | `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record. Cached. |
 | `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. |
-| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<List<PresencePupil>>` | Pupils and their am/pm half-day cells for a single day. |
+| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). |
 
 Status codes are **not hard-coded** — their numeric IDs are per-school/per-structure, so they are resolved dynamically by name (`Te laat`, `Te laat zonder geldige reden`, `Aanwezig`). The service handles both updating an existing half-day cell and creating one where none exists, and surfaces a non-empty server `errors[]` as a `SmartschoolPresenceError`.
 
@@ -1172,8 +1172,24 @@ A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumbe
 ### `PresenceCode` / `PresenceAlias`
 A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`aliasId`, `parentCodeId`, `name`). Codes are per-structure, resolved by name. `PresenceCode.aliasByName(name)` looks up an alias case-insensitively.
 
+### `PresenceClassPupils`
+Returned by `PresenceService.getClassPupils()` (#104). The pupils of the class for the day, as a `List<PresencePupil>`, with what the Presence module said about the class that day: `saveIsAllowed` (`bool?`), `errorMessage` (`String?`, the module's reason, `null` when it gave none) and `classRef` (`PresenceClassRef?`, the class as the module names it, `null` when the module does not know the class ID). When the module lists no pupils, `saveIsAllowed` is `false` and `errorMessage` says why, in Dutch as its web client shows it. Seen live (2026-10-03): "Het is niet mogelijk om in de toekomst afwezigheden op te nemen." for a day after today, "Deze klas bevat geen leerlingen." for a class without pupils and for a class ID the module does not know (then without a `classRef`), and "U geeft momenteel geen les. Kies een andere klas in de keuzelijst." for the class `-2` ("Uit Planner").
+
+```dart
+final pupils = await presence.getClassPupils(
+  classGroupId: 298,
+  date: DateTime(2026, 10, 1),
+  schoolyearRefDate: config.schoolyearRefDate,
+);
+if (pupils.isEmpty) {
+  print(pupils.classRef == null
+      ? 'No such class: ${pupils.errorMessage}'
+      : 'No pupils listed: ${pupils.errorMessage}');
+}
+```
+
 ### `PresencePupil` / `PresenceHalfDay`
-Returned by `PresenceService.getClassPupils()`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell.
+Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell.
 
 ### `SkoreClass`
 Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `name`, `modelId`, `modelName`, `groupId` (`int?`), `groupName` (`String?`).

@@ -300,9 +300,15 @@ class SmartschoolClient {
   /// Builds the `<request>` XML, POSTs it to the dispatcher URL, parses the
   /// response and returns each matched element as a [Map<String, dynamic>].
   ///
-  /// Throws a [SmartschoolAuthenticationError] when Smartschool answers with
-  /// an HTML page, and a [SmartschoolParsingError] when it answers with
-  /// anything else that is not XML, an empty answer included.
+  /// Throws a [SmartschoolUnexpectedPageError] (a
+  /// [SmartschoolAuthenticationError]) when Smartschool answers with an HTML
+  /// page: it says whether that is Smartschool's login page, and keeps the
+  /// status, the title and the main heading of the page, so that an error
+  /// page is not taken for an expired session (#106). Such an answer is not
+  /// retried, nor does the client log in again for it: it does that for the
+  /// answers with which Smartschool refuses a session (see below). Throws a
+  /// [SmartschoolParsingError] when Smartschool answers with anything else
+  /// that is not XML, an empty answer included.
   ///
   /// With [allowEmptyAnswer], an empty answer (no body, or white space only)
   /// with status `200` returns no elements instead: Smartschool answers some
@@ -343,9 +349,12 @@ class SmartschoolClient {
     }
 
     if (_isLikelyHtml(trimmed)) {
-      throw SmartschoolAuthenticationError(
-        'Smartschool returned HTML instead of XML for "$action". '
-        'Login may have failed or expired. Response URL: ${resp.realUri}',
+      throw SmartschoolUnexpectedPageError.fromPage(
+        body,
+        action: action,
+        statusCode: resp.statusCode,
+        url: resp.realUri,
+        contentType: resp.headers.value(Headers.contentTypeHeader),
       );
     }
 

@@ -55,6 +55,13 @@
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
 // (test/support/no_network.dart), whatever the library makes of the error.
+//
+// It also keeps every answer to an XML command that is not XML, such as the
+// HTML page that Smartschool answered a `message list` with once (#106), and
+// prints what the page is when the test fails: its status, whether it is the
+// login page, its title and main heading, and the start of its text, without
+// its scripts and forms (SmartschoolUnexpectedPageError.fromPage). It lets
+// such an answer through: the library reports it.
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:flutter_smartschool/src/xml_interface.dart';
@@ -186,6 +193,13 @@ class LiveWireGuard extends Interceptor {
   /// Smartschool's answers to the changes of the read state and the flag of
   /// a message (#94), in order, with the command and the message ID.
   final List<({String action, int id, String answer})> markAnswers = [];
+
+  /// The answers to an XML command that were not XML (#106), in order, each
+  /// as the line that the test that got it prints when it fails: the
+  /// command, the status and content type of the answer, and what the page
+  /// is. An empty answer is not one of them: Smartschool answers some
+  /// commands that change nothing that way (#59).
+  final List<String> unexpectedAnswers = [];
 
   /// The archive folder of the inbox, as Smartschool's Messages page names it
   /// (MessagesService.getArchiveBoxId loads that page), or `null` while no
@@ -718,10 +732,65 @@ class LiveWireGuard extends Interceptor {
       case ('POST', 'searchUsers', 'deleteUsersFromSelected'):
         _recordRemoved(options.data, body);
       case ('POST', 'dispatcher', _):
+        _noteUnexpectedAnswer(options.data, response, body);
         _recordCommandAnswer(options.data, body);
     }
     return null;
   }
+
+  /// Keeps Smartschool's answer [body] to the XML command with the fields
+  /// [data] in [unexpectedAnswers] when it is not XML, and prints it when the
+  /// test fails (#106).
+  void _noteUnexpectedAnswer(
+    Object? data,
+    Response<dynamic> response,
+    String body,
+  ) {
+    final trimmed = body.trim();
+    if (trimmed.isEmpty || _isXml(trimmed)) return;
+    final command = data is Map ? data['command'] : null;
+    final action = command is String
+        ? _text(XmlDocument.parse(command), 'action')
+        : '(no command)';
+    final page = SmartschoolUnexpectedPageError.fromPage(
+      body,
+      action: action,
+      statusCode: response.statusCode,
+      contentType: response.headers.value(Headers.contentTypeHeader),
+    );
+    final line = [
+      'Smartschool answered "$action" with something that is not XML '
+          '(#106): status ${response.statusCode}',
+      page.contentType ?? 'no content type',
+      page.isLoginPage ? 'its login page' : 'not its login page',
+      if (page.title != null) 'title "${page.title}"',
+      if (page.heading != null) 'heading "${page.heading}"',
+      'text "${page.excerpt ?? ''}"',
+    ].join(', ');
+    unexpectedAnswers.add(line);
+    try {
+      printOnFailure(line);
+    } on StateError {
+      // Not in a test: the line is in unexpectedAnswers.
+    }
+  }
+
+  /// Whether [body], a trimmed answer, is an XML document, and not an HTML
+  /// page (which can be one too).
+  static bool _isXml(String body) {
+    if (_htmlStart.hasMatch(body)) return false;
+    try {
+      XmlDocument.parse(body);
+      return true;
+    } on XmlException {
+      return false;
+    }
+  }
+
+  static final _htmlStart = RegExp(
+    r'^<(!doctype\s+html|html)\b',
+    caseSensitive: false,
+  );
 
   /// Keeps the compose form of [html], loaded from [url], with the
   /// recipients it names: a reply form has them registered already.

@@ -130,6 +130,10 @@ class _Smartschool implements HttpClientAdapter {
   /// answer that registers the recipient asked for when `null`.
   final String Function(Map<dynamic, dynamic> fields)? answerAdd;
 
+  /// HTML pages that the dispatcher answers the next XML commands with, one
+  /// per command, before it answers them as usual again (#106).
+  final List<String> dispatcherPages = [];
+
   /// Every request that reached it, as `METHOD <path and query>`.
   final List<String> log = [];
 
@@ -223,6 +227,8 @@ class _Smartschool implements HttpClientAdapter {
           '{"success":[${ids.join(',')}]}',
           contentType: 'application/json',
         );
+      case (true, '/', 'dispatcher', _) when dispatcherPages.isNotEmpty:
+        return _answer(dispatcherPages.removeAt(0));
       case (true, '/', 'dispatcher', _):
         final command = (options.data as Map)['command'] as String;
         final id = RegExp(r'name="msgID"><!\[CDATA\[(\d+)').firstMatch(command);
@@ -576,6 +582,42 @@ void main() {
 
       expect(server.log, hasLength(5));
       expect(guard.requestsSent, 5);
+      expect(guard.violations, isEmpty);
+      expect(guard.unexpectedAnswers, isEmpty);
+    });
+
+    test('an answer to an XML command that is not XML, which it keeps with '
+        'what the page is, without its scripts (#106)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn)
+        ..dispatcherPages.addAll([
+          '\n<!DOCTYPE html><html><head><title>Springfield Academy - '
+              'Smartschool</title></head><body><h1>Storing</h1><p>Probeer het '
+              'later opnieuw.</p><script>var user = "Jan Janssens";</script>'
+              '</body></html>',
+          'Fatal error',
+        ]);
+      final (messages, guard) = await _guarded(server);
+
+      await expectLater(
+        messages.getHeaders(),
+        throwsA(isA<SmartschoolUnexpectedPageError>()),
+      );
+      await expectLater(
+        messages.getMessage(4242),
+        throwsA(isA<SmartschoolParsingError>()),
+      );
+      await messages.getHeaders();
+
+      expect(guard.unexpectedAnswers, [
+        'Smartschool answered "message list" with something that is not XML '
+            '(#106): status 200, text/html; charset=UTF-8, not its login page, '
+            'title "Springfield Academy - Smartschool", heading "Storing", text '
+            '"Storing Probeer het later opnieuw."',
+        'Smartschool answered "show message" with something that is not XML '
+            '(#106): status 200, text/html; charset=UTF-8, not its login page, '
+            'text "Fatal error"',
+      ]);
+      expect(server.log, hasLength(3));
       expect(guard.violations, isEmpty);
     });
 

@@ -743,10 +743,16 @@ class MessagesService {
 
   /// Marks message [msgId] in [boxType] as unread.
   ///
-  /// For messages in the archive folder pass the same [boxId] you used when
-  /// retrieving them (usually `208`).  Defaults to `0` (primary mailbox).
+  /// For a message in a folder of [boxType], such as the archive (see
+  /// [getArchiveBoxId]), pass the [boxId] of the folder, as the web client
+  /// does: its request names the folder of the message, where those of
+  /// [markRead] and [setLabel] name none. Defaults to `0` (the box itself).
+  /// Tried live (2026-10-03, #94) with the archive's [boxId] on a message in
+  /// the archive: the archive then listed it as unread (it was unread
+  /// before too).
   ///
-  /// Returns the updated [MessageChanged] record from the server.
+  /// Returns the updated [MessageChanged] record from the server: the
+  /// message's ID and its new read state (`0`, unread).
   Future<MessageChanged?> markUnread(
     int msgId, {
     BoxType boxType = BoxType.inbox,
@@ -775,6 +781,15 @@ class MessagesService {
   /// message as opened. The call is idempotent — invoking it on an
   /// already-read message is a no-op.
   ///
+  /// It names no folder of [boxType], as the web client's request does (the
+  /// one it sends when it opens an unread message), also for a message in a
+  /// folder such as the archive: Smartschool finds a message in a folder of
+  /// [boxType] by its ID alone. Tried live (2026-10-03, #94) on a message in
+  /// the archive folder, marked unread first with [markUnread] and the
+  /// archive's box ID: Smartschool answered with the message's ID and status
+  /// `1`, and the archive ([getArchiveHeaders]) then listed it as read, still
+  /// in the archive.
+  ///
   /// Returns the updated [MessageChanged] record from the server. The server
   /// responds with `<status>1</status>` to indicate the message is now read.
   Future<MessageChanged?> markRead(
@@ -799,6 +814,19 @@ class MessagesService {
   /// Sets the colour [label] on message [msgId] in [boxType].
   ///
   /// Use [MessageLabel.noFlag] to clear the flag.
+  ///
+  /// It names no folder of [boxType], as the web client's requests do (those
+  /// of the flag buttons of the message list and of an opened message), also
+  /// for a message in a folder such as the archive: Smartschool finds a
+  /// message in a folder of [boxType] by its ID alone. Tried live
+  /// (2026-10-03, #94) on a message in the archive folder: Smartschool
+  /// answered [MessageLabel.redFlag] and then [MessageLabel.noFlag] with the
+  /// message's ID and the new label (`3`, then `0`), and the archive
+  /// ([getArchiveHeaders]) listed it with that flag after each, still in the
+  /// archive.
+  ///
+  /// Returns the updated [MessageChanged] record from the server: the
+  /// message's ID and its new label ([MessageLabel.value]).
   Future<MessageChanged?> setLabel(
     int msgId,
     MessageLabel label, {

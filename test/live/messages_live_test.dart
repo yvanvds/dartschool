@@ -24,6 +24,10 @@
 //   never empties the trash;
 // - it archives (moveToArchive) only the inbox copy of a message it sent,
 //   once, while the inbox lists it with the run's subject (#64);
+// - it marks read or unread (markRead, markUnread) and flags (setLabel) only
+//   the inbox copy of a message it sent, while the inbox or its archive
+//   folder lists it with the run's subject, and never one it moved to the
+//   trash (#94);
 // - it sends no quick delete (moveToTrash) at all: that names the ID only,
 //   Smartschool acts on whichever copy of the ID its session state points
 //   to, and one of a copy in the trash deletes it for good (#19), so it is
@@ -339,6 +343,140 @@ void main() {
           contains(id),
           reason: 'the trash, at the end',
         );
+      });
+
+      test('markRead and setLabel, which name no folder, change a message in '
+          'the archive folder, as markUnread, which names it, does '
+          '(#94)', () async {
+        final subject = run.subject('archive-mark');
+        final arrival = await run.send(
+          subject,
+          () => messages.sendMessage(
+            SendMessageParams(
+              to: [run.own],
+              subject: subject,
+              bodyHtml: run.body('archive-mark'),
+            ),
+          ),
+        );
+        expect(arrival.inbox, hasLength(1), reason: 'copies in the inbox');
+        expect(arrival.sent, hasLength(1), reason: 'copies in the sent box');
+        final id = arrival.inbox.single.id;
+        expect(arrival.sent.single.id, id);
+
+        // Archives the inbox copy (resolving the archive folder first).
+        final archived = await run.archive(id, subject);
+        final archiveBoxId = await messages.getArchiveBoxId();
+        expect(archived.map((c) => (c.id, c.newValue)), [(id, 1)]);
+
+        // The archive's header of the message, once the archive lists it and
+        // [until] holds for it (waiting up to half a minute), or the last one
+        // the archive listed.
+        Future<ShortMessage?> inArchive({
+          bool Function(ShortMessage header)? until,
+        }) async {
+          final deadline = DateTime.now().add(const Duration(seconds: 30));
+          while (true) {
+            final header = (await run.listed(
+              BoxType.inbox,
+              subject,
+              boxId: archiveBoxId,
+            )).where((m) => m.id == id).firstOrNull;
+            final done = header != null && (until == null || until(header));
+            if (done || DateTime.now().isAfter(deadline)) return header;
+            await Future<void>.delayed(const Duration(seconds: 2));
+          }
+        }
+
+        final before = await inArchive();
+        expect(before, isNotNull, reason: 'the archive lists it');
+        expect(
+          await run.listed(BoxType.inbox, subject),
+          isEmpty,
+          reason: 'the inbox',
+        );
+        print(
+          'archive-mark scenario: message $id in archive folder $archiveBoxId, '
+          'unread ${before!.unread}, flag ${before.coloredFlag}',
+        );
+        run.guard.allowMark(id);
+        final red = MessageLabel.redFlag.value;
+        final none = MessageLabel.noFlag.value;
+
+        // Each change, as the library returns Smartschool's answer, and the
+        // archive's header of the message after it. markUnread names the
+        // archive folder, as the web client does; markRead and setLabel name
+        // none, as the web client's requests do for a message in the archive
+        // too (the one it sends when it opens an unread message, and those
+        // of its flag buttons).
+        final unread = await messages.markUnread(id, boxId: archiveBoxId);
+        final afterUnread = await inArchive(until: (m) => m.unread);
+        final read = await messages.markRead(id);
+        final afterRead = await inArchive(until: (m) => !m.unread);
+        final flagged = await messages.setLabel(id, MessageLabel.redFlag);
+        final afterFlag = await inArchive(until: (m) => m.coloredFlag == red);
+        final cleared = await messages.setLabel(id, MessageLabel.noFlag);
+        final afterClear = await inArchive(until: (m) => m.coloredFlag == none);
+        final inboxAfter = await run.listed(BoxType.inbox, subject);
+
+        for (final answer in run.guard.markAnswers.where((a) => a.id == id)) {
+          print(
+            'archive-mark scenario: Smartschool answered ${answer.action} '
+            'with ${answer.answer}',
+          );
+        }
+        for (final (step, header) in [
+          ('markUnread(boxId: $archiveBoxId)', afterUnread),
+          ('markRead', afterRead),
+          ('setLabel(redFlag)', afterFlag),
+          ('setLabel(noFlag)', afterClear),
+        ]) {
+          print(
+            'archive-mark scenario: after $step, the archive lists it '
+            '${header != null} (unread ${header?.unread}, flag '
+            '${header?.coloredFlag})',
+          );
+        }
+
+        // The sent-box copy first, then the archived inbox copy, before the
+        // checks: a failed check leaves nothing of it for the cleanup test.
+        final sentCopy = await run.trash(id, subject, BoxType.sent);
+        final archivedCopy = await run.trash(
+          id,
+          subject,
+          BoxType.inbox,
+          boxId: archiveBoxId,
+        );
+        print('archive-mark scenario: $sentCopy');
+        print('archive-mark scenario: $archivedCopy');
+
+        expect((unread?.id, unread?.newValue), (id, 0), reason: 'markUnread');
+        expect(
+          afterUnread?.unread,
+          isTrue,
+          reason: 'the archive, after markUnread with the archive folder',
+        );
+        expect((read?.id, read?.newValue), (id, 1), reason: 'markRead');
+        expect(
+          afterRead?.unread,
+          isFalse,
+          reason: 'the archive, after markRead without a folder',
+        );
+        expect((flagged?.id, flagged?.newValue), (id, red), reason: 'setLabel');
+        expect(
+          afterFlag?.coloredFlag,
+          red,
+          reason: 'the archive, after setLabel(redFlag) without a folder',
+        );
+        expect((cleared?.id, cleared?.newValue), (id, none), reason: 'noFlag');
+        expect(
+          afterClear?.coloredFlag,
+          none,
+          reason: 'the archive, after setLabel(noFlag) without a folder',
+        );
+        expect(inboxAfter, isEmpty, reason: 'none of it unarchived it');
+        expect(sentCopy.leftAlone, isNull, reason: '$sentCopy');
+        expect(archivedCopy.leftAlone, isNull, reason: '$archivedCopy');
       });
 
       test('moveToTrashFrom moves both copies of every message of the run to '

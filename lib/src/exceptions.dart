@@ -228,7 +228,10 @@ class SmartschoolAccountVerificationRejectedError
 /// `MessagesService.searchRecipientsForCompose` sends its search both ways
 /// (#97): when the search is refused or not sent, it loads a new compose form
 /// and searches once more itself, and throws this error only when that search
-/// cannot go out in the session of its form either.
+/// cannot go out in the session of its form either. So does
+/// `MessagesService.searchRecipientsForComposeAll` with its searches on one
+/// form (#107): it loads a new form once per call, and throws this error when
+/// a search on that form cannot go out in its session either.
 ///
 /// Also thrown, without logging in again and without a retry, by
 /// `SkoreService` when Smartschool's Skore module answers an RPC without a

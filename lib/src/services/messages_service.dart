@@ -1124,7 +1124,9 @@ class MessagesService {
   /// Internally loads a fresh compose page to obtain the `uniqueUsc` token
   /// required by the search endpoint.  If you intend to call [sendMessage]
   /// immediately after, that call will perform its own form load — two
-  /// lightweight page requests total, which is acceptable for normal use.
+  /// lightweight page requests total, which is acceptable for normal use. To
+  /// look up several names, use [searchRecipientsForComposeAll], which
+  /// searches them all on one compose page (#107).
   ///
   /// The `uniqueUsc` belongs to the session the compose page was loaded in,
   /// so the search goes out only in that session, as the steps of
@@ -1142,20 +1144,67 @@ class MessagesService {
   /// Throws a [SmartschoolComposeError] when the compose page holds no
   /// `uniqueUsc`.
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
-  searchRecipientsForCompose(String query) async {
-    final form = await _loadSearchForm();
-    try {
-      return await _searchUsers(query, form);
-    } on SmartschoolSessionExpiredError {
-      // The search was refused, or not sent, in the session of its form
-      // (#97). A new form loads in a session the client accepts, logging in
-      // first when Smartschool refuses it, and the search goes once more.
+  searchRecipientsForCompose(String query) async =>
+      (await searchRecipientsForComposeAll([query]))[query]!;
+
+  /// Searches for the recipients of each query of [queries] on one compose
+  /// form, as [searchRecipientsForCompose] does for one query (#107).
+  ///
+  /// Returns, for each query, the record `(users, groups)` that
+  /// [searchRecipientsForCompose] returns for it, keyed by the query, in the
+  /// order of [queries]. A query given more than once is searched once.
+  /// Without queries, it returns an empty map and sends no request.
+  ///
+  /// It loads one new-message compose page for its `uniqueUsc` and sends the
+  /// searches with it, one after the other, as Smartschool's web client
+  /// searches several times on one form as the user types: looking up five
+  /// names takes one page and five searches, where five calls of
+  /// [searchRecipientsForCompose] load five pages. A search registers no one
+  /// on the form.
+  ///
+  /// Each search goes out only in the session the page was loaded in, as the
+  /// one of [searchRecipientsForCompose] (#97): it is not retried after
+  /// logging in again when Smartschool refuses the session for it, and it is
+  /// not sent when the client logged in again since the page was loaded, or
+  /// is logging in. Then this method loads a new compose page, logging in
+  /// first when Smartschool refuses the session for it, and goes on with the
+  /// same query on the new page, in its session; the results it has are kept.
+  /// It loads a new page once per call: when a search on the new page cannot
+  /// go out in its session either, it throws a
+  /// [SmartschoolSessionExpiredError], and no search went out with a
+  /// `uniqueUsc` of another session.
+  ///
+  /// Throws a [SmartschoolComposeError] when the compose page holds no
+  /// `uniqueUsc`.
+  Future<Map<String, (List<MessageSearchUser>, List<MessageSearchGroup>)>>
+  searchRecipientsForComposeAll(Iterable<String> queries) async {
+    final results =
+        <String, (List<MessageSearchUser>, List<MessageSearchGroup>)>{};
+    // A set keeps the order of the queries, and each query once.
+    final distinct = queries.toSet();
+    if (distinct.isEmpty) return results;
+
+    var form = await _loadSearchForm();
+    var reloaded = false;
+    for (final query in distinct) {
+      try {
+        results[query] = await _searchUsers(query, form);
+      } on SmartschoolSessionExpiredError {
+        if (reloaded) rethrow;
+        // The search was refused, or not sent, in the session of its form
+        // (#97). A new form loads in a session the client accepts, logging in
+        // first when Smartschool refuses it, and the searches go on from this
+        // one on the new form.
+        reloaded = true;
+        form = await _loadSearchForm();
+        results[query] = await _searchUsers(query, form);
+      }
     }
-    return _searchUsers(query, await _loadSearchForm());
+    return results;
   }
 
-  /// Loads the new-message compose form for [searchRecipientsForCompose]:
-  /// its answer, which the search goes out in the session of, and its
+  /// Loads the new-message compose form for [searchRecipientsForComposeAll]:
+  /// its answer, which the searches go out in the session of, and its
   /// `uniqueUsc`.
   Future<({Response<String> form, String uniqueUsc})> _loadSearchForm() async {
     final form = await _client.getResponse(_composeUrl());

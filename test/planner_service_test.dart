@@ -917,6 +917,189 @@ void main() {
       );
     });
 
+    // #99: an element of a type the library does not know could only be read
+    // with getDetail, which takes a whole PlannedElement.
+    test('reads an element of a type the library does not know by its '
+        'typeName, platform and id kept from the list (#99)', () async {
+      const excursionPath = '$_api/planned-excursions/4069/$_excursionId';
+      final (_, lister) = await serve({
+        '$_api/planned-elements/group/4069_2001': _json(_groupWeek),
+      });
+      final week = await lister.getPlannedElements(
+        PlannerCalendar.group('4069_2001'),
+        from: DateTime(2026, 10, 5),
+        to: DateTime(2026, 10, 9, 23, 59, 59),
+      );
+      final listed = week.last;
+      expect(listed.type, PlannedElementType.other);
+      // What a caller (an app or a server) keeps of it between calls.
+      final (typeName, platformId, id) = (
+        listed.typeName,
+        listed.platformId,
+        listed.id,
+      );
+
+      // Later, on another client.
+      final (server, planner) = await serve({
+        excursionPath: _json(
+          _lessonDetail
+              .replaceAll(_lessonId, _excursionId)
+              .replaceAll('"planned-lessons"', '"planned-excursions"'),
+        ),
+      });
+      final excursion = await planner.getPlannedElement(
+        typeName: typeName,
+        platformId: platformId,
+        id: id,
+      );
+
+      expect(excursion.id, _excursionId);
+      expect(excursion.type, PlannedElementType.other);
+      expect(excursion.typeName, 'planned-excursions');
+      expect(excursion.publicInfo, '<p>Lees hoofdstuk 4</p>');
+      final request = server.requests.single;
+      expect(request.method, 'GET');
+      expect(request.path, excursionPath);
+      expect(request.rawQuery, isEmpty);
+    });
+
+    test('typeName of a type the library knows reads as its type does '
+        '(#99)', () async {
+      final (server, planner) = await serve({lessonPath: _json(_lessonDetail)});
+
+      final byName = await planner.getPlannedElement(
+        typeName: 'planned-lessons',
+        platformId: 4069,
+        id: _lessonId,
+      );
+      final byType = await planner.getPlannedElement(
+        type: PlannedElementType.lesson,
+        platformId: 4069,
+        id: _lessonId,
+      );
+
+      expect(byName.type, PlannedElementType.lesson);
+      expect(byName.name, byType.name);
+      expect(byName.privateInfo, byType.privateInfo);
+      expect(server.requests.map((r) => r.path), [lessonPath, lessonPath]);
+    });
+
+    test('takes the typeName of every type the library knows (#99)', () async {
+      final known = [
+        for (final type in PlannedElementType.values)
+          if (type.wireName != null) type.wireName!,
+      ];
+      final (server, planner) = await serve({
+        for (final typeName in known)
+          '$_api/$typeName/4069/$_lessonId': _json(_notFound, status: 404),
+      });
+
+      for (final typeName in known) {
+        await expectLater(
+          planner.getPlannedElement(
+            typeName: typeName,
+            platformId: 4069,
+            id: _lessonId,
+          ),
+          throwsA(
+            isA<SmartschoolPlannedElementNotFoundError>().having(
+              (e) => e.elementType,
+              'elementType',
+              typeName,
+            ),
+          ),
+        );
+      }
+      expect(server.requests.map((r) => r.path), [
+        for (final typeName in known) '$_api/$typeName/4069/$_lessonId',
+      ]);
+    });
+
+    test('a typeName the planner does not have (404 "Resource not found") '
+        'is a SmartschoolPlannedElementNotFoundError (#99)', () async {
+      const path = '$_api/planned-field-trips/4069/$_excursionId';
+      final (server, planner) = await serve({
+        // The planner's answer to a type it does not have (read live,
+        // 2026-10-03): another body than for an element it does not have.
+        path: _json('{"error":"Resource not found"}', status: 404),
+      });
+
+      await expectLater(
+        planner.getPlannedElement(
+          typeName: 'planned-field-trips',
+          platformId: 4069,
+          id: _excursionId,
+        ),
+        throwsA(
+          isA<SmartschoolPlannedElementNotFoundError>()
+              .having(
+                (e) => e.elementType,
+                'elementType',
+                'planned-field-trips',
+              )
+              .having((e) => e.platformId, 'platformId', 4069)
+              .having((e) => e.elementId, 'elementId', _excursionId),
+        ),
+      );
+      expect(server.requests.single.path, path);
+    });
+
+    test('refuses neither or both of type and typeName, and a typeName not '
+        'of the planner\'s form, before sending anything (#99)', () async {
+      final (server, planner) = await serve({});
+
+      await expectLater(
+        planner.getPlannedElement(platformId: 4069, id: _lessonId),
+        throwsA(
+          isA<ArgumentError>()
+              .having((e) => e.name, 'name', 'type')
+              .having((e) => e.message, 'message', contains('typeName')),
+        ),
+      );
+      await expectLater(
+        planner.getPlannedElement(
+          type: PlannedElementType.lesson,
+          typeName: 'planned-lessons',
+          platformId: 4069,
+          id: _lessonId,
+        ),
+        throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'typeName')),
+      );
+      for (final typeName in [
+        '',
+        ' ',
+        'planned-',
+        'lessons',
+        'Planned-Lessons',
+        ' planned-lessons',
+        'planned-lessons/4069',
+        'planned-lessons%2F4069',
+        '..',
+        'planned_lessons',
+      ]) {
+        await expectLater(
+          planner.getPlannedElement(
+            typeName: typeName,
+            platformId: 4069,
+            id: _lessonId,
+          ),
+          throwsA(
+            isA<ArgumentError>().having((e) => e.name, 'name', 'typeName'),
+          ),
+          reason: '"$typeName"',
+        );
+      }
+      await expectLater(
+        planner.getPlannedElement(
+          typeName: 'planned-excursions',
+          platformId: 4069,
+          id: '',
+        ),
+        throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'id')),
+      );
+      expect(server.requests, isEmpty);
+    });
+
     test('refuses PlannedElementType.other and an empty ID before sending '
         'anything', () async {
       final (server, planner) = await serve({});
@@ -927,7 +1110,13 @@ void main() {
           platformId: 4069,
           id: _excursionId,
         ),
-        throwsA(isA<ArgumentError>()),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains('typeName'),
+          ),
+        ),
       );
       await expectLater(
         planner.getPlannedElement(

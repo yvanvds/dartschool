@@ -6,6 +6,8 @@
 /// supply the internal `userID` and the class `groupID` themselves.
 library;
 
+import 'dart:collection';
+
 /// Which half of the school day a presence entry applies to.
 ///
 /// Smartschool's Presence module tracks two half-day cells per pupil per day,
@@ -269,6 +271,49 @@ class PresenceHalfDay {
       'codeId: $codeId, aliasId: $aliasId)';
 }
 
+/// A half-day as `PresenceService.setLate` or `setPresent` saved it (#105):
+/// the record the Presence module answered the save with, and [before], the
+/// half-day as the call read it right before the save.
+///
+/// The fields of [PresenceHalfDay] are the module's: [presenceId] is the
+/// record's ID (a new one when the half-day had no record yet), and
+/// [codeId] / [aliasId] are what it stores, so `codeId` is `null` for an
+/// alias (such as "Te laat zonder geldige reden"). Name the status with
+/// `PresenceService.statusNameOf`.
+class PresenceSavedHalfDay extends PresenceHalfDay {
+  const PresenceSavedHalfDay({
+    required super.presenceId,
+    required super.presenceDate,
+    required super.part,
+    required super.codeId,
+    required super.aliasId,
+    required super.motivation,
+    this.before,
+  });
+
+  /// The half-day [stored], as the save answer gives it, with [before].
+  PresenceSavedHalfDay.of(PresenceHalfDay stored, {PresenceHalfDay? before})
+    : this(
+        presenceId: stored.presenceId,
+        presenceDate: stored.presenceDate,
+        part: stored.part,
+        codeId: stored.codeId,
+        aliasId: stored.aliasId,
+        motivation: stored.motivation,
+        before: before,
+      );
+
+  /// The half-day as the call read it right before the save (the one an
+  /// `onlyReplacing` check looked at), or `null` when the pupil had no
+  /// record for it yet.
+  final PresenceHalfDay? before;
+
+  @override
+  String toString() =>
+      'PresenceSavedHalfDay(part: ${part.wire}, presenceId: $presenceId, '
+      'codeId: $codeId, aliasId: $aliasId, before: $before)';
+}
+
 /// A pupil as returned by `Presence/Class/getClass`, with the resolved half-day
 /// cells for the requested date range.
 class PresencePupil {
@@ -307,6 +352,83 @@ class PresencePupil {
   @override
   String toString() =>
       'PresencePupil(userId: $userId, movementId: $movementId, name: $name)';
+}
+
+/// The pupils of a class for one day, as `PresenceService.getClassPupils`
+/// returns them, with what the Presence module said about the class on that
+/// day (#104).
+///
+/// It is the list of [PresencePupil]s, so code that takes it as a
+/// `List<PresencePupil>` needs no change. An empty list no longer stands for
+/// "no pupils" alone: when the module lists no pupils, it answers with
+/// [saveIsAllowed] `false` and says why in [errorMessage], as its web client
+/// shows it (in Dutch). Seen live (read-only, 2026-10-03), the module
+/// answers `Presence/Class/getClass`:
+///
+/// - for a class with pupils, on a day up to today (a Saturday or a day of
+///   the previous school year too): the pupils, [saveIsAllowed] `true` and
+///   no [errorMessage];
+/// - for a day after today: no pupils, `false`, "Het is niet mogelijk om in
+///   de toekomst afwezigheden op te nemen.";
+/// - for a class without pupils: no pupils, `false`, "Deze klas bevat geen
+///   leerlingen.";
+/// - for a class ID it does not know: the same, but without a class:
+///   [classRef] is `null`;
+/// - for the class `-2` ("Uit Planner", the `activeClass` of the config of a
+///   teacher who has no lesson at that moment): no pupils, `false`, "U geeft
+///   momenteel geen les. Kies een andere klas in de keuzelijst.", and no
+///   class.
+///
+/// No answer with an empty list and [saveIsAllowed] `true` was seen.
+class PresenceClassPupils extends ListBase<PresencePupil> {
+  /// The [pupils] (copied into a list of its own) and what the module said
+  /// about the class.
+  PresenceClassPupils(
+    Iterable<PresencePupil> pupils, {
+    this.classRef,
+    this.saveIsAllowed,
+    this.errorMessage,
+  }) : _pupils = List.of(pupils);
+
+  final List<PresencePupil> _pupils;
+
+  /// The class as the module names it in its answer (its `groupID`, `name`,
+  /// `structID`, `userCanRecord`, ...), or `null` when the answer names no
+  /// class: the module does not know the class ID (or the list was not read
+  /// from an answer).
+  final PresenceClassRef? classRef;
+
+  /// Whether the module would save presences for the class on that day (its
+  /// `saveIsAllowed`), or `null` when the answer does not say (or the list
+  /// was not read from an answer).
+  ///
+  /// `false` with an empty list: the module did not list the class on that
+  /// day, for the reason in [errorMessage].
+  final bool? saveIsAllowed;
+
+  /// The module's reason for not listing the class on that day (its
+  /// `errorMessage`, such as "Deze klas bevat geen leerlingen."), as it
+  /// shows it to the user, or `null` when it gave none (it answers `""` for
+  /// a class it lists).
+  final String? errorMessage;
+
+  @override
+  int get length => _pupils.length;
+
+  @override
+  set length(int newLength) => _pupils.length = newLength;
+
+  @override
+  PresencePupil operator [](int index) => _pupils[index];
+
+  @override
+  void operator []=(int index, PresencePupil value) => _pupils[index] = value;
+
+  @override
+  void add(PresencePupil element) => _pupils.add(element);
+
+  @override
+  void addAll(Iterable<PresencePupil> iterable) => _pupils.addAll(iterable);
 }
 
 /// Parses [value] leniently to an `int`, returning `null` for empty strings,

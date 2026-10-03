@@ -19,13 +19,21 @@ export '../models/presence_models.dart';
 /// ```dart
 /// final presence = PresenceService(client);
 ///
-/// // Mark internal userID 11110 (in class groupID 298) late this morning.
-/// await presence.setLate(
+/// // Mark internal userID 11110 (in class groupID 298) late this morning,
+/// // unless the half-day holds another status than nothing or "Aanwezig"
+/// // (such as an absence the secretariat recorded).
+/// final saved = await presence.setLate(
 ///   userId: 11110,
 ///   classGroupId: 298,
 ///   date: DateTime(2026, 6, 1),
 ///   part: DayPart.morning,
+///   onlyReplacing: {
+///     PresenceService.nothingRecorded,
+///     PresenceService.presentCodeName,
+///   },
 /// );
+/// // The half-day as stored, from the save's answer (#105).
+/// print(saved?.codeId);
 /// ```
 ///
 /// ### Access requirement
@@ -40,7 +48,9 @@ export '../models/presence_models.dart';
 /// - [SmartschoolPresenceError]: the Presence module refused the request (an
 ///   error page instead of JSON, or a non-empty `errors[]` on a save), or a
 ///   class, code or pupil could not be resolved. The session was accepted:
-///   signing in again does not help.
+///   signing in again does not help. Its subtype
+///   [SmartschoolPresenceChangeRefusedError]: the half-day holds a status
+///   that the call's `onlyReplacing` does not allow (#105); nothing was sent.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session,
 ///   also after the client logged in again and retried the request once. The
 ///   request was not carried out: sign in again and retry.
@@ -79,6 +89,13 @@ class PresenceService {
 
   /// The status name that marks a pupil present.
   static const presentCodeName = 'Aanwezig';
+
+  /// The status name of a half-day that holds nothing: no record yet, or a
+  /// record without a code or alias (#105).
+  ///
+  /// Pass it in the `onlyReplacing` of [setLate] / [setPresent] to allow
+  /// changing such a half-day; [statusNameOf] gives it for one.
+  static const nothingRecorded = '';
 
   // ---------------------------------------------------------------------------
   // Read endpoints
@@ -122,11 +139,22 @@ class PresenceService {
   }
 
   /// Returns the pupils (with their half-day cells) of class [classGroupId] for
-  /// the single day [date].
+  /// the single day [date], with what the Presence module said about the
+  /// class on that day (#104).
   ///
   /// [schoolyearRefDate] is the reference date from [getConfig]
   /// ([PresenceConfig.schoolyearRefDate]).
-  Future<List<PresencePupil>> getClassPupils({
+  ///
+  /// The result is a `List<PresencePupil>`. When it is empty, the module says
+  /// why: [PresenceClassPupils.saveIsAllowed] is `false` and
+  /// [PresenceClassPupils.errorMessage] has its reason, such as a day after
+  /// today ("Het is niet mogelijk om in de toekomst afwezigheden op te
+  /// nemen.") or a class without pupils ("Deze klas bevat geen
+  /// leerlingen."). [PresenceClassPupils.classRef] is `null` for a class ID
+  /// the module does not know, which it answers with that same reason. See
+  /// [PresenceClassPupils] for what was seen live. A class the module lists
+  /// no pupils for is not an error: nothing is thrown for it.
+  Future<PresenceClassPupils> getClassPupils({
     required int classGroupId,
     required DateTime date,
     required String schoolyearRefDate,
@@ -159,15 +187,49 @@ class PresenceService {
   /// is used instead of plain "Te laat". [motivation] is an optional free-text
   /// note stored on the presence.
   ///
+  /// The call reads the class (`getClass`) right before it saves. Without
+  /// [onlyReplacing] it saves over whatever the half-day holds, also an
+  /// absence the secretariat recorded (a doctor's note, say). With it, the
+  /// half-day may only hold one of the statuses it names, by name as
+  /// [statusNameOf] gives them (case-insensitive): such as [presentCodeName],
+  /// [lateCodeName], [lateWithoutReasonAliasName], or [nothingRecorded] for
+  /// a half-day that holds nothing. For any other status, as read right
+  /// before the save, it throws a [SmartschoolPresenceChangeRefusedError]
+  /// that names it, and sends nothing (#105):
+  ///
+  /// ```dart
+  /// await presence.setLate(
+  ///   userId: 11110,
+  ///   classGroupId: 298,
+  ///   date: DateTime(2026, 6, 1),
+  ///   part: DayPart.morning,
+  ///   onlyReplacing: {
+  ///     PresenceService.nothingRecorded,
+  ///     PresenceService.presentCodeName,
+  ///     PresenceService.lateCodeName,
+  ///     PresenceService.lateWithoutReasonAliasName,
+  ///   },
+  /// );
+  /// ```
+  ///
+  /// Returns the half-day as stored (#105): the record the Presence module
+  /// answered the save with (its `presenceId`, a new one when the half-day
+  /// had none, and the `codeId` / `aliasId` and `motivation` it stores),
+  /// with [PresenceSavedHalfDay.before], the half-day as read right before
+  /// the save. Nothing more is read for it. `null` when the answer holds no
+  /// record of the half-day: the save itself was confirmed (no `errors`), so
+  /// read the class to see what it holds.
+  ///
   /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
   /// the server rejects the save.
-  Future<void> setLate({
+  Future<PresenceSavedHalfDay?> setLate({
     required int userId,
     required int classGroupId,
     required DateTime date,
     required DayPart part,
     bool withoutValidReason = false,
     String motivation = '',
+    Set<String>? onlyReplacing,
   }) {
     return _setStatusByName(
       userId: userId,
@@ -177,21 +239,28 @@ class PresenceService {
       codeName: lateCodeName,
       aliasName: withoutValidReason ? lateWithoutReasonAliasName : null,
       motivation: motivation,
+      onlyReplacing: onlyReplacing,
     );
   }
 
   /// Marks [userId] **present** ("Aanwezig") for [date] / [part] in class
   /// [classGroupId].
   ///
-  /// Useful to clear a previously recorded status. Throws
-  /// [SmartschoolPresenceError] if the class/code cannot be resolved or the
-  /// server rejects the save.
-  Future<void> setPresent({
+  /// Useful to clear a previously recorded status. [onlyReplacing] and the
+  /// result are as for [setLate]: pass, say, `{PresenceService.lateCodeName}`
+  /// to clear a "Te laat" and refuse any other status (#105).
+  ///
+  /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
+  /// the server rejects the save, and its subtype
+  /// [SmartschoolPresenceChangeRefusedError] when [onlyReplacing] refuses the
+  /// change (nothing was sent).
+  Future<PresenceSavedHalfDay?> setPresent({
     required int userId,
     required int classGroupId,
     required DateTime date,
     required DayPart part,
     String motivation = '',
+    Set<String>? onlyReplacing,
   }) {
     return _setStatusByName(
       userId: userId,
@@ -201,12 +270,14 @@ class PresenceService {
       codeName: presentCodeName,
       aliasName: null,
       motivation: motivation,
+      onlyReplacing: onlyReplacing,
     );
   }
 
-  /// Resolves the class, code (and optional alias) and half-day cell, then
-  /// saves the presence. Shared engine behind [setLate] / [setPresent].
-  Future<void> _setStatusByName({
+  /// Resolves the class, code (and optional alias) and half-day cell, checks
+  /// the cell against [onlyReplacing], then saves the presence and returns
+  /// the half-day as stored. Shared engine behind [setLate] / [setPresent].
+  Future<PresenceSavedHalfDay?> _setStatusByName({
     required int userId,
     required int classGroupId,
     required DateTime date,
@@ -214,6 +285,7 @@ class PresenceService {
     required String codeName,
     required String? aliasName,
     required String motivation,
+    required Set<String>? onlyReplacing,
   }) async {
     final config = await getConfig();
     final classRef = config.classForGroup(classGroupId);
@@ -251,18 +323,43 @@ class PresenceService {
       }
     }
     if (pupil == null) {
+      // The module's reason when it listed no pupils (#104), such as a day
+      // after today.
+      final reason = pupils.isEmpty ? pupils.errorMessage : null;
+      final why = reason == null
+          ? ''
+          : ': the Presence module listed no pupils ("$reason")';
       throw SmartschoolPresenceError(
         'Pupil userID $userId was not found in class groupID $classGroupId on '
-        '${formatDate(date)}.',
+        '${formatDate(date)}$why.',
       );
     }
 
-    final cell = pupil.halfDayFor(part, date: formatDate(date));
+    final day = formatDate(date);
+    final cell = pupil.halfDayFor(part, date: day);
+
+    if (onlyReplacing != null) {
+      final held = statusNameOf(cell, codes);
+      if (!_allows(onlyReplacing, held)) {
+        throw SmartschoolPresenceChangeRefusedError(
+          'The ${part.name} of $day of pupil userID $userId in class groupID '
+          '$classGroupId holds ${_describeHeld(held, cell)}, which '
+          'onlyReplacing does not allow (${_describeAllowed(onlyReplacing)}): '
+          'nothing was sent.',
+          userId: userId,
+          part: part,
+          date: day,
+          halfDay: cell,
+          heldStatus: held,
+          onlyReplacing: onlyReplacing,
+        );
+      }
+    }
 
     final payload = buildPupilsPayload(
       userId: userId,
       movementId: pupil.movementId,
-      presenceDate: formatDate(date),
+      presenceDate: day,
       part: part,
       presenceId: cell?.presenceId,
       codeId: resolved.codeId,
@@ -273,13 +370,54 @@ class PresenceService {
     final response = await _client.postFormResponse(_savePath, {
       'pupils': payload,
     });
-    final errors = parseSaveErrors(_decode(response, _savePath));
+    final answer = _decode(response, _savePath);
+    final errors = parseSaveErrors(answer);
     if (errors.isNotEmpty) {
       throw SmartschoolPresenceError(
         'Saving the presence for userID $userId failed.',
         errors: errors,
       );
     }
+    final stored = parseSavedHalfDay(
+      answer,
+      userId: userId,
+      date: day,
+      part: part,
+    );
+    return stored == null
+        ? null
+        : PresenceSavedHalfDay.of(stored, before: cell);
+  }
+
+  /// Whether [onlyReplacing] holds [held] (a name from [statusNameOf]),
+  /// compared trimmed and case-insensitively. A status without a name
+  /// (`null`) is never allowed.
+  static bool _allows(Set<String> onlyReplacing, String? held) {
+    if (held == null) return false;
+    final target = held.trim().toLowerCase();
+    return onlyReplacing.any((name) => name.trim().toLowerCase() == target);
+  }
+
+  /// What the half-day [cell] holds, for a message: [held] is its status
+  /// name from [statusNameOf].
+  static String _describeHeld(String? held, PresenceHalfDay? cell) {
+    if (held == null) {
+      final id = cell?.aliasId != null
+          ? 'aliasID ${cell?.aliasId}'
+          : 'codeID ${cell?.codeId}';
+      return 'a status that is not among the codes of its school structure '
+          '($id)';
+    }
+    return held.trim().isEmpty ? 'nothing recorded' : '"$held"';
+  }
+
+  /// The statuses of an `onlyReplacing`, for a message.
+  static String _describeAllowed(Set<String> onlyReplacing) {
+    if (onlyReplacing.isEmpty) return 'no status';
+    return [
+      for (final name in onlyReplacing)
+        name.trim().isEmpty ? 'nothing recorded' : '"${name.trim()}"',
+    ].join(', ');
   }
 
   // ---------------------------------------------------------------------------
@@ -324,13 +462,29 @@ class PresenceService {
     return codes;
   }
 
-  /// Parses a `getClass` response into its pupils and their half-day cells.
+  /// Parses a `getClass` response into its pupils and their half-day cells,
+  /// with what the module said about the class (#104): the class it names
+  /// ([PresenceClassRef], `null` when it names none), `saveIsAllowed` and
+  /// `errorMessage` (`null` when absent or empty).
   ///
   /// Only the half-day cells (`partOfDay: "am"|"pm"` with `hourID: null`) are
   /// retained; per-lesson rows (`partOfDay: "none"`) are ignored.
-  static List<PresencePupil> parsePupils(Map<String, dynamic> json) {
+  static PresenceClassPupils parsePupils(Map<String, dynamic> json) {
+    final saveIsAllowed = json['saveIsAllowed'];
+    final errorMessage = json['errorMessage'];
+    final trimmedMessage = errorMessage is String ? errorMessage.trim() : '';
+    return PresenceClassPupils(
+      _parsePupilList(json['pupils']),
+      classRef: _asInt(json['groupID']) == null
+          ? null
+          : PresenceClassRef.fromJson(json),
+      saveIsAllowed: saveIsAllowed is bool ? saveIsAllowed : null,
+      errorMessage: trimmedMessage.isEmpty ? null : trimmedMessage,
+    );
+  }
+
+  static List<PresencePupil> _parsePupilList(Object? pupilsRaw) {
     final result = <PresencePupil>[];
-    final pupilsRaw = json['pupils'];
     if (pupilsRaw is! List) return result;
 
     for (final p in pupilsRaw) {
@@ -344,19 +498,8 @@ class PresenceService {
       if (presenceRaw is List) {
         for (final e in presenceRaw) {
           if (e is! Map<String, dynamic>) continue;
-          if (e['hourID'] != null) continue; // per-lesson row, not a half-day
-          final part = DayPart.fromWire(e['partOfDay'] as String?);
-          if (part == null) continue;
-          halfDays.add(
-            PresenceHalfDay(
-              presenceId: _asInt(e['presenceID']),
-              presenceDate: e['presenceDate'] as String? ?? '',
-              part: part,
-              codeId: _asInt(e['codeID']),
-              aliasId: _asInt(e['aliasID']),
-              motivation: e['motivation'] as String? ?? '',
-            ),
-          );
+          final halfDay = _parseHalfDay(e);
+          if (halfDay != null) halfDays.add(halfDay);
         }
       }
 
@@ -371,6 +514,98 @@ class PresenceService {
     }
     return result;
   }
+
+  /// Parses a presence record (of `getClass`, or of the answer to a save) as
+  /// a half-day cell, or `null` for a per-lesson row (`hourID` set, or a
+  /// `partOfDay` other than `"am"` / `"pm"`).
+  static PresenceHalfDay? _parseHalfDay(Map<String, dynamic> e) {
+    if (e['hourID'] != null) return null; // per-lesson row, not a half-day
+    final part = DayPart.fromWire(e['partOfDay'] as String?);
+    if (part == null) return null;
+    return PresenceHalfDay(
+      presenceId: _asInt(e['presenceID']),
+      presenceDate: e['presenceDate'] as String? ?? '',
+      part: part,
+      codeId: _asInt(e['codeID']),
+      aliasId: _asInt(e['aliasID']),
+      motivation: e['motivation'] as String? ?? '',
+    );
+  }
+
+  /// Returns the half-day of [userId] on [date] (`yyyy-MM-dd`) / [part] that
+  /// a `savePupilsPresences` answer holds (#105), or `null` when it holds
+  /// none.
+  ///
+  /// The module answers a save with the pupils sent, each with the records
+  /// as stored (`{"pupils":[{"userID", "movementID", "presence":[...]}],
+  /// "errors":[]}`, the shape its web client reads), in the shape of the
+  /// records of `getClass`: a new `presenceID` for a half-day that had no
+  /// record. A record is the pupil's by its `studentID`, or else by the
+  /// pupil's `userID`.
+  static PresenceHalfDay? parseSavedHalfDay(
+    Object? json, {
+    required int userId,
+    required String date,
+    required DayPart part,
+  }) {
+    if (json is! Map<String, dynamic>) return null;
+    final pupils = json['pupils'];
+    if (pupils is! List) return null;
+    for (final pupil in pupils) {
+      if (pupil is! Map<String, dynamic>) continue;
+      final records = pupil['presence'];
+      if (records is! List) continue;
+      for (final record in records) {
+        if (record is! Map<String, dynamic>) continue;
+        final owner = _asInt(record['studentID']) ?? _asInt(pupil['userID']);
+        if (owner != userId) continue;
+        // Checked here, so that a record in another shape is passed over
+        // rather than failing a call whose save went through.
+        if (record['presenceDate'] != date) continue;
+        if (record['partOfDay'] != part.wire) continue;
+        final motivation = record['motivation'];
+        if (motivation != null && motivation is! String) continue;
+        final halfDay = _parseHalfDay(record);
+        if (halfDay != null) return halfDay;
+      }
+    }
+    return null;
+  }
+
+  /// Returns the name of the status [halfDay] holds, from [codes] (those of
+  /// the class's school structure, [getAllCodes]) (#105):
+  ///
+  /// - the name of its alias when it has an `aliasId` (the module stores
+  ///   "Te laat zonder geldige reden" as an alias, with `codeId` `null`);
+  /// - else the name of its code, such as [presentCodeName] or
+  ///   "Doktersattest";
+  /// - [nothingRecorded] (`""`) when it has neither, or there is no
+  ///   [halfDay] (no record yet);
+  /// - `null` when its code or alias is not among [codes], or has no name.
+  static String? statusNameOf(
+    PresenceHalfDay? halfDay,
+    List<PresenceCode> codes,
+  ) {
+    final aliasId = halfDay?.aliasId;
+    if (aliasId != null) {
+      for (final code in codes) {
+        for (final alias in code.aliases) {
+          if (alias.aliasId == aliasId) return _named(alias.name);
+        }
+      }
+      return null;
+    }
+    final codeId = halfDay?.codeId;
+    if (codeId != null) {
+      for (final code in codes) {
+        if (code.codeId == codeId) return _named(code.name);
+      }
+      return null;
+    }
+    return nothingRecorded;
+  }
+
+  static String? _named(String name) => name.trim().isEmpty ? null : name;
 
   /// Resolves [codeName] (and optional [aliasName]) against [codes], returning
   /// the `codeID` / `aliasID` pair to send when saving.
@@ -488,7 +723,9 @@ class PresenceService {
   /// may also lack Presence access). The session was accepted, so signing in
   /// again does not help: this is a [SmartschoolPresenceError]. (A class the
   /// account may not record for is answered in JSON, not here: `getConfig`
-  /// does not list it, and `setLate` / `setPresent` check that first.)
+  /// does not list it, and `setLate` / `setPresent` check that first. So is
+  /// a class `getClass` lists no pupils for: [getClassPupils] returns the
+  /// module's reason with the empty list, #104.)
   ///
   /// The login chain answering never gets here (#5, #22): for a request that
   /// is answered with `401` or redirected to `/login`, `/2fa` or

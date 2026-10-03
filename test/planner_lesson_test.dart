@@ -374,10 +374,21 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
         allowMalformed: true,
       );
 
-/// A check before the write refused it: nothing was sent.
-Matcher _refused(Object? message) => isA<SmartschoolPlannerWriteRefusedError>()
+/// A check before the write refused it: nothing was sent. The error gives
+/// the check as [reason] (#100), with the ID of the [element] it read again
+/// and the capability [flags] it refused on.
+Matcher _refused(
+  Object? message, {
+  required PlannerWriteRefusalReason reason,
+  Object? element = anything,
+  Object? flags = isEmpty,
+}) => isA<SmartschoolPlannerWriteRefusedError>()
     .having((e) => e.message, 'message', message)
-    .having((e) => e.message, 'message', contains('Nothing was sent'));
+    .having((e) => e.message, 'message', contains('Nothing was sent'))
+    .having((e) => e.reason, 'reason', reason)
+    .having((e) => e.element?.id, 'element', element)
+    .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
+    .having((e) => e.lessonContent, 'lessonContent', isNull);
 
 /// The write went out without the planner confirming it.
 Matcher _unconfirmed(
@@ -555,11 +566,21 @@ void main() {
           await expectLater(
             planner.planLesson(placeholder: _listed(_slot), name: _name),
             throwsA(
-              _refused(
-                allOf(
-                  contains('not in your own planner'),
-                  contains('Wim Willems (4069_1003_0)'),
-                  contains('not by $_me'),
+              allOf(
+                _refused(
+                  allOf(
+                    contains('not in your own planner'),
+                    contains('Wim Willems (4069_1003_0)'),
+                    contains('not by $_me'),
+                  ),
+                  reason: PlannerWriteRefusalReason.notOwn,
+                  element: _slotId,
+                ),
+                // The slot as read again, with its organiser.
+                isA<SmartschoolPlannerWriteRefusedError>().having(
+                  (e) => e.element!.organiserUsers.map((u) => u.id),
+                  'organisers',
+                  ['4069_1003_0'],
                 ),
               ),
             ),
@@ -578,7 +599,14 @@ void main() {
 
         await expectLater(
           planner.planLesson(placeholder: _listed(_slot), name: _name),
-          throwsA(_refused(contains('canUserReplace not set'))),
+          throwsA(
+            _refused(
+              contains('canUserReplace not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _slotId,
+              flags: ['canUserReplace'],
+            ),
+          ),
         );
         expect(server.plannerLog, [_readSlot]);
       });
@@ -592,7 +620,14 @@ void main() {
 
         await expectLater(
           planner.planLesson(placeholder: _listed(_slot), name: _name),
-          throwsA(_refused(contains('canUserReplace not set'))),
+          throwsA(
+            _refused(
+              contains('canUserReplace not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _slotId,
+              flags: ['canUserReplace'],
+            ),
+          ),
         );
         expect(server.plannerLog, [_readSlot]);
       });
@@ -606,7 +641,54 @@ void main() {
 
         await expectLater(
           planner.planLesson(placeholder: _listed(_slot), name: _name),
-          throwsA(_refused(contains('no longer in the period'))),
+          throwsA(
+            allOf(
+              _refused(
+                contains('no longer in the period'),
+                reason: PlannerWriteRefusalReason.periodChanged,
+                element: _slotId,
+              ),
+              // The slot as read again, in the period it has now.
+              isA<SmartschoolPlannerWriteRefusedError>().having(
+                (e) => e.element!.period.from,
+                'period.from',
+                DateTime.parse('2026-11-20T12:00:00+01:00').toLocal(),
+              ),
+            ),
+          ),
+        );
+        expect(server.plannerLog, [_readSlot]);
+      });
+
+      test('an element that is no longer a timetable slot under the ID of '
+          'the slot', () async {
+        final (server, planner) = await serve({
+          _readSlot: [
+            _json(
+              _with(
+                _slot,
+                changes: {'plannedElementType': 'planned-lessons', 'name': 'X'},
+              ),
+            ),
+          ],
+        });
+
+        await expectLater(
+          planner.planLesson(placeholder: _listed(_slot), name: _name),
+          throwsA(
+            allOf(
+              _refused(
+                contains('is a planned-lessons now, not a timetable slot'),
+                reason: PlannerWriteRefusalReason.noLongerASlot,
+                element: _slotId,
+              ),
+              isA<SmartschoolPlannerWriteRefusedError>().having(
+                (e) => e.element!.type,
+                'element.type',
+                PlannedElementType.lesson,
+              ),
+            ),
+          ),
         );
         expect(server.plannerLog, [_readSlot]);
       });
@@ -668,7 +750,13 @@ void main() {
 
           await expectLater(
             planner.planLesson(placeholder: _listed(_slot), name: _name),
-            throwsA(_refused(contains('participant roles or group filters'))),
+            throwsA(
+              _refused(
+                contains('participant roles or group filters'),
+                reason: PlannerWriteRefusalReason.participantRoles,
+                element: _slotId,
+              ),
+            ),
           );
           expect(server.plannerLog, [_readSlot]);
         }
@@ -1014,6 +1102,8 @@ void main() {
             throwsA(
               _refused(
                 allOf(contains(name), contains('not in your own planner')),
+                reason: PlannerWriteRefusalReason.notOwn,
+                element: _lessonId,
               ),
             ),
           );
@@ -1030,7 +1120,14 @@ void main() {
 
           await expectLater(
             edit(planner),
-            throwsA(_refused(contains('canUserEdit not set'))),
+            throwsA(
+              _refused(
+                contains('canUserEdit not set'),
+                reason: PlannerWriteRefusalReason.notAllowed,
+                element: _lessonId,
+                flags: ['canUserEdit'],
+              ),
+            ),
           );
           expect(server.plannerLog, [_readLesson]);
         });
@@ -1045,7 +1142,14 @@ void main() {
 
           await expectLater(
             edit(planner),
-            throwsA(_refused(contains('${flags[name]} not set'))),
+            throwsA(
+              _refused(
+                contains('${flags[name]} not set'),
+                reason: PlannerWriteRefusalReason.notAllowed,
+                element: _lessonId,
+                flags: [flags[name]],
+              ),
+            ),
           );
           expect(server.plannerLog, [_readLesson]);
         });
@@ -1070,7 +1174,14 @@ void main() {
 
         await expectLater(
           planner.renameElement(_listed(_slot), 'Nieuw'),
-          throwsA(_refused(contains('canUserRename not set'))),
+          throwsA(
+            _refused(
+              contains('canUserRename not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _slotId,
+              flags: ['canUserRename'],
+            ),
+          ),
         );
         expect(server.plannerLog, [_readSlot]);
       });
@@ -1196,7 +1307,13 @@ void main() {
 
           await expectLater(
             planner.clearLesson(_listed(_lesson)),
-            throwsA(_refused(contains('not in your own planner'))),
+            throwsA(
+              _refused(
+                contains('not in your own planner'),
+                reason: PlannerWriteRefusalReason.notOwn,
+                element: _lessonId,
+              ),
+            ),
           );
           expect(server.plannerLog, [_readLesson]);
         },
@@ -1212,7 +1329,14 @@ void main() {
 
         await expectLater(
           planner.clearLesson(_listed(_lesson)),
-          throwsA(_refused(contains('canUserEdit not set'))),
+          throwsA(
+            _refused(
+              contains('canUserEdit not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _lessonId,
+              flags: ['canUserEdit'],
+            ),
+          ),
         );
         expect(server.plannerLog, [_readLesson]);
       });
@@ -1228,11 +1352,45 @@ void main() {
 
           await expectLater(
             planner.clearLesson(_listed(_lesson)),
-            throwsA(_refused(allOf(contains(flag), contains('timetable')))),
+            throwsA(
+              _refused(
+                allOf(contains(flag), contains('timetable')),
+                reason: PlannerWriteRefusalReason.trashable,
+                element: _lessonId,
+                flags: [flag],
+              ),
+            ),
           );
           expect(server.plannerLog, [_readLesson]);
         });
       }
+
+      test('a lesson the planner lets the user trash and delete: both '
+          'flags', () async {
+        final (server, planner) = await serve({
+          _readLesson: [
+            _json(
+              _with(
+                _lesson,
+                capabilities: {'canUserTrash': true, 'canUserDelete': true},
+              ),
+            ),
+          ],
+        });
+
+        await expectLater(
+          planner.clearLesson(_listed(_lesson)),
+          throwsA(
+            _refused(
+              contains('(canUserTrash)'),
+              reason: PlannerWriteRefusalReason.trashable,
+              element: _lessonId,
+              flags: ['canUserTrash', 'canUserDelete'],
+            ),
+          ),
+        );
+        expect(server.plannerLog, [_readLesson]);
+      });
 
       test('a lesson the planner no longer has', () async {
         final (server, planner) = await serve({
@@ -1491,4 +1649,89 @@ void main() {
       _clear,
     ]);
   });
+
+  test("the case of #100: an app that plans a lesson in a colleague's hour, "
+      'read from a class calendar, tells its user why it was refused in its '
+      'own words, from the reason and the element', () async {
+    // The class calendar of 6A1 shows a colleague's empty lesson hour.
+    final colleaguesSlot = _byColleague(_slot);
+    final (server, service) = await serve(
+      {},
+      respond: (label, body) => switch (label) {
+        'GET $_api/planned-elements/group/4069_2001' => _json(
+          '[$colleaguesSlot]',
+        ),
+        _readSlot => _json(colleaguesSlot),
+        _ => null,
+      },
+    );
+    final klas = await service.getPlannedElements(
+      PlannerCalendar.group('4069_2001'),
+      from: DateTime.utc(2026, 11, 20),
+      to: DateTime.utc(2026, 11, 20, 22, 59, 59),
+    );
+    final slot = klas.single;
+
+    // The app's own text, built from the error's values only, not from its
+    // message.
+    String why(SmartschoolPlannerWriteRefusedError e) {
+      final element = e.element!;
+      final when =
+          '${element.period.from.day}/${element.period.from.month} '
+          '${element.period.from.hour}:'
+          '${'${element.period.from.minute}'.padLeft(2, '0')}';
+      final classes = element.participantGroups.map((g) => g.name).join('+');
+      final course = element.courses.map((c) => c.name).join(', ');
+      return switch (e.reason) {
+        PlannerWriteRefusalReason.notOwn =>
+          'The hour of $when ($classes, $course) belongs to '
+              '${element.organiserUsers.map((u) => u.name).join(', ')}.',
+        PlannerWriteRefusalReason.notAllowed =>
+          'Smartschool does not let you change the hour of $when '
+              '(${e.capabilityFlags.join(', ')}).',
+        _ => 'Refused: ${e.reason?.name}.',
+      };
+    }
+
+    final refused = await service
+        .planLesson(placeholder: slot, name: 'Lussen')
+        .then<SmartschoolPlannerWriteRefusedError?>((_) => null)
+        .catchError(
+          (Object e) => e as SmartschoolPlannerWriteRefusedError,
+          test: (e) => e is SmartschoolPlannerWriteRefusedError,
+        );
+
+    expect(refused, isNotNull, reason: "a colleague's hour is refused");
+    expect(refused!.reason, PlannerWriteRefusalReason.notOwn);
+    expect(refused.element!.id, _slotId);
+    expect(refused.element!.type, PlannedElementType.placeholder);
+    expect(
+      refused.element!.period.from.isAtSameMomentAs(
+        DateTime.utc(2026, 11, 20, 10, 10),
+      ),
+      isTrue,
+    );
+    expect(
+      why(refused),
+      'The hour of ${_local(11, 10)} (6A1+6A2, informatica) belongs to Wim '
+      'Willems.',
+    );
+    // The message stays as it was, for a log.
+    expect(refused.message, startsWith('planLesson: planned-placeholders'));
+    expect(refused.message, endsWith('Nothing was sent.'));
+    // Read the calendar and the slot; nothing written.
+    expect(server.plannerLog, [
+      'GET $_api/planned-elements/group/4069_2001',
+      _readSlot,
+    ]);
+  });
+}
+
+/// 20 November 2026 at [hour]:[minute] in Belgium (`+01:00`) as the app's
+/// own text writes it, in the local time of this machine (`20/11 11:10` in
+/// Belgium).
+String _local(int hour, int minute) {
+  final local = DateTime.utc(2026, 11, 20, hour - 1, minute).toLocal();
+  return '${local.day}/${local.month} ${local.hour}:'
+      '${'${local.minute}'.padLeft(2, '0')}';
 }

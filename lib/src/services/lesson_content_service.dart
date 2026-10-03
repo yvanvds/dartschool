@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 
 import '../exceptions.dart';
 import '../models/lesson_content_models.dart';
+import '../models/planner_models.dart';
 import '../session.dart';
 
 export '../models/lesson_content_models.dart';
@@ -17,7 +18,8 @@ export '../models/lesson_content_models.dart';
 /// final fiches = await lessonContent.getItems();
 /// final lessons = fiches.where((f) => f.type == LessonContentType.lesson);
 /// for (final fiche in lessons) {
-///   print('${fiche.name}  ${fiche.labels.map((l) => l.text).join(', ')}');
+///   print('${fiche.name}  ${fiche.courses.map((c) => c.name).join(', ')}  '
+///       '${fiche.labels.map((l) => l.text).join(', ')}');
 /// }
 ///
 /// // Plan one into an empty lesson hour of the own planner.
@@ -28,18 +30,20 @@ export '../models/lesson_content_models.dart';
 /// ```
 ///
 /// It only reads, with GET requests to the module's JSON API
-/// (`/lesson-content/api/v1/`). Creating, changing, sharing or trashing
+/// (`/lesson-content/api/v1/`), and to the school's course list
+/// (`/course-list/api/v1/courses`) for the names of the courses, which the
+/// module's list does not give. Creating, changing, sharing or trashing
 /// lesfiches is not covered. A lesson lesfiche is planned by
 /// `PlannerService.planLessonContent`, which reads the lesfiches with this
 /// service first; the school's assignment types, which the planner reads from
 /// this module too, are read by `PlannerService.getAssignmentTypes`.
 ///
 /// ### Errors
-/// - [SmartschoolLessonContentError]: the module answered with something the
-///   service cannot use: another HTTP status than `200` (its
-///   [SmartschoolLessonContentError.statusCode]), an HTML page (the module
-///   answers a route it does not know with its web app), invalid JSON, or
-///   data in an unknown shape. The session was accepted: signing in again
+/// - [SmartschoolLessonContentError]: the module, or the course list, answered
+///   with something the service cannot use: another HTTP status than `200`
+///   (its [SmartschoolLessonContentError.statusCode]), an HTML page (the
+///   module answers a route it does not know with its web app), invalid JSON,
+///   or data in an unknown shape. The session was accepted: signing in again
 ///   does not help.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
@@ -55,45 +59,117 @@ class LessonContentService {
   /// The base path of the module's JSON API.
   static const _apiPath = '/lesson-content/api/v1';
 
+  /// The school's course list, which names the courses of the lesfiches.
+  static const _courseListPath = '/course-list/api/v1/courses';
+
+  static const _module = 'The Lesfiches module';
+  static const _courseList = 'The course list';
+
   /// Returns the lesfiches of the authenticated user in the Lesfiches
   /// module, lessons and assignments, in the order the module gives them.
   ///
   /// Each has its [LessonContentItem.type] (keep the
   /// [LessonContentType.lesson]s to plan one with
   /// `PlannerService.planLessonContent`), name, icon, public info, courses
-  /// (IDs only), labels, owner, dates, the number of its attachments and
-  /// links, and its capabilities. Hidden lesfiches
+  /// (with their names, see below), labels, owner, dates, the number of its
+  /// attachments and links, and its capabilities. Hidden lesfiches
   /// ([LessonContentItem.isVisible] `false`) are in the list too.
   ///
   /// Sends `GET lesson-content/` (with the slash, as the web client does;
   /// seen live, 2026-10-02: all the teacher's lesfiches, both kinds). The
   /// detail of one lesfiche is not read: the module answers
   /// `lesson-content/{id}` with its web app, not with JSON.
-  Future<List<LessonContentItem>> getItems() async {
+  ///
+  /// The list names a lesfiche's courses by ID only (`{platformId, id}`).
+  /// When [withCourseNames] is `true` (the default) and a lesfiche has a
+  /// course, it then reads the school's course list ([getCourses], one
+  /// request more) and names each course after the course with the same ID
+  /// in it ([LessonContentCourse.name]), as the Lesfiches web client names
+  /// the courses of its course filter (#101). A course that the course list
+  /// does not have keeps a `null` name. With [withCourseNames] `false` it
+  /// sends the one request only, and every course has a `null` name.
+  Future<List<LessonContentItem>> getItems({
+    bool withCourseNames = true,
+  }) async {
     final response = await _client.getResponse('$_apiPath/lesson-content/');
-    return parseItems(_decode(response, 'the lesfiches'));
+    final json = _decode(response, 'the lesfiches', _module);
+    final items = parseItems(json);
+    if (!withCourseNames || items.every((item) => item.courses.isEmpty)) {
+      return items;
+    }
+    return parseItems(json, courses: await getCourses());
+  }
+
+  /// Returns the courses of the school, in the order the course list gives
+  /// them: each with its ID, the same as the [LessonContentCourse.id] of a
+  /// lesfiche's course and the [PlannerCourse.id] of a planned element's
+  /// course, its name, timetable codes, icon, cluster and visibility.
+  ///
+  /// Sends `GET /course-list/api/v1/courses`, the course list that the
+  /// Lesfiches web client reads to name the courses of the lesfiches (and
+  /// [SmartschoolClient.platformId] reads for the platform ID). Seen live
+  /// (read-only, 2026-10-03): all the school's courses (100 there), not only
+  /// the teacher's, each in the shape of a [PlannerCourse], and among them
+  /// every course of the teacher's lesfiches and of the own planner, with the
+  /// planner's names.
+  Future<List<PlannerCourse>> getCourses() async {
+    final response = await _client.getResponse(_courseListPath);
+    return parseCourses(_decode(response, 'the courses', _courseList));
   }
 
   // ---------------------------------------------------------------------------
   // Pure helpers (exposed for testing)
   // ---------------------------------------------------------------------------
 
-  /// Parses the Lesfiches list (a JSON array of lesfiches).
-  static List<LessonContentItem> parseItems(dynamic json) {
+  /// Parses the Lesfiches list (a JSON array of lesfiches), naming the
+  /// courses of each lesfiche after the course with the same ID in
+  /// [courses] (the school's courses, [getCourses]). Without [courses], or
+  /// for a course that is not in it (or has no name), a course has a `null`
+  /// [LessonContentCourse.name].
+  static List<LessonContentItem> parseItems(
+    dynamic json, {
+    Iterable<PlannerCourse> courses = const [],
+  }) {
     if (json is! List) {
       throw SmartschoolLessonContentError(
-        'The Lesfiches module gave the lesfiches as ${json.runtimeType} '
-        'instead of a list.',
+        '$_module gave the lesfiches as ${json.runtimeType} instead of a '
+        'list.',
       );
     }
+    final names = {
+      for (final course in courses)
+        if (course.name.isNotEmpty) course.id: course.name,
+    };
     return List.unmodifiable([
       for (final (index, item) in json.indexed)
         if (item is Map<String, dynamic>)
-          LessonContentItem.fromJson(item)
+          LessonContentItem.fromJson(item, courseNames: names)
         else
           throw SmartschoolLessonContentError(
-            'The Lesfiches module gave lesfiche $index as '
-            '${item.runtimeType} instead of an object.',
+            '$_module gave lesfiche $index as ${item.runtimeType} instead of '
+            'an object.',
+          ),
+    ]);
+  }
+
+  /// Parses the school's course list (a JSON array of courses, each as a
+  /// [PlannerCourse]). Throws a [SmartschoolLessonContentError] for a list
+  /// in an unknown shape, or a course without its `id` or `platformId`.
+  static List<PlannerCourse> parseCourses(dynamic json) {
+    if (json is! List) {
+      throw SmartschoolLessonContentError(
+        '$_courseList gave the courses as ${json.runtimeType} instead of a '
+        'list.',
+      );
+    }
+    return List.unmodifiable([
+      for (final (index, course) in json.indexed)
+        if (course is Map<String, dynamic>)
+          _course(course, index)
+        else
+          throw SmartschoolLessonContentError(
+            '$_courseList gave course $index as ${course.runtimeType} '
+            'instead of an object.',
           ),
     ]);
   }
@@ -102,34 +178,49 @@ class LessonContentService {
   // Internals
   // ---------------------------------------------------------------------------
 
-  /// The decoded JSON of [response], the module's answer to [what].
-  static dynamic _decode(Response<String> response, String what) {
+  /// Course [index] of the course list, in the shape of a planner course.
+  static PlannerCourse _course(Map<String, dynamic> json, int index) {
+    try {
+      return PlannerCourse.fromJson(json);
+    } on SmartschoolPlannerError catch (e) {
+      throw SmartschoolLessonContentError(
+        '$_courseList gave course $index in an unknown shape: ${e.message}',
+      );
+    }
+  }
+
+  /// The decoded JSON of [response], the answer of [source] (`The Lesfiches
+  /// module`) to [what].
+  static dynamic _decode(
+    Response<String> response,
+    String what,
+    String source,
+  ) {
     final status = response.statusCode;
     final body = (response.data ?? '').trimLeft();
     if (status != 200) {
       throw SmartschoolLessonContentError(
-        'The Lesfiches module answered $what with HTTP $status: '
-        '${_preview(body)}',
+        '$source answered $what with HTTP $status: ${_preview(body)}',
         statusCode: status,
       );
     }
     if (body.isEmpty) {
       throw SmartschoolLessonContentError(
-        'The Lesfiches module answered $what with an empty body.',
+        '$source answered $what with an empty body.',
       );
     }
     if (body.startsWith('<')) {
       throw SmartschoolLessonContentError(
-        'The Lesfiches module answered $what with an HTML page instead of '
-        'JSON: ${_preview(body)}',
+        '$source answered $what with an HTML page instead of JSON: '
+        '${_preview(body)}',
       );
     }
     try {
       return jsonDecode(body);
     } on FormatException catch (e) {
       throw SmartschoolLessonContentError(
-        'The Lesfiches module answered $what with invalid JSON '
-        '(${e.message}): ${_preview(body)}',
+        '$source answered $what with invalid JSON (${e.message}): '
+        '${_preview(body)}',
       );
     }
   }

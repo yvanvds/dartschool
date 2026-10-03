@@ -1,3 +1,10 @@
+import 'package:html/dom.dart' as html_dom;
+import 'package:html/parser.dart' as html_parser;
+
+import 'models/lesson_content_models.dart' show LessonContentItem;
+import 'models/planner_models.dart'
+    show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
+import 'models/presence_models.dart' show DayPart, PresenceHalfDay;
 import 'models/skore_models.dart' show SkoreAccessArea;
 
 /// Base exception for all Smartschool API errors.
@@ -31,10 +38,13 @@ class SmartschoolException implements Exception {
 ///   answer was rejected.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session
 ///   for a request, also after logging in again.
+/// - [SmartschoolUnexpectedPageError]: Smartschool answered an XML command
+///   with an HTML page; it says whether that is the login page, which an
+///   error page, for one, is not (#106).
 ///
 /// This class itself is still thrown for the remaining authentication
 /// failures, such as an unrecognised step in the login chain, or an HTML page
-/// where data was expected. Catching [SmartschoolAuthenticationError] catches
+/// where JSON was expected. Catching [SmartschoolAuthenticationError] catches
 /// all of them.
 ///
 /// It is thrown as itself also when the login is triggered by a regular
@@ -231,6 +241,209 @@ class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
   const SmartschoolSessionExpiredError([
     super.message = 'Smartschool did not accept the session.',
   ]);
+}
+
+/// Thrown by `SmartschoolClient.postXml`, and so by the calls of
+/// `MessagesService` that send an XML command (`getHeaders`, `getMessage`,
+/// `markRead`, `moveToTrashFrom`, ...), when Smartschool answers the command
+/// with an HTML page instead of XML (#106).
+///
+/// The client logs in again on the answers with which Smartschool refuses a
+/// session: a `401`, its answer to an XML command on an expired session, or a
+/// redirect to its login chain. So an HTML page that comes this far is
+/// something else, and [isLoginPage] tells what:
+///
+/// - `false`: a page that is not Smartschool's login page, such as one of its
+///   error pages (it serves some of those with status `200`). Not a sign of
+///   an expired session: Smartschool's web client reports such an answer to
+///   a command as an unknown error, and goes on in the same session. Seen
+///   once in a live run, for a `message list`, after which the same session
+///   listed the boxes again; what that page was is not known yet. Whether a
+///   command that changes something was carried out is not known either:
+///   check before sending it again.
+/// - `true`: a page with Smartschool's login form, or its account
+///   verification form. Smartschool did not accept the session, although it
+///   did not refuse it in a way that makes the client log in again. Not seen
+///   live.
+///
+/// It extends [SmartschoolAuthenticationError] because `postXml` threw that
+/// error for every HTML page before: code that catches it still catches this
+/// one.
+///
+/// It keeps what tells one page from another, so that a next one can be
+/// understood: the [statusCode], [contentType] and [url] of the answer, and
+/// the page's [title] and [heading], all in the [message] too, and the start
+/// of its text in [excerpt], which is not in the message. None of them holds
+/// the page's scripts, styles or forms (Smartschool's pages carry the
+/// signed-in user, with their name, in a script), and e-mail addresses and
+/// token-like strings (long runs of letters and digits) are masked in each.
+/// None holds the request's cookies or credentials, which are not in the
+/// page. Yet a page can show a name in its text: that is why [excerpt] is
+/// left out of the message.
+class SmartschoolUnexpectedPageError extends SmartschoolAuthenticationError {
+  /// The XML command that Smartschool answered with the page, such as
+  /// `message list`, or `null` when it is not known.
+  final String? action;
+
+  /// The HTTP status of the answer, or `null` when it is not known.
+  final int? statusCode;
+
+  /// The URL of the answer (after any redirect), or `null` when it is not
+  /// known.
+  final Uri? url;
+
+  /// The `Content-Type` of the answer, or `null` when it had none.
+  final String? contentType;
+
+  /// The page's `<title>`, or `null` when it has none. Smartschool's own
+  /// pages, its login page and its error pages alike, are titled with the
+  /// school's name (`<school> - Smartschool`).
+  final String? title;
+
+  /// The page's first `<h1>`, or else its first `<h2>`, or `null` when it
+  /// has neither. On Smartschool's own error pages, it says what went wrong
+  /// (such as "De opgevraagde pagina kon niet worden gevonden").
+  final String? heading;
+
+  /// The start of the page's text, without its scripts, styles and forms, or
+  /// `null` for a page without text: its first [maxExcerptLength]
+  /// characters, followed by `...` when it goes on. Not in the [message].
+  final String? excerpt;
+
+  /// Whether the page holds Smartschool's login form (`login_form`) or its
+  /// account verification form (`account_verification_form`), the forms the
+  /// client fills in when it logs in.
+  final bool isLoginPage;
+
+  /// How many characters of the page's [title] and [heading] are kept: a
+  /// longer one is cut off there, and ends in `...`.
+  static const maxLabelLength = 120;
+
+  /// How many characters of the page's text [excerpt] keeps.
+  static const maxExcerptLength = 200;
+
+  const SmartschoolUnexpectedPageError(
+    super.message, {
+    this.action,
+    this.statusCode,
+    this.url,
+    this.contentType,
+    this.title,
+    this.heading,
+    this.excerpt,
+    this.isLoginPage = false,
+  });
+
+  /// The error for [page], the HTML that Smartschool answered the XML command
+  /// [action] with, with the [statusCode], [url] and [contentType] of that
+  /// answer.
+  ///
+  /// Reads the [title], [heading], [excerpt] and [isLoginPage] from [page],
+  /// and builds a [message] that says what the page is.
+  factory SmartschoolUnexpectedPageError.fromPage(
+    String page, {
+    required String action,
+    int? statusCode,
+    Uri? url,
+    String? contentType,
+  }) {
+    final document = html_parser.parse(page);
+    final isLoginPage = document.querySelector(_loginForms) != null;
+    final title = _label(document.querySelector('title'), maxLabelLength);
+    final heading = _label(
+      document.querySelector('h1') ?? document.querySelector('h2'),
+      maxLabelLength,
+    );
+    final excerpt = _label(document.body, maxExcerptLength);
+
+    final details = [
+      'status ${statusCode ?? 'unknown'}',
+      ?contentType,
+      if (title != null) 'title "$title"',
+      if (heading != null) 'heading "$heading"',
+    ].join(', ');
+    final what = isLoginPage
+        ? 'its login page ($details). It did not accept the session, although '
+              'not in a way that makes the client log in again (a 401, or a '
+              'redirect to its login chain)'
+        : 'a page that is not its login page ($details), so not a sign of an '
+              "expired session: Smartschool's web client reports such an "
+              'answer as an unknown error';
+    return SmartschoolUnexpectedPageError(
+      'Smartschool returned HTML instead of XML for "$action": $what.'
+      '${url == null ? '' : ' Response URL: $url'}',
+      action: action,
+      statusCode: statusCode,
+      url: url,
+      contentType: contentType,
+      title: title,
+      heading: heading,
+      excerpt: excerpt,
+      isLoginPage: isLoginPage,
+    );
+  }
+
+  /// The forms that the client's login fills in.
+  static const _loginForms =
+      'form[name="login_form"], form[name="account_verification_form"]';
+
+  /// The elements whose content is left out of the text of a page: what is
+  /// not its text (scripts, styles, and the like), and its forms, whose lists
+  /// and fields can name people.
+  static const _notText = {
+    'script',
+    'style',
+    'noscript',
+    'template',
+    'svg',
+    'iframe',
+    'object',
+    'form',
+    'select',
+    'textarea',
+  };
+
+  static final _whiteSpace = RegExp(r'\s+');
+  static final _email = RegExp(r'[^\s@<>()"]+@[^\s@<>()"]+\.[A-Za-z]{2,}');
+  static final _tokenLike = RegExp(r'[A-Za-z0-9_+/=\-]{24,}');
+  static final _digit = RegExp(r'\d');
+
+  /// The text of [node] on one line, without the content of [_notText], with
+  /// e-mail addresses and token-like strings masked, cut off after [max]
+  /// characters; `null` when nothing is left.
+  ///
+  /// Its pieces of text are joined with a space, so that the text of one
+  /// block does not run into the next one (where a word could run into an
+  /// e-mail address).
+  static String? _label(html_dom.Node? node, int max) {
+    if (node == null) return null;
+    final pieces = <String>[];
+    void collect(html_dom.Node parent) {
+      for (final child in parent.nodes) {
+        if (child is html_dom.Text) {
+          pieces.add(child.data);
+        } else if (child is! html_dom.Element ||
+            !_notText.contains(child.localName)) {
+          collect(child);
+        }
+      }
+    }
+
+    collect(node);
+    final masked = pieces
+        .join(' ')
+        .replaceAll(_whiteSpace, ' ')
+        .trim()
+        .replaceAll(_email, '[e-mail]')
+        .replaceAllMapped(
+          _tokenLike,
+          (match) => _digit.hasMatch(match[0]!) ? '[token]' : match[0]!,
+        );
+    if (masked.isEmpty) return null;
+    final characters = masked.runes;
+    if (characters.length <= max) return masked;
+    return '${String.fromCharCodes(characters.take(max))}...';
+  }
 }
 
 /// Thrown when Smartschool cannot be reached: the host does not resolve, the
@@ -468,6 +681,10 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// unresolvable status code, or a pupil not present in the class. The session
 /// was accepted for all of them, so signing in again does not help.
 ///
+/// A half-day that `setLate` or `setPresent` refuses to change because it
+/// holds a status their `onlyReplacing` does not allow is reported with the
+/// subtype [SmartschoolPresenceChangeRefusedError] (#105): nothing was sent.
+///
 /// A session that Smartschool does not accept is not reported with this type
 /// but as a [SmartschoolSessionExpiredError] (a
 /// [SmartschoolAuthenticationError]), like any other authentication failure.
@@ -483,6 +700,54 @@ class SmartschoolPresenceError extends SmartschoolException {
   String toString() => errors.isEmpty
       ? '$runtimeType: $message'
       : '$runtimeType: $message (${errors.join('; ')})';
+}
+
+/// Thrown by `PresenceService.setLate` and `setPresent` when the half-day
+/// holds a status that their `onlyReplacing` does not allow (#105). Nothing
+/// was sent.
+///
+/// The check looks at the half-day as the call read it right before the
+/// save (`Presence/Class/getClass`), so a status recorded meanwhile, such as
+/// an absence the secretariat recorded, is not overwritten. Its message
+/// names the pupil, the half-day, what it holds and what `onlyReplacing`
+/// allows.
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] is empty.
+class SmartschoolPresenceChangeRefusedError extends SmartschoolPresenceError {
+  /// The pupil's internal `userID`.
+  final int userId;
+
+  /// The half of the day the call would have changed.
+  final DayPart part;
+
+  /// The day the call would have changed (`yyyy-MM-dd`).
+  final String date;
+
+  /// The half-day as the call read it right before the save, or `null` when
+  /// the pupil had no record for it.
+  final PresenceHalfDay? halfDay;
+
+  /// The name of the status the half-day holds, as
+  /// `PresenceService.statusNameOf` gives it: the name of its code or alias,
+  /// `PresenceService.nothingRecorded` (`""`) when it holds nothing, or
+  /// `null` when it holds a code or alias that is not among the codes of the
+  /// class's school structure (see [halfDay] for its ID).
+  final String? heldStatus;
+
+  /// The statuses the call allowed the half-day to hold (its
+  /// `onlyReplacing`), as passed.
+  final Set<String> onlyReplacing;
+
+  const SmartschoolPresenceChangeRefusedError(
+    super.message, {
+    required this.userId,
+    required this.part,
+    required this.date,
+    this.halfDay,
+    this.heldStatus,
+    this.onlyReplacing = const {},
+  });
 }
 
 /// Thrown by `SkoreService` when Smartschool's Skore module (grading and
@@ -649,7 +914,8 @@ class SmartschoolPlannerError extends SmartschoolException {
 /// planner answers `404`: it has no element of that type with that ID (#84).
 /// The ID is unknown, or the element was removed or moved to the trash (a
 /// lesson hour that was cleared comes back as a timetable slot with a new
-/// ID).
+/// ID). The planner answers a type name it does not have, given to
+/// `getPlannedElement` as its `typeName`, with `404` too (#99).
 ///
 /// A [SmartschoolPlannerError] with [statusCode] `404`.
 class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
@@ -686,8 +952,15 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// (`planLessonContent`, #88) must be a lesson lesfiche among the user's
 /// lesfiches. A new assignment (`planAssignment`, #89) must be of one of the
 /// school's assignment types, and an assignment moved to the trash
-/// (`trashAssignment`, #89) must not have a linked Skore evaluation. The
-/// method says which check refused.
+/// (`trashAssignment`, #89) must not have a linked Skore evaluation.
+///
+/// Which check refused is a value an app can switch on (#100): [reason],
+/// with the [element] the check read (to name it in the app's own words:
+/// its period, name, classes, course and organisers), the
+/// [capabilityFlags] it missed or found, and for a lesfiche that is not a
+/// lesson one the [lessonContent]. The [message] says the same for a log,
+/// in the library's words: it names the method, the element by its type,
+/// ID and period, and ends with "Nothing was sent.".
 ///
 /// A [SmartschoolPlannerError] (without a [statusCode]), so that from the
 /// writes that type always means nothing was sent. An element that is gone
@@ -695,7 +968,48 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// is a [SmartschoolPlannedElementNotFoundError] instead, also before
 /// anything was sent.
 class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
-  const SmartschoolPlannerWriteRefusedError(super.message);
+  /// Which check refused the write (#100). `PlannerService` always sets it;
+  /// `null` only for an error made without it.
+  final PlannerWriteRefusalReason? reason;
+
+  /// The element the write was for, as the write read it again before the
+  /// check (its detail, a [PlannedElementDetail]): the slot to fill, the
+  /// element to edit, the lesson to clear, the assignment to trash. For
+  /// [PlannerWriteRefusalReason.periodChanged] it has the period the slot
+  /// has now, for [PlannerWriteRefusalReason.notOwn] its organisers.
+  ///
+  /// `null` when the check refused before an element was read
+  /// ([PlannerWriteRefusalReason.unknownLessonContent],
+  /// [PlannerWriteRefusalReason.notALessonLessonContent],
+  /// [PlannerWriteRefusalReason.unknownAssignmentType]), and for an error
+  /// made without it.
+  final PlannedElement? element;
+
+  /// The capability flags of [element] the check refused on, by the
+  /// planner's names: for [PlannerWriteRefusalReason.notAllowed] the flags
+  /// the write needs that are not set (such as `canUserReplace`), for
+  /// [PlannerWriteRefusalReason.trashable] the ones set of `canUserTrash`
+  /// and `canUserDelete`. Empty for the other reasons.
+  final List<String> capabilityFlags;
+
+  /// For [PlannerWriteRefusalReason.notALessonLessonContent], the lesfiche
+  /// that is not a lesson one, as `planLessonContent` read it again (without
+  /// the names of its courses: `LessonContentCourse.name` is `null`); `null`
+  /// otherwise.
+  final LessonContentItem? lessonContent;
+
+  const SmartschoolPlannerWriteRefusedError(
+    super.message, {
+    this.reason,
+    this.element,
+    this.capabilityFlags = const [],
+    this.lessonContent,
+  });
+
+  @override
+  String toString() => reason == null
+      ? super.toString()
+      : '$runtimeType(${reason!.name}): $message';
 }
 
 /// Thrown by the writes of `PlannerService` (#87) when the write went out to
@@ -754,12 +1068,14 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
       : '$runtimeType($statusCode): $message';
 }
 
-/// Thrown when Smartschool's Lesfiches module (lesson content) answers a
-/// request with something `LessonContentService` cannot use (#88): another
-/// HTTP status than `200` (in [statusCode]), an HTML page instead of data
-/// (the module answers a route it does not know with its web app), an
-/// answer that is not valid JSON, or data in a shape it does not recognise
-/// (such as a lesfiche without its `id` or `type`).
+/// Thrown when Smartschool's Lesfiches module (lesson content), or the
+/// school's course list that names the courses of the lesfiches (#101),
+/// answers a request with something `LessonContentService` cannot use
+/// (#88): another HTTP status than `200` (in [statusCode]), an HTML page
+/// instead of data (the module answers a route it does not know with its web
+/// app), an answer that is not valid JSON, or data in a shape it does not
+/// recognise (such as a lesfiche without its `id` or `type`, or a course
+/// without its `id`).
 ///
 /// The session was accepted: signing in again does not help. A session that
 /// Smartschool does not accept is a [SmartschoolSessionExpiredError]

@@ -46,10 +46,22 @@
 //   sent, listed in the inbox or in its archive folder with the run's subject
 //   and checked there, and not moved to the trash; and one in a folder of the
 //   inbox other than the archive folder (#94);
+// - any request to the Presence module but its three POSTs that only read,
+//   `getConfig`, `getAllCodes` and `getClass` (PresenceService.getConfig,
+//   getAllCodes and getClassPupils, #104, #105): the live suite changes no
+//   presence, so a save of presences (`savePupilsPresences`: setLate,
+//   setPresent) never goes out;
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
 // (test/support/no_network.dart), whatever the library makes of the error.
+//
+// It also keeps every answer to an XML command that is not XML, such as the
+// HTML page that Smartschool answered a `message list` with once (#106), and
+// prints what the page is when the test fails: its status, whether it is the
+// login page, its title and main heading, and the start of its text, without
+// its scripts and forms (SmartschoolUnexpectedPageError.fromPage). It lets
+// such an answer through: the library reports it.
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:flutter_smartschool/src/xml_interface.dart';
@@ -182,6 +194,13 @@ class LiveWireGuard extends Interceptor {
   /// a message (#94), in order, with the command and the message ID.
   final List<({String action, int id, String answer})> markAnswers = [];
 
+  /// The answers to an XML command that were not XML (#106), in order, each
+  /// as the line that the test that got it prints when it fails: the
+  /// command, the status and content type of the answer, and what the page
+  /// is. An empty answer is not one of them: Smartschool answers some
+  /// commands that change nothing that way (#59).
+  final List<String> unexpectedAnswers = [];
+
   /// The archive folder of the inbox, as Smartschool's Messages page names it
   /// (MessagesService.getArchiveBoxId loads that page), or `null` while no
   /// page named one, or when pages named different ones: then the guard
@@ -305,6 +324,7 @@ class LiveWireGuard extends Interceptor {
     }
     if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
     if (path == _archivePath) return _archiveRefusal(options.data);
+    if (path.startsWith('/Presence/')) return _presenceRefusal(path);
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -332,6 +352,22 @@ class LiveWireGuard extends Interceptor {
     if (count == 1) return null;
     return 'it would log in a second time in this run (its $step); the live '
         'suite logs in at most once per run';
+  }
+
+  /// The Presence module's POSTs that only read: its config and the pupils
+  /// of a class on a day (#104), and the codes of a school structure (#105).
+  static const _presenceReads = {
+    '/Presence/Main/getConfig',
+    '/Presence/Code/getAllCodes',
+    '/Presence/Class/getClass',
+  };
+
+  /// Why the Presence request to [path] may not go out, or `null`: only the
+  /// reads go out, never a save of presences.
+  String? _presenceRefusal(String path) {
+    if (_presenceReads.contains(path)) return null;
+    return 'the live suite changes no presence: it sends no Presence request '
+        'but the reads getConfig, getAllCodes and getClass (#104, #105)';
   }
 
   /// The XML commands that only read.
@@ -696,10 +732,65 @@ class LiveWireGuard extends Interceptor {
       case ('POST', 'searchUsers', 'deleteUsersFromSelected'):
         _recordRemoved(options.data, body);
       case ('POST', 'dispatcher', _):
+        _noteUnexpectedAnswer(options.data, response, body);
         _recordCommandAnswer(options.data, body);
     }
     return null;
   }
+
+  /// Keeps Smartschool's answer [body] to the XML command with the fields
+  /// [data] in [unexpectedAnswers] when it is not XML, and prints it when the
+  /// test fails (#106).
+  void _noteUnexpectedAnswer(
+    Object? data,
+    Response<dynamic> response,
+    String body,
+  ) {
+    final trimmed = body.trim();
+    if (trimmed.isEmpty || _isXml(trimmed)) return;
+    final command = data is Map ? data['command'] : null;
+    final action = command is String
+        ? _text(XmlDocument.parse(command), 'action')
+        : '(no command)';
+    final page = SmartschoolUnexpectedPageError.fromPage(
+      body,
+      action: action,
+      statusCode: response.statusCode,
+      contentType: response.headers.value(Headers.contentTypeHeader),
+    );
+    final line = [
+      'Smartschool answered "$action" with something that is not XML '
+          '(#106): status ${response.statusCode}',
+      page.contentType ?? 'no content type',
+      page.isLoginPage ? 'its login page' : 'not its login page',
+      if (page.title != null) 'title "${page.title}"',
+      if (page.heading != null) 'heading "${page.heading}"',
+      'text "${page.excerpt ?? ''}"',
+    ].join(', ');
+    unexpectedAnswers.add(line);
+    try {
+      printOnFailure(line);
+    } on StateError {
+      // Not in a test: the line is in unexpectedAnswers.
+    }
+  }
+
+  /// Whether [body], a trimmed answer, is an XML document, and not an HTML
+  /// page (which can be one too).
+  static bool _isXml(String body) {
+    if (_htmlStart.hasMatch(body)) return false;
+    try {
+      XmlDocument.parse(body);
+      return true;
+    } on XmlException {
+      return false;
+    }
+  }
+
+  static final _htmlStart = RegExp(
+    r'^<(!doctype\s+html|html)\b',
+    caseSensitive: false,
+  );
 
   /// Keeps the compose form of [html], loaded from [url], with the
   /// recipients it names: a reply form has them registered already.

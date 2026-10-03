@@ -238,6 +238,7 @@ Future<LessonContentItem?> _lessonFiche(
     print(
       '  ${fiche.id}  ${fiche.name}'
       '${fiche.isVisible ? '' : ' (hidden)'}'
+      '  ${fiche.courses.map((c) => c.name ?? c.id).join(', ')}'
       '  [${fiche.labels.map((l) => l.text).join(', ')}]',
     );
   }

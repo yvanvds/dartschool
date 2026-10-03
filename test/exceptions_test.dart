@@ -1,4 +1,8 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
+import 'package:flutter_smartschool/src/models/planner_models.dart'
+    show PlannedElement, PlannerWriteRefusalReason;
+import 'package:flutter_smartschool/src/models/presence_models.dart'
+    show DayPart, PresenceHalfDay;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
     show SkoreAccessArea;
 import 'package:test/test.dart';
@@ -120,6 +124,55 @@ void main() {
         'SmartschoolSessionExpiredError: '
         'Smartschool did not accept the session.',
       );
+    });
+  });
+
+  group('SmartschoolPresenceChangeRefusedError (#105)', () {
+    test('is a SmartschoolPresenceError without server errors, not a session '
+        'problem, and keeps what the half-day held', () {
+      const halfDay = PresenceHalfDay(
+        presenceId: 90005,
+        presenceDate: '2026-06-01',
+        part: DayPart.morning,
+        codeId: 479,
+        aliasId: null,
+        motivation: '',
+      );
+      const error = SmartschoolPresenceChangeRefusedError(
+        'holds "Doktersattest"',
+        userId: 1003,
+        part: DayPart.morning,
+        date: '2026-06-01',
+        halfDay: halfDay,
+        heldStatus: 'Doktersattest',
+        onlyReplacing: {'Aanwezig'},
+      );
+      expect(error, isA<SmartschoolPresenceError>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.errors, isEmpty);
+      expect(
+        (error.userId, error.part, error.date),
+        (1003, DayPart.morning, '2026-06-01'),
+      );
+      expect(error.halfDay, same(halfDay));
+      expect(error.heldStatus, 'Doktersattest');
+      expect(error.onlyReplacing, {'Aanwezig'});
+      expect(
+        error.toString(),
+        'SmartschoolPresenceChangeRefusedError: holds "Doktersattest"',
+      );
+    });
+
+    test('made without a half-day, status or set: null, null and empty', () {
+      const error = SmartschoolPresenceChangeRefusedError(
+        'refused',
+        userId: 1,
+        part: DayPart.afternoon,
+        date: '2026-06-01',
+      );
+      expect(error.halfDay, isNull);
+      expect(error.heldStatus, isNull);
+      expect(error.onlyReplacing, isEmpty);
     });
   });
 
@@ -258,6 +311,61 @@ void main() {
         error.toString(),
         'SmartschoolPlannerWriteRefusedError: not your slot',
       );
+    });
+
+    test('SmartschoolPlannerWriteRefusedError made without a reason has none '
+        '(#100): no reason, element, flags or lesfiche', () {
+      // The constructor of 0.3.2 still works: the new fields are optional.
+      const error = SmartschoolPlannerWriteRefusedError('not your slot');
+      expect(error.reason, isNull);
+      expect(error.element, isNull);
+      expect(error.capabilityFlags, isEmpty);
+      expect(error.lessonContent, isNull);
+    });
+
+    test('SmartschoolPlannerWriteRefusedError carries its reason, element and '
+        'flags, and shows the reason (#100)', () {
+      final slot = PlannedElement.fromJson({
+        'id': 'e0000000-0000-5000-8000-000000000001',
+        'platformId': 4069,
+        'plannedElementType': 'planned-placeholders',
+        'period': {
+          'dateTimeFrom': '2026-11-20T11:10:00+01:00',
+          'dateTimeTo': '2026-11-20T12:00:00+01:00',
+        },
+      });
+      final error = SmartschoolPlannerWriteRefusedError(
+        'cannot fill it',
+        reason: PlannerWriteRefusalReason.notAllowed,
+        element: slot,
+        capabilityFlags: const ['canUserReplace'],
+      );
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error.statusCode, isNull);
+      expect(error.reason, PlannerWriteRefusalReason.notAllowed);
+      expect(error.element, same(slot));
+      expect(error.capabilityFlags, ['canUserReplace']);
+      expect(error.lessonContent, isNull);
+      expect(error.message, 'cannot fill it');
+      expect(
+        error.toString(),
+        'SmartschoolPlannerWriteRefusedError(notAllowed): cannot fill it',
+      );
+    });
+
+    test('PlannerWriteRefusalReason has the reasons of the issue (#100)', () {
+      expect(PlannerWriteRefusalReason.values.map((r) => r.name), [
+        'notOwn',
+        'notAllowed',
+        'noLongerASlot',
+        'periodChanged',
+        'participantRoles',
+        'trashable',
+        'unknownLessonContent',
+        'notALessonLessonContent',
+        'unknownAssignmentType',
+        'linkedEvaluation',
+      ]);
     });
 
     test('SmartschoolPlannerSaveUnconfirmedError is not a '

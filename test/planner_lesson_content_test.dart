@@ -80,12 +80,19 @@ const _readSlot = 'GET $_slotPath';
 const _plan = 'POST $_planPath';
 const _readLesson = 'GET $_lessonPath';
 const _clear = 'POST $_clearPath';
+const _readCourses = 'GET /course-list/api/v1/courses';
 
 /// An empty lesson hour of the own planner on Friday 20 November 2026 (winter
 /// time, `+01:00`), classes 6A1 and 6A2, course informatica, room 101: no
 /// name, and it can be filled (`canUserReplace`).
 const _slot = r'''
 {"id":"e0000000-0000-5000-8000-000000000010","platformId":4069,"period":{"dateTimeFrom":"2026-11-20T11:10:00+01:00","dateTimeTo":"2026-11-20T12:00:00+01:00","wholeDay":false,"deadline":false},"organisers":{"users":[{"id":"4069_1001_0","pictureHash":"initials_JJ","pictureUrl":"https:\/\/userpicture20.smartschool.be\/User\/Userimage\/hashimage\/hash\/initials_JJ\/plain\/1\/res\/128","description":{"startingWithFirstName":"","startingWithLastName":""},"name":{"startingWithFirstName":"Jan Janssens","startingWithLastName":"Janssens Jan"},"sort":"janssens-jan","deleted":false}],"groups":[]},"participants":{"users":[],"groups":[{"identifier":"4069_2001","id":"4069_2001","platformId":4069,"name":"6A1","type":"K","icon":"briefcase","sort":"6A1"},{"identifier":"4069_2002","id":"4069_2002","platformId":4069,"name":"6A2","type":"K","icon":"briefcase","sort":"6A2"}],"userRoles":[],"groupFilters":{"filters":[],"additionalUsers":[]}},"labels":[],"presenceSaved":false,"showPresenceChoices":false,"courses":[{"id":"c0000000-0000-4000-8000-000000000005","platformId":4069,"name":"informatica","scheduleCodes":["INFO"],"icon":"schoolbord","courseCluster":{"id":4,"name":"Informatica"},"isVisible":true}],"courseLinks":[],"locations":[{"id":"10000000-0000-4000-8000-000000000101","platformId":4069,"platformName":"Springfield Academy","number":"","title":"101","icon":"","type":"mini-db-item","selectable":true}],"isParticipant":false,"capabilities":{"canUserTrash":false,"canUserDelete":false,"canUserEdit":true,"canUserReplace":true,"canUserReschedule":false,"canUserChangeParticipants":true,"canUserChangeLocations":true,"canUserRename":false,"canUserChangeIcon":false,"canUserSeeProperties":{"id":true,"platformId":true,"period":true,"organisers":true,"participants":true,"courses":true,"locations":true,"plannedElementType":true}},"plannedElementType":"planned-placeholders","onlineSession":null,"reservations":[],"sort":"20261120111000_8_6A1_","unconfirmed":false,"pinned":false,"color":"aqua-200","reminders":[],"joinIds":{"from":"f0000000-0000-5000-8000-000000000010","to":"f0000000-0000-5000-8000-000000000011"}}
+''';
+
+/// The school's course list (`/course-list/api/v1/courses`), trimmed to the
+/// course of the slot (informatica), as the planner names it (#101).
+const _courses = r'''
+[{"id":"c0000000-0000-4000-8000-000000000005","platformId":4069,"name":"informatica","scheduleCodes":["INFO"],"icon":"schoolbord","courseCluster":{"id":4,"name":"Informatica"},"isVisible":true}]
 ''';
 
 /// The planner's answer to the plan: a new lesson in the slot's period, with
@@ -300,8 +307,8 @@ class _Smartschool implements HttpClientAdapter {
     if (failure != null) throw failure(options);
 
     switch (label) {
-      case 'GET /course-list/api/v1/courses':
-        return _respond(_json('[{"platformId":4069}]'));
+      case _readCourses:
+        return _respond(_json(_courses));
       case 'GET /login':
         return _respond((status: 200, body: _loginPage, location: null));
       case 'POST /login':
@@ -365,11 +372,25 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
         allowMalformed: true,
       );
 
-/// A check before the plan refused it: nothing was sent.
-Matcher _refused(Object? message) => isA<SmartschoolPlannerWriteRefusedError>()
+/// A check before the plan refused it: nothing was sent. The error gives the
+/// check as [reason] (#100), with the ID of the [element] it read again
+/// (`null` when it refused the lesfiche before reading the slot), the
+/// capability [flags] it refused on and the ID of the [lessonContent] that
+/// is not a lesson one.
+Matcher _refused(
+  Object? message, {
+  required PlannerWriteRefusalReason reason,
+  Object? element = anything,
+  Object? flags = isEmpty,
+  Object? lessonContent = isNull,
+}) => isA<SmartschoolPlannerWriteRefusedError>()
     .having((e) => e.message, 'message', message)
     .having((e) => e.message, 'message', contains('planLessonContent'))
-    .having((e) => e.message, 'message', contains('Nothing was sent'));
+    .having((e) => e.message, 'message', contains('Nothing was sent'))
+    .having((e) => e.reason, 'reason', reason)
+    .having((e) => e.element?.id, 'element', element)
+    .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
+    .having((e) => e.lessonContent?.id, 'lessonContent', lessonContent);
 
 /// The plan went out without the planner confirming it.
 Matcher _unconfirmed(
@@ -428,6 +449,11 @@ void main() {
 
       expect(server.moduleLog, [_readFiches, _readSlot, _plan]);
       expect(server.log, isNot(contains(endsWith('/blanco'))));
+      // The lesfiche's ID and kind are all it needs: it does not read the
+      // course list for the names of the lesfiches' courses (#101). The one
+      // read of it is the client's, for the platform ID it reads with the
+      // authenticated user.
+      expect(server.log.where((l) => l == _readCourses), hasLength(1));
       expect(server.bodyOf(_plan), _planBody());
       final body = server.bodyOf(_plan)! as Map<String, dynamic>;
       for (final key in ['name', 'info', 'publicInfo', 'privateInfo']) {
@@ -448,11 +474,12 @@ void main() {
         lesson.period.from.isAtSameMomentAs(DateTime.utc(2026, 11, 20, 10, 10)),
         isTrue,
       );
-      // The lesfiche's labels and goals came along (seen live).
-      expect(
-        [for (final label in lesson.raw['labels'] as List) label['text']],
-        ['JAAR 6', 'TRIMESTER 1'],
-      );
+      // The lesfiche's labels and goals came along (seen live); the labels
+      // are typed (#98), the goals are only in raw.
+      expect(lesson.labels!.map((l) => l.text), ['JAAR 6', 'TRIMESTER 1']);
+      expect(lesson.labels!.every((l) => l.isSchoolLabel), isTrue);
+      expect(lesson.attachments, isEmpty);
+      expect(lesson.weblinks, isEmpty);
       expect(lesson.raw['goals'] as List, hasLength(2));
     });
 
@@ -547,6 +574,8 @@ void main() {
           throwsA(
             _refused(
               allOf(contains('no lesfiche $unknown'), contains('2 lesfiches')),
+              reason: PlannerWriteRefusalReason.unknownLessonContent,
+              element: isNull,
             ),
           ),
         );
@@ -564,12 +593,29 @@ void main() {
             lessonContentId: _assignmentFicheId,
           ),
           throwsA(
-            _refused(
-              allOf(
-                contains('"Taak: een eigen spel"'),
-                contains('an assignment lesfiche (assignments)'),
-                contains('not a lesson one'),
+            allOf(
+              _refused(
+                allOf(
+                  contains('"Taak: een eigen spel"'),
+                  contains('an assignment lesfiche (assignments)'),
+                  contains('not a lesson one'),
+                ),
+                reason: PlannerWriteRefusalReason.notALessonLessonContent,
+                element: isNull,
+                lessonContent: _assignmentFicheId,
               ),
+              // The lesfiche as read again, to name it in the app's words.
+              isA<SmartschoolPlannerWriteRefusedError>()
+                  .having(
+                    (e) => e.lessonContent?.name,
+                    'lessonContent.name',
+                    'Taak: een eigen spel',
+                  )
+                  .having(
+                    (e) => e.lessonContent?.type,
+                    'lessonContent.type',
+                    LessonContentType.assignment,
+                  ),
             ),
           ),
         );
@@ -586,7 +632,14 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('a "activities" lesfiche'))),
+          throwsA(
+            _refused(
+              contains('a "activities" lesfiche'),
+              reason: PlannerWriteRefusalReason.notALessonLessonContent,
+              element: isNull,
+              lessonContent: _ficheId,
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches]);
       });
@@ -643,6 +696,8 @@ void main() {
                   contains('not in your own planner'),
                   contains('Wim Willems (4069_1003_0)'),
                 ),
+                reason: PlannerWriteRefusalReason.notOwn,
+                element: _slotId,
               ),
             ),
           );
@@ -664,7 +719,14 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('canUserReplace not set'))),
+          throwsA(
+            _refused(
+              contains('canUserReplace not set'),
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _slotId,
+              flags: ['canUserReplace'],
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches, _readSlot]);
       });
@@ -682,7 +744,13 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('no longer in the period'))),
+          throwsA(
+            _refused(
+              contains('no longer in the period'),
+              reason: PlannerWriteRefusalReason.periodChanged,
+              element: _slotId,
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches, _readSlot]);
       });
@@ -715,7 +783,13 @@ void main() {
             placeholder: _listed(_slot),
             lessonContentId: _ficheId,
           ),
-          throwsA(_refused(contains('participant roles or group filters'))),
+          throwsA(
+            _refused(
+              contains('participant roles or group filters'),
+              reason: PlannerWriteRefusalReason.participantRoles,
+              element: _slotId,
+            ),
+          ),
         );
         expect(server.moduleLog, [_readFiches, _readSlot]);
       });
@@ -964,14 +1038,33 @@ void main() {
 
     final hour = await hourOfWeek();
     expect(hour.type, PlannedElementType.placeholder);
+    // The lesfiche names its course as the planner names the hour's course:
+    // the course list has the planner's course IDs (#101).
+    expect(fiche.courses.single.id, hour.courses.single.id);
+    expect(fiche.courses.single.name, hour.courses.single.name);
+    expect(fiche.courses.single.name, 'informatica');
 
-    // An assignment lesfiche is refused before the slot is read.
+    // An assignment lesfiche is refused before the slot is read, with the
+    // lesfiche (#100).
     await expectLater(
       service.planLessonContent(
         placeholder: hour,
         lessonContentId: assignmentFiche.id,
       ),
-      throwsA(isA<SmartschoolPlannerWriteRefusedError>()),
+      throwsA(
+        isA<SmartschoolPlannerWriteRefusedError>()
+            .having(
+              (e) => e.reason,
+              'reason',
+              PlannerWriteRefusalReason.notALessonLessonContent,
+            )
+            .having(
+              (e) => e.lessonContent?.name,
+              'lesfiche',
+              assignmentFiche.name,
+            )
+            .having((e) => e.element, 'element', isNull),
+      ),
     );
 
     final planned = await service.planLessonContent(

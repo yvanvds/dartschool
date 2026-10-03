@@ -744,6 +744,258 @@ class PlannedElementCapabilities {
 }
 
 // ---------------------------------------------------------------------------
+// Labels, attachments and weblinks
+// ---------------------------------------------------------------------------
+
+/// A label of a planned element: a school label (such as `JAAR 6` or
+/// `TRIMESTER 1`) or one of the teacher's own.
+///
+/// In [PlannedElementDetail.labels]. The planner gives the same label object
+/// as the Lesfiches module (`LessonContentLabel`): a lesson planned from a
+/// lesfiche gets the lesfiche's labels.
+class PlannerLabel {
+  /// The label ID (`id`): the platform ID and a UUID for a school label
+  /// (`4069_<uuid>`), the owner's whole user ID and a UUID for an own label
+  /// (`4069_146_0_<uuid>`).
+  final String id;
+
+  /// The text of the label (`JAAR 6`).
+  final String text;
+
+  /// The colour the planner shows the label in (`aqua`, `yellow`, `steel`),
+  /// or `null` when it gave none.
+  final String? color;
+
+  /// The kind of label (`type`): `platform` for a label of the school, `user`
+  /// for one of the teacher's own; `""` when the planner gave none.
+  final String type;
+
+  /// Whether the label is visible.
+  final bool isVisible;
+
+  const PlannerLabel({
+    required this.id,
+    required this.text,
+    this.color,
+    this.type = '',
+    this.isVisible = true,
+  });
+
+  /// Parses a label as the planner gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks its `id`.
+  factory PlannerLabel.fromJson(Map<String, dynamic> json) => PlannerLabel(
+    id: _requiredString(json, 'id', 'a label'),
+    text: (_optionalString(json['text']) ?? '').trim(),
+    color: _optionalString(json['color']),
+    type: _optionalString(json['type']) ?? '',
+    isVisible: json['isVisible'] == null || _bool(json['isVisible']),
+  );
+
+  /// Whether this is a label of the school (`type` `platform`).
+  bool get isSchoolLabel => type == 'platform';
+
+  @override
+  String toString() => 'PlannerLabel($text)';
+}
+
+/// From when pupils see an attachment or a weblink of a planned element: the
+/// option the teacher chose for it ("Vanaf wanneer zien leerlingen dit?").
+///
+/// Only [always] was seen on the live site; the others are the web client's
+/// options. An option this library does not know is [other];
+/// [PlannerVisibility.optionName] keeps its name.
+enum PlannerVisibilityOption {
+  /// Pupils always see it (`always`).
+  always('always'),
+
+  /// Pupils never see it (`never`).
+  never('never'),
+
+  /// Pupils see it from the start of the lesson or assignment (`at-start`).
+  atStart('at-start'),
+
+  /// Pupils see it from the end of the lesson or assignment (`at-end`).
+  atEnd('at-end'),
+
+  /// Pupils see it a number of days after the end of the lesson or
+  /// assignment (`days-after-end`; the number is
+  /// [PlannerVisibility.daysAfterEnd]).
+  daysAfterEnd('days-after-end'),
+
+  /// An option this library does not know. [PlannerVisibility.optionName]
+  /// holds the planner's name for it.
+  other(null);
+
+  const PlannerVisibilityOption(this.wireName);
+
+  /// The planner's name of the option (`days-after-end`), or `null` for
+  /// [other].
+  final String? wireName;
+
+  /// The option the planner calls [wireName], or [other] when this library
+  /// does not know it.
+  static PlannerVisibilityOption fromWire(String wireName) {
+    for (final option in values) {
+      if (option.wireName == wireName) return option;
+    }
+    return other;
+  }
+}
+
+/// From when pupils see an attachment or a weblink of a planned element
+/// (`visibility`: `{"option": "always", "daysAfterEnd": null}`).
+class PlannerVisibility {
+  /// The option; [PlannerVisibilityOption.other] for one this library does
+  /// not know (see [optionName]).
+  final PlannerVisibilityOption option;
+
+  /// The planner's name of the option (`always`), also for one this library
+  /// does not know; `""` when the planner gave none.
+  final String optionName;
+
+  /// For [PlannerVisibilityOption.daysAfterEnd]: after how many days pupils
+  /// see it; `null` when the planner gave no number (it gives `null` for the
+  /// other options).
+  final int? daysAfterEnd;
+
+  const PlannerVisibility({
+    required this.option,
+    required this.optionName,
+    this.daysAfterEnd,
+  });
+
+  /// Parses a visibility as the planner gives it. A missing or unknown
+  /// `option` is [PlannerVisibilityOption.other].
+  factory PlannerVisibility.fromJson(Map<String, dynamic> json) {
+    final optionName = (_optionalString(json['option']) ?? '').trim();
+    return PlannerVisibility(
+      option: PlannerVisibilityOption.fromWire(optionName),
+      optionName: optionName,
+      daysAfterEnd: _optionalInt(json['daysAfterEnd']),
+    );
+  }
+
+  @override
+  String toString() =>
+      'PlannerVisibility($optionName'
+      '${daysAfterEnd == null ? '' : ', $daysAfterEnd days'})';
+}
+
+/// A file attached to a planned element (a "bijlage"), in
+/// [PlannedElementDetail.attachments].
+///
+/// The planner gives it as `{id, fileName, fileSize, mimeType, visibility}`
+/// (seen live, 2026-10-03). The library does not download it.
+class PlannerAttachment {
+  /// The attachment ID (a UUID).
+  final String id;
+
+  /// The file name (`fileName`, such as `rubriek.docx`), as the planner gave
+  /// it; `""` when it gave none.
+  final String name;
+
+  /// The size of the file in bytes (`fileSize`), or `null` when the planner
+  /// gave none.
+  final int? size;
+
+  /// The MIME type of the file (`mimeType`), or `null` when the planner gave
+  /// none.
+  final String? mimeType;
+
+  /// From when pupils see the file, or `null` when the planner gave no
+  /// visibility.
+  final PlannerVisibility? visibility;
+
+  const PlannerAttachment({
+    required this.id,
+    required this.name,
+    this.size,
+    this.mimeType,
+    this.visibility,
+  });
+
+  /// Parses an attachment as the planner gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks its `id` or holds a part in an
+  /// unknown shape.
+  factory PlannerAttachment.fromJson(Map<String, dynamic> json) {
+    final id = _requiredString(json, 'id', 'an attachment');
+    final visibility = _optionalMap(
+      json['visibility'],
+      'the visibility of attachment $id',
+    );
+    return PlannerAttachment(
+      id: id,
+      name: _optionalString(json['fileName']) ?? '',
+      size: _optionalInt(json['fileSize']),
+      mimeType: _optionalString(json['mimeType']),
+      visibility: visibility == null
+          ? null
+          : PlannerVisibility.fromJson(visibility),
+    );
+  }
+
+  @override
+  String toString() =>
+      'PlannerAttachment($id, $name${size == null ? '' : ', $size bytes'})';
+}
+
+/// A weblink of a planned element, in [PlannedElementDetail.weblinks]: a
+/// named link to a web page.
+///
+/// The planner gives it as `{id, name, url, icon, visibility}`, as the
+/// Lesfiches module does. A partner's weblink (`partnerWeblinks`, such as
+/// BookWidgets) is not a [PlannerWeblink].
+class PlannerWeblink {
+  /// The weblink ID (a UUID).
+  final String id;
+
+  /// The name of the weblink (`Opdracht`); `""` when the planner gave none.
+  final String name;
+
+  /// The address of the web page it opens, as the planner gave it; `""`
+  /// when it gave none.
+  final String url;
+
+  /// The icon the planner shows for the weblink (`earth`), or `null`.
+  final String? icon;
+
+  /// From when pupils see the weblink, or `null` when the planner gave no
+  /// visibility.
+  final PlannerVisibility? visibility;
+
+  const PlannerWeblink({
+    required this.id,
+    required this.name,
+    required this.url,
+    this.icon,
+    this.visibility,
+  });
+
+  /// Parses a weblink as the planner gives it. Throws a
+  /// [SmartschoolPlannerError] when it lacks its `id` or holds a part in an
+  /// unknown shape.
+  factory PlannerWeblink.fromJson(Map<String, dynamic> json) {
+    final id = _requiredString(json, 'id', 'a weblink');
+    final visibility = _optionalMap(
+      json['visibility'],
+      'the visibility of weblink $id',
+    );
+    return PlannerWeblink(
+      id: id,
+      name: (_optionalString(json['name']) ?? '').trim(),
+      url: _optionalString(json['url']) ?? '',
+      icon: _optionalString(json['icon']),
+      visibility: visibility == null
+          ? null
+          : PlannerVisibility.fromJson(visibility),
+    );
+  }
+
+  @override
+  String toString() => 'PlannerWeblink($name, $url)';
+}
+
+// ---------------------------------------------------------------------------
 // Elements
 // ---------------------------------------------------------------------------
 
@@ -954,11 +1206,15 @@ class PlannedElement {
 }
 
 /// The full detail of one planned element: the [PlannedElement] fields, and
-/// the info texts and other fields only the detail holds.
+/// the info texts, labels, attachments, weblinks and other fields only the
+/// detail holds.
 ///
 /// Returned by `PlannerService.getPlannedElement` and `getDetail`. The detail
 /// is up to date at once after a change in the planner; the calendar list
 /// may still show the old state for a few seconds.
+///
+/// The partner weblinks, deeplinks and goals of the element are only in
+/// [raw] (`partnerWeblinks`, `deeplinks`, `goals`).
 class PlannedElementDetail extends PlannedElement {
   /// The old name of [privateInfo]: it held the same text in every answer
   /// seen. HTML; `""` when empty.
@@ -988,6 +1244,21 @@ class PlannedElementDetail extends PlannedElement {
   /// planner gave no such date.
   final DateTime? dateCreated;
 
+  /// The labels of the element (`labels`), school labels and own labels, in
+  /// the planner's order: `[]` when it has none, `null` when the planner gave
+  /// no labels for the element.
+  final List<PlannerLabel>? labels;
+
+  /// The files attached to the element (`attachments`), in the planner's
+  /// order: `[]` when it has none, `null` when the planner gave no
+  /// attachments for the element (it gives none for a timetable slot).
+  final List<PlannerAttachment>? attachments;
+
+  /// The weblinks of the element (`weblinks`), in the planner's order: `[]`
+  /// when it has none, `null` when the planner gave no weblinks for the
+  /// element (it gives none for a timetable slot).
+  final List<PlannerWeblink>? weblinks;
+
   PlannedElementDetail._(
     super.element, {
     required this.info,
@@ -997,6 +1268,9 @@ class PlannedElementDetail extends PlannedElement {
     this.visibleFrom,
     this.hasLinkedEvaluation,
     this.dateCreated,
+    this.labels,
+    this.attachments,
+    this.weblinks,
   }) : super._copy();
 
   /// Parses the detail of an element as the planner gives it; see
@@ -1027,6 +1301,21 @@ class PlannedElementDetail extends PlannedElement {
       dateCreated: created == null
           ? null
           : _dateTime(created, 'the creation date of $what'),
+      labels: _optionalObjects(
+        json['labels'],
+        'the labels of $what',
+        PlannerLabel.fromJson,
+      ),
+      attachments: _optionalObjects(
+        json['attachments'],
+        'the attachments of $what',
+        PlannerAttachment.fromJson,
+      ),
+      weblinks: _optionalObjects(
+        json['weblinks'],
+        'the weblinks of $what',
+        PlannerWeblink.fromJson,
+      ),
     );
   }
 
@@ -1196,6 +1485,83 @@ class PlannerGroupWorkload {
 }
 
 // ---------------------------------------------------------------------------
+// Writes
+// ---------------------------------------------------------------------------
+
+/// Why a check of `PlannerService` refused a write before it was sent: the
+/// [SmartschoolPlannerWriteRefusedError.reason] (#100). Nothing was sent.
+///
+/// The error's [SmartschoolPlannerWriteRefusedError.element] is the element
+/// as the write read it again (its detail), for every reason that is about
+/// an element; [SmartschoolPlannerWriteRefusedError.capabilityFlags] and
+/// [SmartschoolPlannerWriteRefusedError.lessonContent] hold what some
+/// reasons add.
+enum PlannerWriteRefusalReason {
+  /// The element is not in the authenticated user's own planner: it is not
+  /// organised by the authenticated user (`organisers.users`), such as a
+  /// colleague's slot, lesson or assignment in a class calendar. The service
+  /// never changes those, even when the planner would let the user. The
+  /// error's `element` has the organisers ([PlannedElement.organiserUsers]).
+  ///
+  /// From every write that changes an element: `planLesson`,
+  /// `planLessonContent`, `renameElement`, `changePublicInfo`,
+  /// `changePrivateInfo`, `clearLesson` and `trashAssignment`.
+  notOwn,
+
+  /// The planner's capabilities of the element do not allow the change. The
+  /// error's `capabilityFlags` are the flags the write needs that are not
+  /// set: `canUserReplace` to fill a slot (`planLesson`,
+  /// `planLessonContent`); `canUserEdit` and `canUserRename`,
+  /// `canUserChangePublicInfo` or `canUserChangePrivateInfo` to edit;
+  /// `canUserEdit` to clear a lesson; `canUserTrash` to move an assignment
+  /// to the trash.
+  notAllowed,
+
+  /// The slot to fill (`planLesson`, `planLessonContent`) is no longer a
+  /// timetable slot: the planner answered its detail with an element of
+  /// another type (the error's `element`).
+  noLongerASlot,
+
+  /// The slot to fill (`planLesson`, `planLessonContent`) is no longer in
+  /// the period it was read with: the error's `element` has the period it
+  /// has now. Read the calendar again.
+  periodChanged,
+
+  /// The slot to fill (`planLesson`, `planLessonContent`) has participant
+  /// roles or group filters, which the timetable slots seen live never had
+  /// and which the service does not know how to send on.
+  participantRoles,
+
+  /// The lesson to clear (`clearLesson`) is one the planner lets the user
+  /// trash or delete: the error's `capabilityFlags` are those of
+  /// `canUserTrash` and `canUserDelete` that are set. The lessons in a
+  /// timetable hour seen live allowed neither, clearing being the planner's
+  /// way to remove them; the clear of another lesson was not tried.
+  trashable,
+
+  /// The lesfiche to plan (`planLessonContent`) is not among the user's
+  /// lesfiches (`LessonContentService.getItems`, read again first). Refused
+  /// before the slot was read: the error has no `element`.
+  unknownLessonContent,
+
+  /// The lesfiche to plan (`planLessonContent`) is not a lesson lesfiche:
+  /// an assignment lesfiche, or one of a kind the library does not know.
+  /// The error's `lessonContent` is the lesfiche as read again. Refused
+  /// before the slot was read: the error has no `element`.
+  notALessonLessonContent,
+
+  /// The type of a new assignment (`planAssignment`) is not one of the
+  /// school's assignment types (`getAssignmentTypes`, read again first). A
+  /// new assignment has no element yet: the error has no `element`.
+  unknownAssignmentType,
+
+  /// The assignment to move to the trash (`trashAssignment`) has a linked
+  /// Skore evaluation ([PlannedElementDetail.hasLinkedEvaluation]): the
+  /// trash of such an assignment was not tried.
+  linkedEvaluation,
+}
+
+// ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -1236,6 +1602,14 @@ List<T> _objects<T>(
 ) => List.unmodifiable([
   for (final item in _list(value, what)) parse(_map(item, 'one of $what')),
 ]);
+
+/// The objects in list [value], each parsed with [parse]; `null` when the
+/// planner gave no list (`value` missing or `null`).
+List<T>? _optionalObjects<T>(
+  Object? value,
+  String what,
+  T Function(Map<String, dynamic>) parse,
+) => value == null ? null : _objects(value, what, parse);
 
 String _requiredString(Map<String, dynamic> json, String key, String what) {
   final value = json[key];

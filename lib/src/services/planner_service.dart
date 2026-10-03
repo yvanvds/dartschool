@@ -61,6 +61,12 @@ export '../models/planner_models.dart';
 /// );
 /// final detail = await planner.getDetail(tests.first);
 /// print(detail.publicInfo);
+/// for (final file in detail.attachments ?? const <PlannerAttachment>[]) {
+///   print('${file.name} (${file.size} bytes)');
+/// }
+/// for (final link in detail.weblinks ?? const <PlannerWeblink>[]) {
+///   print('${link.name}: ${link.url}');
+/// }
 ///
 /// // The assignments of the class in that week, of all its teachers, and
 /// // the planner's workload figures per day.
@@ -187,7 +193,12 @@ export '../models/planner_models.dart';
 ///   does not have (`404`); so did a write, for the element it reads again
 ///   first (such as a slot that was filled since it was read).
 /// - [SmartschoolPlannerWriteRefusedError] (a [SmartschoolPlannerError]): a
-///   check before a write refused it. Nothing was sent.
+///   check before a write refused it. Nothing was sent. Its
+///   [SmartschoolPlannerWriteRefusedError.reason] says which check (a
+///   [PlannerWriteRefusalReason], such as
+///   [PlannerWriteRefusalReason.notOwn]), and its
+///   [SmartschoolPlannerWriteRefusedError.element] is the element as read
+///   again, so an app can say why in its own words.
 /// - [SmartschoolLessonContentError]: [planLessonContent] could not read the
 ///   lesfiches before it planned one. Nothing was sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
@@ -355,28 +366,69 @@ class PlannerService {
     return parsePlannedElements(_decode(response, what));
   }
 
-  /// Returns the full detail of the element of [type] with ID [id] on
-  /// platform [platformId] (the [PlannedElement.type],
+  /// Returns the full detail of the element with ID [id] on platform
+  /// [platformId], of [type] or of the type the planner calls [typeName]
+  /// (the [PlannedElement.type] or [PlannedElement.typeName],
   /// [PlannedElement.platformId] and [PlannedElement.id] of a listed
-  /// element; [getDetail] takes the element itself).
+  /// element; [getDetail] takes the element itself). Pass one of [type] and
+  /// [typeName].
   ///
-  /// The detail is up to date at once after a change, unlike the list.
+  /// [typeName] is the planner's name of the type (`planned-lessons`), as
+  /// [PlannedElement.typeName] keeps it: it reads an element of any type,
+  /// also one this library does not know ([PlannedElementType.other]), from
+  /// the three parts a caller kept of it. A type name the planner does not
+  /// have is answered with `404`, as an element it does not have.
+  ///
+  /// The detail holds what the list does not: the info texts, and the
+  /// element's labels, attachments and weblinks
+  /// ([PlannedElementDetail.labels], [PlannedElementDetail.attachments],
+  /// [PlannedElementDetail.weblinks]; the files themselves are not
+  /// downloaded). The detail is up to date at once after a change, unlike
+  /// the list.
   ///
   /// Throws a [SmartschoolPlannedElementNotFoundError] when the planner has
   /// no such element (`404`), and an [ArgumentError], without sending
-  /// anything, for [PlannedElementType.other] (use [getDetail], which knows
-  /// the element's [PlannedElement.typeName]) or an empty [id].
+  /// anything, when neither or both of [type] and [typeName] are given, for
+  /// [PlannedElementType.other] (which has no planner name: pass the
+  /// element's [typeName] instead), for a [typeName] that is not of the form
+  /// of the planner's type names (`planned-` and words of lowercase letters
+  /// and digits joined by hyphens), or for an empty [id].
   Future<PlannedElementDetail> getPlannedElement({
-    required PlannedElementType type,
+    PlannedElementType? type,
+    String? typeName,
     required int platformId,
     required String id,
   }) async {
-    final typeName = type.wireName;
-    if (typeName == null) {
+    if (type == null && typeName == null) {
       throw ArgumentError.value(
-        type,
+        null,
         'type',
-        'is not a type the planner knows; use getDetail with the element',
+        'and typeName are both missing; pass one of them',
+      );
+    }
+    if (type != null && typeName != null) {
+      throw ArgumentError.value(
+        typeName,
+        'typeName',
+        'is given together with type; pass one of them',
+      );
+    }
+    if (type != null) {
+      final wireName = type.wireName;
+      if (wireName == null) {
+        throw ArgumentError.value(
+          type,
+          'type',
+          'has no planner name; pass the element\'s typeName instead',
+        );
+      }
+      return _detail(wireName, platformId, id);
+    }
+    if (!_typeName.hasMatch(typeName!)) {
+      throw ArgumentError.value(
+        typeName,
+        'typeName',
+        'is not a planner element type such as planned-lessons',
       );
     }
     return _detail(typeName, platformId, id);
@@ -384,7 +436,8 @@ class PlannerService {
 
   /// Returns the full detail of [element], an element of a calendar; see
   /// [getPlannedElement]. Works for an element of a type this library does
-  /// not know too ([PlannedElementType.other]).
+  /// not know too ([PlannedElementType.other]), as [getPlannedElement] with
+  /// its [PlannedElement.typeName] does.
   Future<PlannedElementDetail> getDetail(PlannedElement element) =>
       _detail(element.typeName, element.platformId, element.id);
 
@@ -637,7 +690,8 @@ class PlannerService {
   /// other.
   ///
   /// Before it sends anything, it reads the lesfiches again
-  /// (`LessonContentService.getItems`) and refuses with a
+  /// (`LessonContentService.getItems`, without the course names: one
+  /// request) and refuses with a
   /// [SmartschoolPlannerWriteRefusedError] a [lessonContentId] that is not
   /// among them, or that is not a lesson lesfiche
   /// ([LessonContentType.lesson]): an assignment lesfiche is planned as
@@ -675,7 +729,11 @@ class PlannerService {
     if (sourceId.isEmpty) {
       throw ArgumentError.value(lessonContentId, 'lessonContentId', 'is empty');
     }
-    final fiches = await LessonContentService(_client).getItems();
+    // The lesfiche's ID and kind are all it needs: no course names, so no
+    // read of the course list (#101).
+    final fiches = await LessonContentService(
+      _client,
+    ).getItems(withCourseNames: false);
     final fiche = fiches
         .where((item) => item.id.toLowerCase() == sourceId.toLowerCase())
         .firstOrNull;
@@ -684,6 +742,7 @@ class PlannerService {
         '$operation: there is no lesfiche $sourceId among your '
         '${fiches.length} lesfiches (LessonContentService.getItems). Nothing '
         'was sent.',
+        reason: PlannerWriteRefusalReason.unknownLessonContent,
       );
     }
     if (fiche.type != LessonContentType.lesson) {
@@ -694,6 +753,8 @@ class PlannerService {
         '$operation: lesfiche ${fiche.id} "${fiche.name}" is $kind lesfiche '
         '(${fiche.typeName}), not a lesson one (lessons): planning it would '
         'not make a lesson. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.notALessonLessonContent,
+        lessonContent: fiche,
       );
     }
     final icon = fiche.icon?.trim() ?? '';
@@ -857,14 +918,20 @@ class PlannerService {
     final what = _describe(current);
     _refuseUnlessOwn(operation, current, me);
     _refuseUnlessCapable(operation, current, const ['canUserEdit']);
-    for (final flag in const ['canUserTrash', 'canUserDelete']) {
-      if (current.capabilities.can(flag)) {
-        throw SmartschoolPlannerWriteRefusedError(
-          '$operation: the planner lets you trash or delete $what ($flag), '
-          'so it is not a lesson in a timetable hour as the service knows '
-          'them, which only clearing removes. Nothing was sent.',
-        );
-      }
+    final removable = [
+      for (final flag in const ['canUserTrash', 'canUserDelete'])
+        if (current.capabilities.can(flag)) flag,
+    ];
+    if (removable.isNotEmpty) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: the planner lets you trash or delete $what '
+        '(${removable.first}), so it is not a lesson in a timetable hour as '
+        'the service knows them, which only clearing removes. Nothing was '
+        'sent.',
+        reason: PlannerWriteRefusalReason.trashable,
+        element: current,
+        capabilityFlags: List.unmodifiable(removable),
+      );
     }
     return _write(
       operation,
@@ -1013,6 +1080,7 @@ class PlannerService {
         '$operation: assignment type ${type.id} "${type.name}" is not one of '
         'the school\'s ${types.length} assignment types '
         '(getAssignmentTypes). Nothing was sent.',
+        reason: PlannerWriteRefusalReason.unknownAssignmentType,
       );
     }
     final dueAt = formatDateTime(due);
@@ -1151,6 +1219,8 @@ class PlannerService {
         '$operation: $what has a linked Skore evaluation '
         '(hasLinkedEvaluation); the trash of such an assignment was not '
         'tried, so the service does not send it. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.linkedEvaluation,
+        element: current,
       );
     }
 
@@ -1245,6 +1315,8 @@ class PlannerService {
       throw SmartschoolPlannerWriteRefusedError(
         '$operation: ${slot.id} is a ${slot.typeName} now, not a timetable '
         'slot. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.noLongerASlot,
+        element: slot,
       );
     }
     if (!_samePeriod(slot.period, placeholder.period)) {
@@ -1252,6 +1324,8 @@ class PlannerService {
         '$operation: $what is no longer in the period it was read with '
         '(${placeholder.period.from} - ${placeholder.period.to}): read the '
         'calendar again. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.periodChanged,
+        element: slot,
       );
     }
     _refuseUnlessOwn(operation, slot, me);
@@ -1266,6 +1340,8 @@ class PlannerService {
       throw SmartschoolPlannerWriteRefusedError(
         '$operation: $what has participant roles or group filters, which '
         'the service does not know how to send on. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.participantRoles,
+        element: slot,
       );
     }
 
@@ -1468,6 +1544,8 @@ class PlannerService {
       '$operation: ${_describe(element)} is not in your own planner: it is '
       'organised by ${organisers.isEmpty ? 'no user' : organisers.join(', ')}'
       ', not by $me. Nothing was sent.',
+      reason: PlannerWriteRefusalReason.notOwn,
+      element: element,
     );
   }
 
@@ -1486,6 +1564,9 @@ class PlannerService {
       '$operation: the planner does not let you change '
       '${_describe(element)} (${missing.join(', ')} not set). Nothing was '
       'sent.',
+      reason: PlannerWriteRefusalReason.notAllowed,
+      element: element,
+      capabilityFlags: List.unmodifiable(missing),
     );
   }
 
@@ -1753,6 +1834,11 @@ class PlannerService {
   static const _lessonContentPath = '/lesson-content/api/v1';
 
   static final _userId = RegExp(r'^\d+_\d+_\d+$');
+
+  /// The form of the planner's names of element types (`planned-lessons`,
+  /// `planned-lesson-cluster-moments`): every name of [PlannedElementType]
+  /// has it. A name of another form never goes into a request path.
+  static final _typeName = RegExp(r'^planned(?:-[a-z0-9]+)+$');
 
   static final _day = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$');
 

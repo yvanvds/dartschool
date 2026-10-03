@@ -63,6 +63,22 @@ final _replyFormFromOwn = _replyFormFromOther
 /// The subject of a message of the run.
 const _runSubject = '[dartschool test] $_tag send';
 
+/// The Presence module's answers to its reads (#104, #105), by path, with a
+/// made-up pupil; any other Presence request is answered as a save that went
+/// through.
+const _presenceAnswers = {
+  '/Presence/Main/getConfig':
+      '{"hasErrors":false,"errors":[],"state":{"activeClass":null,'
+      '"schoolyear":"2026-11-05"},"main":{"allowedClasses":[{"groupID":298,'
+      '"name":"1A  ","structID":311,"userCanRecord":true}]}}',
+  '/Presence/Code/getAllCodes':
+      '[{"codeID":497,"code":"L","name":"Te laat","alias":[]}]',
+  '/Presence/Class/getClass':
+      '{"groupID":298,"name":"1A  ","structID":311,"userCanRecord":true,'
+      '"errorMessage":"","pupils":[{"movementID":35714,"userID":11110,'
+      '"name":"Test Pupil","presence":[]}],"saveIsAllowed":true}',
+};
+
 /// The recorded answer to a `message list`, with the headers [headers], as
 /// (ID, subject), in place of the recorded ones.
 String _messageList(List<(int, String)> headers) {
@@ -113,6 +129,10 @@ class _Smartschool implements HttpClientAdapter {
   /// The answer to `addUserToSelected` with the given fields; the recorded
   /// answer that registers the recipient asked for when `null`.
   final String Function(Map<dynamic, dynamic> fields)? answerAdd;
+
+  /// HTML pages that the dispatcher answers the next XML commands with, one
+  /// per command, before it answers them as usual again (#106).
+  final List<String> dispatcherPages = [];
 
   /// Every request that reached it, as `METHOD <path and query>`.
   final List<String> log = [];
@@ -181,6 +201,11 @@ class _Smartschool implements HttpClientAdapter {
         return _answer(_searchAnswer, contentType: 'text/xml');
       case (true, '/Upload/Upload/Index', _, _):
         return _answer('true');
+      case (true, final path, _, _) when path.startsWith('/Presence/'):
+        return _answer(
+          _presenceAnswers[path] ?? '{"hasErrors":false,"errors":[]}',
+          contentType: 'application/json',
+        );
       case (false, '/', 'index', 'main'):
         final folder = archiveFolder;
         return _answer(
@@ -202,6 +227,8 @@ class _Smartschool implements HttpClientAdapter {
           '{"success":[${ids.join(',')}]}',
           contentType: 'application/json',
         );
+      case (true, '/', 'dispatcher', _) when dispatcherPages.isNotEmpty:
+        return _answer(dispatcherPages.removeAt(0));
       case (true, '/', 'dispatcher', _):
         final command = (options.data as Map)['command'] as String;
         final id = RegExp(r'name="msgID"><!\[CDATA\[(\d+)').firstMatch(command);
@@ -269,6 +296,20 @@ Future<(MessagesService, LiveWireGuard)> _guarded(
   bool own = true,
   int maxSubmits = 6,
 }) async {
+  final (client, guard) = await _guardedClient(
+    server,
+    own: own,
+    maxSubmits: maxSubmits,
+  );
+  return (MessagesService(client), guard);
+}
+
+/// The client of [_guarded] itself, for another service than Messages.
+Future<(SmartschoolClient, LiveWireGuard)> _guardedClient(
+  _Smartschool server, {
+  bool own = true,
+  int maxSubmits = 6,
+}) async {
   final client = await SmartschoolClient.create(
     AppCredentials(username: 'user', password: 'pass', mainUrl: _host),
     cacheDir: tempCacheDir(),
@@ -283,7 +324,7 @@ Future<(MessagesService, LiveWireGuard)> _guarded(
   );
   client.dio.interceptors.add(guard);
   if (own) guard.own = _own;
-  return (MessagesService(client), guard);
+  return (client, guard);
 }
 
 /// A bare Dio on [server] with [guard], for requests the library does not
@@ -541,6 +582,66 @@ void main() {
 
       expect(server.log, hasLength(5));
       expect(guard.requestsSent, 5);
+      expect(guard.violations, isEmpty);
+      expect(guard.unexpectedAnswers, isEmpty);
+    });
+
+    test('an answer to an XML command that is not XML, which it keeps with '
+        'what the page is, without its scripts (#106)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn)
+        ..dispatcherPages.addAll([
+          '\n<!DOCTYPE html><html><head><title>Springfield Academy - '
+              'Smartschool</title></head><body><h1>Storing</h1><p>Probeer het '
+              'later opnieuw.</p><script>var user = "Jan Janssens";</script>'
+              '</body></html>',
+          'Fatal error',
+        ]);
+      final (messages, guard) = await _guarded(server);
+
+      await expectLater(
+        messages.getHeaders(),
+        throwsA(isA<SmartschoolUnexpectedPageError>()),
+      );
+      await expectLater(
+        messages.getMessage(4242),
+        throwsA(isA<SmartschoolParsingError>()),
+      );
+      await messages.getHeaders();
+
+      expect(guard.unexpectedAnswers, [
+        'Smartschool answered "message list" with something that is not XML '
+            '(#106): status 200, text/html; charset=UTF-8, not its login page, '
+            'title "Springfield Academy - Smartschool", heading "Storing", text '
+            '"Storing Probeer het later opnieuw."',
+        'Smartschool answered "show message" with something that is not XML '
+            '(#106): status 200, text/html; charset=UTF-8, not its login page, '
+            'text "Fatal error"',
+      ]);
+      expect(server.log, hasLength(3));
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the Presence reads: the config, the pupils of a class on a day '
+        '(#104), and the codes of a school structure (#105)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final presence = PresenceService(client);
+
+      final config = await presence.getConfig();
+      final pupils = await presence.getClassPupils(
+        classGroupId: 298,
+        date: DateTime(2026, 10, 1),
+        schoolyearRefDate: config.schoolyearRefDate,
+      );
+      final codes = await presence.getAllCodes(311);
+
+      expect(pupils.single.userId, 11110);
+      expect(codes.single.name, 'Te laat');
+      expect(server.log, [
+        'POST /Presence/Main/getConfig',
+        'POST /Presence/Class/getClass',
+        'POST /Presence/Code/getAllCodes',
+      ]);
       expect(guard.violations, isEmpty);
     });
 
@@ -1262,6 +1363,58 @@ void main() {
       expect(_violations(guard), [
         contains('no "empty_trash" command'),
         contains('not a request the live suite sends'),
+      ]);
+    });
+
+    test('a save of presences, and any other Presence request but its reads '
+        '(#104)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final dio = _dio(server, guard);
+
+      // setLate reads the config, the codes and the pupils (#105: the codes
+      // are a read too), then saves: refused there.
+      await expectLater(
+        PresenceService(client).setLate(
+          userId: 11110,
+          classGroupId: 298,
+          date: DateTime(2026, 10, 1),
+          part: DayPart.morning,
+        ),
+        throwsA(anything),
+      );
+      for (final path in [
+        '/Presence/Class/savePupilsPresences',
+        '/Presence/Class/deletePresences',
+      ]) {
+        await expectLater(
+          dio.post<String>(
+            path,
+            data: {'pupils': '[]'},
+            options: Options(contentType: Headers.formUrlEncodedContentType),
+          ),
+          throwsA(isA<DioException>()),
+        );
+      }
+
+      expect(server.log, [
+        'POST /Presence/Main/getConfig',
+        'POST /Presence/Code/getAllCodes',
+        'POST /Presence/Class/getClass',
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST /Presence/Class/savePupilsPresences was not sent'),
+          contains('changes no presence'),
+        ),
+        allOf(
+          contains('POST /Presence/Class/savePupilsPresences was not sent'),
+          contains('changes no presence'),
+        ),
+        allOf(
+          contains('POST /Presence/Class/deletePresences was not sent'),
+          contains('changes no presence'),
+        ),
       ]);
     });
 

@@ -1,7 +1,8 @@
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 
-/// Example: mark a pupil **Te laat** ("late") for a half-day, then restore the
-/// original status.
+/// Example: mark a pupil **Te laat** ("late") for a half-day, unless the
+/// half-day holds another status than nothing or "Aanwezig" (such as an
+/// absence the secretariat recorded), then restore "Aanwezig".
 ///
 /// The Presence module is internal to Smartschool and speaks the internal
 /// `userID` (not the public API's AccountID/UID). You supply the pupil's
@@ -34,9 +35,13 @@ Future<void> main() async {
   );
   final pupil = pupils.where((p) => p.userId == userId).firstOrNull;
   if (pupil == null) {
+    // When the Presence module lists no pupils (a day after today, a class
+    // without pupils or a class ID it does not know), it says why (#104).
+    final reason = pupils.isEmpty ? pupils.errorMessage : null;
     print(
       'Pupil $userId not found in class $classGroupId on '
-      '${PresenceService.formatDate(date)}.',
+      '${PresenceService.formatDate(date)}'
+      '${reason == null ? '' : ' (the Presence module: $reason)'}.',
     );
     await client.dispose();
     return;
@@ -44,24 +49,39 @@ Future<void> main() async {
   final before = pupil.halfDayFor(part, date: PresenceService.formatDate(date));
   print('Before: ${before ?? '(no half-day record)'}');
 
-  // Mark the pupil late for the morning.
-  await presence.setLate(
-    userId: userId,
-    classGroupId: classGroupId,
-    date: date,
-    part: part,
-    motivation: 'Overslept',
-  );
-  print('✓ Marked "Te laat".');
+  // Mark the pupil late for the morning, but leave any other status alone:
+  // the service checks the half-day it reads right before the save (#105).
+  final PresenceSavedHalfDay? late;
+  try {
+    late = await presence.setLate(
+      userId: userId,
+      classGroupId: classGroupId,
+      date: date,
+      part: part,
+      motivation: 'Overslept',
+      onlyReplacing: {
+        PresenceService.nothingRecorded,
+        PresenceService.presentCodeName,
+      },
+    );
+  } on SmartschoolPresenceChangeRefusedError catch (e) {
+    print('Left alone: ${e.message}');
+    await client.dispose();
+    return;
+  }
+  // The half-day as stored, from the save's answer (null when the answer
+  // does not hold it).
+  print('✓ Marked "Te laat": ${late ?? '(not in the answer)'}');
 
-  // Restore to present.
-  await presence.setPresent(
+  // Restore to present, only while it still holds the "Te laat" set above.
+  final restored = await presence.setPresent(
     userId: userId,
     classGroupId: classGroupId,
     date: date,
     part: part,
+    onlyReplacing: {PresenceService.lateCodeName},
   );
-  print('✓ Restored to "Aanwezig".');
+  print('✓ Restored to "Aanwezig": ${restored ?? '(not in the answer)'}');
 
   await client.dispose();
 }

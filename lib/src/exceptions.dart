@@ -248,6 +248,13 @@ class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
 /// `markRead`, `moveToTrashFrom`, ...), when Smartschool answers the command
 /// with an HTML page instead of XML (#106).
 ///
+/// That includes a page with a comment before its doctype, and a piece of a
+/// page, such as the one Smartschool answers an XHR to a module page with
+/// (`<!-- TRANSPARANT LAYER -->` and `<div>`s, seen live), also one that
+/// happens to be well-formed XML (#110). Such a piece seldom has a [title],
+/// and the [message] calls it a page too. Malformed XML that is not HTML is
+/// a [SmartschoolParsingError].
+///
 /// The client logs in again on the answers with which Smartschool refuses a
 /// session: a `401`, its answer to an XML command on an expired session, or a
 /// redirect to its login chain. So an HTML page that comes this far is
@@ -489,6 +496,12 @@ class SmartschoolClientDisposedError extends StateError {
 }
 
 /// Thrown when parsing server response data fails.
+///
+/// `SmartschoolClient.postXml`, and so every call of `MessagesService` that
+/// sends an XML command, throws it for an answer that is neither XML nor
+/// HTML: one that is empty or does not start with `<`, and malformed XML,
+/// whose message says where the XML breaks off but not what it holds
+/// (#110). For HTML it throws a [SmartschoolUnexpectedPageError].
 class SmartschoolParsingError extends SmartschoolException {
   const SmartschoolParsingError(super.message);
 }

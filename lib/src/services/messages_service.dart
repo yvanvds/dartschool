@@ -933,8 +933,9 @@ class MessagesService {
   /// as Smartschool answered when it deleted nothing (seen for ID `0`, #59).
   ///
   /// An answer that is not XML and not empty still throws (as for every
-  /// command): a [SmartschoolAuthenticationError] for an HTML page, a
-  /// [SmartschoolParsingError] otherwise.
+  /// command): a [SmartschoolUnexpectedPageError] (a
+  /// [SmartschoolAuthenticationError]) for an HTML page or a piece of one, a
+  /// [SmartschoolParsingError] otherwise, malformed XML included (#110).
   Future<MessageDeletionStatus?> moveToTrash(int msgId) async {
     final actions = await _client.postXml(
       url: _messagesXmlUrl,
@@ -1020,9 +1021,11 @@ class MessagesService {
   /// as a moved message is no longer in them) is not needed.
   ///
   /// An answer that is not XML throws, to the move or to the check, as for
-  /// every command: a [SmartschoolAuthenticationError] for an HTML page, a
-  /// [SmartschoolParsingError] otherwise. When the check throws, the move
-  /// went out and may have been made: [getMessage] in [boxType] tells.
+  /// every command: a [SmartschoolUnexpectedPageError] (a
+  /// [SmartschoolAuthenticationError]) for an HTML page or a piece of one, a
+  /// [SmartschoolParsingError] otherwise, malformed XML included (#110).
+  /// When the check throws, the move went out and may have been made:
+  /// [getMessage] in [boxType] tells.
   ///
   /// Throws an [ArgumentError], before any request, for a [boxType] other
   /// than [BoxType.inbox] and [BoxType.sent]: the web client moves no

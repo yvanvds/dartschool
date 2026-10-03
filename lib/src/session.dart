@@ -304,11 +304,15 @@ class SmartschoolClient {
   /// [SmartschoolAuthenticationError]) when Smartschool answers with an HTML
   /// page: it says whether that is Smartschool's login page, and keeps the
   /// status, the title and the main heading of the page, so that an error
-  /// page is not taken for an expired session (#106). Such an answer is not
-  /// retried, nor does the client log in again for it: it does that for the
-  /// answers with which Smartschool refuses a session (see below). Throws a
-  /// [SmartschoolParsingError] when Smartschool answers with anything else
-  /// that is not XML, an empty answer included.
+  /// page is not taken for an expired session (#106). The same for a page
+  /// with a comment before its doctype, and for a piece of a page, such as
+  /// `<!-- ... -->` and `<div>`s, also one that happens to be well-formed XML
+  /// (#110). Such an answer is not retried, nor does the client log in again
+  /// for it: it does that for the answers with which Smartschool refuses a
+  /// session (see below). Throws a [SmartschoolParsingError] when Smartschool
+  /// answers with anything else that is not XML, an empty answer included,
+  /// and for malformed XML, saying where it breaks off but not what it holds
+  /// (#110). So every answer that is not XML is a [SmartschoolException].
   ///
   /// With [allowEmptyAnswer], an empty answer (no body, or white space only)
   /// with status `200` returns no elements instead: Smartschool answers some
@@ -348,13 +352,14 @@ class SmartschoolClient {
       return <Map<String, dynamic>>[];
     }
 
-    if (_isLikelyHtml(trimmed)) {
+    final contentType = resp.headers.value(Headers.contentTypeHeader);
+    if (_isHtmlAnswer(trimmed)) {
       throw SmartschoolUnexpectedPageError.fromPage(
         body,
         action: action,
         statusCode: resp.statusCode,
         url: resp.realUri,
-        contentType: resp.headers.value(Headers.contentTypeHeader),
+        contentType: contentType,
       );
     }
 
@@ -365,7 +370,19 @@ class SmartschoolClient {
       );
     }
 
-    return XmlInterface.parseResponse(body, xpath);
+    try {
+      return XmlInterface.parseResponse(body, xpath);
+    } on FormatException catch (e) {
+      // The parser's message says what is wrong and where (such as
+      // "XmlTagException: Missing </message> at 33:29"), not the content of
+      // the answer, which can name people (#110).
+      throw SmartschoolParsingError(
+        'Smartschool returned an answer for "$action" that is not '
+        'well-formed XML (status ${resp.statusCode ?? 'unknown'}, '
+        '${contentType == null ? '' : '$contentType, '}'
+        'url: ${resp.realUri}): ${e.message}',
+      );
+    }
   }
 
   /// Downloads raw bytes from [path].
@@ -1415,6 +1432,54 @@ class SmartschoolClient {
     final lower = body.toLowerCase();
     return lower.startsWith('<!doctype html') || lower.startsWith('<html');
   }
+
+  /// Whether [body], an answer to an XML command without its leading white
+  /// space, is HTML: a page, or a piece of one (#106, #110).
+  ///
+  /// After any white space, comments, processing instructions (such as the
+  /// XML declaration of an XHTML page) and doctypes other than HTML's, it
+  /// starts with an HTML doctype, or with the tag of an element of
+  /// [_htmlElements]. So a page with a comment before its doctype is one, and
+  /// so is a piece of a page such as the one Smartschool answers an XHR to a
+  /// module page with (`<!-- TRANSPARANT LAYER -->` and `<div>`s), also when
+  /// it happens to be well-formed XML. The answers of the XML dispatcher
+  /// (`<server>`, `<results>`, `<users>`) are not.
+  static bool _isHtmlAnswer(String body) {
+    final start = _beforeContent.matchAsPrefix(body)?.end ?? 0;
+    final content = _contentStart.matchAsPrefix(body, start);
+    if (content == null) return false;
+    final tag = content[1];
+    return tag == null || _htmlElements.contains(tag.toLowerCase());
+  }
+
+  /// White space, comments, processing instructions and doctypes other than
+  /// HTML's: what can come before the content of a document.
+  static final _beforeContent = RegExp(
+    r'(?:\s|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!doctype\s+(?!html\b)[^>]*>)*',
+    caseSensitive: false,
+  );
+
+  /// The start of the content of a document: an HTML doctype, or a start tag,
+  /// with its name.
+  static final _contentStart = RegExp(
+    r'<(?:!doctype\s+html\b|([a-z][a-z0-9-]*)(?=[\s/>]|$))',
+    caseSensitive: false,
+  );
+
+  /// The elements that make an answer HTML when it starts with one: common
+  /// elements of HTML. The answers of the XML dispatcher start with none of
+  /// them.
+  static const _htmlElements = {
+    'html', 'head', 'body', 'title', 'base', 'meta', 'link', // document
+    'script', 'style', 'noscript', 'iframe', // scripts and frames
+    'div', 'span', 'p', 'pre', 'blockquote', 'center', 'br', 'hr', // blocks
+    'section', 'article', 'aside', 'nav', 'main', 'header', 'footer', // parts
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', // headings
+    'a', 'b', 'i', 'u', 'em', 'strong', 'small', 'font', 'img', // inline
+    'ul', 'ol', 'li', 'dl', // lists
+    'table', 'thead', 'tbody', 'tr', 'td', 'th', // tables
+    'form', 'input', 'button', 'select', 'textarea', // forms
+  };
 
   static String _preview(String body, {int max = 180}) {
     if (body.length <= max) return body;

@@ -252,7 +252,8 @@ void main() {
 
       test('moveToTrashFrom moves an archived message out of the archive '
           'folder (a boxId other than 0) to the trash, after its sent-box '
-          'copy (#64)', () async {
+          'copy (#64), and says that each move took it out of its box, as '
+          'getMessage in that box does (#96)', () async {
         final subject = run.subject('archive');
         final arrival = await run.send(
           subject,
@@ -306,19 +307,53 @@ void main() {
           reason: 'the inbox',
         );
 
+        // What getMessage (Smartschool's `show message`, which names no
+        // folder) finds of the message in each box, as moveToTrashFrom checks
+        // its move (#96): the subject of what it returns, or null.
+        Future<String?> shown(BoxType box) async =>
+            (await messages.getMessage(id, boxType: box))?.subject;
+        final inboxBefore = await shown(BoxType.inbox);
+        final sentBefore = await shown(BoxType.sent);
+
         // The sent-box copy first, then the archived inbox copy, each while
         // its box (folder) lists it with the run's subject.
         final sentCopy = await run.trash(id, subject, BoxType.sent);
+        final sentAfterSent = await shown(BoxType.sent);
+        final inboxAfterSent = await shown(BoxType.inbox);
         final archivedCopy = await run.trash(
           id,
           subject,
           BoxType.inbox,
           boxId: archiveBoxId,
         );
+        final inboxAtEnd = await shown(BoxType.inbox);
+        final trashAtEnd = await shown(BoxType.trash);
         print('archive scenario: $sentCopy');
         print('archive scenario: $archivedCopy');
+        print(
+          'archive scenario: getMessage of $id, before the moves: inbox '
+          '"$inboxBefore", sent box "$sentBefore"; after the sent-box copy: '
+          'sent box "$sentAfterSent", inbox "$inboxAfterSent"; after the '
+          'archived copy: inbox "$inboxAtEnd", trash "$trashAtEnd"',
+        );
         expect(sentCopy.leftAlone, isNull, reason: '$sentCopy');
         expect(archivedCopy.leftAlone, isNull, reason: '$archivedCopy');
+
+        // getMessage in the inbox finds the archived copy (#96), and none in
+        // a box that the move took the message out of: moveToTrashFrom says
+        // so. The trash holds it.
+        expect(inboxBefore, subject, reason: 'inbox (archive), before');
+        expect(sentBefore, subject, reason: 'sent box, before');
+        expect(sentCopy.left, isTrue, reason: 'moveToTrashFrom, sent box');
+        expect(sentAfterSent, isNull, reason: 'sent box, after its move');
+        expect(
+          inboxAfterSent,
+          subject,
+          reason: 'inbox (archive), after the move of the sent-box copy',
+        );
+        expect(archivedCopy.left, isTrue, reason: 'moveToTrashFrom, archive');
+        expect(inboxAtEnd, isNull, reason: 'inbox (archive), after its move');
+        expect(trashAtEnd, subject, reason: 'trash, at the end');
         expect(
           run.guard.trashMoveAnswers[(id, BoxType.inbox.value)],
           contains('<command>silent</command>'),
@@ -481,7 +516,8 @@ void main() {
 
       test('moveToTrashFrom moves both copies of every message of the run to '
           'the trash, the sent-box copy first, and each move leaves the other '
-          'copy alone (#60)', () async {
+          'copy alone (#60); it says that the move took the copy out of its '
+          'box, as getMessage in that box does (#96)', () async {
         // Where the run's messages are: the IDs that each box lists, and the
         // trash's header of each (the trash lists an ID once).
         Future<(Map<int, ShortMessage>, Set<int>, Set<int>)> boxes() async => (
@@ -495,12 +531,29 @@ void main() {
           )).map((m) => m.id).toSet(),
         );
 
+        // What getMessage (Smartschool's `show message`) finds of message
+        // [id] in the inbox, the sent box and the trash, as moveToTrashFrom
+        // checks its move (#96): the subject of what it returns, or null.
+        Future<({String? inbox, String? sent, String? trash})> shown(
+          int id,
+        ) async => (
+          inbox: (await messages.getMessage(id))?.subject,
+          sent: (await messages.getMessage(id, boxType: BoxType.sent))?.subject,
+          trash: (await messages.getMessage(
+            id,
+            boxType: BoxType.trash,
+          ))?.subject,
+        );
+
         final sentCopies = await run.cleanUp(boxes: const [BoxType.sent]);
         if (sentCopies.isEmpty) {
           markTestSkipped('this run sent no message');
           return;
         }
         final (trashAfterSent, inboxAfterSent, sentAfterSent) = await boxes();
+        final shownAfterSent = {
+          for (final t in sentCopies) t.id: await shown(t.id),
+        };
         final inboxCopies = await run.cleanUp();
         final done = [...sentCopies, ...inboxCopies];
         for (final trashing in done) {
@@ -524,17 +577,37 @@ void main() {
             contains('<command>silent</command>'),
             reason: "Smartschool's answer to the move of $t",
           );
+          // What moveToTrashFrom made of the box it moved the copy out of.
+          expect(t.left, isTrue, reason: 'moveToTrashFrom: $t');
         }
         final (trash, inbox, sent) = await boxes();
+        final shownAtEnd = {for (final id in ids) id: await shown(id)};
         for (final id in ids) {
+          final subject = sentCopies.firstWhere((t) => t.id == id).subject;
+          final afterSent = shownAfterSent[id]!;
+          final atEnd = shownAtEnd[id]!;
+          print(
+            'message $id: getMessage after the sent-box copies: $afterSent; '
+            'at the end: $atEnd',
+          );
           // The move of the sent-box copy left the inbox copy in the inbox.
           expect(trashAfterSent.keys, contains(id), reason: '$id: trash');
           expect(inboxAfterSent, contains(id), reason: '$id: inbox');
           expect(sentAfterSent, isNot(contains(id)), reason: '$id: sent box');
+          // getMessage agrees, box by box (#96): it finds no message in the
+          // sent box, the inbox copy in the inbox, the sent-box copy in the
+          // trash.
+          expect(afterSent.sent, isNull, reason: '$id: getMessage, sent box');
+          expect(afterSent.inbox, subject, reason: '$id: getMessage, inbox');
+          expect(afterSent.trash, subject, reason: '$id: getMessage, trash');
           // The move of the inbox copy left the message in the trash.
           expect(trash.keys, contains(id), reason: '$id: trash, at the end');
           expect(inbox, isNot(contains(id)), reason: '$id: inbox, at the end');
           expect(sent, isNot(contains(id)), reason: '$id: sent, at the end');
+          // And getMessage finds it in the trash only.
+          expect(atEnd.inbox, isNull, reason: '$id: getMessage, inbox, end');
+          expect(atEnd.sent, isNull, reason: '$id: getMessage, sent box, end');
+          expect(atEnd.trash, subject, reason: '$id: getMessage, trash, end');
           // A reply marks the inbox copy of the message it answers
           // (hasReply), not its sent-box copy: the trash's header shows which
           // copy the trash lists.

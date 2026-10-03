@@ -259,6 +259,12 @@ class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
 /// and the [message] calls it a page too. Malformed XML that is not HTML is
 /// a [SmartschoolParsingError].
 ///
+/// `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` throw it too, the same way, when
+/// Smartschool answers a recipient search (a form POST to `searchUsers`, not
+/// a command) with HTML instead of XML; its [action] is then `searchUsers`
+/// (#112).
+///
 /// The client logs in again on the answers with which Smartschool refuses a
 /// session: a `401`, its answer to an XML command on an expired session, or a
 /// redirect to its login chain. So an HTML page that comes this far is
@@ -293,7 +299,8 @@ class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
 /// left out of the message.
 class SmartschoolUnexpectedPageError extends SmartschoolAuthenticationError {
   /// The XML command that Smartschool answered with the page, such as
-  /// `message list`, or `null` when it is not known.
+  /// `message list`, or `searchUsers` for a recipient search (#112), or
+  /// `null` when it is not known.
   final String? action;
 
   /// The HTTP status of the answer, or `null` when it is not known.
@@ -506,6 +513,10 @@ class SmartschoolClientDisposedError extends StateError {
 /// HTML: one that is empty or does not start with `<`, and malformed XML,
 /// whose message says where the XML breaks off but not what it holds
 /// (#110). For HTML it throws a [SmartschoolUnexpectedPageError].
+/// `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` throw both the same way for an answer to
+/// a recipient search that is not XML (#112), where an empty answer with
+/// status `200` holds no one.
 class SmartschoolParsingError extends SmartschoolException {
   const SmartschoolParsingError(super.message);
 }

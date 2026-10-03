@@ -618,6 +618,23 @@ void main() {
       },
     );
 
+    test('an answer that does not start with "<" is a SmartschoolParsingError '
+        'that says its status and content type (#112)', () async {
+      await serve([_html('Fatal error: lijst mislukt', status: 500)]);
+
+      final error = await _parsingErrorOf(messages.getHeaders);
+
+      // Before #112: '... for "message list" (url: ...): Fatal error: ...',
+      // without the status. The recipient search reads its answer with the
+      // same code since #112.
+      expect(
+        error.message,
+        'Smartschool returned a non-XML response for "message list" (status '
+        '500, text/html; charset=UTF-8, url: $_dispatcher): Fatal error: '
+        'lijst mislukt',
+      );
+    });
+
     test('the client does not log in again or retry, and the session goes '
         'on', () async {
       await serve([_html(_fragment), _xml(_cutOffMessageList)]);

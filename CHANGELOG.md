@@ -1,4 +1,4 @@
-## 0.3.3 - Unreleased
+## 0.3.3 - 2026-10-03
 
 ### Added
 - Skore: `addTeacher` and `replaceTeacher` return the change in its context (#102). They read the class (`getCourses`) and the teachers before they save, but returned only the `SkoreAssignment` saved, so a caller that reports the change (smartschool-mcp: "Maes, Mira instead of Willems, Wim on course "Digitale vaardigheden" ...") had to read the class's assignments page a second time, a read that could differ from the one the call checked. Now:

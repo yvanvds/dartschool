@@ -565,14 +565,21 @@ Writes a pupil's absence/presence code for a specific half-day via Smartschool's
 ```dart
 final presence = PresenceService(client);
 
-// Mark internal userID 11110 (class groupID 298) late this morning.
-await presence.setLate(
+// Mark internal userID 11110 (class groupID 298) late this morning, unless
+// the half-day holds another status than nothing or "Aanwezig" (#105).
+final saved = await presence.setLate(
   userId: 11110,
   classGroupId: 298,
   date: DateTime(2026, 6, 1),
   part: DayPart.morning,
   motivation: 'Overslept',
+  onlyReplacing: {
+    PresenceService.nothingRecorded,
+    PresenceService.presentCodeName,
+  },
 );
+// The half-day as stored, from the save's answer, and as it was before.
+print('${saved?.codeId} (was ${saved?.before?.codeId})');
 
 // "Late without a valid reason" uses the alias of "Te laat".
 await presence.setLate(
@@ -596,19 +603,23 @@ await presence.setPresent(
 
 | Method | Returns | Description |
 |---|---|---|
-| `setLate({userId, classGroupId, date, part, withoutValidReason, motivation})` | `Future<void>` | Mark a pupil late for a half-day; `withoutValidReason` selects the "Te laat zonder geldige reden" alias. |
-| `setPresent({userId, classGroupId, date, part, motivation})` | `Future<void>` | Mark a pupil present ("Aanwezig") — useful to clear a status. |
+| `setLate({userId, classGroupId, date, part, withoutValidReason, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil late for a half-day; `withoutValidReason` selects the "Te laat zonder geldige reden" alias. With `onlyReplacing`, only changes a half-day that holds one of those statuses (see below). Returns the half-day as stored (#105). |
+| `setPresent({userId, classGroupId, date, part, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil present ("Aanwezig") — useful to clear a status. `onlyReplacing` and the result as for `setLate`. |
 | `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record. Cached. |
 | `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. |
 | `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). |
 
 Status codes are **not hard-coded** — their numeric IDs are per-school/per-structure, so they are resolved dynamically by name (`Te laat`, `Te laat zonder geldige reden`, `Aanwezig`). The service handles both updating an existing half-day cell and creating one where none exists, and surfaces a non-empty server `errors[]` as a `SmartschoolPresenceError`.
 
+**Leaving other statuses alone (#105).** A half-day is an official record. `setLate` and `setPresent` read the class right before they save; without `onlyReplacing` they save over whatever the half-day holds, also an absence the secretariat recorded (a doctor's note, say). Pass `onlyReplacing` with the statuses the half-day may hold, by name (case-insensitive): `PresenceService.presentCodeName`, `lateCodeName`, `lateWithoutReasonAliasName`, any other code name of the school, or `PresenceService.nothingRecorded` (`""`) for a half-day that holds nothing. For any other status, as read right before the save, the call throws a `SmartschoolPresenceChangeRefusedError` that names it (`heldStatus`, `halfDay`) and sends nothing. An alias is a status of its own: `{lateCodeName}` does not allow "Te laat zonder geldige reden". `PresenceService.statusNameOf(halfDay, codes)` gives the name a half-day's status goes by, from the codes of its structure (`getAllCodes`): `null` for a code that is not among them, which `onlyReplacing` never allows.
+
+**What was stored (#105).** Both return a `PresenceSavedHalfDay`, the record the module answered the save with (`presenceId`, a new one for a half-day without a record, `codeId` / `aliasId`, `motivation`), with `before`, the half-day as read right before the save (`null` when it had no record). Nothing more is read for it. `null` when the answer holds no record of the half-day (the save itself was confirmed): read the class to see what it holds. The answer's shape is the one the module's web client reads; it was not captured from a live save for this.
+
 ### Errors
 
 An expired session and a missing access right need opposite actions, so they arrive as different types:
 
-- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help.
+- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help. Its subtype `SmartschoolPresenceChangeRefusedError`: the half-day holds a status that `onlyReplacing` does not allow; nothing was sent (#105).
 - `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again and retried the request once. The request was not carried out: sign in again and retry.
 
 ```dart
@@ -618,6 +629,8 @@ try {
   // Sign in again (e.g. a new SmartschoolClient) and retry.
 } on SmartschoolAuthenticationError {
   // Logging in failed: check the credentials.
+} on SmartschoolPresenceChangeRefusedError catch (e) {
+  // onlyReplacing left the half-day alone: it holds e.heldStatus.
 } on SmartschoolPresenceError catch (e) {
   // Permanent: show e.message (and e.errors) to the operator.
 } on SmartschoolConnectionError {
@@ -1189,7 +1202,10 @@ if (pupils.isEmpty) {
 ```
 
 ### `PresencePupil` / `PresenceHalfDay`
-Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell.
+Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell. `PresenceService.statusNameOf(halfDay, codes)` names the status a cell holds (#105).
+
+### `PresenceSavedHalfDay`
+Returned by `PresenceService.setLate()` / `setPresent()` (#105): a `PresenceHalfDay`, the record the Presence module answered the save with (a new `presenceId` for a half-day that had no record; `codeId` `null` for an alias), with `before` (`PresenceHalfDay?`), the half-day as the call read it right before the save. The calls return `null` when the save's answer holds no record of the half-day.
 
 ### `SkoreClass`
 Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `name`, `modelId`, `modelName`, `groupId` (`int?`), `groupName` (`String?`).
@@ -1287,6 +1303,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolPlannerSaveUnconfirmedError` | A planner write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again (`getDetail`) before trying again. Not a `SmartschoolPlannerError` |
 | `SmartschoolLessonContentError` | The Lesfiches module, or the course list, answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server `errors`), the Presence module refuses or cannot handle a request (an HTML error page instead of JSON), or a class/code/pupil cannot be resolved. Not a session problem |
+| `SmartschoolPresenceChangeRefusedError` | `PresenceService.setLate` / `setPresent` with `onlyReplacing`: the half-day, as read right before the save, holds a status it does not allow (carries `userId`, `part`, `date`, `halfDay`, `heldStatus`, `onlyReplacing`). Nothing was sent. A `SmartschoolPresenceError` (#105) |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
 | `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |
 | `SmartschoolPagingRestartedError` | `getHeaderPages` / `getArchiveHeaderPages`, and so `getAllHeaders` / `getAllArchiveHeaders`: the box was listed again while it was being paged, so Smartschool restarted the paging halfway. A listing on the same client (`getHeaders`, or a later paging of the box) fails the paging before its next page (#80); one elsewhere shows as Smartschool sending the second page again (#76). The headers so far are correct but not the whole box: list it again. Not a session problem |

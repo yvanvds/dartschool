@@ -1,6 +1,7 @@
 import 'models/lesson_content_models.dart' show LessonContentItem;
 import 'models/planner_models.dart'
     show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
+import 'models/presence_models.dart' show DayPart, PresenceHalfDay;
 import 'models/skore_models.dart' show SkoreAccessArea;
 
 /// Base exception for all Smartschool API errors.
@@ -471,6 +472,10 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// unresolvable status code, or a pupil not present in the class. The session
 /// was accepted for all of them, so signing in again does not help.
 ///
+/// A half-day that `setLate` or `setPresent` refuses to change because it
+/// holds a status their `onlyReplacing` does not allow is reported with the
+/// subtype [SmartschoolPresenceChangeRefusedError] (#105): nothing was sent.
+///
 /// A session that Smartschool does not accept is not reported with this type
 /// but as a [SmartschoolSessionExpiredError] (a
 /// [SmartschoolAuthenticationError]), like any other authentication failure.
@@ -486,6 +491,54 @@ class SmartschoolPresenceError extends SmartschoolException {
   String toString() => errors.isEmpty
       ? '$runtimeType: $message'
       : '$runtimeType: $message (${errors.join('; ')})';
+}
+
+/// Thrown by `PresenceService.setLate` and `setPresent` when the half-day
+/// holds a status that their `onlyReplacing` does not allow (#105). Nothing
+/// was sent.
+///
+/// The check looks at the half-day as the call read it right before the
+/// save (`Presence/Class/getClass`), so a status recorded meanwhile, such as
+/// an absence the secretariat recorded, is not overwritten. Its message
+/// names the pupil, the half-day, what it holds and what `onlyReplacing`
+/// allows.
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] is empty.
+class SmartschoolPresenceChangeRefusedError extends SmartschoolPresenceError {
+  /// The pupil's internal `userID`.
+  final int userId;
+
+  /// The half of the day the call would have changed.
+  final DayPart part;
+
+  /// The day the call would have changed (`yyyy-MM-dd`).
+  final String date;
+
+  /// The half-day as the call read it right before the save, or `null` when
+  /// the pupil had no record for it.
+  final PresenceHalfDay? halfDay;
+
+  /// The name of the status the half-day holds, as
+  /// `PresenceService.statusNameOf` gives it: the name of its code or alias,
+  /// `PresenceService.nothingRecorded` (`""`) when it holds nothing, or
+  /// `null` when it holds a code or alias that is not among the codes of the
+  /// class's school structure (see [halfDay] for its ID).
+  final String? heldStatus;
+
+  /// The statuses the call allowed the half-day to hold (its
+  /// `onlyReplacing`), as passed.
+  final Set<String> onlyReplacing;
+
+  const SmartschoolPresenceChangeRefusedError(
+    super.message, {
+    required this.userId,
+    required this.part,
+    required this.date,
+    this.halfDay,
+    this.heldStatus,
+    this.onlyReplacing = const {},
+  });
 }
 
 /// Thrown by `SkoreService` when Smartschool's Skore module (grading and

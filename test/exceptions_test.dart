@@ -1,6 +1,8 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/models/planner_models.dart'
     show PlannedElement, PlannerWriteRefusalReason;
+import 'package:flutter_smartschool/src/models/presence_models.dart'
+    show DayPart, PresenceHalfDay;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
     show SkoreAccessArea;
 import 'package:test/test.dart';
@@ -122,6 +124,55 @@ void main() {
         'SmartschoolSessionExpiredError: '
         'Smartschool did not accept the session.',
       );
+    });
+  });
+
+  group('SmartschoolPresenceChangeRefusedError (#105)', () {
+    test('is a SmartschoolPresenceError without server errors, not a session '
+        'problem, and keeps what the half-day held', () {
+      const halfDay = PresenceHalfDay(
+        presenceId: 90005,
+        presenceDate: '2026-06-01',
+        part: DayPart.morning,
+        codeId: 479,
+        aliasId: null,
+        motivation: '',
+      );
+      const error = SmartschoolPresenceChangeRefusedError(
+        'holds "Doktersattest"',
+        userId: 1003,
+        part: DayPart.morning,
+        date: '2026-06-01',
+        halfDay: halfDay,
+        heldStatus: 'Doktersattest',
+        onlyReplacing: {'Aanwezig'},
+      );
+      expect(error, isA<SmartschoolPresenceError>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.errors, isEmpty);
+      expect(
+        (error.userId, error.part, error.date),
+        (1003, DayPart.morning, '2026-06-01'),
+      );
+      expect(error.halfDay, same(halfDay));
+      expect(error.heldStatus, 'Doktersattest');
+      expect(error.onlyReplacing, {'Aanwezig'});
+      expect(
+        error.toString(),
+        'SmartschoolPresenceChangeRefusedError: holds "Doktersattest"',
+      );
+    });
+
+    test('made without a half-day, status or set: null, null and empty', () {
+      const error = SmartschoolPresenceChangeRefusedError(
+        'refused',
+        userId: 1,
+        part: DayPart.afternoon,
+        date: '2026-06-01',
+      );
+      expect(error.halfDay, isNull);
+      expect(error.heldStatus, isNull);
+      expect(error.onlyReplacing, isEmpty);
     });
   });
 

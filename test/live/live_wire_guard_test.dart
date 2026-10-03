@@ -63,8 +63,8 @@ final _replyFormFromOwn = _replyFormFromOther
 /// The subject of a message of the run.
 const _runSubject = '[dartschool test] $_tag send';
 
-/// The Presence module's answers to its reads (#104), by path, with a made-up
-/// pupil; any other Presence request is answered as a save that went
+/// The Presence module's answers to its reads (#104, #105), by path, with a
+/// made-up pupil; any other Presence request is answered as a save that went
 /// through.
 const _presenceAnswers = {
   '/Presence/Main/getConfig':
@@ -579,8 +579,8 @@ void main() {
       expect(guard.violations, isEmpty);
     });
 
-    test('the Presence reads: the config and the pupils of a class on a day '
-        '(#104)', () async {
+    test('the Presence reads: the config, the pupils of a class on a day '
+        '(#104), and the codes of a school structure (#105)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);
       final presence = PresenceService(client);
@@ -591,11 +591,14 @@ void main() {
         date: DateTime(2026, 10, 1),
         schoolyearRefDate: config.schoolyearRefDate,
       );
+      final codes = await presence.getAllCodes(311);
 
       expect(pupils.single.userId, 11110);
+      expect(codes.single.name, 'Te laat');
       expect(server.log, [
         'POST /Presence/Main/getConfig',
         'POST /Presence/Class/getClass',
+        'POST /Presence/Code/getAllCodes',
       ]);
       expect(guard.violations, isEmpty);
     });
@@ -1327,8 +1330,8 @@ void main() {
       final (client, guard) = await _guardedClient(server);
       final dio = _dio(server, guard);
 
-      // setLate reads the config, then the codes: refused there, before the
-      // pupils are read and long before the save.
+      // setLate reads the config, the codes and the pupils (#105: the codes
+      // are a read too), then saves: refused there.
       await expectLater(
         PresenceService(client).setLate(
           userId: 11110,
@@ -1352,10 +1355,14 @@ void main() {
         );
       }
 
-      expect(server.log, ['POST /Presence/Main/getConfig']);
+      expect(server.log, [
+        'POST /Presence/Main/getConfig',
+        'POST /Presence/Code/getAllCodes',
+        'POST /Presence/Class/getClass',
+      ]);
       expect(_violations(guard), [
         allOf(
-          contains('POST /Presence/Code/getAllCodes was not sent'),
+          contains('POST /Presence/Class/savePupilsPresences was not sent'),
           contains('changes no presence'),
         ),
         allOf(

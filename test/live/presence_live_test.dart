@@ -1,18 +1,23 @@
 // The live answers of the Presence module to getClassPupils (#104): the
 // pupils of a class, or the module's reason for listing none, against the
-// Presence module of credentials.yml.
+// Presence module of credentials.yml; and the names of the statuses its
+// half-days hold, which the onlyReplacing check of setLate and setPresent
+// compares (#105).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
 // files, `dart test -P live test/live/presence_live_test.dart` alone.
 // Without a credentials.yml in the package root, it skips.
 //
-// It only reads, with the Presence module's two POSTs that read: getConfig,
-// and getClass for a class the account may record for (a week ago and some
-// eight weeks ahead) and for a class ID the module does not know. It changes
-// no presence: it calls no setLate or setPresent, LiveWireGuard
+// It only reads, with the Presence module's three POSTs that read:
+// getConfig; getClass for a class the account may record for (a week ago,
+// each of the seven days before today, and some eight weeks ahead) and for a
+// class ID the module does not know; and getAllCodes for the class's school
+// structure. It changes no presence: it calls no setLate or setPresent, so
+// the onlyReplacing check and the half-day a save returns (#105) are tested
+// offline only (presence_set_status_test.dart); LiveWireGuard
 // (support/live_wire_guard.dart) refuses every Presence request but those
-// two reads, a save of presences above all, and each test checks that the
+// three reads, a save of presences above all, and each test checks that the
 // library did not even try one. As every live run, it takes the lock of the
 // session first, logs in at most once, and prints no credential, no cookie
 // and no name.
@@ -30,6 +35,7 @@ import 'support/live_client.dart';
 import 'support/live_run.dart';
 
 const _getConfig = '/Presence/Main/getConfig';
+const _getAllCodes = '/Presence/Code/getAllCodes';
 const _getClass = '/Presence/Class/getClass';
 
 /// A class ID the Presence module does not know (seen live, 2026-10-03: it
@@ -42,11 +48,12 @@ class _Attempts extends Interceptor {
   final List<String> requests = [];
 
   /// The requests tried since [from] to the Presence module that are not one
-  /// of its two reads.
+  /// of its three reads.
   List<String> presenceWritesSince(int from) => [
     for (final request in requests.skip(from))
       if (request.contains(' /Presence/') &&
           request != 'POST $_getConfig' &&
+          request != 'POST $_getAllCodes' &&
           request != 'POST $_getClass')
         request,
   ];
@@ -171,11 +178,58 @@ void main() {
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });
 
+      test('the half-days of the class over the last seven days hold statuses '
+          'that the codes of its structure name, as the onlyReplacing check '
+          'of setLate and setPresent names them (#105)', () async {
+        final mark = attempts.requests.length;
+
+        final codes = await presence.getAllCodes(recordable.structId!);
+        final held = <String>{};
+        var halfDays = 0;
+        for (var back = 1; back <= 7; back++) {
+          final date = day.subtract(Duration(days: back));
+          for (final pupil in await classPupils(recordable.groupId, date)) {
+            for (final halfDay in pupil.halfDays) {
+              halfDays++;
+              final status = PresenceService.statusNameOf(halfDay, codes);
+              expect(
+                status,
+                isNotNull,
+                reason:
+                    'a half-day of ${halfDay.presenceDate} holds codeID '
+                    '${halfDay.codeId}, aliasID ${halfDay.aliasId}, which '
+                    'getAllCodes(${recordable.structId}) does not name',
+              );
+              held.add(status!);
+            }
+          }
+        }
+
+        // The statuses setLate and setPresent set, by the names of the
+        // library (seen 2026-10-03, with "Doktersattest" among others).
+        final late = codes.firstWhere(
+          (c) => c.name == PresenceService.lateCodeName,
+        );
+        expect(
+          late.aliasByName(PresenceService.lateWithoutReasonAliasName),
+          isNotNull,
+        );
+        expect(
+          codes.map((c) => c.name),
+          contains(PresenceService.presentCodeName),
+        );
+        expect(halfDays, greaterThan(0), reason: 'no half-day in a week');
+        expect(held, isNotEmpty);
+        expect(attempts.presenceWritesSince(mark), isEmpty);
+      });
+
       test('the run tried no Presence request but its reads', () {
         expect(attempts.presenceWritesSince(0), isEmpty);
         expect(
           attempts.requests.where((r) => r.contains(' /Presence/')),
-          everyElement(anyOf('POST $_getConfig', 'POST $_getClass')),
+          everyElement(
+            anyOf('POST $_getConfig', 'POST $_getAllCodes', 'POST $_getClass'),
+          ),
         );
         expect(run.guard.violations, isEmpty);
       });

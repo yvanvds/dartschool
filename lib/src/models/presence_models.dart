@@ -271,6 +271,49 @@ class PresenceHalfDay {
       'codeId: $codeId, aliasId: $aliasId)';
 }
 
+/// A half-day as `PresenceService.setLate` or `setPresent` saved it (#105):
+/// the record the Presence module answered the save with, and [before], the
+/// half-day as the call read it right before the save.
+///
+/// The fields of [PresenceHalfDay] are the module's: [presenceId] is the
+/// record's ID (a new one when the half-day had no record yet), and
+/// [codeId] / [aliasId] are what it stores, so `codeId` is `null` for an
+/// alias (such as "Te laat zonder geldige reden"). Name the status with
+/// `PresenceService.statusNameOf`.
+class PresenceSavedHalfDay extends PresenceHalfDay {
+  const PresenceSavedHalfDay({
+    required super.presenceId,
+    required super.presenceDate,
+    required super.part,
+    required super.codeId,
+    required super.aliasId,
+    required super.motivation,
+    this.before,
+  });
+
+  /// The half-day [stored], as the save answer gives it, with [before].
+  PresenceSavedHalfDay.of(PresenceHalfDay stored, {PresenceHalfDay? before})
+    : this(
+        presenceId: stored.presenceId,
+        presenceDate: stored.presenceDate,
+        part: stored.part,
+        codeId: stored.codeId,
+        aliasId: stored.aliasId,
+        motivation: stored.motivation,
+        before: before,
+      );
+
+  /// The half-day as the call read it right before the save (the one an
+  /// `onlyReplacing` check looked at), or `null` when the pupil had no
+  /// record for it yet.
+  final PresenceHalfDay? before;
+
+  @override
+  String toString() =>
+      'PresenceSavedHalfDay(part: ${part.wire}, presenceId: $presenceId, '
+      'codeId: $codeId, aliasId: $aliasId, before: $before)';
+}
+
 /// A pupil as returned by `Presence/Class/getClass`, with the resolved half-day
 /// cells for the requested date range.
 class PresencePupil {

@@ -459,6 +459,193 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // statusNameOf (#105)
+  // ---------------------------------------------------------------------------
+
+  group('PresenceService.statusNameOf (#105)', () {
+    // The codes as read live (2026-10-03), trimmed.
+    final codes = PresenceService.parseCodes(
+      _arr('''
+      [
+        {"codeID":70,"code":"|","name":"Aanwezig","alias":[]},
+        {"codeID":479,"code":"D","name":"Doktersattest","alias":[]},
+        {"codeID":497,"code":"L","name":"Te laat","alias":[
+          {"aliasID":14,"codeID":497,"name":"Te laat zonder geldige reden"}
+        ]},
+        {"codeID":12,"code":"?","name":"  ","alias":[]}
+      ]
+      '''),
+    );
+
+    PresenceHalfDay cell({int? codeId, int? aliasId}) => PresenceHalfDay(
+      presenceId: 90001,
+      presenceDate: '2026-06-01',
+      part: DayPart.morning,
+      codeId: codeId,
+      aliasId: aliasId,
+      motivation: '',
+    );
+
+    test('a code by its name', () {
+      expect(PresenceService.statusNameOf(cell(codeId: 70), codes), 'Aanwezig');
+      expect(
+        PresenceService.statusNameOf(cell(codeId: 479), codes),
+        'Doktersattest',
+      );
+    });
+
+    test('an alias by its own name, also with its code set', () {
+      // Seen live: an alias cell has codeID null and aliasID 14.
+      expect(
+        PresenceService.statusNameOf(cell(aliasId: 14), codes),
+        PresenceService.lateWithoutReasonAliasName,
+      );
+      expect(
+        PresenceService.statusNameOf(cell(codeId: 497, aliasId: 14), codes),
+        PresenceService.lateWithoutReasonAliasName,
+      );
+    });
+
+    test('no record, or a record without a code: nothing recorded', () {
+      expect(
+        PresenceService.statusNameOf(null, codes),
+        PresenceService.nothingRecorded,
+      );
+      expect(
+        PresenceService.statusNameOf(cell(), codes),
+        PresenceService.nothingRecorded,
+      );
+    });
+
+    test('a code or alias not among the codes, or without a name: null', () {
+      expect(PresenceService.statusNameOf(cell(codeId: 999), codes), isNull);
+      expect(PresenceService.statusNameOf(cell(aliasId: 99), codes), isNull);
+      expect(PresenceService.statusNameOf(cell(codeId: 12), codes), isNull);
+      expect(PresenceService.statusNameOf(cell(codeId: 70), const []), isNull);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // parseSavedHalfDay (#105)
+  // ---------------------------------------------------------------------------
+
+  group('PresenceService.parseSavedHalfDay (#105)', () {
+    // The answer to a save of two pupils, in the shape the module's web
+    // client reads: the pupils sent, with their records as stored.
+    const answerJson = '''
+    {"hasErrors":false,"errors":[],"pupils":[
+      {"userID":1002,"movementID":5002,"presence":[
+        {"presenceID":95001,"presenceDate":"2026-06-01","studentID":1002,
+         "hourID":null,"partOfDay":"am","codeID":497,"aliasID":null,
+         "motivation":"Bus","deleteStatus":0,
+         "code":{"codeID":497,"name":"Te laat"}}]},
+      {"userID":1001,"movementID":5001,"presence":[
+        {"presenceID":90003,"presenceDate":"2026-06-01","studentID":1001,
+         "hourID":198,"partOfDay":"none","codeID":1,"aliasID":null,
+         "motivation":null,"deleteStatus":0},
+        {"presenceID":"90002","presenceDate":"2026-06-01","studentID":1001,
+         "hourID":null,"partOfDay":"pm","codeID":null,"aliasID":14,
+         "motivation":null,"deleteStatus":0,
+         "code":{"codeID":14,"aliasID":14,"parentCodeID":497,
+                 "name":"Te laat zonder geldige reden","isAlias":true}}]}
+    ]}
+    ''';
+
+    PresenceHalfDay? saved(
+      Object? json,
+      int userId, {
+      String date = '2026-06-01',
+      DayPart part = DayPart.afternoon,
+    }) => PresenceService.parseSavedHalfDay(
+      json,
+      userId: userId,
+      date: date,
+      part: part,
+    );
+
+    test('finds the pupil\'s record of the half-day', () {
+      final morning = saved(_obj(answerJson), 1002, part: DayPart.morning)!;
+      expect(morning.presenceId, 95001);
+      expect(morning.presenceDate, '2026-06-01');
+      expect(morning.part, DayPart.morning);
+      expect((morning.codeId, morning.aliasId), (497, null));
+      expect(morning.motivation, 'Bus');
+
+      // Past a per-lesson row; a presenceID as text, which the web client
+      // reads with parseInt.
+      final afternoon = saved(_obj(answerJson), 1001)!;
+      expect(afternoon.presenceId, 90002);
+      expect((afternoon.codeId, afternoon.aliasId), (null, 14));
+      expect(afternoon.motivation, isEmpty);
+    });
+
+    test('another pupil, day or half of the day: null', () {
+      expect(saved(_obj(answerJson), 1002), isNull, reason: 'no pm record');
+      expect(saved(_obj(answerJson), 1003), isNull);
+      expect(saved(_obj(answerJson), 1001, date: '2026-06-02'), isNull);
+    });
+
+    test('a record without studentID is the pupil\'s by its userID', () {
+      final answer = _obj('''
+      {"errors":[],"pupils":[{"userID":1001,"presence":[
+        {"presenceID":90002,"presenceDate":"2026-06-01","hourID":null,
+         "partOfDay":"pm","codeID":70,"aliasID":null,"motivation":""}]}]}
+      ''');
+      expect(saved(answer, 1001)?.codeId, 70);
+      expect(saved(answer, 1002), isNull);
+    });
+
+    test('an answer without records, or in another shape: null, without '
+        'throwing', () {
+      expect(saved(_obj('{"hasErrors":false,"errors":[]}'), 1001), isNull);
+      expect(saved(_arr('[{"presenceID":1}]'), 1001), isNull);
+      expect(saved(42, 1001), isNull);
+      expect(saved(null, 1001), isNull);
+      expect(
+        saved(_obj('{"errors":[],"pupils":[42,{"presence":"x"}]}'), 1001),
+        isNull,
+      );
+      expect(
+        saved(
+          _obj('''
+          {"errors":[],"pupils":[{"userID":1001,"presence":[
+            {"presenceDate":20260601,"partOfDay":"pm","hourID":null},
+            {"presenceDate":"2026-06-01","partOfDay":1,"hourID":null},
+            {"presenceDate":"2026-06-01","partOfDay":"pm","hourID":null,
+             "motivation":42}]}]}
+          '''),
+          1001,
+        ),
+        isNull,
+      );
+    });
+
+    test('PresenceSavedHalfDay.of keeps the record, with before', () {
+      final stored = saved(_obj(answerJson), 1001)!;
+      const before = PresenceHalfDay(
+        presenceId: 90002,
+        presenceDate: '2026-06-01',
+        part: DayPart.afternoon,
+        codeId: 70,
+        aliasId: null,
+        motivation: '',
+      );
+      final result = PresenceSavedHalfDay.of(stored, before: before);
+      expect(result, isA<PresenceHalfDay>());
+      expect(
+        (result.presenceId, result.presenceDate, result.part),
+        (90002, '2026-06-01', DayPart.afternoon),
+      );
+      expect(
+        (result.codeId, result.aliasId, result.motivation),
+        (null, 14, ''),
+      );
+      expect(result.before, same(before));
+      expect(PresenceSavedHalfDay.of(stored).before, isNull);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // formatDate
   // ---------------------------------------------------------------------------
 

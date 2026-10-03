@@ -361,10 +361,18 @@ class PlannerService {
     return parsePlannedElements(_decode(response, what));
   }
 
-  /// Returns the full detail of the element of [type] with ID [id] on
-  /// platform [platformId] (the [PlannedElement.type],
+  /// Returns the full detail of the element with ID [id] on platform
+  /// [platformId], of [type] or of the type the planner calls [typeName]
+  /// (the [PlannedElement.type] or [PlannedElement.typeName],
   /// [PlannedElement.platformId] and [PlannedElement.id] of a listed
-  /// element; [getDetail] takes the element itself).
+  /// element; [getDetail] takes the element itself). Pass one of [type] and
+  /// [typeName].
+  ///
+  /// [typeName] is the planner's name of the type (`planned-lessons`), as
+  /// [PlannedElement.typeName] keeps it: it reads an element of any type,
+  /// also one this library does not know ([PlannedElementType.other]), from
+  /// the three parts a caller kept of it. A type name the planner does not
+  /// have is answered with `404`, as an element it does not have.
   ///
   /// The detail holds what the list does not: the info texts, and the
   /// element's labels, attachments and weblinks
@@ -375,19 +383,47 @@ class PlannerService {
   ///
   /// Throws a [SmartschoolPlannedElementNotFoundError] when the planner has
   /// no such element (`404`), and an [ArgumentError], without sending
-  /// anything, for [PlannedElementType.other] (use [getDetail], which knows
-  /// the element's [PlannedElement.typeName]) or an empty [id].
+  /// anything, when neither or both of [type] and [typeName] are given, for
+  /// [PlannedElementType.other] (which has no planner name: pass the
+  /// element's [typeName] instead), for a [typeName] that is not of the form
+  /// of the planner's type names (`planned-` and words of lowercase letters
+  /// and digits joined by hyphens), or for an empty [id].
   Future<PlannedElementDetail> getPlannedElement({
-    required PlannedElementType type,
+    PlannedElementType? type,
+    String? typeName,
     required int platformId,
     required String id,
   }) async {
-    final typeName = type.wireName;
-    if (typeName == null) {
+    if (type == null && typeName == null) {
       throw ArgumentError.value(
-        type,
+        null,
         'type',
-        'is not a type the planner knows; use getDetail with the element',
+        'and typeName are both missing; pass one of them',
+      );
+    }
+    if (type != null && typeName != null) {
+      throw ArgumentError.value(
+        typeName,
+        'typeName',
+        'is given together with type; pass one of them',
+      );
+    }
+    if (type != null) {
+      final wireName = type.wireName;
+      if (wireName == null) {
+        throw ArgumentError.value(
+          type,
+          'type',
+          'has no planner name; pass the element\'s typeName instead',
+        );
+      }
+      return _detail(wireName, platformId, id);
+    }
+    if (!_typeName.hasMatch(typeName!)) {
+      throw ArgumentError.value(
+        typeName,
+        'typeName',
+        'is not a planner element type such as planned-lessons',
       );
     }
     return _detail(typeName, platformId, id);
@@ -395,7 +431,8 @@ class PlannerService {
 
   /// Returns the full detail of [element], an element of a calendar; see
   /// [getPlannedElement]. Works for an element of a type this library does
-  /// not know too ([PlannedElementType.other]).
+  /// not know too ([PlannedElementType.other]), as [getPlannedElement] with
+  /// its [PlannedElement.typeName] does.
   Future<PlannedElementDetail> getDetail(PlannedElement element) =>
       _detail(element.typeName, element.platformId, element.id);
 
@@ -1764,6 +1801,11 @@ class PlannerService {
   static const _lessonContentPath = '/lesson-content/api/v1';
 
   static final _userId = RegExp(r'^\d+_\d+_\d+$');
+
+  /// The form of the planner's names of element types (`planned-lessons`,
+  /// `planned-lesson-cluster-moments`): every name of [PlannedElementType]
+  /// has it. A name of another form never goes into a request path.
+  static final _typeName = RegExp(r'^planned(?:-[a-z0-9]+)+$');
 
   static final _day = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$');
 

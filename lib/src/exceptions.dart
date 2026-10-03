@@ -649,7 +649,8 @@ class SmartschoolPlannerError extends SmartschoolException {
 /// planner answers `404`: it has no element of that type with that ID (#84).
 /// The ID is unknown, or the element was removed or moved to the trash (a
 /// lesson hour that was cleared comes back as a timetable slot with a new
-/// ID).
+/// ID). The planner answers a type name it does not have, given to
+/// `getPlannedElement` as its `typeName`, with `404` too (#99).
 ///
 /// A [SmartschoolPlannerError] with [statusCode] `404`.
 class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {

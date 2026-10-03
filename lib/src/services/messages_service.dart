@@ -7,6 +7,7 @@ import 'package:html/parser.dart' as html_parser;
 
 import '../exceptions.dart';
 import '../session.dart';
+import '../xml_answer.dart';
 import '../xml_interface.dart';
 import '../models/message_models.dart';
 import '../models/notification_models.dart';
@@ -933,8 +934,9 @@ class MessagesService {
   /// as Smartschool answered when it deleted nothing (seen for ID `0`, #59).
   ///
   /// An answer that is not XML and not empty still throws (as for every
-  /// command): a [SmartschoolAuthenticationError] for an HTML page, a
-  /// [SmartschoolParsingError] otherwise.
+  /// command): a [SmartschoolUnexpectedPageError] (a
+  /// [SmartschoolAuthenticationError]) for an HTML page or a piece of one, a
+  /// [SmartschoolParsingError] otherwise, malformed XML included (#110).
   Future<MessageDeletionStatus?> moveToTrash(int msgId) async {
     final actions = await _client.postXml(
       url: _messagesXmlUrl,
@@ -1020,9 +1022,11 @@ class MessagesService {
   /// as a moved message is no longer in them) is not needed.
   ///
   /// An answer that is not XML throws, to the move or to the check, as for
-  /// every command: a [SmartschoolAuthenticationError] for an HTML page, a
-  /// [SmartschoolParsingError] otherwise. When the check throws, the move
-  /// went out and may have been made: [getMessage] in [boxType] tells.
+  /// every command: a [SmartschoolUnexpectedPageError] (a
+  /// [SmartschoolAuthenticationError]) for an HTML page or a piece of one, a
+  /// [SmartschoolParsingError] otherwise, malformed XML included (#110).
+  /// When the check throws, the move went out and may have been made:
+  /// [getMessage] in [boxType] tells.
   ///
   /// Throws an [ArgumentError], before any request, for a [boxType] other
   /// than [BoxType.inbox] and [BoxType.sent]: the web client moves no
@@ -1121,7 +1125,9 @@ class MessagesService {
   /// Internally loads a fresh compose page to obtain the `uniqueUsc` token
   /// required by the search endpoint.  If you intend to call [sendMessage]
   /// immediately after, that call will perform its own form load — two
-  /// lightweight page requests total, which is acceptable for normal use.
+  /// lightweight page requests total, which is acceptable for normal use. To
+  /// look up several names, use [searchRecipientsForComposeAll], which
+  /// searches them all on one compose page (#107).
   ///
   /// The `uniqueUsc` belongs to the session the compose page was loaded in,
   /// so the search goes out only in that session, as the steps of
@@ -1138,21 +1144,89 @@ class MessagesService {
   ///
   /// Throws a [SmartschoolComposeError] when the compose page holds no
   /// `uniqueUsc`.
+  ///
+  /// Throws, as every call that sends an XML command does (see
+  /// `SmartschoolClient.postXml`), for an answer to the search that is not
+  /// XML (#112): a [SmartschoolUnexpectedPageError] (a
+  /// [SmartschoolAuthenticationError], with the action `searchUsers`) for an
+  /// HTML page or a piece of one, also one that happens to be well-formed
+  /// XML, and a [SmartschoolParsingError] for anything else, malformed XML
+  /// included, and an empty answer with another status than `200` (an empty
+  /// `200` holds no users and no groups, as before). Neither loads a new
+  /// compose page or logs in again: the answers with which Smartschool
+  /// refuses a session (a `401`, a redirect to its login chain) are told
+  /// apart before, and for those this method loads a new page (see above);
+  /// an answer that comes this far is not one of them. A page with
+  /// Smartschool's login form is told apart
+  /// ([SmartschoolUnexpectedPageError.isLoginPage]).
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
-  searchRecipientsForCompose(String query) async {
-    final form = await _loadSearchForm();
-    try {
-      return await _searchUsers(query, form);
-    } on SmartschoolSessionExpiredError {
-      // The search was refused, or not sent, in the session of its form
-      // (#97). A new form loads in a session the client accepts, logging in
-      // first when Smartschool refuses it, and the search goes once more.
+  searchRecipientsForCompose(String query) async =>
+      (await searchRecipientsForComposeAll([query]))[query]!;
+
+  /// Searches for the recipients of each query of [queries] on one compose
+  /// form, as [searchRecipientsForCompose] does for one query (#107).
+  ///
+  /// Returns, for each query, the record `(users, groups)` that
+  /// [searchRecipientsForCompose] returns for it, keyed by the query, in the
+  /// order of [queries]. A query given more than once is searched once.
+  /// Without queries, it returns an empty map and sends no request.
+  ///
+  /// It loads one new-message compose page for its `uniqueUsc` and sends the
+  /// searches with it, one after the other, as Smartschool's web client
+  /// searches several times on one form as the user types: looking up five
+  /// names takes one page and five searches, where five calls of
+  /// [searchRecipientsForCompose] load five pages. A search registers no one
+  /// on the form.
+  ///
+  /// Each search goes out only in the session the page was loaded in, as the
+  /// one of [searchRecipientsForCompose] (#97): it is not retried after
+  /// logging in again when Smartschool refuses the session for it, and it is
+  /// not sent when the client logged in again since the page was loaded, or
+  /// is logging in. Then this method loads a new compose page, logging in
+  /// first when Smartschool refuses the session for it, and goes on with the
+  /// same query on the new page, in its session; the results it has are kept.
+  /// It loads a new page once per call: when a search on the new page cannot
+  /// go out in its session either, it throws a
+  /// [SmartschoolSessionExpiredError], and no search went out with a
+  /// `uniqueUsc` of another session.
+  ///
+  /// Throws a [SmartschoolComposeError] when the compose page holds no
+  /// `uniqueUsc`, and, for an answer to a search that is not XML, a
+  /// [SmartschoolUnexpectedPageError] or a [SmartschoolParsingError], as
+  /// [searchRecipientsForCompose] does (#112): without loading a new page,
+  /// and without the results of the searches before it.
+  Future<Map<String, (List<MessageSearchUser>, List<MessageSearchGroup>)>>
+  searchRecipientsForComposeAll(Iterable<String> queries) async {
+    final results =
+        <String, (List<MessageSearchUser>, List<MessageSearchGroup>)>{};
+    // A set keeps the order of the queries, and each query once.
+    final distinct = queries.toSet();
+    if (distinct.isEmpty) return results;
+
+    var form = await _loadSearchForm();
+    var reloaded = false;
+    for (final query in distinct) {
+      try {
+        results[query] = await _searchUsers(query, form);
+      } on SmartschoolSessionExpiredError {
+        if (reloaded) rethrow;
+        // The search was refused, or not sent, in the session of its form
+        // (#97). A new form loads in a session the client accepts, logging in
+        // first when Smartschool refuses it, and the searches go on from this
+        // one on the new form. An answer that is not XML (#112) is not caught
+        // here: it is not one of the answers with which Smartschool refuses
+        // a session (a 401, a redirect to its login chain), which the client
+        // turns into this error for the search.
+        reloaded = true;
+        form = await _loadSearchForm();
+        results[query] = await _searchUsers(query, form);
+      }
     }
-    return _searchUsers(query, await _loadSearchForm());
+    return results;
   }
 
-  /// Loads the new-message compose form for [searchRecipientsForCompose]:
-  /// its answer, which the search goes out in the session of, and its
+  /// Loads the new-message compose form for [searchRecipientsForComposeAll]:
+  /// its answer, which the searches go out in the session of, and its
   /// `uniqueUsc`.
   Future<({Response<String> form, String uniqueUsc})> _loadSearchForm() async {
     final form = await _client.getResponse(_composeUrl());
@@ -2163,11 +2237,17 @@ class MessagesService {
   /// not retried after logging in again, and goes out only in the session
   /// the form was loaded in: `uniqueUsc` belongs to that session (#25, #38,
   /// #97).
+  ///
+  /// Reads the answer as `SmartschoolClient.postXml` reads the answer to a
+  /// command (#112): an empty answer with status `200` holds no users and no
+  /// groups, as before; an HTML page or a piece of one throws a
+  /// [SmartschoolUnexpectedPageError] (with the action `searchUsers`), and
+  /// any other answer that is not XML a [SmartschoolParsingError].
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)> _searchUsers(
     String query,
     ({Response<String> form, String uniqueUsc}) compose,
   ) async {
-    final xml = await _client.postFormRaw(
+    final answer = await _client.postFormResponse(
       '/?module=Messages&file=searchUsers',
       {
         'val': query,
@@ -2180,17 +2260,20 @@ class MessagesService {
       sameSessionAs: compose.form,
     );
 
-    final users = XmlInterface.parseResponse(
-      xml,
-      './/users/user',
-    ).map(MessageSearchUser.fromXml).toList();
+    final (users, groups) = readXmlAnswer(
+      answer,
+      action: 'searchUsers',
+      allowEmptyAnswer: true,
+      parse: (xml) => (
+        XmlInterface.parseResponse(xml, './/users/user'),
+        XmlInterface.parseResponse(xml, './/groups/group'),
+      ),
+    );
 
-    final groups = XmlInterface.parseResponse(
-      xml,
-      './/groups/group',
-    ).map(MessageSearchGroup.fromXml).toList();
-
-    return (users, groups);
+    return (
+      users.map(MessageSearchUser.fromXml).toList(),
+      groups.map(MessageSearchGroup.fromXml).toList(),
+    );
   }
 
   /// Registers a single user recipient on the server-side compose form state.

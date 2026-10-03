@@ -4,7 +4,8 @@ import 'package:html/parser.dart' as html_parser;
 import 'models/lesson_content_models.dart' show LessonContentItem;
 import 'models/planner_models.dart'
     show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
-import 'models/presence_models.dart' show DayPart, PresenceHalfDay;
+import 'models/presence_models.dart'
+    show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'models/skore_models.dart' show SkoreAccessArea;
 
 /// Base exception for all Smartschool API errors.
@@ -227,7 +228,10 @@ class SmartschoolAccountVerificationRejectedError
 /// `MessagesService.searchRecipientsForCompose` sends its search both ways
 /// (#97): when the search is refused or not sent, it loads a new compose form
 /// and searches once more itself, and throws this error only when that search
-/// cannot go out in the session of its form either.
+/// cannot go out in the session of its form either. So does
+/// `MessagesService.searchRecipientsForComposeAll` with its searches on one
+/// form (#107): it loads a new form once per call, and throws this error when
+/// a search on that form cannot go out in its session either.
 ///
 /// Also thrown, without logging in again and without a retry, by
 /// `SkoreService` when Smartschool's Skore module answers an RPC without a
@@ -247,6 +251,19 @@ class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
 /// `MessagesService` that send an XML command (`getHeaders`, `getMessage`,
 /// `markRead`, `moveToTrashFrom`, ...), when Smartschool answers the command
 /// with an HTML page instead of XML (#106).
+///
+/// That includes a page with a comment before its doctype, and a piece of a
+/// page, such as the one Smartschool answers an XHR to a module page with
+/// (`<!-- TRANSPARANT LAYER -->` and `<div>`s, seen live), also one that
+/// happens to be well-formed XML (#110). Such a piece seldom has a [title],
+/// and the [message] calls it a page too. Malformed XML that is not HTML is
+/// a [SmartschoolParsingError].
+///
+/// `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` throw it too, the same way, when
+/// Smartschool answers a recipient search (a form POST to `searchUsers`, not
+/// a command) with HTML instead of XML; its [action] is then `searchUsers`
+/// (#112).
 ///
 /// The client logs in again on the answers with which Smartschool refuses a
 /// session: a `401`, its answer to an XML command on an expired session, or a
@@ -282,7 +299,8 @@ class SmartschoolSessionExpiredError extends SmartschoolAuthenticationError {
 /// left out of the message.
 class SmartschoolUnexpectedPageError extends SmartschoolAuthenticationError {
   /// The XML command that Smartschool answered with the page, such as
-  /// `message list`, or `null` when it is not known.
+  /// `message list`, or `searchUsers` for a recipient search (#112), or
+  /// `null` when it is not known.
   final String? action;
 
   /// The HTTP status of the answer, or `null` when it is not known.
@@ -489,6 +507,16 @@ class SmartschoolClientDisposedError extends StateError {
 }
 
 /// Thrown when parsing server response data fails.
+///
+/// `SmartschoolClient.postXml`, and so every call of `MessagesService` that
+/// sends an XML command, throws it for an answer that is neither XML nor
+/// HTML: one that is empty or does not start with `<`, and malformed XML,
+/// whose message says where the XML breaks off but not what it holds
+/// (#110). For HTML it throws a [SmartschoolUnexpectedPageError].
+/// `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` throw both the same way for an answer to
+/// a recipient search that is not XML (#112), where an empty answer with
+/// status `200` holds no one.
 class SmartschoolParsingError extends SmartschoolException {
   const SmartschoolParsingError(super.message);
 }
@@ -674,12 +702,13 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// Thrown when a Presence (attendance) operation fails.
 ///
 /// This covers a rejected save (the server returns a non-empty `errors[]`
-/// array, exposed via [errors]), a request the Presence module refuses or
-/// cannot handle (it answers with an HTML page instead of JSON, such as its
-/// generic `500` error page: the request is invalid, or the account may lack
-/// Presence access), and precondition failures such as an unknown class, an
-/// unresolvable status code, or a pupil not present in the class. The session
-/// was accepted for all of them, so signing in again does not help.
+/// array, exposed via [saveErrors], typed, and [errors], as text), a request
+/// the Presence module refuses or cannot handle (it answers with an HTML page
+/// instead of JSON, such as its generic `500` error page: the request is
+/// invalid, or the account may lack Presence access), and precondition
+/// failures such as an unknown class, an unresolvable status code, or a pupil
+/// not present in the class. The session was accepted for all of them, so
+/// signing in again does not help.
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
@@ -689,12 +718,26 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// but as a [SmartschoolSessionExpiredError] (a
 /// [SmartschoolAuthenticationError]), like any other authentication failure.
 class SmartschoolPresenceError extends SmartschoolException {
-  /// The server-reported error strings, when the failure originated from a
-  /// non-empty `errors[]` in the save response. Empty for precondition
-  /// failures raised client-side.
+  /// The errors of a save the Presence module refused, as text: the
+  /// [PresenceSaveError.message] of each of [saveErrors], the module's reason
+  /// (#109). Empty for precondition failures raised client-side.
+  ///
+  /// The pupil's name, which the module gives with the record of each error,
+  /// is not in them, nor in [toString], which shows them.
   final List<String> errors;
 
-  const SmartschoolPresenceError(super.message, {this.errors = const []});
+  /// The errors of a save the Presence module refused (the `errors[]` of its
+  /// answer), typed (#109): each with the module's reason and the record that
+  /// was not saved (its day, half of the day, the pupil's `userID`, and the
+  /// pupil's name, which is in no message). Empty for precondition failures
+  /// raised client-side, and for an error made without them.
+  final List<PresenceSaveError> saveErrors;
+
+  const SmartschoolPresenceError(
+    super.message, {
+    this.errors = const [],
+    this.saveErrors = const [],
+  });
 
   @override
   String toString() => errors.isEmpty

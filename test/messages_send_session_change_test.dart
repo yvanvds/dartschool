@@ -20,6 +20,11 @@
 // out in the new session. It now goes out only in the session of its form;
 // when it cannot, the method loads a new form and searches once more on it.
 //
+// Issue #107: `MessagesService.searchRecipientsForComposeAll` looks several
+// names up on one compose form, one search each, every one only in the
+// session of that form; when one cannot go out there, it loads a new form
+// once and goes on with the searches on it.
+//
 // Like the fake in `session_shared_login_test.dart`, the fake Smartschool
 // below keeps its state per `PHPSESSID` cookie, as the live platform does:
 // the login loads the login page without a session cookie and gets a new
@@ -807,6 +812,184 @@ void main() {
       // client logged in once, for the refused form.
       expect(server.searches, isEmpty);
       expect(server.count(_search), 2);
+      expect(server.count(_password), 1);
+    });
+  });
+
+  group('searchRecipientsForComposeAll searches several names on one compose '
+      'form, each only in the session of its form (#107)', () {
+    /// The users of the recorded search answer, which the fake gives to
+    /// every search.
+    const found = [146, 7236, 330, 9156, 11816, 11892, 12014];
+
+    List<int> ids((List<MessageSearchUser>, List<MessageSearchGroup>) result) =>
+        result.$1.map((u) => u.userId).toList();
+
+    /// A search, as the fake records it, that went out in the session its
+    /// compose form was loaded in: with that session's `uniqueUsc`.
+    final inTheSessionOfItsForm = predicate<String>((search) {
+      final match = RegExp(
+        r'^(session-\d+): usc-of-(session-\d+) ',
+      ).firstMatch(search);
+      return match != null && match[1] == match[2];
+    }, 'a search in the session of its compose form');
+
+    test('without a login meanwhile, one form and one search per name, in the '
+        'session of the form; a name given twice is searched once', () async {
+      final results = await messages.searchRecipientsForComposeAll([
+        'Piet',
+        'Jan',
+        'Piet',
+        'An',
+      ]);
+
+      expect(results.keys, ['Piet', 'Jan', 'An']);
+      for (final result in results.values) {
+        expect(ids(result), found);
+      }
+      expect(server.searches, [
+        'session-0: usc-of-session-0 Piet',
+        'session-0: usc-of-session-0 Jan',
+        'session-0: usc-of-session-0 An',
+      ]);
+      expect(server.log.where((r) => r.contains('?file=')), [
+        _form,
+        _search,
+        _search,
+        _search,
+      ]);
+      expect(server.count(_password), 0);
+    });
+
+    test('without names, it sends no request', () async {
+      final results = await messages.searchRecipientsForComposeAll(const []);
+
+      expect(results, isEmpty);
+      expect(server.log, isEmpty);
+    });
+
+    test('when another request logged in again after a search, the next '
+        'searches are not sent with the old uniqueUsc: they go out on a new '
+        'form, in the new session, and the results so far are kept', () async {
+      anotherRequestLogsInAfter(_search);
+
+      final results = await messages.searchRecipientsForComposeAll([
+        'Piet',
+        'Jan',
+        'An',
+      ]);
+
+      expect(results.keys, ['Piet', 'Jan', 'An']);
+      for (final result in results.values) {
+        expect(ids(result), found);
+      }
+      expect(server.searches, [
+        'session-0: usc-of-session-0 Piet',
+        'session-2: usc-of-session-2 Jan',
+        'session-2: usc-of-session-2 An',
+      ]);
+      expect(server.log.where((r) => r.contains('?file=')), [
+        _form,
+        _search,
+        _form,
+        _search,
+        _search,
+      ]);
+      expect(server.count(_password), 1);
+    });
+
+    test('when Smartschool refuses the session for a search, it is not sent '
+        'again with the old uniqueUsc: a new form is loaded after logging in, '
+        'and the searches go on from that one on it', () async {
+      // Smartschool ends the session once it has handled the first search:
+      // the next one, in that session, is refused.
+      server.afterHandling[_search] = (_) async => server.expire(_firstSession);
+
+      final results = await messages.searchRecipientsForComposeAll([
+        'Piet',
+        'Jan',
+        'An',
+      ]);
+
+      expect(results.keys, ['Piet', 'Jan', 'An']);
+      expect(server.searches, [
+        'session-0: usc-of-session-0 Piet',
+        'session-2: usc-of-session-2 Jan',
+        'session-2: usc-of-session-2 An',
+      ]);
+      // The refused search for Jan, the refused form (which logs in, then is
+      // retried), and the searches for Jan and An on the new form.
+      expect(server.log.where((r) => r.contains('?file=')), [
+        _form,
+        _search,
+        _search,
+        _form,
+        _form,
+        _search,
+        _search,
+      ]);
+      expect(server.count(_password), 1);
+    });
+
+    test('it loads a new form once: when the session of the new form is '
+        'replaced too, it throws a SmartschoolSessionExpiredError, and no '
+        'search went out with a uniqueUsc of another session', () async {
+      server.afterHandling[_search] = (_) async {
+        server.expire(_firstSession);
+        await client.getRaw('/');
+        // The same after the first search on the new form, in session-2.
+        server.afterHandling[_search] = (_) async {
+          server.expire('session-2');
+          await client.getRaw('/');
+        };
+      };
+
+      await expectLater(
+        messages.searchRecipientsForComposeAll(['Piet', 'Jan', 'An']),
+        throwsA(_sessionChanged),
+      );
+      expect(server.searches, [
+        'session-0: usc-of-session-0 Piet',
+        'session-2: usc-of-session-2 Jan',
+      ]);
+      expect(server.searches, everyElement(inTheSessionOfItsForm));
+      expect(server.count(_form), 2);
+      expect(server.count(_password), 2);
+    });
+
+    test('when Smartschool refuses the session for a search on the new form '
+        'too, it throws a SmartschoolSessionExpiredError, and no search went '
+        'out in another session than its form\'s', () async {
+      server.afterHandling[_search] = (_) async {
+        server.expire(_firstSession);
+        // The search on the new form, in session-2, is refused too.
+        server.afterHandling[_form] = (_) async {
+          server.afterHandling[_form] = (_) async => server.expire('session-2');
+        };
+      };
+
+      await expectLater(
+        messages.searchRecipientsForComposeAll(['Piet', 'Jan', 'An']),
+        throwsA(
+          isA<SmartschoolSessionExpiredError>().having(
+            (e) => e.message,
+            'message',
+            contains('/?module=Messages&file=searchUsers'),
+          ),
+        ),
+      );
+      // Piet was found; both searches for Jan were refused, each in the
+      // session of its form, and An was not searched. The client logged in
+      // once, for the refused form.
+      expect(server.searches, ['session-0: usc-of-session-0 Piet']);
+      expect(server.log.where((r) => r.contains('?file=')), [
+        _form,
+        _search,
+        _search,
+        _form,
+        _form,
+        _search,
+      ]);
       expect(server.count(_password), 1);
     });
   });

@@ -663,6 +663,31 @@ void main() {
       expect(guard.searches, 1);
       expect(guard.violations, isEmpty);
     });
+
+    test('several recipient searches on one compose form loaded through it '
+        '(#107)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+
+      final results = await messages.searchRecipientsForComposeAll([
+        'John',
+        'Piet',
+      ]);
+
+      expect(results.keys, ['John', 'Piet']);
+      expect(results['Piet']!.$1.map((u) => u.userId), contains(146));
+      expect(server.log, [
+        'GET /?module=Messages&file=composeMessage&boxType=inbox'
+            '&composeType=0&msgID=undefined',
+        'POST /?module=Messages&file=searchUsers',
+        'POST /?module=Messages&file=searchUsers',
+      ]);
+      expect(server.searched.map((f) => f['val']), ['John', 'Piet']);
+      expect(server.searched.map((f) => f['uniqueUsc']).toSet(), hasLength(1));
+      expect(server.registered, isEmpty);
+      expect(guard.searches, 2);
+      expect(guard.violations, isEmpty);
+    });
   });
 
   group('refuses before it reaches Smartschool', () {

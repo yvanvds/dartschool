@@ -17,6 +17,7 @@ import 'download.dart';
 import 'exceptions.dart';
 import 'models/notification_models.dart';
 import 'models/user_models.dart';
+import 'xml_answer.dart';
 import 'xml_interface.dart';
 
 export 'download.dart' show SmartschoolDownload;
@@ -304,11 +305,15 @@ class SmartschoolClient {
   /// [SmartschoolAuthenticationError]) when Smartschool answers with an HTML
   /// page: it says whether that is Smartschool's login page, and keeps the
   /// status, the title and the main heading of the page, so that an error
-  /// page is not taken for an expired session (#106). Such an answer is not
-  /// retried, nor does the client log in again for it: it does that for the
-  /// answers with which Smartschool refuses a session (see below). Throws a
-  /// [SmartschoolParsingError] when Smartschool answers with anything else
-  /// that is not XML, an empty answer included.
+  /// page is not taken for an expired session (#106). The same for a page
+  /// with a comment before its doctype, and for a piece of a page, such as
+  /// `<!-- ... -->` and `<div>`s, also one that happens to be well-formed XML
+  /// (#110). Such an answer is not retried, nor does the client log in again
+  /// for it: it does that for the answers with which Smartschool refuses a
+  /// session (see below). Throws a [SmartschoolParsingError] when Smartschool
+  /// answers with anything else that is not XML, an empty answer included,
+  /// and for malformed XML, saying where it breaks off but not what it holds
+  /// (#110). So every answer that is not XML is a [SmartschoolException].
   ///
   /// With [allowEmptyAnswer], an empty answer (no body, or white space only)
   /// with status `200` returns no elements instead: Smartschool answers some
@@ -339,33 +344,12 @@ class SmartschoolClient {
       ),
     );
 
-    final body = resp.data ?? '';
-    final trimmed = body.trimLeft();
-
-    if (allowEmptyAnswer &&
-        trimmed.isEmpty &&
-        resp.statusCode == HttpStatus.ok) {
-      return <Map<String, dynamic>>[];
-    }
-
-    if (_isLikelyHtml(trimmed)) {
-      throw SmartschoolUnexpectedPageError.fromPage(
-        body,
-        action: action,
-        statusCode: resp.statusCode,
-        url: resp.realUri,
-        contentType: resp.headers.value(Headers.contentTypeHeader),
-      );
-    }
-
-    if (!trimmed.startsWith('<')) {
-      throw SmartschoolParsingError(
-        'Smartschool returned a non-XML response for "$action" '
-        '(url: ${resp.realUri}): ${_preview(trimmed)}',
-      );
-    }
-
-    return XmlInterface.parseResponse(body, xpath);
+    return readXmlAnswer(
+      resp,
+      action: action,
+      allowEmptyAnswer: allowEmptyAnswer,
+      parse: (body) => XmlInterface.parseResponse(body, xpath),
+    );
   }
 
   /// Downloads raw bytes from [path].

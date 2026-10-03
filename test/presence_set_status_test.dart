@@ -23,9 +23,11 @@
 //   "movementID","presence":[...]}],"errors":[]}`, the pupils sent with
 //   their records as stored, in the shape of `getClass`'s (a new
 //   `presenceID` for a half-day without a record). A refused save has
-//   `errors` of `{"message", "presence"}`. No save was sent to the live
-//   module for these tests: what it answers is the web client's reading of
-//   it, and the "saved records plus `errors: []`" of #2.
+//   `errors` of `{"message", "presence"}`: the reason, and the record that
+//   was not saved with the pupil's name in its `pupil`, which the web
+//   client's error dialog lists (#109). No save was sent to the live module
+//   for these tests: what it answers is the web client's reading of it, and
+//   the "saved records plus `errors: []`" of #2.
 //
 // Its pupils are made up.
 import 'dart:convert';
@@ -120,6 +122,12 @@ const _pupils = <_Pupil>[
   (_claes, 5004, 'Claes, Mila'),
   (_maes, 5005, 'Maes, Finn'),
 ];
+
+/// The name of the pupil [userId], as the module gives it.
+String _nameOf(int userId) => _pupils.firstWhere((p) => p.$1 == userId).$3;
+
+/// The reason the fake gives for a save it refuses.
+const _refusal = 'De afwezigheid kon niet worden opgeslagen.';
 
 /// How the fake answers a save.
 enum _SaveAnswer {
@@ -237,8 +245,8 @@ class _Smartschool implements HttpClientAdapter {
         final part = presence['partOfDay']! as String;
         if (saveAnswer == _SaveAnswer.refused) {
           errors.add({
-            'message': 'De afwezigheid kon niet worden opgeslagen.',
-            'presence': {...presence, 'pupil': 'Peeters, Lotte'},
+            'message': _refusal,
+            'presence': {...presence, 'pupil': _nameOf(userId)},
           });
           continue;
         }
@@ -651,6 +659,87 @@ void main() {
       expect(server.saved, hasLength(1));
       expect(saved!.before?.motivation, 'Bus');
       expect(saved.motivation, 'Bus again');
+    });
+  });
+
+  group('a save the module refuses (#109)', () {
+    test("the module's reason, as text and typed with the record, and no "
+        "pupil's name in the error's text", () async {
+      // Before the fix: errors held each error object's Map.toString(),
+      // "{message: ..., presence: {..., pupil: Peeters, Lotte}}", also in
+      // the error's toString(), which ends up in logs.
+      final (presence, server) = await serve();
+      server.saveAnswer = _SaveAnswer.refused;
+
+      late SmartschoolPresenceError error;
+      try {
+        await presence.setLate(
+          userId: _peeters,
+          classGroupId: _classId,
+          date: _date,
+          part: DayPart.morning,
+          onlyReplacing: _replaceable,
+        );
+        fail('the save was refused');
+      } on SmartschoolPresenceError catch (e) {
+        error = e;
+      }
+
+      expect(error, isNot(isA<SmartschoolPresenceChangeRefusedError>()));
+      expect(server.log, [..._reads, 'POST $_save']);
+      expect(server.cells[(_peeters, 'am')]!.codeId, _aanwezig);
+
+      expect(error.errors, [_refusal]);
+      expect(
+        error.toString(),
+        'SmartschoolPresenceError: Saving the presence for userID 1001 '
+        'failed. (De afwezigheid kon niet worden opgeslagen.)',
+      );
+      final saveError = error.saveErrors.single;
+      expect(
+        (saveError.message, saveError.userId, saveError.date, saveError.part),
+        (_refusal, _peeters, _day, DayPart.morning),
+      );
+      expect(saveError.pupilName, 'Peeters, Lotte', reason: 'kept as a field');
+      for (final text in [error.message, '$error', '$saveError']) {
+        expect(text, isNot(contains('Peeters')));
+        expect(text, isNot(contains('Lotte')));
+      }
+    });
+
+    test('an app shows the reason once and the half-days it names, as the '
+        'web client does', () async {
+      final (presence, server) = await serve();
+      server.saveAnswer = _SaveAnswer.refused;
+
+      Future<String> report(Future<Object?> Function() call) async {
+        try {
+          await call();
+          return 'saved';
+        } on SmartschoolPresenceError catch (e) {
+          // The reason once, then a line per half-day, with the pupil's
+          // name from its field.
+          return [
+            e.saveErrors.first.message,
+            for (final error in e.saveErrors)
+              '${error.date} ${error.part?.wire} - ${error.pupilName}',
+          ].join('\n');
+        }
+      }
+
+      expect(
+        await report(
+          () => presence.setPresent(
+            userId: _claes,
+            classGroupId: _classId,
+            date: _date,
+            part: DayPart.afternoon,
+          ),
+        ),
+        'De afwezigheid kon niet worden opgeslagen.\n'
+        '2026-06-01 pm - Claes, Mila',
+      );
+      expect(server.cells[(_claes, 'pm')]!.aliasId, _zonderReden);
     });
   });
 

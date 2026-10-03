@@ -136,6 +136,22 @@ void main() {
       expect(error.classId, 2516);
       expect(error.courseId, 1588);
       expect(error.teacherId, 1005);
+      // Made without a name, as before #102.
+      expect(error.teacherName, isNull);
+      expect(error.toString(), 'SmartschoolSkoreMyGroupsError: groups');
+    });
+
+    test('SmartschoolSkoreMyGroupsError carries the name of the current '
+        'teacher (#102)', () {
+      const error = SmartschoolSkoreMyGroupsError(
+        'groups',
+        classId: 2516,
+        courseId: 1588,
+        teacherId: 1005,
+        teacherName: 'Willems, Wim',
+      );
+      expect(error.teacherId, 1005);
+      expect(error.teacherName, 'Willems, Wim');
       expect(error.toString(), 'SmartschoolSkoreMyGroupsError: groups');
     });
 

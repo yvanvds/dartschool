@@ -589,11 +589,18 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreChangeRefusedError {
   /// The Smartschool user ID of the current teacher, the one with the groups.
   final int teacherId;
 
+  /// The name of the current teacher as Skore shows it (`"Last, First"`), as
+  /// `replaceTeacher` read it from the class before it asked about the groups
+  /// (#102). `replaceTeacher` always sets it; `null` only for an error made
+  /// without it.
+  final String? teacherName;
+
   const SmartschoolSkoreMyGroupsError(
     super.message, {
     required this.classId,
     required this.courseId,
     required this.teacherId,
+    this.teacherName,
   });
 }
 

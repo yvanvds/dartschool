@@ -1,5 +1,7 @@
 // Tests for issue #71: assigning a teacher to a course of a class in Skore
-// (`SkoreService.addTeacher`, `SkoreService.replaceTeacher`).
+// (`SkoreService.addTeacher`, `SkoreService.replaceTeacher`); and #102: both
+// return the assignment saved with the course and, for a replace, the
+// assignment it replaced, as read before the save.
 //
 // Both go through `saveOwner(classID, courseID, ownerID, userID)` of Skore's
 // RPC service owners.php: an empty ownerID adds an assignment, an existing
@@ -269,6 +271,12 @@ Matcher _unconfirmed(Object? message, {Object? cause = isNull}) => allOf(
       .having((e) => e.cause, 'cause', cause),
 );
 
+/// The assignments of [course], as `"<id>: <teacherId> <teacherName>"`.
+List<String> _teachersOf(SkoreCourse course) => [
+  for (final a in course.assignments)
+    '${a.id}: ${a.teacherId} ${a.teacherName}',
+];
+
 void main() {
   forbidRealNetwork();
 
@@ -454,11 +462,27 @@ void main() {
             throwsA(
               allOf(
                 // A refused change, like the other checks (#83).
-                _refused(contains('Mijn lesgroepen')),
+                _refused(
+                  allOf(
+                    contains('Mijn lesgroepen'),
+                    // The current teacher and the course, as read (#102).
+                    contains('1005 (Willems, Wim)'),
+                    contains(
+                      '"Digitale vaardigheden  [Digitale '
+                      'vaardigheden]"',
+                    ),
+                  ),
+                ),
                 isA<SmartschoolSkoreMyGroupsError>()
                     .having((e) => e.classId, 'classId', 2516)
                     .having((e) => e.courseId, 'courseId', 1588)
-                    .having((e) => e.teacherId, 'teacherId', 1005),
+                    .having((e) => e.teacherId, 'teacherId', 1005)
+                    // The name the service read from the class (#102).
+                    .having(
+                      (e) => e.teacherName,
+                      'teacherName',
+                      'Willems, Wim',
+                    ),
               ),
             ),
           );
@@ -514,6 +538,223 @@ void main() {
         ),
         throwsA(isA<SmartschoolSessionExpiredError>()),
       );
+      expect(server.log, [_readClass, _getTeachers, _getMyGroups]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The result: the assignment saved, in its context (#102)
+  // ---------------------------------------------------------------------------
+
+  group('returns the assignment saved with the course and the assignment it '
+      'replaced, as read before the save, without reading the class '
+      'again (#102)', () {
+    test('addTeacher: the course with its teachers before the add, and no '
+        'replaced assignment', () async {
+      final server = _Smartschool();
+      final skore = await serve(server);
+
+      final saved = await skore.addTeacher(
+        classId: 2516,
+        courseId: 1588,
+        teacherId: 1005,
+      );
+
+      expect(saved, isA<SkoreSavedAssignment>());
+      expect(saved.id, 34826);
+      expect(saved.teacherId, 1005);
+      expect(saved.teacherName, 'Willems, Wim');
+      expect(saved.replaced, isNull);
+      final course = saved.course;
+      expect(course.id, 1588);
+      expect(course.classId, 2516);
+      expect(course.label, 'Digitale vaardigheden  [Digitale vaardigheden]');
+      expect(course.code, 'Digitale vaardigheden');
+      expect(course.depth, 1);
+      expect(course.isGroupHeader, isFalse);
+      // Before the add: the course had no teacher.
+      expect(course.assignments, isEmpty);
+      // One read of the class: the one the checks used.
+      expect(server.log, [_readClass, _getTeachers, _saveOwner]);
+    });
+
+    test('addTeacher to a course with a teacher: the course holds the other '
+        'teacher, not the new assignment', () async {
+      final server = _Smartschool(
+        save: _ok(_rpcAnswer('saveOwner', '{"ownerID":40001,"userID":1006}')),
+      );
+      final skore = await serve(server);
+
+      final saved = await skore.addTeacher(
+        classId: 2516,
+        courseId: 2164,
+        teacherId: 1006,
+      );
+
+      expect(saved.id, 40001);
+      expect(saved.teacherName, 'Maes, Mieke');
+      expect(saved.replaced, isNull);
+      expect(saved.course.id, 2164);
+      expect(saved.course.label, 'Aardrijkskunde (1 uur) (5e j DG) [AARDR]');
+      expect(saved.course.code, 'AARDR');
+      expect(_teachersOf(saved.course), ['31882: 1001 Janssens, Jan']);
+      expect(server.log, [_readClass, _getTeachers, _saveOwner]);
+    });
+
+    test('replaceTeacher: the assignment it replaced holds the previous '
+        'teacher', () async {
+      final server = _Smartschool(
+        page: _pageWithAssignment,
+        save: _ok(_replaceAnswer),
+      );
+      final skore = await serve(server);
+
+      final saved = await skore.replaceTeacher(
+        classId: 2516,
+        courseId: 1588,
+        assignmentId: 34826,
+        teacherId: 1006,
+      );
+
+      expect(saved.id, 34826);
+      expect(saved.teacherId, 1006);
+      expect(saved.teacherName, 'Maes, Mieke');
+      final replaced = saved.replaced!;
+      expect(replaced.id, 34826);
+      expect(replaced.teacherId, 1005);
+      expect(replaced.teacherName, 'Willems, Wim');
+      expect(saved.course.id, 1588);
+      expect(saved.course.classId, 2516);
+      expect(
+        saved.course.label,
+        'Digitale vaardigheden  [Digitale vaardigheden]',
+      );
+      // Before the replace: the assignment with its previous teacher.
+      expect(_teachersOf(saved.course), ['34826: 1005 Willems, Wim']);
+      expect(server.log, [_readClass, _getTeachers, _getMyGroups, _saveOwner]);
+    });
+
+    test('replaceTeacher of one of several teachers: the replaced one is the '
+        'assignment asked for, and the course holds the others', () async {
+      final server = _Smartschool(
+        save: _ok(_rpcAnswer('saveOwner', '{"ownerID":34582,"userID":1006}')),
+      );
+      final skore = await serve(server);
+
+      final saved = await skore.replaceTeacher(
+        classId: 2516,
+        courseId: 1840,
+        assignmentId: 34582,
+        teacherId: 1006,
+      );
+
+      expect(saved.teacherName, 'Maes, Mieke');
+      expect(saved.replaced?.id, 34582);
+      expect(saved.replaced?.teacherId, 1003);
+      expect(saved.replaced?.teacherName, 'Dupré, Céline');
+      expect(saved.course.label, 'Project 1 (3e graad) [PROJE1]');
+      expect(saved.course.code, 'PROJE1');
+      expect(saved.course.depth, 2);
+      expect(_teachersOf(saved.course), [
+        '34580: 1002 Peeters, Piet',
+        '34582: 1003 Dupré, Céline',
+        "34584: 1004 D'Hondt, Karel",
+      ]);
+      // The other teachers of the course: those of the other assignments.
+      expect(
+        saved.course.assignments
+            .where((a) => a.id != saved.id)
+            .map((a) => a.teacherName),
+        ['Peeters, Piet', "D'Hondt, Karel"],
+      );
+      expect(server.log, [_readClass, _getTeachers, _getMyGroups, _saveOwner]);
+    });
+
+    test('a caller reports the change from the result alone, as '
+        'smartschool-mcp does, and code that takes a SkoreAssignment keeps '
+        'working', () async {
+      final server = _Smartschool(
+        page: _pageWithAssignment,
+        save: _ok(_replaceAnswer),
+      );
+      final skore = await serve(server);
+
+      // The type the writes returned before #102.
+      final SkoreAssignment assignment = await skore.replaceTeacher(
+        classId: 2516,
+        courseId: 1588,
+        assignmentId: 34826,
+        teacherId: 1006,
+      );
+      expect(assignment.id, 34826);
+      expect(assignment.teacherName, 'Maes, Mieke');
+
+      final saved = assignment as SkoreSavedAssignment;
+      final course = saved.course;
+      expect(
+        '${saved.teacherName} instead of ${saved.replaced?.teacherName} on '
+            'course "${course.code}" (course id ${course.id}) of class id '
+            '${course.classId}',
+        'Maes, Mieke instead of Willems, Wim on course "Digitale '
+            'vaardigheden" (course id 1588) of class id 2516',
+      );
+      // Nothing was read for the report: no second read of the class.
+      expect(server.log, [_readClass, _getTeachers, _getMyGroups, _saveOwner]);
+    });
+
+    test('toString names the course, the class and the replaced '
+        'assignment', () async {
+      final server = _Smartschool(
+        page: _pageWithAssignment,
+        save: _ok(_replaceAnswer),
+      );
+      final skore = await serve(server);
+
+      final saved = await skore.replaceTeacher(
+        classId: 2516,
+        courseId: 1588,
+        assignmentId: 34826,
+        teacherId: 1006,
+      );
+
+      expect(
+        '$saved',
+        'SkoreSavedAssignment(id: 34826, teacherId: 1006, teacherName: '
+            'Maes, Mieke, course: 1588 (Digitale vaardigheden  [Digitale '
+            'vaardigheden]), class: 2516, replaced: SkoreAssignment(id: '
+            '34826, teacherId: 1005, teacherName: Willems, Wim))',
+      );
+    });
+
+    test('a refusal for "Mijn lesgroepen" names the current teacher of the '
+        'assignment asked for, not another teacher of the course', () async {
+      final server = _Smartschool(
+        myGroups: _rpcAnswer('getMyGroups', '{"mygroups":["77"]}'),
+      );
+      final skore = await serve(server);
+
+      await expectLater(
+        skore.replaceTeacher(
+          classId: 2516,
+          courseId: 1840,
+          assignmentId: 34582,
+          teacherId: 1006,
+        ),
+        throwsA(
+          isA<SmartschoolSkoreMyGroupsError>()
+              .having((e) => e.teacherId, 'teacherId', 1003)
+              .having((e) => e.teacherName, 'teacherName', 'Dupré, Céline')
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('1003 (Dupré, Céline)'),
+                  contains('"Project 1 (3e graad) [PROJE1]"'),
+                ),
+              ),
+        ),
+      );
+      expect(server.rpcParams(_getMyGroups), ['1003', '2516', '1840']);
       expect(server.log, [_readClass, _getTeachers, _getMyGroups]);
     });
   });

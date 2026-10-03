@@ -30,7 +30,8 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///   3. Print the change, and ask for confirmation (y/N; anything but "y" or
 ///      "yes", or no answer, saves nothing).
 ///   4. Save it. The service checks the change again before it saves, and
-///      sends the save once.
+///      sends the save once. Print the change from the result: the course
+///      and the replaced teacher as the service read them before the save.
 ///   5. Read the class again and print the course as it is then.
 ///
 /// Credentials are read from `credentials.yml` next to the workspace root
@@ -136,10 +137,28 @@ Future<void> main(List<String> args) async {
               assignmentId: assignmentId,
               teacherId: teacherId,
             );
-      print('✓ Saved: assignment ${saved.id}, ${saved.teacherName}.');
+      // The result holds the course and the replaced assignment as the
+      // service read them before the save: no need to read the class again
+      // to report the change.
+      final replaced = saved.replaced;
+      print(
+        '✓ Saved: assignment ${saved.id}, ${saved.teacherName}'
+        '${replaced == null ? '' : ' instead of ${replaced.teacherName}'}'
+        ' on course "${saved.course.label}" (course ${saved.course.id}) of '
+        'class ${saved.course.classId}.',
+      );
+    } on SmartschoolSkoreMyGroupsError catch (e) {
+      // The current teacher works with "Mijn lesgroepen": nothing was saved.
+      print(
+        'Not saved: ${e.teacherName ?? 'the current teacher'} '
+        '(${e.teacherId}) works with "Mijn '
+        'lesgroepen" for the course. Handle those groups in Skore first.',
+      );
+      exitCode = 1;
+      return;
     } on SmartschoolSkoreError catch (e) {
-      // A check before the save refused it (a SmartschoolSkoreMyGroupsError
-      // too): nothing was saved.
+      // A check before the save refused it, or Skore answered a read before
+      // it with something the service cannot use: nothing was saved.
       print('Not saved: ${e.message}');
       exitCode = 1;
       return;

@@ -1,3 +1,12 @@
+## 0.3.3 - Unreleased
+
+### Added
+- Skore: `addTeacher` and `replaceTeacher` return the change in its context (#102). They read the class (`getCourses`) and the teachers before they save, but returned only the `SkoreAssignment` saved, so a caller that reports the change (smartschool-mcp: "Maes, Mira instead of Willems, Wim on course "Digitale vaardigheden" ...") had to read the class's assignments page a second time, a read that could differ from the one the call checked. Now:
+  - both return the new `SkoreSavedAssignment`, which extends `SkoreAssignment` (the assignment saved: `id`, `teacherId`, `teacherName` of its new teacher, as before), with `course`, the `SkoreCourse` as the call read it before the save (its `label`, `code`, `depth`, `classId`, and its `assignments` before the change), and `replaced`, for `replaceTeacher` the assignment as it was (the same `id`, with the teacher it had), `null` for `addTeacher`. Nothing more is read for it: the class is still read once per call;
+  - `SmartschoolSkoreMyGroupsError` also carries the name of the current teacher (`teacherName`, as read from the class), and its message names the teacher and the course label. The parameter is optional: an error made without it has `teacherName` `null`.
+
+  Code that takes the result as a `SkoreAssignment`, or makes a `SmartschoolSkoreMyGroupsError`, needs no change; only a class that overrides `addTeacher` or `replaceTeacher` must now return a `SkoreSavedAssignment`. The example `skore_assign_teacher_example.dart` prints the change from the result. Tested offline only: the saves are not run against the live Skore.
+
 ## 0.3.2 - 2026-10-02
 
 ### Added

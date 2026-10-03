@@ -1,7 +1,7 @@
 /// Models for Smartschool's Skore module (grading and reports): the classes
 /// of its report models, the courses of a class with the teachers assigned to
-/// them, the teachers that can be assigned, and the gradebooks of a teacher
-/// with the teachers they are shared with.
+/// them, the teachers that can be assigned, an assignment as a write saved it,
+/// and the gradebooks of a teacher with the teachers they are shared with.
 ///
 /// Skore is an **internal** Smartschool module, not part of the official
 /// (public) API. Its IDs are its own: a [SkoreClass.id] is a Skore class ID
@@ -137,6 +137,48 @@ class SkoreAssignment {
   String toString() =>
       'SkoreAssignment(id: $id, teacherId: $teacherId, '
       'teacherName: $teacherName)';
+}
+
+/// The assignment that `SkoreService.addTeacher` or `replaceTeacher` saved,
+/// in its context: the course it is on and, for a replace, the assignment as
+/// it was (#102).
+///
+/// It is the [SkoreAssignment] saved ([id], [teacherId] and [teacherName]
+/// of the teacher it has now), so a caller that takes it as a
+/// [SkoreAssignment] needs no change. [course] and [replaced] are what the
+/// call read before it saved: reporting the change needs no second read of
+/// the class, which could differ from what the call checked.
+class SkoreSavedAssignment extends SkoreAssignment {
+  /// The course of the assignment, as the call read it right before the save
+  /// (the class's assignments page, as `SkoreService.getCourses` reads it):
+  /// its [SkoreCourse.label], [SkoreCourse.code] and [SkoreCourse.depth], its
+  /// [SkoreCourse.classId], and its assignments **before** the change.
+  ///
+  /// So for an add, [SkoreCourse.assignments] holds the other teachers of
+  /// the course, without the new assignment. For a replace, it holds the
+  /// assignment with its previous teacher ([replaced]); the other teachers
+  /// are those with another ID than [id].
+  final SkoreCourse course;
+
+  /// For `replaceTeacher`, the assignment as it was before the save: the same
+  /// [SkoreAssignment.id] as this one, with the teacher it had (its
+  /// [SkoreAssignment.teacherId] and [SkoreAssignment.teacherName]). `null`
+  /// for `addTeacher`, which replaces nothing.
+  final SkoreAssignment? replaced;
+
+  const SkoreSavedAssignment({
+    required super.id,
+    required super.teacherId,
+    required super.teacherName,
+    required this.course,
+    this.replaced,
+  });
+
+  @override
+  String toString() =>
+      'SkoreSavedAssignment(id: $id, teacherId: $teacherId, '
+      'teacherName: $teacherName, course: ${course.id} (${course.label}), '
+      'class: ${course.classId}, replaced: $replaced)';
 }
 
 /// A teacher that Skore lets assign to a course.

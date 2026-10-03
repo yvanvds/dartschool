@@ -660,8 +660,8 @@ final teachers = await skore.getTeachers();        // List<SkoreTeacher>
 | `getClasses()` | `Future<List<SkoreClass>>` | The classes of all report models, with their model and group. |
 | `getCourses(classId)` | `Future<List<SkoreCourse>>` | The courses of a class, in Skore's order, each with its `assignments`. Empty for a class without a course structure, and for a class ID Skore does not know (Skore answers both the same way). |
 | `getTeachers()` | `Future<List<SkoreTeacher>>` | The teachers that can be assigned to a course. |
-| `addTeacher({classId, courseId, teacherId})` | `Future<SkoreAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it. |
-| `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it. |
+| `addTeacher({classId, courseId, teacherId})` | `Future<SkoreSavedAssignment>` | Adds the teacher to the course of the class: a new assignment (as the green **+** does), which holds all pupils of the class. Returns it, with the course as read before the save. |
+| `replaceTeacher({classId, courseId, assignmentId, teacherId})` | `Future<SkoreSavedAssignment>` | Gives an assignment of the course another teacher (as the teacher drop-down does). The assignment keeps its ID, and its gradebook stays. Returns it, with the course and the assignment as it was (`replaced`: the previous teacher), as read before the save. |
 | `getGradebookShares(ownerId)` | `Future<List<SkoreGradebookShares>>` | The gradebooks of a teacher, each with the teachers who may read it and those who may read and change it. Empty for a teacher without gradebooks, and for a user ID Skore does not know. |
 | `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShares>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again. |
 | `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShares>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again. |
@@ -677,9 +677,15 @@ A course code is **not** unique within a class: a course and its sub-course can 
 final added = await skore.addTeacher(classId: 2516, courseId: 1588, teacherId: 146);
 
 // Another teacher on an existing assignment: the assignment and its gradebook stay.
-final replaced = await skore.replaceTeacher(
+final saved = await skore.replaceTeacher(
     classId: 2516, courseId: 1588, assignmentId: added.id, teacherId: 320);
+
+// The change in its context, as read before the save: no second read needed.
+print('${saved.teacherName} instead of ${saved.replaced?.teacherName} '
+    'on course "${saved.course.label}" of class ${saved.course.classId}');
 ```
+
+Both return a `SkoreSavedAssignment`: the assignment saved (a `SkoreAssignment`: `id`, `teacherId`, `teacherName` of its new teacher), with what the call read before the save (#102): `course`, the `SkoreCourse` as it was (its `label`, `code`, `depth`, and its `assignments` before the change), and, for `replaceTeacher`, `replaced`, the assignment with the teacher it had (`null` for `addTeacher`). So reporting the change needs no second read of the class, which could differ from what the call checked.
 
 Both go through Skore's `saveOwner`. Before it, they read the class (`getCourses`) and the teachers (`getTeachers`) again, and refuse with a `SmartschoolSkoreChangeRefusedError`, saving nothing:
 
@@ -738,7 +744,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 - `SmartschoolSkoreAccessDeniedError` — Skore refused the request to the account, which lacks the rights for that part of Skore (carries `area`: `SkoreAccessArea.reportManagement` or `.gradebookManagement`). Thrown for an answer with HTTP 403; see the access requirement above for what is not known yet. Its message quotes nothing of the answer, so it can be shown to the user.
 - `SmartschoolSkoreChangeRefusedError` — a check before the save refused the change (the checks are listed above). Nothing was saved. Its message says which check refused and why, so the call can be corrected.
-- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved.
+- `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, and `teacherName` as read from the class). Nothing was saved.
 - `SmartschoolSkoreError` itself (none of the types above) — Skore answered with something the service cannot use: another HTTP status than `200`, an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers, or a `getMyGroups` answer it does not recognise). The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log.
 - `SmartschoolSkoreSaveUnconfirmedError` — `addTeacher`, `replaceTeacher`, `shareGradebook` or `unshareGradebook` sent the save, but Skore's answer (for a share, also the read afterwards) does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read again. Not a `SmartschoolSkoreError`.
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered an RPC without a session (which its web client reports as an empty session). Sign in again and retry. The save of `addTeacher` and `replaceTeacher` is not retried: it fails at once.
@@ -1122,6 +1128,9 @@ Returned by `SkoreService.getClasses()`. Fields: `id` (the Skore class ID), `nam
 ### `SkoreCourse` / `SkoreAssignment`
 Returned by `SkoreService.getCourses()`. A course row (`id`, `classId`, `name`, `label` — as Skore shows it, code included, `code` (`String?`, the last `[...]` of the label), `isGroupHeader`, `depth` — `0` for a top-level row, `assignments`) and the teachers assigned to it (`id` — the assignment ID, `ownerID` in Skore, `teacherId`, `teacherName`).
 
+### `SkoreSavedAssignment`
+Returned by `SkoreService.addTeacher()` and `replaceTeacher()`. The assignment saved, a `SkoreAssignment` (`id`, `teacherId`, `teacherName` of the teacher it has now), with `course` (the `SkoreCourse` as read before the save, its `assignments` before the change) and `replaced` (`SkoreAssignment?`: for `replaceTeacher`, the assignment with the teacher it had; `null` for `addTeacher`).
+
 ### `SkoreTeacher`
 Returned by `SkoreService.getTeachers()`. Fields: `id` (the Smartschool user ID), `name` (`"Last, First"`).
 
@@ -1194,7 +1203,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolAttachmentUploadError` | An attachment upload step fails |
 | `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
-| `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`). Nothing was saved. A `SmartschoolSkoreError` |
+| `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, `teacherName`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError` |
 | `SmartschoolPlannerError` | The planner answers `PlannerService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. Not a session problem |
 | `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`); also a planner write, for the element it reads again first (nothing was sent). A `SmartschoolPlannerError` |

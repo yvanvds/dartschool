@@ -2,6 +2,7 @@ import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
 import 'models/lesson_content_models.dart' show LessonContentItem;
+import 'models/message_models.dart' show BoxType;
 import 'models/planner_models.dart'
     show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
@@ -666,6 +667,60 @@ class SmartschoolSendUnconfirmedError extends SmartschoolException {
     super.message, {
     this.statusCode,
     this.cause,
+  });
+}
+
+/// Thrown by `MessagesService.moveToTrashFrom` when its move to the trash
+/// went out and Smartschool answered it, but the check after it failed
+/// (#115).
+///
+/// `moveToTrashFrom` sends Smartschool's `quickmove messages`, which
+/// Smartschool answers the same whether it moved a message or not, and then
+/// checks the move with a `show message` in the box it moved the copy out
+/// of (#96). When that check throws, this error is thrown with the check's
+/// error as its [cause]: a [SmartschoolSessionExpiredError] (Smartschool did
+/// not accept the session for the check, also after the client logged in
+/// again), a [SmartschoolUnexpectedPageError] or a [SmartschoolParsingError]
+/// (an answer that is not XML), a [SmartschoolConnectionError], or another
+/// failure of a login for the check.
+///
+/// **The move went out and may have been made.** Do not send it again
+/// blindly: ask the box first, with `MessagesService.getMessage(msgId,
+/// boxType: boxType)`, which returns `null` once the box (none of its
+/// folders) holds the message any more. [msgId], [boxType] and [boxId] are
+/// those of the move.
+///
+/// Every other failure of `moveToTrashFrom` is the move's own: an
+/// [ArgumentError] before any request, or an error of the move's request,
+/// such as a [SmartschoolSessionExpiredError] when Smartschool did not
+/// accept the session for the move, also after the client logged in again
+/// (the move was not carried out). So a caller that sends a call again on a
+/// [SmartschoolSessionExpiredError] does not send a move again that went
+/// out.
+///
+/// Deliberately not a [SmartschoolAuthenticationError], whatever its
+/// [cause], so a `catch` meant for the session refused for the move does
+/// not catch it.
+class SmartschoolMoveUncheckedError extends SmartschoolException {
+  /// The ID of the message whose copy was moved.
+  final int msgId;
+
+  /// The box the copy was moved out of, which the check asked.
+  final BoxType boxType;
+
+  /// The folder of [boxType] the copy was moved out of; `0` for the box
+  /// itself.
+  final int boxId;
+
+  /// What the check failed with.
+  final Object cause;
+
+  const SmartschoolMoveUncheckedError(
+    super.message, {
+    required this.msgId,
+    required this.boxType,
+    this.boxId = 0,
+    required this.cause,
   });
 }
 

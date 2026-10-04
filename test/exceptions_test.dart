@@ -1,4 +1,6 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
+import 'package:flutter_smartschool/src/models/message_models.dart'
+    show BoxType;
 import 'package:flutter_smartschool/src/models/planner_models.dart'
     show PlannedElement, PlannerWriteRefusalReason;
 import 'package:flutter_smartschool/src/models/presence_models.dart'
@@ -124,6 +126,40 @@ void main() {
         'SmartschoolSessionExpiredError: '
         'Smartschool did not accept the session.',
       );
+    });
+  });
+
+  group('SmartschoolMoveUncheckedError (#115)', () {
+    test('is not a SmartschoolAuthenticationError, whatever its cause, and '
+        'carries the move and the cause', () {
+      // "The move went out" must not share a type with "Smartschool refused
+      // the session for the move": a caller sends the call again on the
+      // latter.
+      const cause = SmartschoolSessionExpiredError();
+      const error = SmartschoolMoveUncheckedError(
+        'unchecked',
+        msgId: 4242,
+        boxType: BoxType.inbox,
+        boxId: 208,
+        cause: cause,
+      );
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.msgId, 4242);
+      expect(error.boxType, BoxType.inbox);
+      expect(error.boxId, 208);
+      expect(error.cause, same(cause));
+      expect(error.toString(), 'SmartschoolMoveUncheckedError: unchecked');
+    });
+
+    test('a move out of the box itself: folder 0', () {
+      const error = SmartschoolMoveUncheckedError(
+        'unchecked',
+        msgId: 1,
+        boxType: BoxType.sent,
+        cause: SmartschoolParsingError('empty'),
+      );
+      expect(error.boxId, 0);
     });
   });
 

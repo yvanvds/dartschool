@@ -32,7 +32,20 @@
 // message moved to the trash (`show message moved to trash.xml`, asked in the
 // inbox) is the placeholder, with the ID asked.
 //
-// The fake Smartschool below records each XML command and answers it.
+// Issue #115: when that check failed, `moveToTrashFrom` threw the check's
+// error as it was, after the move went out: the same
+// `SmartschoolSessionExpiredError`, `SmartschoolUnexpectedPageError` or
+// `SmartschoolParsingError` as for a move that failed. A caller that sends a
+// call again on a `SmartschoolSessionExpiredError` (as smartschool-mcp does)
+// could not tell, and sent the move a second time for a message that may be
+// in the trash already. Now a failed check is a
+// `SmartschoolMoveUncheckedError` with the check's error as its cause, and
+// the message, box and folder of the move; the move's own errors are thrown
+// as before.
+//
+// The fake Smartschools below record each XML command and answer it; one of
+// them refuses the session for the commands it is told to, also after the
+// client logged in again.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -98,22 +111,54 @@ String _heldWithId(String id) {
 /// An XML command as it reached the fake Smartschool.
 typedef _Command = ({String path, String action, Map<String, String> params});
 
+/// The XML command that [options] posts to the dispatcher.
+_Command _commandOf(RequestOptions options) {
+  expect(options.method, 'POST');
+  final command = (options.data as Map)['command'] as String;
+  expect(command, contains('<subsystem>postboxes</subsystem>'));
+  return (
+    path: '${options.uri.path}?${options.uri.query}',
+    action: RegExp(r'<action>(.*?)</action>').firstMatch(command)!.group(1)!,
+    params: {
+      for (final m in RegExp(
+        r'<param name="([^"]+)"><!\[CDATA\[(.*?)\]\]></param>',
+      ).allMatches(command))
+        m.group(1)!: m.group(2)!,
+    },
+  );
+}
+
+ResponseBody _response(
+  String body, {
+  int status = 200,
+  String contentType = 'text/html',
+}) => ResponseBody.fromString(
+  body,
+  status,
+  headers: {
+    Headers.contentTypeHeader: [contentType],
+  },
+);
+
 /// A Smartschool whose XML dispatcher answers `show message` with [shown]
 /// (HTTP `200`, [shownContentType]; by default the placeholder for message
 /// `4242`) and every other command with [answer] (HTTP `200`,
-/// [contentType]).
+/// [contentType]). With [shownUnreachable], the connection fails at the
+/// `show message` instead, before an answer comes in.
 class _Smartschool implements HttpClientAdapter {
   _Smartschool(
     this.answer, {
     this.contentType = 'application/xml',
     String? shown,
     this.shownContentType = 'application/xml',
+    this.shownUnreachable = false,
   }) : shown = shown ?? _gone(4242);
 
   final String answer;
   final String contentType;
   final String shown;
   final String shownContentType;
+  final bool shownUnreachable;
 
   /// Every command that reached it, in order.
   final List<_Command> commands = [];
@@ -124,29 +169,19 @@ class _Smartschool implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
-    expect(options.method, 'POST');
-    final command = (options.data as Map)['command'] as String;
-    expect(command, contains('<subsystem>postboxes</subsystem>'));
-    final action = RegExp(
-      r'<action>(.*?)</action>',
-    ).firstMatch(command)!.group(1)!;
-    commands.add((
-      path: '${options.uri.path}?${options.uri.query}',
-      action: action,
-      params: {
-        for (final m in RegExp(
-          r'<param name="([^"]+)"><!\[CDATA\[(.*?)\]\]></param>',
-        ).allMatches(command))
-          m.group(1)!: m.group(2)!,
-      },
-    ));
-    final show = action == 'show message';
-    return ResponseBody.fromString(
+    final command = _commandOf(options);
+    commands.add(command);
+    final show = command.action == 'show message';
+    if (show && shownUnreachable) {
+      throw DioException.connectionError(
+        requestOptions: options,
+        reason: 'Connection closed before full header was received',
+        error: const SocketException('Connection reset by peer'),
+      );
+    }
+    return _response(
       show ? shown : answer,
-      200,
-      headers: {
-        Headers.contentTypeHeader: [show ? shownContentType : contentType],
-      },
+      contentType: show ? shownContentType : contentType,
     );
   }
 
@@ -154,30 +189,152 @@ class _Smartschool implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+const _loginPage = '''
+<!DOCTYPE html>
+<html><body>
+<form class="form" name="login_form" method="post">
+<input type="text" name="login_form[_username]" />
+<input type="password" name="login_form[_password]" />
+<input type="hidden" name="login_form[_token]" value="csrf" />
+<button type="submit">Aanmelden</button>
+</form>
+</body></html>
+''';
+
+/// A Smartschool on which the session expired (#115): it refuses every XML
+/// command with a bare `401` and an empty body, as it refuses an XML POST on
+/// such a session (#8), until the client logged in again (password and
+/// 2FA). Then it answers `quickmove messages` with the recorded answer and
+/// `show message` with the placeholder for message `4242`, except the
+/// commands named in [refused]: those it refuses every time, also after the
+/// client logged in again, and it drops the session with them, so that the
+/// client logs in again from the start.
+class _ExpiringSmartschool implements HttpClientAdapter {
+  _ExpiringSmartschool({required this.refused});
+
+  final Set<String> refused;
+
+  bool _passwordDone = false;
+  bool _twoFaDone = false;
+
+  /// Every request the client made, as `METHOD path`.
+  final List<String> log = [];
+
+  /// Every XML command that reached it, in order.
+  final List<_Command> commands = [];
+
+  /// The actions of [commands], in order.
+  List<String> get actions => [for (final c in commands) c.action];
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    final path = options.uri.path;
+    log.add('${options.method} $path');
+
+    if (options.method == 'POST' && path == '/login') {
+      _passwordDone = true;
+      final response = _response(
+        '<html><body>Redirecting to /</body></html>',
+        status: 302,
+      );
+      response.headers['location'] = ['/'];
+      return response;
+    }
+    if (path == '/2fa/api/v1/config') {
+      return _response(
+        '{"possibleAuthenticationMechanisms":["googleAuthenticator"]}',
+        contentType: Headers.jsonContentType,
+      );
+    }
+    if (path == '/2fa/api/v1/google-authenticator') {
+      _twoFaDone = true;
+      return _response(
+        '{"success":true,"redirectTo":"/"}',
+        contentType: Headers.jsonContentType,
+      );
+    }
+    if (options.method == 'POST') {
+      final command = _commandOf(options);
+      commands.add(command);
+      if (!_passwordDone || !_twoFaDone) return _response('', status: 401);
+      if (refused.contains(command.action)) {
+        _passwordDone = _twoFaDone = false;
+        return _response('', status: 401);
+      }
+      return _response(
+        command.action == 'show message' ? _gone(4242) : _moveAnswer,
+        contentType: 'application/xml',
+      );
+    }
+
+    // A page request: redirected to wherever the session is in the chain.
+    final (at, page) = !_passwordDone
+        ? ('/login', _loginPage)
+        : !_twoFaDone
+        ? ('/2fa', '<html><body>2fa</body></html>')
+        : (path, '<html><body>home</body></html>');
+    final response = _response(page);
+    if (at != path) {
+      response.redirects = [
+        RedirectRecord(302, 'GET', Uri.parse('https://$_host$at')),
+      ];
+    }
+    return response;
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
+/// Moves message [id] out of [box] to the trash as a caller does that sends
+/// a call once more when Smartschool did not accept the session for it, as
+/// smartschool-mcp does (yvanvds/smartschool-mcp, #115): the call is safe to
+/// repeat then, as nothing was carried out.
+Future<bool?> _moveRepeatingOnRefusedSession(
+  MessagesService messages,
+  int id,
+  BoxType box,
+) async {
+  try {
+    return await messages.moveToTrashFrom(id, boxType: box);
+  } on SmartschoolSessionExpiredError {
+    return messages.moveToTrashFrom(id, boxType: box);
+  }
+}
+
 void main() {
   forbidRealNetwork();
 
   late SmartschoolClient client;
+
+  Future<T> use<T extends HttpClientAdapter>(T server) async {
+    client = await SmartschoolClient.create(
+      _Credentials(),
+      cacheDir: tempCacheDir(),
+    );
+    client.dio.httpClientAdapter = server;
+    return server;
+  }
 
   Future<_Smartschool> serve(
     String answer, {
     String contentType = 'application/xml',
     String? shown,
     String shownContentType = 'application/xml',
-  }) async {
-    client = await SmartschoolClient.create(
-      _Credentials(),
-      cacheDir: tempCacheDir(),
-    );
-    final server = _Smartschool(
+    bool shownUnreachable = false,
+  }) => use(
+    _Smartschool(
       answer,
       contentType: contentType,
       shown: shown,
       shownContentType: shownContentType,
-    );
-    client.dio.httpClientAdapter = server;
-    return server;
-  }
+      shownUnreachable: shownUnreachable,
+    ),
+  );
 
   tearDown(() => client.dispose());
 
@@ -408,33 +565,6 @@ void main() {
       });
     }
 
-    test('a check answered with an HTML page throws, after the move went '
-        'out', () async {
-      final server = await serve(
-        _moveAnswer,
-        shown: '<!DOCTYPE html><html><body>login</body></html>',
-        shownContentType: 'text/html',
-      );
-
-      await expectLater(
-        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
-        throwsA(isA<SmartschoolAuthenticationError>()),
-      );
-      expect(server.commands.map((c) => c.action), [
-        'quickmove messages',
-        'show message',
-      ]);
-    });
-
-    test('a check answered with an empty body throws', () async {
-      await serve(_moveAnswer, shown: '', shownContentType: 'text/html');
-
-      await expectLater(
-        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
-        throwsA(isA<SmartschoolParsingError>()),
-      );
-    });
-
     test('getMessage, which sends the same show message, returns null for '
         'the placeholder of a moved message, and the message for one the '
         'box holds', () async {
@@ -446,6 +576,179 @@ void main() {
       final message = await MessagesService(client).getMessage(4242);
       expect(message?.id, 4242);
       expect(message?.subject, 'Griezelfestijn');
+    });
+  });
+
+  group('moveToTrashFrom throws a SmartschoolMoveUncheckedError, with the '
+      "check's error as its cause, when its check fails after the move went "
+      "out, and the move's own error when the move fails (#115)", () {
+    /// A [SmartschoolMoveUncheckedError] for the move of message `4242` out
+    /// of [box] (folder [boxId]), with a [T] as its cause.
+    Matcher unchecked<T>(BoxType box, {int boxId = 0}) =>
+        isA<SmartschoolMoveUncheckedError>()
+            .having((e) => e.msgId, 'msgId', 4242)
+            .having((e) => e.boxType, 'boxType', box)
+            .having((e) => e.boxId, 'boxId', boxId)
+            .having((e) => e.cause, 'cause', isA<T>());
+
+    /// What [call] throws, or `null` when it returns.
+    Future<Object?> thrownBy(Future<Object?> call) =>
+        call.then<Object?>((_) => null, onError: (Object e) => e);
+
+    test('Smartschool refuses the session for the check, also after the '
+        'client logged in again: not a SmartschoolSessionExpiredError, and '
+        'the move is not sent again', () async {
+      final server = await use(_ExpiringSmartschool(refused: {'show message'}));
+
+      // Before the fix: the check's SmartschoolSessionExpiredError, the
+      // same error as for a move that Smartschool refused.
+      final error = await thrownBy(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.inbox),
+      );
+
+      expect(error, unchecked<SmartschoolSessionExpiredError>(BoxType.inbox));
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      // The move went out and was answered; the check was refused, logged
+      // in again for, and refused again.
+      expect(server.actions, [
+        'quickmove messages', // refused: the session expired
+        'quickmove messages', // after logging in: answered
+        'show message', // refused, and the session dropped
+        'show message', // after logging in again: refused again
+      ]);
+      expect(
+        server.log.where((r) => r == 'POST /2fa/api/v1/google-authenticator'),
+        hasLength(2),
+      );
+    });
+
+    test('Smartschool refuses the session for the move, also after the '
+        'client logged in again: a SmartschoolSessionExpiredError, and no '
+        'check', () async {
+      final server = await use(
+        _ExpiringSmartschool(refused: {'quickmove messages'}),
+      );
+
+      final error = await thrownBy(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.inbox),
+      );
+
+      expect(error, isA<SmartschoolSessionExpiredError>());
+      expect(server.actions, [
+        'quickmove messages', // refused: the session expired
+        'quickmove messages', // after logging in: refused again
+      ], reason: 'a move that failed is not checked');
+    });
+
+    test('a caller that sends a call again when Smartschool did not accept '
+        'the session for it does not send the move again when only the '
+        'check was refused', () async {
+      final server = await use(_ExpiringSmartschool(refused: {'show message'}));
+
+      // Before the fix: the caller sent the move a second time, for a
+      // message that may be in the trash already.
+      final error = await thrownBy(
+        _moveRepeatingOnRefusedSession(
+          MessagesService(client),
+          4242,
+          BoxType.inbox,
+        ),
+      );
+
+      expect(server.actions, [
+        'quickmove messages', // refused: the session expired
+        'quickmove messages', // after logging in: answered
+        'show message',
+        'show message',
+      ]);
+      expect(error, unchecked<SmartschoolSessionExpiredError>(BoxType.inbox));
+    });
+
+    test('... and sends it again when the move itself was refused', () async {
+      final server = await use(
+        _ExpiringSmartschool(refused: {'quickmove messages'}),
+      );
+
+      final error = await thrownBy(
+        _moveRepeatingOnRefusedSession(
+          MessagesService(client),
+          4242,
+          BoxType.inbox,
+        ),
+      );
+
+      expect(error, isA<SmartschoolSessionExpiredError>());
+      // Each call: refused, logged in again, refused again; never checked.
+      expect(server.actions, List.filled(4, 'quickmove messages'));
+    });
+
+    test('a check answered with an HTML page', () async {
+      final server = await serve(
+        _moveAnswer,
+        shown: '<!DOCTYPE html><html><body>login</body></html>',
+        shownContentType: 'text/html',
+      );
+
+      // Before the fix: the check's SmartschoolUnexpectedPageError.
+      await expectLater(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
+        throwsA(unchecked<SmartschoolUnexpectedPageError>(BoxType.sent)),
+      );
+      expect(server.commands.map((c) => c.action), [
+        'quickmove messages',
+        'show message',
+      ]);
+    });
+
+    test('a check answered with an empty body, after a move out of the '
+        'archive folder', () async {
+      await serve(_moveAnswer, shown: '', shownContentType: 'text/html');
+
+      // Before the fix: the check's SmartschoolParsingError.
+      await expectLater(
+        MessagesService(
+          client,
+        ).moveToTrashFrom(4242, boxType: BoxType.inbox, boxId: 208),
+        throwsA(unchecked<SmartschoolParsingError>(BoxType.inbox, boxId: 208)),
+      );
+    });
+
+    test('a check whose connection fails before an answer comes in', () async {
+      final server = await serve(_moveAnswer, shownUnreachable: true);
+
+      // Before the fix: the check's SmartschoolConnectionError.
+      await expectLater(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
+        throwsA(unchecked<SmartschoolConnectionError>(BoxType.sent)),
+      );
+      expect(server.commands.map((c) => c.action), [
+        'quickmove messages',
+        'show message',
+      ]);
+    });
+
+    test('its message says that the move went out, what the check failed '
+        'with, and how to check the move', () async {
+      await serve(
+        _moveAnswer,
+        shown: '<!DOCTYPE html><html><body>login</body></html>',
+        shownContentType: 'text/html',
+      );
+
+      final error = await thrownBy(
+        MessagesService(client).moveToTrashFrom(4242, boxType: BoxType.sent),
+      );
+
+      expect(error, isA<SmartschoolMoveUncheckedError>());
+      final text = error.toString();
+      expect(
+        text,
+        startsWith('SmartschoolMoveUncheckedError: moveToTrashFrom: '),
+      );
+      expect(text, contains('message 4242'));
+      expect(text, contains('went out'));
+      expect(text, contains('SmartschoolUnexpectedPageError'));
+      expect(text, contains('getMessage(4242, boxType: BoxType.sent)'));
     });
   });
 }

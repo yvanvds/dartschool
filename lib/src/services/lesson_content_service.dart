@@ -45,6 +45,10 @@ export '../models/lesson_content_models.dart';
 ///   module answers a route it does not know with its web app), invalid JSON,
 ///   or data in an unknown shape. The session was accepted: signing in again
 ///   does not help.
+/// - [SmartschoolLessonContentCourseListError] (a
+///   [SmartschoolLessonContentError]): [getItems] read the lesfiches, but the
+///   course list that names their courses answered so. It carries the
+///   lesfiches as read, without the course names (#118).
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once.
@@ -88,6 +92,17 @@ class LessonContentService {
   /// the courses of its course filter (#101). A course that the course list
   /// does not have keeps a `null` name. With [withCourseNames] `false` it
   /// sends the one request only, and every course has a `null` name.
+  ///
+  /// A course list it cannot use (another status than `200`, an HTML page,
+  /// invalid JSON, a course without its `id` or `platformId`) does not lose
+  /// the lesfiches: it throws a [SmartschoolLessonContentCourseListError]
+  /// with the course list's message and status, whose
+  /// [SmartschoolLessonContentCourseListError.items] are the lesfiches as
+  /// read, every course with a `null` name (#118). Catch it to list them
+  /// without the names. Any other [SmartschoolLessonContentError] is about
+  /// the lesfiches: none were read. A session refused for the course list
+  /// (also after logging in again) or a failed connection is thrown as for
+  /// the lesfiches, without them.
   Future<List<LessonContentItem>> getItems({
     bool withCourseNames = true,
   }) async {
@@ -97,7 +112,20 @@ class LessonContentService {
     if (!withCourseNames || items.every((item) => item.courses.isEmpty)) {
       return items;
     }
-    return parseItems(json, courses: await getCourses());
+    final List<PlannerCourse> courses;
+    try {
+      courses = await getCourses();
+    } on SmartschoolLessonContentError catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolLessonContentCourseListError(
+          e.message,
+          statusCode: e.statusCode,
+          items: items,
+        ),
+        stackTrace,
+      );
+    }
+    return parseItems(json, courses: courses);
   }
 
   /// Returns the courses of the school, in the order the course list gives
@@ -112,6 +140,10 @@ class LessonContentService {
   /// the teacher's, each in the shape of a [PlannerCourse], and among them
   /// every course of the teacher's lesfiches and of the own planner, with the
   /// planner's names.
+  ///
+  /// An answer it cannot use is a plain [SmartschoolLessonContentError]:
+  /// only [getItems] throws a [SmartschoolLessonContentCourseListError] for
+  /// it, with the lesfiches it read before.
   Future<List<PlannerCourse>> getCourses() async {
     final response = await _client.getResponse(_courseListPath);
     return parseCourses(_decode(response, 'the courses', _courseList));

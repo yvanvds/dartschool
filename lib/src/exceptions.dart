@@ -2,11 +2,23 @@ import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
 import 'models/lesson_content_models.dart' show LessonContentItem;
+import 'models/message_models.dart' show BoxType;
 import 'models/planner_models.dart'
-    show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
+    show
+        PlannedElement,
+        PlannedElementDetail,
+        PlannerAssignmentType,
+        PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
     show DayPart, PresenceHalfDay, PresenceSaveError;
-import 'models/skore_models.dart' show SkoreAccessArea;
+import 'models/skore_models.dart'
+    show
+        SkoreAccessArea,
+        SkoreAssignment,
+        SkoreCourse,
+        SkoreGradebookShares,
+        SkoreShareAccess,
+        SkoreTeacher;
 
 /// Base exception for all Smartschool API errors.
 class SmartschoolException implements Exception {
@@ -669,6 +681,60 @@ class SmartschoolSendUnconfirmedError extends SmartschoolException {
   });
 }
 
+/// Thrown by `MessagesService.moveToTrashFrom` when its move to the trash
+/// went out and Smartschool answered it, but the check after it failed
+/// (#115).
+///
+/// `moveToTrashFrom` sends Smartschool's `quickmove messages`, which
+/// Smartschool answers the same whether it moved a message or not, and then
+/// checks the move with a `show message` in the box it moved the copy out
+/// of (#96). When that check throws, this error is thrown with the check's
+/// error as its [cause]: a [SmartschoolSessionExpiredError] (Smartschool did
+/// not accept the session for the check, also after the client logged in
+/// again), a [SmartschoolUnexpectedPageError] or a [SmartschoolParsingError]
+/// (an answer that is not XML), a [SmartschoolConnectionError], or another
+/// failure of a login for the check.
+///
+/// **The move went out and may have been made.** Do not send it again
+/// blindly: ask the box first, with `MessagesService.getMessage(msgId,
+/// boxType: boxType)`, which returns `null` once the box (none of its
+/// folders) holds the message any more. [msgId], [boxType] and [boxId] are
+/// those of the move.
+///
+/// Every other failure of `moveToTrashFrom` is the move's own: an
+/// [ArgumentError] before any request, or an error of the move's request,
+/// such as a [SmartschoolSessionExpiredError] when Smartschool did not
+/// accept the session for the move, also after the client logged in again
+/// (the move was not carried out). So a caller that sends a call again on a
+/// [SmartschoolSessionExpiredError] does not send a move again that went
+/// out.
+///
+/// Deliberately not a [SmartschoolAuthenticationError], whatever its
+/// [cause], so a `catch` meant for the session refused for the move does
+/// not catch it.
+class SmartschoolMoveUncheckedError extends SmartschoolException {
+  /// The ID of the message whose copy was moved.
+  final int msgId;
+
+  /// The box the copy was moved out of, which the check asked.
+  final BoxType boxType;
+
+  /// The folder of [boxType] the copy was moved out of; `0` for the box
+  /// itself.
+  final int boxId;
+
+  /// What the check failed with.
+  final Object cause;
+
+  const SmartschoolMoveUncheckedError(
+    super.message, {
+    required this.msgId,
+    required this.boxType,
+    this.boxId = 0,
+    required this.cause,
+  });
+}
+
 /// Thrown by `MessagesService.getHeaderPages` and `getArchiveHeaderPages`,
 /// and so by `getAllHeaders` and `getAllArchiveHeaders`, when Smartschool
 /// restarted the paging of the box halfway: the box was listed again while
@@ -712,7 +778,10 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
-/// subtype [SmartschoolPresenceChangeRefusedError] (#105): nothing was sent.
+/// subtype [SmartschoolPresenceChangeRefusedError] (#105), and a pupil the
+/// class does not list on that day with the subtype
+/// [SmartschoolPresencePupilNotFoundError] (#116): nothing was sent for
+/// either.
 ///
 /// A session that Smartschool does not accept is not reported with this type
 /// but as a [SmartschoolSessionExpiredError] (a
@@ -793,6 +862,50 @@ class SmartschoolPresenceChangeRefusedError extends SmartschoolPresenceError {
   });
 }
 
+/// Thrown by `PresenceService.setLate` and `setPresent` when the class, as
+/// the call read it right before the save (`Presence/Class/getClass`), does
+/// not list the pupil on that day (#116). Nothing was sent.
+///
+/// A fact about the pupil on that day, not a refusal of the module: the
+/// pupil is not (or no longer) in the class on that day, such as a pupil
+/// whose movement into the class ended, or a `userId` the class does not
+/// list at all. When the module listed no pupils for the class on that day
+/// (a day after today, a class without pupils), [errorMessage] has its
+/// reason and [saveIsAllowed] what it answered with it (#104).
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] is empty.
+class SmartschoolPresencePupilNotFoundError extends SmartschoolPresenceError {
+  /// The pupil's internal `userID`, as passed.
+  final int userId;
+
+  /// The class's `groupID`, as passed.
+  final int classGroupId;
+
+  /// The day the call would have changed (`yyyy-MM-dd`).
+  final String date;
+
+  /// When the module listed no pupils for the class on that day: its
+  /// `saveIsAllowed` (`false` in every such answer seen live), or `null`
+  /// when its answer did not say. `null` when it listed other pupils.
+  final bool? saveIsAllowed;
+
+  /// When the module listed no pupils for the class on that day: its reason,
+  /// as it shows it to the user (such as "Het is niet mogelijk om in de
+  /// toekomst afwezigheden op te nemen."), or `null` when it gave none.
+  /// `null` when it listed other pupils.
+  final String? errorMessage;
+
+  const SmartschoolPresencePupilNotFoundError(
+    super.message, {
+    required this.userId,
+    required this.classGroupId,
+    required this.date,
+    this.saveIsAllowed,
+    this.errorMessage,
+  });
+}
+
 /// Thrown by `SkoreService` when Smartschool's Skore module (grading and
 /// reports) does not give what was asked for. The session was accepted:
 /// signing in again does not help. A Skore RPC answer that carries no session
@@ -812,11 +925,10 @@ class SmartschoolPresenceChangeRefusedError extends SmartschoolPresenceError {
 ///   `getMyGroups` answer it does not know). Its message may quote the
 ///   answer, which can hold names: keep it in a log.
 ///
-/// What Skore answers an account without the rights has not been captured
-/// yet (#91): only an answer with HTTP 403 is reported as a
-/// [SmartschoolSkoreAccessDeniedError]. Until then, such an account may get
-/// this type itself (most likely about an HTML page instead of data), or
-/// even an empty list.
+/// A teacher without the rights gets a [SmartschoolSkoreAccessDeniedError]
+/// from every call, not this type itself, and never an empty list (seen
+/// live, #91). What Skore answers a pupil, and an account with only one of
+/// the two rights, was not captured.
 ///
 /// From the writes (`SkoreService.addTeacher`, `replaceTeacher`, #71;
 /// `shareGradebook`, `unshareGradebook`, #74), this type and all its subtypes
@@ -833,17 +945,21 @@ class SmartschoolSkoreError extends SmartschoolException {
 /// (Puntenboeken). An account can have one without the other. Ask the
 /// school's Smartschool administrator for the rights.
 ///
-/// Thrown when Skore answers a request with HTTP 403 (Forbidden). That is
-/// HTTP's own answer for a request the server refuses to the account; it has
-/// not been seen from Skore. What Skore answers an account without the
-/// rights has not been captured yet (#91), so such an account may still get
-/// a plain [SmartschoolSkoreError] instead, until it is.
+/// Thrown when Skore sends the request on to Smartschool's start page (a
+/// redirect to `/?module=Homepage`): its answer to every request of the
+/// service from a teacher without Skore's management rights, seen live
+/// (#91). The request was refused: no data came. Also thrown when Skore
+/// answers with HTTP 403 (Forbidden), HTTP's own answer for a request the
+/// server refuses to the account (#83; not seen from Skore). What Skore
+/// answers a pupil, and an account with only one of the two rights, was not
+/// captured. `SkoreService.checkAccess` tells which parts the account can
+/// use.
 ///
 /// Its message names the request and the part of Skore, and quotes nothing
 /// of the answer, so it can be shown to the user. A
 /// [SmartschoolSkoreError], so `catch` clauses for that type keep catching
 /// it. From the writes, it comes from a read before the save: nothing was
-/// saved. When Skore answers a save itself with HTTP 403, the write throws a
+/// saved. When Skore answers a save itself so, the write throws a
 /// [SmartschoolSkoreSaveUnconfirmedError] with this error as its `cause`.
 class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
   /// The part of Skore the refused request belongs to.
@@ -1000,8 +1116,10 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// Which check refused is a value an app can switch on (#100): [reason],
 /// with the [element] the check read (to name it in the app's own words:
 /// its period, name, classes, course and organisers), the
-/// [capabilityFlags] it missed or found, and for a lesfiche that is not a
-/// lesson one the [lessonContent]. The [message] says the same for a log,
+/// [capabilityFlags] it missed or found, for a lesfiche that is not a
+/// lesson one the [lessonContent], and for an assignment type the school
+/// does not have the school's [assignmentTypes] as the check read them
+/// (#119). The [message] says the same for a log,
 /// in the library's words: it names the method, the element by its type,
 /// ID and period, and ends with "Nothing was sent.".
 ///
@@ -1041,12 +1159,23 @@ class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
   /// otherwise.
   final LessonContentItem? lessonContent;
 
+  /// For [PlannerWriteRefusalReason.unknownAssignmentType], the school's
+  /// assignment types as `planAssignment` read them again for the check
+  /// (`getAssignmentTypes`), in the planner's order: the types the refused
+  /// one is not among (#119). An app can list them to its user, and keep its
+  /// own copy up to date, without reading them a second time (a read that
+  /// could differ from the one the check refused on). Empty when the school
+  /// has none, and for the other reasons. The type that was refused is the
+  /// caller's own `type`.
+  final List<PlannerAssignmentType> assignmentTypes;
+
   const SmartschoolPlannerWriteRefusedError(
     super.message, {
     this.reason,
     this.element,
     this.capabilityFlags = const [],
     this.lessonContent,
+    this.assignmentTypes = const [],
   });
 
   @override
@@ -1124,6 +1253,12 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
 /// Smartschool does not accept is a [SmartschoolSessionExpiredError]
 /// instead.
 ///
+/// When `LessonContentService.getItems` read the lesfiches but the course
+/// list it reads after them to name their courses fails so, it throws the
+/// subtype [SmartschoolLessonContentCourseListError], which carries the
+/// lesfiches as read (#118). From `getItems`, an error of this type that is
+/// not of that subtype is about the lesfiches: none were read.
+///
 /// `PlannerService.planLessonContent` reads the lesfiches before it plans
 /// one; this error from it means that **nothing was sent** to the planner.
 class SmartschoolLessonContentError extends SmartschoolException {
@@ -1137,6 +1272,50 @@ class SmartschoolLessonContentError extends SmartschoolException {
   String toString() => statusCode == null
       ? '$runtimeType: $message'
       : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `LessonContentService.getItems` when it read the lesfiches, but
+/// the school's course list, which it reads after them to name their courses
+/// (#101), answered with something the service cannot use (#118): another
+/// HTTP status than `200` (in [statusCode]), an HTML page, an answer that is
+/// not valid JSON, or a list in a shape it does not recognise (such as a
+/// course without its `id` or `platformId`). Its [message] and [statusCode]
+/// are those of the course list's answer.
+///
+/// The lesfiches are not lost: [items] holds them as read, the same as
+/// `getItems(withCourseNames: false)` gives them (every course with a `null`
+/// `LessonContentCourse.name`). A caller that can do without the names lists
+/// those:
+///
+/// ```dart
+/// List<LessonContentItem> fiches;
+/// try {
+///   fiches = await lessonContent.getItems();
+/// } on SmartschoolLessonContentCourseListError catch (e) {
+///   fiches = e.items; // the courses without their names; e says why
+/// }
+/// ```
+///
+/// A [SmartschoolLessonContentError], so `catch` clauses for that type keep
+/// catching it. From `getItems`, a [SmartschoolLessonContentError] that is
+/// not of this type is about the lesfiches themselves: none were read. A
+/// session that Smartschool does not accept for the course list (also after
+/// the client logged in again), or a connection that fails for it, is thrown
+/// as for the lesfiches ([SmartschoolSessionExpiredError],
+/// [SmartschoolConnectionError]), without the lesfiches: calling `getItems`
+/// again reads both. `LessonContentService.getCourses`, which reads the
+/// course list alone, throws a plain [SmartschoolLessonContentError].
+class SmartschoolLessonContentCourseListError
+    extends SmartschoolLessonContentError {
+  /// The lesfiches `getItems` read, in the module's order, with their
+  /// courses unnamed (`LessonContentCourse.name` `null`).
+  final List<LessonContentItem> items;
+
+  const SmartschoolLessonContentCourseListError(
+    super.message, {
+    super.statusCode,
+    required this.items,
+  });
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save
@@ -1165,15 +1344,102 @@ class SmartschoolLessonContentError extends SmartschoolException {
 /// the complete readers and writers of one gradebook, so sending it again
 /// does not change the outcome.
 ///
+/// The service throws one of its two subtypes, which carry what the call
+/// read before the save (#120), as its result would have:
+/// - [SmartschoolSkoreAssignmentSaveUnconfirmedError] from `addTeacher` and
+///   `replaceTeacher`: the course, the assignment it was replacing, and the
+///   teacher it was saving;
+/// - [SmartschoolSkoreShareSaveUnconfirmedError] from `shareGradebook` and
+///   `unshareGradebook`: the gradebook as read before the change, and the
+///   teacher whose access it was changing.
+///
+/// So a `catch` of this type keeps catching both. Its message names the
+/// change by IDs only (no labels or names); the subtypes carry those.
+///
 /// Deliberately not a [SmartschoolSkoreError], so a `catch` meant for the
 /// failures where nothing was saved does not catch it.
 class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
   /// The failure of the save when no usable answer came in, such as a
   /// [SmartschoolConnectionError] or a [SmartschoolSkoreError] about the
-  /// answer (a [SmartschoolSkoreAccessDeniedError] for an answer with HTTP
-  /// 403), or of the read that checks a gradebook share afterwards; `null`
+  /// answer (a [SmartschoolSkoreAccessDeniedError] for an answer that sends
+  /// the save on to Smartschool's start page, or with HTTP 403), or of the
+  /// read that checks a gradebook share afterwards; `null`
   /// when Skore answered with a result that does not confirm the save.
   final Object? cause;
 
   const SmartschoolSkoreSaveUnconfirmedError(super.message, {this.cause});
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of `SkoreService.addTeacher`
+/// and `replaceTeacher`: the save went out, but Skore's answer does not
+/// confirm it. **It may or may not have been saved**: read the class again
+/// (`SkoreService.getCourses`) before trying again.
+///
+/// It carries what the call read before the save (#120), as the
+/// `SkoreSavedAssignment` it returns when the save is confirmed does (#102),
+/// so that telling the user what may have been saved, and what to look for
+/// to check it, needs no read of its own. A read after a save that may have
+/// gone through cannot tell what was there before.
+class SmartschoolSkoreAssignmentSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The course of the assignment, as the call read it right before the save
+  /// (the class's assignments page, as `SkoreService.getCourses` reads it):
+  /// its [SkoreCourse.label], [SkoreCourse.code], [SkoreCourse.id],
+  /// [SkoreCourse.classId], and its assignments **before** the save.
+  final SkoreCourse course;
+
+  /// For `replaceTeacher`, the assignment as it was before the save: its
+  /// [SkoreAssignment.id], with the teacher it had. If the save went through,
+  /// the assignment keeps that ID with [teacher] instead. `null` for
+  /// `addTeacher`, which replaces nothing.
+  final SkoreAssignment? replaced;
+
+  /// The teacher the call was saving on the course, as `SkoreService` read
+  /// them from `getTeachers` before the save: their user ID and name.
+  final SkoreTeacher teacher;
+
+  const SmartschoolSkoreAssignmentSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.course,
+    this.replaced,
+    required this.teacher,
+  });
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreService.shareGradebook` and `unshareGradebook`: the save went out,
+/// but Skore's answer, or reading the owner's gradebooks again afterwards,
+/// does not confirm it. **It may or may not have been saved**: read the
+/// gradebooks again (`SkoreService.getGradebookShares`) before trying again.
+///
+/// It carries what the call read before the save (#120), as the
+/// `SkoreGradebookShareChange` it returns when the save is confirmed does
+/// (#103): the gradebook as read before the change ([before]: its class and
+/// course names, and its readers and writers then) and the teacher whose
+/// access it was changing ([teacherId]), so the access they had before
+/// ([accessBefore]). A read after a save that may have gone through cannot
+/// tell what was there before.
+class SmartschoolSkoreShareSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook as the call read it right before the save (the owner's
+  /// gradebooks, as `SkoreService.getGradebookShares` reads them), with the
+  /// readers and writers it had then.
+  final SkoreGradebookShares before;
+
+  /// The Smartschool user ID of the teacher whose access the call was
+  /// changing (its `teacherId`).
+  final int teacherId;
+
+  const SmartschoolSkoreShareSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.before,
+    required this.teacherId,
+  });
+
+  /// The access [teacherId] had before the save, or `null` when the
+  /// gradebook was not shared with them: [before]'s
+  /// `SkoreGradebookShares.accessOf`.
+  SkoreShareAccess? get accessBefore => before.accessOf(teacherId);
 }

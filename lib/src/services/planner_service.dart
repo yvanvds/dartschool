@@ -1010,7 +1010,9 @@ class PlannerService {
   /// Before it sends anything, it reads the school's assignment types again
   /// ([getAssignmentTypes]) and refuses with a
   /// [SmartschoolPlannerWriteRefusedError] a [type] whose ID is not among
-  /// them. When the types cannot be read, the [SmartschoolPlannerError] of
+  /// them; the error carries the types it read as its
+  /// [SmartschoolPlannerWriteRefusedError.assignmentTypes] (#119). When the
+  /// types cannot be read, the [SmartschoolPlannerError] of
   /// [getAssignmentTypes] is thrown: nothing was sent either.
   ///
   /// Sends `POST planned-assignments/blanco?waitForRefresh=true` with the
@@ -1081,6 +1083,7 @@ class PlannerService {
         'the school\'s ${types.length} assignment types '
         '(getAssignmentTypes). Nothing was sent.',
         reason: PlannerWriteRefusalReason.unknownAssignmentType,
+        assignmentTypes: List.unmodifiable(types),
       );
     }
     final dueAt = formatDateTime(due);

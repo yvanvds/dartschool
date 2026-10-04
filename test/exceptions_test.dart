@@ -1,10 +1,20 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
+import 'package:flutter_smartschool/src/models/lesson_content_models.dart'
+    show LessonContentItem;
+import 'package:flutter_smartschool/src/models/message_models.dart'
+    show BoxType;
 import 'package:flutter_smartschool/src/models/planner_models.dart'
-    show PlannedElement, PlannerWriteRefusalReason;
+    show PlannedElement, PlannerAssignmentType, PlannerWriteRefusalReason;
 import 'package:flutter_smartschool/src/models/presence_models.dart'
     show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
-    show SkoreAccessArea;
+    show
+        SkoreAccessArea,
+        SkoreAssignment,
+        SkoreCourse,
+        SkoreGradebookShares,
+        SkoreShareAccess,
+        SkoreTeacher;
 import 'package:test/test.dart';
 
 import 'support/no_network.dart';
@@ -127,6 +137,40 @@ void main() {
     });
   });
 
+  group('SmartschoolMoveUncheckedError (#115)', () {
+    test('is not a SmartschoolAuthenticationError, whatever its cause, and '
+        'carries the move and the cause', () {
+      // "The move went out" must not share a type with "Smartschool refused
+      // the session for the move": a caller sends the call again on the
+      // latter.
+      const cause = SmartschoolSessionExpiredError();
+      const error = SmartschoolMoveUncheckedError(
+        'unchecked',
+        msgId: 4242,
+        boxType: BoxType.inbox,
+        boxId: 208,
+        cause: cause,
+      );
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.msgId, 4242);
+      expect(error.boxType, BoxType.inbox);
+      expect(error.boxId, 208);
+      expect(error.cause, same(cause));
+      expect(error.toString(), 'SmartschoolMoveUncheckedError: unchecked');
+    });
+
+    test('a move out of the box itself: folder 0', () {
+      const error = SmartschoolMoveUncheckedError(
+        'unchecked',
+        msgId: 1,
+        boxType: BoxType.sent,
+        cause: SmartschoolParsingError('empty'),
+      );
+      expect(error.boxId, 0);
+    });
+  });
+
   group('SmartschoolPresenceError of a refused save (#109)', () {
     test('keeps the typed errors; its text shows their messages, without the '
         "pupil's name", () {
@@ -220,6 +264,46 @@ void main() {
     });
   });
 
+  group('SmartschoolPresencePupilNotFoundError (#116)', () {
+    test('is a SmartschoolPresenceError without server errors, not a session '
+        'problem nor a refusal of onlyReplacing, and keeps the read', () {
+      const error = SmartschoolPresencePupilNotFoundError(
+        'not listed',
+        userId: 1001,
+        classGroupId: 298,
+        date: '2026-11-03',
+        saveIsAllowed: false,
+        errorMessage: 'Deze klas bevat geen leerlingen.',
+      );
+      expect(error, isA<SmartschoolPresenceError>());
+      expect(error, isNot(isA<SmartschoolPresenceChangeRefusedError>()));
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.errors, isEmpty);
+      expect(error.saveErrors, isEmpty);
+      expect(
+        (error.userId, error.classGroupId, error.date),
+        (1001, 298, '2026-11-03'),
+      );
+      expect(error.saveIsAllowed, isFalse);
+      expect(error.errorMessage, 'Deze klas bevat geen leerlingen.');
+      expect(
+        error.toString(),
+        'SmartschoolPresencePupilNotFoundError: not listed',
+      );
+    });
+
+    test('made without what the module said: both null', () {
+      const error = SmartschoolPresencePupilNotFoundError(
+        'not listed',
+        userId: 1,
+        classGroupId: 2,
+        date: '2026-06-01',
+      );
+      expect(error.saveIsAllowed, isNull);
+      expect(error.errorMessage, isNull);
+    });
+  });
+
   group('Skore write errors (#71)', () {
     test('SmartschoolSkoreMyGroupsError is a SmartschoolSkoreError: nothing '
         'was saved', () {
@@ -278,6 +362,99 @@ void main() {
         error.toString(),
         'SmartschoolSkoreSaveUnconfirmedError: unconfirmed',
       );
+    });
+
+    test('SmartschoolSkoreAssignmentSaveUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and carries the course, the replaced assignment and the teacher '
+        '(#120)', () {
+      const cause = SmartschoolConnectionError('dropped');
+      const replaced = SkoreAssignment(
+        id: 34826,
+        teacherId: 1005,
+        teacherName: 'Willems, Wim',
+      );
+      const course = SkoreCourse(
+        id: 1588,
+        classId: 2516,
+        name: 'Digitale vaardigheden',
+        label: 'Digitale vaardigheden  [Digitale vaardigheden]',
+        code: 'Digitale vaardigheden',
+        isGroupHeader: false,
+        depth: 1,
+        assignments: [replaced],
+      );
+      const teacher = SkoreTeacher(id: 1006, name: 'Maes, Mieke');
+      const error = SmartschoolSkoreAssignmentSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+        course: course,
+        replaced: replaced,
+        teacher: teacher,
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, same(cause));
+      expect(error.course, same(course));
+      expect(error.replaced, same(replaced));
+      expect(error.teacher, same(teacher));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreAssignmentSaveUnconfirmedError: unconfirmed',
+      );
+
+      // An add replaces nothing, and an answer that does not confirm the save
+      // has no cause.
+      const add = SmartschoolSkoreAssignmentSaveUnconfirmedError(
+        'unconfirmed',
+        course: course,
+        teacher: teacher,
+      );
+      expect(add.replaced, isNull);
+      expect(add.cause, isNull);
+    });
+
+    test('SmartschoolSkoreShareSaveUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and carries the gradebook before and the teacher, with the access '
+        'they had (#120)', () {
+      const before = SkoreGradebookShares(
+        gradebookId: 31886,
+        ownerId: 1005,
+        className: '5WW1',
+        courseName: 'Esthetica (1 uur)',
+        icon: 'palette2',
+        readerIds: [1001],
+        writerIds: [1003],
+      );
+      const error = SmartschoolSkoreShareSaveUnconfirmedError(
+        'unconfirmed',
+        before: before,
+        teacherId: 1001,
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, isNull);
+      expect(error.before, same(before));
+      expect(error.teacherId, 1001);
+      expect(error.accessBefore, SkoreShareAccess.read);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreShareSaveUnconfirmedError: unconfirmed',
+      );
+
+      const writer = SmartschoolSkoreShareSaveUnconfirmedError(
+        'unconfirmed',
+        before: before,
+        teacherId: 1003,
+      );
+      expect(writer.accessBefore, SkoreShareAccess.write);
+      const none = SmartschoolSkoreShareSaveUnconfirmedError(
+        'unconfirmed',
+        before: before,
+        teacherId: 1007,
+      );
+      expect(none.accessBefore, isNull);
     });
   });
 
@@ -365,6 +542,7 @@ void main() {
       expect(error.element, isNull);
       expect(error.capabilityFlags, isEmpty);
       expect(error.lessonContent, isNull);
+      expect(error.assignmentTypes, isEmpty);
     });
 
     test('SmartschoolPlannerWriteRefusedError carries its reason, element and '
@@ -394,6 +572,40 @@ void main() {
       expect(
         error.toString(),
         'SmartschoolPlannerWriteRefusedError(notAllowed): cannot fill it',
+      );
+    });
+
+    test('SmartschoolPlannerWriteRefusedError carries the school\'s '
+        'assignment types for an unknown one, and does not show them '
+        '(#119)', () {
+      const types = [
+        PlannerAssignmentType(
+          id: 'a0000000-0000-4000-8000-000000000001',
+          platformId: 4069,
+          name: 'Kleine Overhoring',
+          abbreviation: 'KO',
+        ),
+        PlannerAssignmentType(
+          id: 'a0000000-0000-4000-8000-000000000002',
+          platformId: 4069,
+          name: 'Grote Overhoring',
+          abbreviation: 'GO',
+        ),
+      ];
+      const error = SmartschoolPlannerWriteRefusedError(
+        'not a type of the school',
+        reason: PlannerWriteRefusalReason.unknownAssignmentType,
+        assignmentTypes: types,
+      );
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error.assignmentTypes, same(types));
+      expect(error.element, isNull);
+      expect(error.capabilityFlags, isEmpty);
+      expect(error.lessonContent, isNull);
+      expect(
+        error.toString(),
+        'SmartschoolPlannerWriteRefusedError(unknownAssignmentType): '
+        'not a type of the school',
       );
     });
 
@@ -455,6 +667,39 @@ void main() {
       expect(
         const SmartschoolLessonContentError('unknown shape').toString(),
         'SmartschoolLessonContentError: unknown shape',
+      );
+    });
+
+    test('SmartschoolLessonContentCourseListError is a '
+        'SmartschoolLessonContentError that keeps the lesfiches read, and '
+        'shows its status but not the lesfiches (#118)', () {
+      final fiche = LessonContentItem.fromJson(const {
+        'id': 'b0000000-0000-4000-8000-000000000001',
+        'platformId': 4069,
+        'type': 'lessons',
+        'name': 'Herhaling: lussen',
+      });
+      final error = SmartschoolLessonContentCourseListError(
+        'The course list answered the courses with HTTP 500: Oeps',
+        statusCode: 500,
+        items: [fiche],
+      );
+      expect(error, isA<SmartschoolLessonContentError>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error, isNot(isA<SmartschoolPlannerError>()));
+      expect(error.statusCode, 500);
+      expect(error.items, [fiche]);
+      expect(
+        error.toString(),
+        'SmartschoolLessonContentCourseListError(500): The course list '
+        'answered the courses with HTTP 500: Oeps',
+      );
+      expect(
+        const SmartschoolLessonContentCourseListError(
+          'invalid JSON',
+          items: [],
+        ).toString(),
+        'SmartschoolLessonContentCourseListError: invalid JSON',
       );
     });
   });

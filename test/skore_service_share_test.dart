@@ -239,7 +239,8 @@ Matcher _unusable([Object? message = anything]) => allOf(
 
 /// Skore's refusal of a request to an account without the rights, as HTTP
 /// defines it (403 Forbidden), with a page that names the user. What Skore
-/// really answers such an account has not been captured (#91).
+/// really answers a teacher without the rights, a redirect to the start
+/// page, is tested in skore_service_access_test.dart (#91).
 const _forbidden = (
   status: 403,
   body:
@@ -1371,6 +1372,202 @@ void main() {
         ),
       );
       expect(server.log, [_getCourses, _saveShared, _getCourses]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The unconfirmed save, in its context (#120)
+  // ---------------------------------------------------------------------------
+
+  group('a save that is not confirmed carries the gradebook as read before '
+      'it, and the teacher whose access it was changing (#120)', () {
+    // Each way the save, or the read afterwards, can fail to confirm it; and
+    // whether the call read the gradebooks again after the save.
+    final failures = <String, (_Smartschool Function(), bool rereads)>{
+      'the connection drops after the save went out': (
+        () => _Smartschool(
+          failSave: (options) => DioException.connectionError(
+            requestOptions: options,
+            reason: 'Connection closed before full header was received',
+            error: const SocketException('Connection reset by peer'),
+          ),
+        ),
+        false,
+      ),
+      'an error page with HTTP 500': (
+        () => _Smartschool(
+          save: (status: 500, body: _errorPage),
+          applySave: false,
+        ),
+        false,
+      ),
+      'state 0 (Skore saved it anyway)': (
+        () => _Smartschool(save: _ok(_rpcAnswer('saveShared', '{"state":0}'))),
+        false,
+      ),
+      'state 1, but reading again shows the old lists': (
+        () => _Smartschool(applySave: false),
+        true,
+      ),
+      'state 1, but reading again no longer lists the gradebook': (
+        () => _Smartschool(reread: _ok(_rpcAnswer('getCourses', '[]'))),
+        true,
+      ),
+      'state 1, but reading again fails': (
+        () => _Smartschool(reread: _ok(_errorPage)),
+        true,
+      ),
+    };
+
+    /// Gradebook 31886 as the call read it before the save.
+    Matcher esthetics(String operation, int teacherId, SkoreShareAccess had) =>
+        allOf(
+          _unconfirmed(contains(operation), cause: anything),
+          isA<SmartschoolSkoreShareSaveUnconfirmedError>()
+              .having((e) => e.teacherId, 'teacherId', teacherId)
+              .having((e) => e.accessBefore, 'accessBefore', had)
+              .having((e) => e.before.gradebookId, 'before.gradebookId', 31886)
+              .having((e) => e.before.ownerId, 'before.ownerId', _owner)
+              .having((e) => e.before.className, 'before.className', '5WW1')
+              .having(
+                (e) => e.before.courseName,
+                'before.courseName',
+                'Esthetica (1 uur)',
+              )
+              .having((e) => e.before.icon, 'before.icon', 'palette2')
+              .having((e) => e.before.readerIds, 'before.readerIds', [
+                1001,
+                1002,
+              ])
+              .having((e) => e.before.writerIds, 'before.writerIds', [1003]),
+        );
+
+    for (final MapEntry(key: name, value: (smartschool, rereads))
+        in failures.entries) {
+      test('shareGradebook, $name: the reader it was giving write access had '
+          'read access', () async {
+        final server = smartschool();
+        final skore = await serve(server);
+
+        await expectLater(
+          skore.shareGradebook(
+            ownerId: _owner,
+            gradebookId: 31886,
+            teacherId: 1002,
+            access: SkoreShareAccess.write,
+          ),
+          throwsA(esthetics('shareGradebook', 1002, SkoreShareAccess.read)),
+        );
+        // Nothing more is read for it.
+        expect(server.log, [
+          _getCourses,
+          _getTeachers,
+          _saveShared,
+          if (rereads) _getCourses,
+        ]);
+      });
+
+      test('unshareGradebook, $name: the writer it was taking off had write '
+          'access', () async {
+        final server = smartschool();
+        final skore = await serve(server);
+
+        await expectLater(
+          skore.unshareGradebook(
+            ownerId: _owner,
+            gradebookId: 31886,
+            teacherId: 1003,
+          ),
+          throwsA(esthetics('unshareGradebook', 1003, SkoreShareAccess.write)),
+        );
+        expect(server.log, [
+          _getCourses,
+          _saveShared,
+          if (rereads) _getCourses,
+        ]);
+      });
+    }
+
+    test('a teacher the gradebook was not shared with had no access', () async {
+      final server = _Smartschool(applySave: false);
+      final skore = await serve(server);
+
+      await expectLater(
+        skore.shareGradebook(
+          ownerId: _owner,
+          gradebookId: 34826,
+          teacherId: 1007,
+          access: SkoreShareAccess.read,
+        ),
+        throwsA(
+          isA<SmartschoolSkoreShareSaveUnconfirmedError>()
+              .having((e) => e.teacherId, 'teacherId', 1007)
+              .having((e) => e.accessBefore, 'accessBefore', isNull)
+              .having(
+                (e) => e.before.courseName,
+                'before.courseName',
+                'Digitale vaardigheden',
+              )
+              .having((e) => e.before.writerIds, 'before.writerIds', [1006]),
+        ),
+      );
+    });
+
+    test("the issue's calls: a caller that catches "
+        'SmartschoolSkoreSaveUnconfirmedError names the gradebook and the '
+        'access the teacher had from the error alone, as smartschool-mcp '
+        'does', () async {
+      // The first teacher's save is not confirmed (Skore answers state 0),
+      // so the caller has no result to name the gradebook from.
+      final server = _Smartschool(
+        save: _ok(_rpcAnswer('saveShared', '{"state":0}')),
+        applySave: false,
+      );
+      final skore = await serve(server);
+
+      // What share_skore_gradebook tells its user, from what it caught.
+      late final String report;
+      try {
+        await skore.shareGradebook(
+          ownerId: _owner,
+          gradebookId: 31886,
+          teacherId: 1002,
+          access: SkoreShareAccess.write,
+        );
+        fail('The save was confirmed');
+      } on SmartschoolSkoreSaveUnconfirmedError catch (e) {
+        // The catch clause written before #120 keeps catching it, and its
+        // message is unchanged: IDs only.
+        expect(
+          e.message,
+          allOf(
+            contains(
+              'shareGradebook: the save (gradebook 31886 of teacher 1005: '
+              'sharing it with teacher 1002 (write); readers [1001], writers '
+              '[1003, 1002]) was sent',
+            ),
+            isNot(contains('Esthetica')),
+          ),
+        );
+        report = switch (e) {
+          SmartschoolSkoreShareSaveUnconfirmedError(:final before) =>
+            'Not confirmed for teacher id ${e.teacherId} on '
+                '"${before.courseName}" of class ${before.className} '
+                '(gradebook id ${before.gradebookId}): it may or may not have '
+                'write access now (it had ${e.accessBefore?.name ?? 'no'} '
+                'access).',
+          _ => 'Not confirmed: ${e.message}',
+        };
+      }
+
+      expect(
+        report,
+        'Not confirmed for teacher id 1002 on "Esthetica (1 uur)" of class '
+        '5WW1 (gradebook id 31886): it may or may not have write access now '
+        '(it had read access).',
+      );
+      // The caller read nothing itself, and the save went out once.
+      expect(server.log, [_getCourses, _getTeachers, _saveShared]);
     });
   });
 }

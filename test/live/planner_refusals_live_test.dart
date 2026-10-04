@@ -256,7 +256,8 @@ void main() {
       });
 
       test('planAssignment of a type the school does not have: '
-          'unknownAssignmentType, without an element', () async {
+          'unknownAssignmentType, without an element, with the school\'s '
+          'types as the check read them (#119)', () async {
         final hour = slot;
         if (hour == null) {
           markTestSkipped('no own empty lesson hour in the week of $from');
@@ -279,6 +280,22 @@ void main() {
 
         expect(refused.reason, PlannerWriteRefusalReason.unknownAssignmentType);
         expect(refused.element, isNull);
+
+        // The types the check read: the school's, without the refused one,
+        // the same as a read of their own right afterwards gives them.
+        String key(PlannerAssignmentType t) =>
+            '${t.id} ${t.platformId} ${t.name} ${t.abbreviation}';
+        final types = await planner.getAssignmentTypes();
+        expect(types, isNotEmpty);
+        expect(
+          refused.assignmentTypes.map(key).toList(),
+          types.map(key).toList(),
+        );
+        expect(
+          refused.assignmentTypes.map((t) => t.id),
+          isNot(contains(_noSuchId)),
+        );
+        expect(attempts.writesSince(0), isEmpty);
       });
 
       test('the week of the own planner is as it was', () async {

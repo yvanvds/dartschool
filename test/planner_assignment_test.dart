@@ -415,19 +415,27 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
 
 /// A check before the write refused it: nothing was sent. The error gives
 /// the check as [reason] (#100), with the ID of the [element] it read again
-/// (`null` for a new assignment) and the capability [flags] it refused on.
+/// (`null` for a new assignment), the capability [flags] it refused on, and
+/// the IDs of the school's assignment [types] it read (#119; none but for
+/// an unknown type).
 Matcher _refused(
   Object? message, {
   required PlannerWriteRefusalReason reason,
   Object? element = anything,
   Object? flags = isEmpty,
+  Object? types = isEmpty,
 }) => isA<SmartschoolPlannerWriteRefusedError>()
     .having((e) => e.message, 'message', message)
     .having((e) => e.message, 'message', contains('Nothing was sent'))
     .having((e) => e.reason, 'reason', reason)
     .having((e) => e.element?.id, 'element', element)
     .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
-    .having((e) => e.lessonContent, 'lessonContent', isNull);
+    .having((e) => e.lessonContent, 'lessonContent', isNull)
+    .having(
+      (e) => [for (final type in e.assignmentTypes) type.id],
+      'assignmentTypes',
+      types,
+    );
 
 /// The write went out without the planner confirming it.
 Matcher _unconfirmed(
@@ -674,10 +682,64 @@ void main() {
               reason: PlannerWriteRefusalReason.unknownAssignmentType,
               // A new assignment: no element was read.
               element: isNull,
+              // The school's types as the check read them, in the planner's
+              // order (#119).
+              types: [
+                _goId,
+                'a0000000-0000-4000-8000-000000000003',
+                _koId,
+                'a0000000-0000-4000-8000-000000000004',
+                'a0000000-0000-4000-8000-000000000005',
+                'a0000000-0000-4000-8000-000000000006',
+              ],
             ),
           ),
         );
         expect(server.apiLog, [_readTypes]);
+      });
+
+      test('a type the school replaced since the app read it: the refusal '
+          'carries the types the check read, and the app plans with the new '
+          'one without reading the types itself (#119)', () async {
+        // The school replaced Kleine Overhoring by one of the same name with
+        // a new ID after the app read the types (and kept _ko).
+        const newKoId = 'a0000000-0000-4000-8000-000000000007';
+        final (server, planner) = await serve({
+          _readTypes: [_json(_types.replaceAll(_koId, newKoId))],
+          _create: [_json(_assignment.replaceAll(_koId, newKoId), status: 201)],
+        });
+
+        late SmartschoolPlannerWriteRefusedError refused;
+        try {
+          await plan(planner);
+          fail('planAssignment with a type the school no longer has');
+        } on SmartschoolPlannerWriteRefusedError catch (e) {
+          refused = e;
+        }
+        expect(refused.reason, PlannerWriteRefusalReason.unknownAssignmentType);
+        expect(refused.element, isNull);
+        expect(server.apiLog, [_readTypes]);
+
+        // What the app shows its user, and keeps as its own copy: the types
+        // as the check read them, with their names and abbreviations.
+        expect(
+          [for (final type in refused.assignmentTypes) type.abbreviation],
+          ['GO', 'GT', 'KO', 'KT', 'MB', 'V'],
+        );
+        final ko = refused.assignmentTypes.singleWhere(
+          (type) => type.abbreviation == 'KO',
+        );
+        expect(ko.id, newKoId);
+        expect(ko.name, 'Kleine Overhoring');
+        expect(ko.platformId, 4069);
+
+        final assignment = await plan(planner, type: ko);
+
+        // Only planAssignment read the types, once for each check: the app
+        // did not read them again.
+        expect(server.apiLog, [_readTypes, _readTypes, _create]);
+        expect(server.one(_create).body, _createBody(type: newKoId));
+        expect(assignment.assignmentType!.id, newKoId);
       });
 
       test(

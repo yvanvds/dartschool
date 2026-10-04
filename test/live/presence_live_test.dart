@@ -1,8 +1,9 @@
 // The live answers of the Presence module to getClassPupils (#104): the
 // pupils of a class, or the module's reason for listing none, against the
-// Presence module of credentials.yml; and the names of the statuses its
+// Presence module of credentials.yml; the names of the statuses its
 // half-days hold, which the onlyReplacing check of setLate and setPresent
-// compares (#105).
+// compares (#105); and the active class of getConfig, a class or none, with
+// a placeholder such as the class -2 ("Uit Planner") kept apart (#117).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -11,8 +12,9 @@
 //
 // It only reads, with the Presence module's three POSTs that read:
 // getConfig; getClass for a class the account may record for (a week ago,
-// each of the seven days before today, and some eight weeks ahead) and for a
-// class ID the module does not know; and getAllCodes for the class's school
+// each of the seven days before today, and some eight weeks ahead), for a
+// class ID the module does not know and, when getConfig gives one, for the
+// placeholder active class; and getAllCodes for the class's school
 // structure. It changes no presence: it calls no setLate or setPresent, so
 // the onlyReplacing check and the half-day a save returns (#105) are tested
 // offline only (presence_set_status_test.dart); LiveWireGuard
@@ -175,6 +177,46 @@ void main() {
         // class without pupils.
         expect(pupils.errorMessage, isNotNull);
         expect(pupils.classRef, isNull);
+        expect(attempts.presenceWritesSince(mark), isEmpty);
+      });
+
+      test('the active class is a class or none, and a placeholder (the class '
+          '-2 of a teacher without a lesson now) is kept apart, which '
+          'getClass lists no pupils for (#117)', () async {
+        final mark = attempts.requests.length;
+        final active = config.activeClass;
+        final placeholder = config.activePlaceholder;
+        // Which of the two the module gave depends on the hour: seen
+        // 2026-10-04 (a Sunday), the placeholder -2.
+        print(
+          'getConfig: active class ${active?.groupId ?? 'none'}, placeholder '
+          '${placeholder?.groupId ?? 'none'}',
+        );
+
+        if (active != null) {
+          expect(active.isPlaceholder, isFalse);
+          expect(config.classForGroup(active.groupId), isNotNull);
+          expect(placeholder, isNull);
+        }
+        if (placeholder != null) {
+          expect(placeholder.isPlaceholder, isTrue);
+          expect(config.classForGroup(placeholder.groupId), isNull);
+          final pupils = await classPupils(
+            placeholder.groupId,
+            day.subtract(const Duration(days: 7)),
+          );
+          expect(pupils, isEmpty);
+          expect(pupils.saveIsAllowed, isFalse);
+          // Seen 2026-10-03: "U geeft momenteel geen les. Kies een andere
+          // klas in de keuzelijst."
+          expect(pupils.errorMessage, isNotNull);
+          expect(pupils.classRef, isNull);
+        }
+        // The classes of the account, as a caller lists them (the allowed
+        // classes, plus the active class when it is not among them): none is
+        // a placeholder.
+        final classes = [...config.allowedClasses, ?config.activeClass];
+        expect(classes.where((c) => c.isPlaceholder), isEmpty);
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });
 

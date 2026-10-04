@@ -162,9 +162,18 @@ Future<void> main(List<String> args) async {
       print('Not saved: ${e.message}');
       exitCode = 1;
       return;
-    } on SmartschoolSkoreSaveUnconfirmedError catch (e) {
-      // Read the class again below: it shows whether the save went through.
-      print('UNCONFIRMED: ${e.message}');
+    } on SmartschoolSkoreAssignmentSaveUnconfirmedError catch (e) {
+      // The error holds the course and the replaced assignment as the
+      // service read them before the save (#120): what to look for below.
+      // Read the class again: it shows whether the save went through.
+      final replaced = e.replaced;
+      print(
+        'UNCONFIRMED: ${e.teacher.name}'
+        '${replaced == null ? '' : ' instead of ${replaced.teacherName}'}'
+        ' on course "${e.course.label}" (course ${e.course.id}) may or may '
+        'not have been saved.',
+      );
+      print('             ${e.message}');
       exitCode = 1;
     }
 

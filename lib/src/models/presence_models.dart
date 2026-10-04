@@ -87,6 +87,22 @@ class PresenceClassRef {
     this.isOfficial = false,
   });
 
+  /// Whether this is no class but a placeholder the Presence module gives in
+  /// the place of one (#117): its [groupId] is below 1.
+  ///
+  /// Seen live (read-only, 2026-10-03): the class `-2`, "Uit Planner",
+  /// without a [structId], which the module gives as the active class of a
+  /// teacher who has no lesson at that moment. `getClass` lists no pupils
+  /// for it ("U geeft momenteel geen les. Kies een andere klas in de
+  /// keuzelijst."), and names no class. A class of the module has a
+  /// `groupID` of 1 or more; one read without a `groupID` gets `0`, which is
+  /// no class either.
+  ///
+  /// [PresenceConfig] keeps such a placeholder apart: in
+  /// [PresenceConfig.activePlaceholder], not in [PresenceConfig.activeClass],
+  /// and [PresenceConfig.classForGroup] does not return it.
+  bool get isPlaceholder => groupId < 1;
+
   factory PresenceClassRef.fromJson(Map<String, dynamic> json) {
     return PresenceClassRef(
       groupId: _asInt(json['groupID']) ?? 0,
@@ -110,8 +126,30 @@ class PresenceClassRef {
 /// Parsed from `Presence/Main/getConfig`. Provides the schoolyear reference
 /// date (needed by `getClass`) and the classes the account may work with.
 class PresenceConfig {
-  /// The currently active class in the Presence UI (may be `null`).
+  /// The class active in the Presence module's web client (its
+  /// `state.activeClass`), or `null` when there is none.
+  ///
+  /// Also `null` when the module gives a placeholder there instead of a
+  /// class (#117): the class `-2`, "Uit Planner", for a teacher who has no
+  /// lesson at that moment (see [PresenceClassRef.isPlaceholder]). That
+  /// placeholder is [activePlaceholder]. So a list of the account's classes
+  /// as [classForGroup] finds them, [allowedClasses] plus [activeClass] when
+  /// it is not among them, lists no placeholder.
+  ///
+  /// `PresenceService.parseConfig` sorts the module's active class into this
+  /// field or [activePlaceholder]; a [PresenceConfig] built by hand keeps
+  /// what it is given, but [classForGroup] never returns a placeholder.
   final PresenceClassRef? activeClass;
+
+  /// The placeholder the Presence module gives as its active class instead
+  /// of a class (#117), or `null` when it gives a class ([activeClass]) or
+  /// nothing.
+  ///
+  /// Seen live: the class `-2`, "Uit Planner", for a teacher who has no
+  /// lesson at that moment ([PresenceClassRef.isPlaceholder]). It is no
+  /// class: `getClass` lists no pupils for it, and [classForGroup] does not
+  /// return it.
+  final PresenceClassRef? activePlaceholder;
 
   /// All classes the account is allowed to view/record.
   final List<PresenceClassRef> allowedClasses;
@@ -124,15 +162,19 @@ class PresenceConfig {
     required this.activeClass,
     required this.allowedClasses,
     required this.schoolyearRefDate,
+    this.activePlaceholder,
   });
 
   /// Returns the class with [groupId] from [allowedClasses] (falling back to
   /// [activeClass]), or `null` when the account has no such class.
+  ///
+  /// Never a placeholder (#117): `null` for the `groupId` of
+  /// [activePlaceholder], such as `-2` ("Uit Planner"), and for any other
+  /// `groupId` below 1 ([PresenceClassRef.isPlaceholder]).
   PresenceClassRef? classForGroup(int groupId) {
-    for (final c in allowedClasses) {
-      if (c.groupId == groupId) return c;
+    for (final c in [...allowedClasses, ?activeClass]) {
+      if (c.groupId == groupId && !c.isPlaceholder) return c;
     }
-    if (activeClass?.groupId == groupId) return activeClass;
     return null;
   }
 
@@ -442,8 +484,9 @@ class PresencePupil {
 ///   leerlingen.";
 /// - for a class ID it does not know: the same, but without a class:
 ///   [classRef] is `null`;
-/// - for the class `-2` ("Uit Planner", the `activeClass` of the config of a
-///   teacher who has no lesson at that moment): no pupils, `false`, "U geeft
+/// - for the class `-2` ("Uit Planner", the placeholder the config gives as
+///   its active class for a teacher who has no lesson at that moment,
+///   [PresenceConfig.activePlaceholder], #117): no pupils, `false`, "U geeft
 ///   momenteel geen les. Kies een andere klas in de keuzelijst.", and no
 ///   class.
 ///

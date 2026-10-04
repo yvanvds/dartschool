@@ -150,10 +150,16 @@ Future<void> main(List<String> args) async {
       print('Not saved: ${e.message}');
       exitCode = 1;
       return;
-    } on SmartschoolSkoreSaveUnconfirmedError catch (e) {
-      // Read the gradebooks again below: it shows whether the save went
-      // through.
-      print('UNCONFIRMED: ${e.message}');
+    } on SmartschoolSkoreShareSaveUnconfirmedError catch (e) {
+      // The error holds the gradebook as the service read it before the
+      // change (#120): the access the teacher had then. Read the gradebooks
+      // again below: it shows whether the save went through.
+      print(
+        'UNCONFIRMED: the change for ${name(teacherId)} on '
+        '${e.before.className} / ${e.before.courseName} may or may not have '
+        'been saved (was ${e.accessBefore?.name ?? 'not shared'}).',
+      );
+      print('             ${e.message}');
       exitCode = 1;
     }
 

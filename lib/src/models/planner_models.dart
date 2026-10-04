@@ -1551,8 +1551,10 @@ enum PlannerWriteRefusalReason {
   notALessonLessonContent,
 
   /// The type of a new assignment (`planAssignment`) is not one of the
-  /// school's assignment types (`getAssignmentTypes`, read again first). A
-  /// new assignment has no element yet: the error has no `element`.
+  /// school's assignment types (`getAssignmentTypes`, read again first). The
+  /// error's `assignmentTypes` are the school's types as that read gave them
+  /// (#119). A new assignment has no element yet: the error has no
+  /// `element`.
   unknownAssignmentType,
 
   /// The assignment to move to the trash (`trashAssignment`) has a linked

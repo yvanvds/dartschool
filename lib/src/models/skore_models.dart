@@ -200,9 +200,12 @@ class SkoreTeacher {
 /// `SkoreService` calls in it (#83). An account can have the rights for one
 /// part without the other.
 ///
-/// A `SmartschoolSkoreAccessDeniedError` names the part it was refused. Each
+/// A `SmartschoolSkoreAccessDeniedError` names the part it was refused, and
+/// `SkoreService.checkAccess` returns the parts the account can use. Each
 /// request is given the part of the Skore screen that uses it; which right
-/// Skore itself checks for each request was not seen.
+/// Skore itself checks for each request was not seen (a teacher without
+/// either right is refused every request, #91; an account with only one was
+/// not captured).
 enum SkoreAccessArea {
   /// Report management (Rapporten > Modellen): the report models with their
   /// classes, and the courses of a class with their teachers. What
@@ -315,7 +318,8 @@ class SkoreGradebookShareChange extends SkoreGradebookShares {
   /// sent.
   ///
   /// A save that was sent but not confirmed is not returned: it throws a
-  /// `SmartschoolSkoreSaveUnconfirmedError`.
+  /// `SmartschoolSkoreShareSaveUnconfirmedError`, which carries [before] and
+  /// [teacherId] too (#120).
   final bool saved;
 
   const SkoreGradebookShareChange({

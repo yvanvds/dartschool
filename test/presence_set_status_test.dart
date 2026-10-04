@@ -8,6 +8,12 @@
 // refused with a SmartschoolPresenceChangeRefusedError before anything is
 // sent; and both return the half-day as stored, from the save's answer.
 //
+// Issue #116: a pupil the class, as read right before the save, does not
+// list on that day (its movement into the class ended, or a userId the class
+// never listed) was a plain SmartschoolPresenceError, the same type as a
+// request the module refused; now it is a SmartschoolPresencePupilNotFoundError,
+// thrown before anything is sent.
+//
 // The fake Smartschool below keeps the half-days of one day and carries out
 // a save on them. It answers in the shapes of the live module:
 //
@@ -157,6 +163,15 @@ class _Smartschool implements HttpClientAdapter {
   /// The half-days of [_day], by pupil and part (`am`, `pm`).
   final Map<(int, String), _Cell> cells = {};
 
+  /// The pupils whose movement into the class ended: the class no longer
+  /// lists them (#116).
+  final Set<int> leftClass = {};
+
+  /// Whether the module answers `getClass` with its generic error page (HTTP
+  /// `500`, an HTML page instead of JSON), as it does for a request it cannot
+  /// handle (#5).
+  bool classErrorPage = false;
+
   _SaveAnswer saveAnswer = _SaveAnswer.records;
 
   int _nextPresenceId = 95001;
@@ -186,6 +201,7 @@ class _Smartschool implements HttpClientAdapter {
       case _getAllCodes:
         return _json(_codesJson);
       case _getClass:
+        if (classErrorPage) return _errorPage();
         if (form['classID'] != '$_classId' || form['startDate'] != _day) {
           return _json('{"pupils":[],"saveIsAllowed":false}');
         }
@@ -217,16 +233,17 @@ class _Smartschool implements HttpClientAdapter {
     'errorMessage': '',
     'pupils': [
       for (final (userId, movementId, name) in _pupils)
-        {
-          'movementID': movementId,
-          'userID': userId,
-          'name': name,
-          'presence': [
-            for (final part in ['am', 'pm'])
-              if (cells[(userId, part)] case final cell?)
-                _record(userId, part, cell),
-          ],
-        },
+        if (!leftClass.contains(userId))
+          {
+            'movementID': movementId,
+            'userID': userId,
+            'name': name,
+            'presence': [
+              for (final part in ['am', 'pm'])
+                if (cells[(userId, part)] case final cell?)
+                  _record(userId, part, cell),
+            ],
+          },
     ],
     'saveIsAllowed': true,
   };
@@ -284,6 +301,17 @@ ResponseBody _json(String body, {int status = 200}) => ResponseBody.fromString(
   },
 );
 
+/// Smartschool's generic error page, which the Presence module answers a
+/// request it cannot handle with (#5), trimmed.
+ResponseBody _errorPage() => ResponseBody.fromString(
+  '<!DOCTYPE html><html><head><title>Smartschool</title></head><body>'
+  '<h1>Oeps, er ging iets mis</h1></body></html>',
+  500,
+  headers: {
+    Headers.contentTypeHeader: ['text/html; charset=UTF-8'],
+  },
+);
+
 /// What smartschool-mcp's `set_pupils_late` lets a write replace.
 const _replaceable = {
   PresenceService.nothingRecorded,
@@ -321,6 +349,29 @@ void main() {
       .having((e) => e.heldStatus, 'heldStatus', heldStatus)
       .having((e) => e.errors, 'errors', isEmpty)
       .having((e) => e.message, 'message', message);
+
+  /// A pupil the class does not list: a
+  /// [SmartschoolPresencePupilNotFoundError] (#116), still a
+  /// [SmartschoolPresenceError], and not a refusal of `onlyReplacing`.
+  Matcher notListed({
+    required int userId,
+    String date = _day,
+    required bool? saveIsAllowed,
+    required String? errorMessage,
+    required Object? message,
+  }) => allOf(
+    isA<SmartschoolPresenceError>(),
+    isNot(isA<SmartschoolPresenceChangeRefusedError>()),
+    isA<SmartschoolPresencePupilNotFoundError>()
+        .having((e) => e.userId, 'userId', userId)
+        .having((e) => e.classGroupId, 'classGroupId', _classId)
+        .having((e) => e.date, 'date', date)
+        .having((e) => e.saveIsAllowed, 'saveIsAllowed', saveIsAllowed)
+        .having((e) => e.errorMessage, 'errorMessage', errorMessage)
+        .having((e) => e.errors, 'errors', isEmpty)
+        .having((e) => e.saveErrors, 'saveErrors', isEmpty)
+        .having((e) => e.message, 'message', message),
+  );
 
   group('onlyReplacing refuses a half-day that holds another status, before '
       'anything is sent (#105)', () {
@@ -834,6 +885,150 @@ void main() {
       await markLate();
 
       expect(server.cells[(_janssens, 'pm')]!.codeId, _teLaat);
+    });
+  });
+
+  group('a pupil the class does not list on that day is a '
+      'SmartschoolPresencePupilNotFoundError, before anything is sent '
+      '(#116)', () {
+    test('the issue: setLate with onlyReplacing for a pupil the class listed '
+        'a moment ago, and no longer lists', () async {
+      // Before the fix: a plain SmartschoolPresenceError, the same type as a
+      // request the module refused; only its message said which it was.
+      final (presence, server) = await serve();
+      final config = await presence.getConfig();
+      final earlier = await presence.getClassPupils(
+        classGroupId: _classId,
+        date: _date,
+        schoolyearRefDate: config.schoolyearRefDate,
+      );
+      expect(earlier.map((p) => p.userId), contains(_peeters));
+
+      // Meanwhile, the pupil's movement into the class ends.
+      server.leftClass.add(_peeters);
+
+      await expectLater(
+        presence.setLate(
+          userId: _peeters,
+          classGroupId: _classId,
+          date: _date,
+          part: DayPart.morning,
+          onlyReplacing: {
+            PresenceService.nothingRecorded,
+            PresenceService.presentCodeName,
+          },
+        ),
+        throwsA(
+          notListed(
+            userId: _peeters,
+            saveIsAllowed: null,
+            errorMessage: null,
+            message:
+                'Pupil userID 1001 was not found in class groupID 298 on '
+                '2026-06-01.',
+          ),
+        ),
+      );
+      expect(server.saved, isEmpty);
+      expect(server.log, isNot(contains('POST $_save')));
+      expect(
+        server.log.where((r) => r == 'POST $_getClass'),
+        hasLength(2),
+        reason: "the caller's read, and the call's own",
+      );
+    });
+
+    test('setPresent for a userId the class does not list at all', () async {
+      final (presence, server) = await serve();
+
+      await expectLater(
+        presence.setPresent(
+          userId: 4242,
+          classGroupId: _classId,
+          date: _date,
+          part: DayPart.afternoon,
+        ),
+        throwsA(
+          notListed(
+            userId: 4242,
+            saveIsAllowed: null,
+            errorMessage: null,
+            message: contains('Pupil userID 4242 was not found'),
+          ),
+        ),
+      );
+      expect(server.log, _reads, reason: 'no save');
+    });
+
+    test('a day the module lists no pupils for: its saveIsAllowed, and no '
+        'reason when it gave none', () async {
+      final (presence, server) = await serve();
+
+      await expectLater(
+        presence.setLate(
+          userId: _janssens,
+          classGroupId: _classId,
+          date: DateTime(2026, 6, 2),
+          part: DayPart.morning,
+          onlyReplacing: _replaceable,
+        ),
+        throwsA(
+          notListed(
+            userId: _janssens,
+            date: '2026-06-02',
+            saveIsAllowed: false,
+            errorMessage: null,
+            message:
+                'Pupil userID 1002 was not found in class groupID 298 on '
+                '2026-06-02.',
+          ),
+        ),
+      );
+      expect(server.saved, isEmpty);
+    });
+
+    test('a caller tells a pupil not listed apart from a refusal of the '
+        'module, and from onlyReplacing leaving the half-day alone', () async {
+      final (presence, server) = await serve();
+      server.saveAnswer = _SaveAnswer.refused;
+      server.leftClass.add(_maes);
+
+      Future<String> classify(Future<Object?> Function() call) async {
+        try {
+          await call();
+          return 'saved';
+        } on SmartschoolPresencePupilNotFoundError catch (e) {
+          return 'not listed: ${e.userId}';
+        } on SmartschoolPresenceChangeRefusedError catch (e) {
+          return 'left alone: ${e.heldStatus}';
+        } on SmartschoolPresenceError {
+          return 'refused by the module';
+        }
+      }
+
+      Future<Object?> markLate(int userId) => presence.setLate(
+        userId: userId,
+        classGroupId: _classId,
+        date: _date,
+        part: DayPart.morning,
+        onlyReplacing: _replaceable,
+      );
+
+      expect(await classify(() => markLate(_maes)), 'not listed: 1005');
+      expect(
+        await classify(() => markLate(_dupont)),
+        'left alone: Doktersattest',
+      );
+      expect(await classify(() => markLate(_peeters)), 'refused by the module');
+      server.classErrorPage = true;
+      expect(
+        await classify(() => markLate(_janssens)),
+        'refused by the module',
+        reason: 'an error page for the read right before the save',
+      );
+      expect(server.saved.map((p) => p['userID']), [
+        _peeters,
+      ], reason: "only Peeters' save went out");
     });
   });
 }

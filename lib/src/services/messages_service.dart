@@ -1021,12 +1021,22 @@ class MessagesService {
   /// each of those moves. Listing the boxes to check a move (to their end,
   /// as a moved message is no longer in them) is not needed.
   ///
-  /// An answer that is not XML throws, to the move or to the check, as for
-  /// every command: a [SmartschoolUnexpectedPageError] (a
-  /// [SmartschoolAuthenticationError]) for an HTML page or a piece of one, a
-  /// [SmartschoolParsingError] otherwise, malformed XML included (#110).
-  /// When the check throws, the move went out and may have been made:
-  /// [getMessage] in [boxType] tells.
+  /// The move fails as every command does: an answer that is not XML throws
+  /// a [SmartschoolUnexpectedPageError] (a [SmartschoolAuthenticationError])
+  /// for an HTML page or a piece of one, a [SmartschoolParsingError]
+  /// otherwise, malformed XML included (#110); a session that Smartschool
+  /// does not accept for the move, also after the client logged in again, a
+  /// [SmartschoolSessionExpiredError] (the move was not carried out, and is
+  /// not checked).
+  ///
+  /// When the check fails after the move went out, whatever it fails with
+  /// (one of those errors, a [SmartschoolConnectionError], a failed login),
+  /// this throws a [SmartschoolMoveUncheckedError] instead, with the check's
+  /// error as its `cause` (#115): the move went out and may have been made,
+  /// so do not send it again blindly; [getMessage] in [boxType] tells. It is
+  /// no [SmartschoolAuthenticationError], so a caller that calls this again
+  /// on a [SmartschoolSessionExpiredError] does not send a move again that
+  /// went out.
   ///
   /// Throws an [ArgumentError], before any request, for a [boxType] other
   /// than [BoxType.inbox] and [BoxType.sent]: the web client moves no
@@ -1058,10 +1068,31 @@ class MessagesService {
       },
       xpath: './/actions/action',
     );
-    final held = _boxHolds(
-      await _showMessage(msgId, boxType: boxType, includeAllRecipients: false),
-      msgId,
-    );
+    final List<Map<String, dynamic>> shown;
+    try {
+      shown = await _showMessage(
+        msgId,
+        boxType: boxType,
+        includeAllRecipients: false,
+      );
+    } on Exception catch (e, stackTrace) {
+      final folder = boxId == 0 ? '' : ' (folder $boxId)';
+      Error.throwWithStackTrace(
+        SmartschoolMoveUncheckedError(
+          'moveToTrashFrom: the move of message $msgId out of $boxType'
+          '$folder to the trash went out, and Smartschool answered it, but '
+          'the check after it failed ($e). The move may have been made: '
+          'check with getMessage($msgId, boxType: $boxType) before moving it '
+          'again.',
+          msgId: msgId,
+          boxType: boxType,
+          boxId: boxId,
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    final held = _boxHolds(shown, msgId);
     return held == null ? null : !held;
   }
 

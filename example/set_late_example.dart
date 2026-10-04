@@ -68,6 +68,12 @@ Future<void> main() async {
     print('Left alone: ${e.message}');
     await client.dispose();
     return;
+  } on SmartschoolPresencePupilNotFoundError catch (e) {
+    // The class, as read right before the save, no longer lists the pupil
+    // on that day (#116): nothing was sent.
+    print('Not listed: ${e.message}');
+    await client.dispose();
+    return;
   }
   // The half-day as stored, from the save's answer (null when the answer
   // does not hold it).

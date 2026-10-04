@@ -376,7 +376,8 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
 /// check as [reason] (#100), with the ID of the [element] it read again
 /// (`null` when it refused the lesfiche before reading the slot), the
 /// capability [flags] it refused on and the ID of the [lessonContent] that
-/// is not a lesson one.
+/// is not a lesson one. It carries no assignment types (#119: only an
+/// unknown assignment type does).
 Matcher _refused(
   Object? message, {
   required PlannerWriteRefusalReason reason,
@@ -390,7 +391,8 @@ Matcher _refused(
     .having((e) => e.reason, 'reason', reason)
     .having((e) => e.element?.id, 'element', element)
     .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
-    .having((e) => e.lessonContent?.id, 'lessonContent', lessonContent);
+    .having((e) => e.lessonContent?.id, 'lessonContent', lessonContent)
+    .having((e) => e.assignmentTypes, 'assignmentTypes', isEmpty);
 
 /// The plan went out without the planner confirming it.
 Matcher _unconfirmed(

@@ -51,6 +51,12 @@
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no
 //   presence, so a save of presences (`savePupilsPresences`: setLate,
 //   setPresent) never goes out;
+// - any POST to the Skore module but its two RPC reads `getTeachers` of
+//   `owners.php` and `getCourses` of `rapportbeheer/rpc/data.php`
+//   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91):
+//   the live suite changes nothing in Skore, which drives the school's
+//   grading and has no test instance, and both services also hold methods
+//   that write, delete or lock (saveOwner, saveShared, deleteTeacher, ...);
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -325,6 +331,9 @@ class LiveWireGuard extends Interceptor {
     if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
     if (path == _archivePath) return _archiveRefusal(options.data);
     if (path.startsWith('/Presence/')) return _presenceRefusal(path);
+    if (path.startsWith('/modules/Skore/')) {
+      return _skoreRefusal(path, options.data);
+    }
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -368,6 +377,23 @@ class LiveWireGuard extends Interceptor {
     if (_presenceReads.contains(path)) return null;
     return 'the live suite changes no presence: it sends no Presence request '
         'but the reads getConfig, getAllCodes and getClass (#104, #105)';
+  }
+
+  /// The Skore RPC POSTs that only read, by path: the one method of each
+  /// service the live suite calls (#91).
+  static const _skoreReads = {
+    '/modules/Skore/backend/models/owners.php': 'getTeachers',
+    '/modules/Skore/modules/rapportbeheer/rpc/data.php': 'getCourses',
+  };
+
+  /// Why the Skore POST to [path] with [data] may not go out, or `null`:
+  /// only the reads go out, never a save.
+  String? _skoreRefusal(String path, Object? data) {
+    final method = data is Map ? data['rpc_method'] : null;
+    if (method != null && _skoreReads[path] == method) return null;
+    return 'the live suite changes nothing in Skore: it sends no Skore POST '
+        'but the reads getTeachers (owners.php) and getCourses '
+        '(rapportbeheer/rpc/data.php) (#91)';
   }
 
   /// The XML commands that only read.

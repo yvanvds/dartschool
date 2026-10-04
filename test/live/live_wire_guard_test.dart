@@ -63,6 +63,19 @@ final _replyFormFromOwn = _replyFormFromOther
 /// The subject of a message of the run.
 const _runSubject = '[dartschool test] $_tag send';
 
+const _skoreOwners = '/modules/Skore/backend/models/owners.php';
+const _skoreGradebooks = '/modules/Skore/modules/rapportbeheer/rpc/data.php';
+
+/// The `result` of Skore's answers to its reads (#91), by RPC method, with a
+/// made-up teacher; any other method is answered as a save that went
+/// through.
+const _skoreResults = {
+  'getTeachers': '[{"userID":"1001","name":"Janssens, Jan"}]',
+  'getCourses':
+      '[{"id":"34826","icon":"IconLib:laptop","name":"Digitale vaardigheden",'
+      '"class":"5WW1","readers":[],"writers":[]}]',
+};
+
 /// The Presence module's answers to its reads (#104, #105), by path, with a
 /// made-up pupil; any other Presence request is answered as a save that went
 /// through.
@@ -149,6 +162,9 @@ class _Smartschool implements HttpClientAdapter {
   /// The `msgID` of each `quick delete` that reached it.
   final List<String> trashed = [];
 
+  /// Each Skore RPC call that reached it, as `<path> <rpc_method>` (#91).
+  final List<String> skoreCalls = [];
+
   /// Each `quickmove messages` that reached it, as `<boxType> <msgID>`, or
   /// `<boxType>/<boxID> <msgID>` out of a folder.
   final List<String> moved = [];
@@ -204,6 +220,13 @@ class _Smartschool implements HttpClientAdapter {
       case (true, final path, _, _) when path.startsWith('/Presence/'):
         return _answer(
           _presenceAnswers[path] ?? '{"hasErrors":false,"errors":[]}',
+          contentType: 'application/json',
+        );
+      case (true, final path, _, _) when path.startsWith('/modules/Skore/'):
+        final method = (options.data as Map)['rpc_method'];
+        skoreCalls.add('$path $method');
+        return _answer(
+          '{"result":${_skoreResults[method] ?? '{"state":1}'},"session":1}',
           contentType: 'application/json',
         );
       case (false, '/', 'index', 'main'):
@@ -641,6 +664,24 @@ void main() {
         'POST /Presence/Main/getConfig',
         'POST /Presence/Class/getClass',
         'POST /Presence/Code/getAllCodes',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the Skore reads: the teachers and the gradebooks of a teacher '
+        '(#91)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final skore = SkoreService(client);
+
+      final teachers = await skore.getTeachers();
+      final gradebooks = await skore.getGradebookShares(146);
+
+      expect(teachers.single.id, 1001);
+      expect(gradebooks.single.gradebookId, 34826);
+      expect(server.skoreCalls, [
+        '$_skoreOwners getTeachers',
+        '$_skoreGradebooks getCourses',
       ]);
       expect(guard.violations, isEmpty);
     });
@@ -1440,6 +1481,58 @@ void main() {
           contains('POST /Presence/Class/deletePresences was not sent'),
           contains('changes no presence'),
         ),
+      ]);
+    });
+
+    test('a save in Skore, and any other Skore POST but its two reads '
+        '(#91)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final dio = _dio(server, guard);
+
+      // shareGradebook reads the gradebooks and the teachers, then saves:
+      // refused there.
+      await expectLater(
+        SkoreService(client).shareGradebook(
+          ownerId: 146,
+          gradebookId: 34826,
+          teacherId: 1001,
+          access: SkoreShareAccess.read,
+        ),
+        throwsA(anything),
+      );
+      final others = [
+        (_skoreOwners, 'saveOwner'),
+        (_skoreOwners, 'deleteOwner'),
+        (_skoreOwners, 'getMyGroups'),
+        (_skoreGradebooks, 'deleteTeacher'),
+        (_skoreGradebooks, 'getTeachers'),
+        ('/modules/Skore/backend/gradebook/rpc.php', 'gradebooksToAccess'),
+      ];
+      for (final (path, method) in others) {
+        await expectLater(
+          dio.post<String>(
+            path,
+            data: {'rpc_method': method, 'rpc_params': '[]'},
+            options: Options(contentType: Headers.formUrlEncodedContentType),
+          ),
+          throwsA(isA<DioException>()),
+        );
+      }
+
+      expect(server.skoreCalls, [
+        '$_skoreGradebooks getCourses',
+        '$_skoreOwners getTeachers',
+      ]);
+      expect(_violations(guard), [
+        for (final path in [
+          _skoreGradebooks,
+          for (final (path, _) in others) path,
+        ])
+          allOf(
+            contains('POST $path was not sent'),
+            contains('changes nothing in Skore'),
+          ),
       ]);
     });
 

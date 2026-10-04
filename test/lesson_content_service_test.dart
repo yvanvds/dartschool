@@ -25,6 +25,7 @@
 // Everything here reads: the fake Smartschool answers the GETs of the two
 // lists (and the login chain), and fails the test on any other request.
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -133,6 +134,9 @@ const _Answer _toLogin = (
   location: '/login',
 );
 
+/// No answer: the connection fails before one comes in.
+const _Answer _dropped = (status: 0, body: '', location: null);
+
 /// A Smartschool whose session is accepted, that answers the GET of the
 /// lesfiches with [answers] and the GET of the course list with [courses],
 /// each in turn (its last answer for every later request), and the login
@@ -184,7 +188,15 @@ class _Smartschool implements HttpClientAdapter {
       case _list:
         return _respond(_next(_answers, label));
       case _courses:
-        return _respond(_next(_courseAnswers, label));
+        final answer = _next(_courseAnswers, label);
+        if (answer.status == _dropped.status) {
+          throw DioException.connectionError(
+            requestOptions: options,
+            reason: 'Connection reset by peer',
+            error: const SocketException('Connection reset by peer'),
+          );
+        }
+        return _respond(answer);
     }
     fail('Unexpected request: ${options.method} $uri');
   }
@@ -211,16 +223,54 @@ class _Smartschool implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-/// A [SmartschoolLessonContentError], not an authentication failure.
+/// A plain [SmartschoolLessonContentError] (not the course list's of
+/// `getItems`, #118), not an authentication failure.
 Matcher _lessonContentError([
   Object? message = anything,
   Object? statusCode = anything,
 ]) => allOf(
   isNot(isA<SmartschoolAuthenticationError>()),
   isNot(isA<SmartschoolPlannerError>()),
+  isNot(isA<SmartschoolLessonContentCourseListError>()),
   isA<SmartschoolLessonContentError>()
       .having((e) => e.message, 'message', message)
       .having((e) => e.statusCode, 'statusCode', statusCode),
+);
+
+/// The [SmartschoolLessonContentCourseListError] of `getItems` for a course
+/// list it cannot use (#118): with the course list's [message] and
+/// [statusCode], and the lesfiches of [_fiches] as read, in order, with
+/// their course IDs and without a course name.
+Matcher _courseListError(Object? message, Object? statusCode) => allOf(
+  isNot(isA<SmartschoolAuthenticationError>()),
+  isNot(isA<SmartschoolPlannerError>()),
+  isA<SmartschoolLessonContentCourseListError>()
+      .having((e) => e.message, 'message', message)
+      .having((e) => e.statusCode, 'statusCode', statusCode)
+      .having(
+        (e) => [for (final item in e.items) item.id],
+        'the IDs of its items',
+        [_lessonId, _assignmentId, _thirdId],
+      )
+      .having(
+        (e) => [
+          for (final item in e.items) [for (final c in item.courses) c.id],
+        ],
+        'the course IDs of its items',
+        [
+          [_informaticaId],
+          [_informaticaId],
+          [_informaticaId, _unlistedId],
+        ],
+      )
+      .having(
+        (e) => [
+          for (final item in e.items)
+            for (final c in item.courses) c.name,
+        ],
+        'the course names of its items',
+        everyElement(isNull),
+      ),
 );
 
 void main() {
@@ -372,17 +422,27 @@ void main() {
     });
 
     group('a course list the service cannot use is a '
-        'SmartschoolLessonContentError: no lesfiches without the names '
-        '(#101)', () {
+        'SmartschoolLessonContentCourseListError with the lesfiches as read, '
+        'without the names (#118)', () {
       final answers = <String, (_Answer, Object?, Object?)>{
         'HTTP 500': (
           _json(_errorPage, status: 500),
           startsWith('The course list answered the courses with HTTP 500'),
           500,
         ),
+        'HTTP 404': (
+          _json('{"status":404}', status: 404),
+          startsWith('The course list answered the courses with HTTP 404'),
+          404,
+        ),
         'an HTML page': (
           _json(_webApp),
           contains('The course list answered the courses with an HTML page'),
+          isNull,
+        ),
+        'an empty body': (
+          _json(''),
+          contains('The course list answered the courses with an empty body'),
           isNull,
         ),
         'invalid JSON': (_json('[{"id":'), contains('invalid JSON'), isNull),
@@ -399,6 +459,11 @@ void main() {
           ),
           isNull,
         ),
+        'a course without its platformId': (
+          _json('[{"id":"$_informaticaId","name":"informatica"}]'),
+          contains('The course list gave course 0 in an unknown shape'),
+          isNull,
+        ),
       };
       for (final MapEntry(key: name, value: (answer, message, status))
           in answers.entries) {
@@ -410,11 +475,139 @@ void main() {
 
           await expectLater(
             lessonContent.getItems(),
-            throwsA(_lessonContentError(message, status)),
+            throwsA(_courseListError(message, status)),
           );
           expect(server.log, [_list, _courses]);
         });
       }
+    });
+
+    test(
+      'the lesfiches of a course list it cannot use are those of '
+      'withCourseNames false: the same lesfiches, read-only (#118)',
+      () async {
+        final (server, lessonContent) = await serve(
+          [_json(_fiches)],
+          courses: [_json(_errorPage, status: 500)],
+        );
+
+        final error = await lessonContent.getItems().then<Object?>(
+          (fiches) => fail('getItems returned ${fiches.length} lesfiches'),
+          onError: (Object e) => e,
+        );
+        final plain = await lessonContent.getItems(withCourseNames: false);
+
+        expect(server.log, [_list, _courses, _list]);
+        final items = (error! as SmartschoolLessonContentCourseListError).items;
+        expect(items.map((f) => f.toString()), plain.map((f) => f.toString()));
+        expect(items.map((f) => f.raw), plain.map((f) => f.raw));
+        expect(
+          items.map((f) => f.courses.map((c) => c.toString()).toList()),
+          plain.map((f) => f.courses.map((c) => c.toString()).toList()),
+        );
+        expect(() => items.add(items.first), throwsUnsupportedError);
+      },
+    );
+
+    test('a caller tells a course list it cannot use from lesfiches it '
+        'cannot read by type, though both answer HTTP 500, and lists the '
+        'lesfiches without names for the first (#118)', () async {
+      /// What a caller such as smartschool-mcp's list_lesfiches shows.
+      Future<String> listing(LessonContentService lessonContent) async {
+        try {
+          final fiches = await lessonContent.getItems();
+          return '${fiches.length} lesfiches: '
+              '${fiches.first.courses.single.name}';
+        } on SmartschoolLessonContentCourseListError catch (e) {
+          return '${e.items.length} lesfiches, courses not named '
+              '(${e.statusCode}): ${e.items.first.courses.single.name}';
+        } on SmartschoolLessonContentError catch (e) {
+          return 'no lesfiches (${e.statusCode})';
+        }
+      }
+
+      final (_, named) = await serve(
+        [_json(_fiches)],
+        courses: [_json(_courseList)],
+      );
+      final (_, courseListFails) = await serve(
+        [_json(_fiches)],
+        courses: [_json(_errorPage, status: 500)],
+      );
+      final (fichesFailServer, fichesFail) = await serve([
+        _json(_errorPage, status: 500),
+      ]);
+
+      expect(await listing(named), '3 lesfiches: informatica');
+      expect(
+        await listing(courseListFails),
+        '3 lesfiches, courses not named (500): null',
+      );
+      expect(await listing(fichesFail), 'no lesfiches (500)');
+      expect(fichesFailServer.log, [_list]);
+    });
+
+    test('a catch of SmartschoolLessonContentError still catches a course '
+        'list it cannot use (#118)', () async {
+      final (_, lessonContent) = await serve(
+        [_json(_fiches)],
+        courses: [_json(_webApp)],
+      );
+
+      Object? caught;
+      try {
+        await lessonContent.getItems();
+      } on SmartschoolLessonContentError catch (e) {
+        caught = e;
+      }
+      expect(caught, isA<SmartschoolLessonContentCourseListError>());
+      expect(
+        caught.toString(),
+        startsWith(
+          'SmartschoolLessonContentCourseListError: The course list answered '
+          'the courses with an HTML page',
+        ),
+      );
+    });
+
+    test('a session refused for the course list also after logging in again '
+        'is a SmartschoolSessionExpiredError, not a course list error '
+        '(#118)', () async {
+      final (server, lessonContent) = await serve(
+        [_json(_fiches)],
+        courses: [_toLogin],
+      );
+
+      await expectLater(
+        lessonContent.getItems(),
+        throwsA(
+          allOf(
+            isA<SmartschoolSessionExpiredError>(),
+            isNot(isA<SmartschoolLessonContentError>()),
+          ),
+        ),
+      );
+      expect(server.log.first, _list);
+      expect(server.log.where((l) => l == _courses), hasLength(2));
+    });
+
+    test('a connection that fails for the course list is a '
+        'SmartschoolConnectionError, not a course list error (#118)', () async {
+      final (server, lessonContent) = await serve(
+        [_json(_fiches)],
+        courses: [_dropped],
+      );
+
+      await expectLater(
+        lessonContent.getItems(),
+        throwsA(
+          allOf(
+            isA<SmartschoolConnectionError>(),
+            isNot(isA<SmartschoolLessonContentError>()),
+          ),
+        ),
+      );
+      expect(server.log, [_list, _courses]);
     });
 
     group('an answer the service cannot use is a '

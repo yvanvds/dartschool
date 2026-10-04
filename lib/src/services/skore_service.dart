@@ -43,13 +43,15 @@ export '../models/skore_models.dart';
 /// ### Access requirement
 /// The account needs access to Skore's report management (Rapporten >
 /// Modellen) and to its gradebooks management (Puntenboeken), as a Skore
-/// administrator has ([SkoreAccessArea]).
+/// administrator has ([SkoreAccessArea]). [checkAccess] tells which of the
+/// two the account has.
 ///
-/// When Skore refuses a request to the account with HTTP 403, the call
-/// throws a [SmartschoolSkoreAccessDeniedError] that names the part of
-/// Skore. What Skore answers an account without the rights has not been
-/// captured yet (#91): until it is, such an account may get a plain
-/// [SmartschoolSkoreError] instead, or even an empty list.
+/// Skore answers every request of these parts to a teacher without the
+/// rights by sending it on to Smartschool's start page (a redirect to
+/// `/?module=Homepage`; seen live, #91), never with an empty list; a call
+/// then throws a [SmartschoolSkoreAccessDeniedError] that names the part of
+/// Skore. An answer with HTTP 403 is one too. What Skore answers a pupil,
+/// and an account with only one of the two rights, was not captured.
 ///
 /// ### Errors
 /// - [SmartschoolSkoreAccessDeniedError] (a [SmartschoolSkoreError]): Skore
@@ -72,7 +74,11 @@ export '../models/skore_models.dart';
 /// - [SmartschoolSkoreSaveUnconfirmedError]: a write sent the save, but
 ///   Skore's answer (or, for [shareGradebook] and [unshareGradebook], reading
 ///   the gradebooks again) does not confirm it. It may or may not have been
-///   saved: read again.
+///   saved: read again. It is always one of its two subtypes, which carry
+///   what the call read before the save (#120):
+///   [SmartschoolSkoreAssignmentSaveUnconfirmedError] from [addTeacher] and
+///   [replaceTeacher], [SmartschoolSkoreShareSaveUnconfirmedError] from
+///   [shareGradebook] and [unshareGradebook].
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered an RPC without a session. Sign in again and
@@ -175,6 +181,45 @@ class SkoreService {
     );
   }
 
+  /// Returns the parts of Skore the account can use: each [SkoreAccessArea]
+  /// whose read Skore answers with data rather than refuses (#91). For a
+  /// status check, before calling the rest.
+  ///
+  /// It reads one small thing per part, and changes nothing:
+  /// - [SkoreAccessArea.reportManagement]: the teachers ([getTeachers]);
+  /// - [SkoreAccessArea.gradebookManagement]: the account's own gradebooks
+  ///   ([getGradebookShares] with its own user ID, from
+  ///   [SmartschoolClient.getCurrentUser]).
+  ///
+  /// A part is left out when Skore refuses its read with a
+  /// [SmartschoolSkoreAccessDeniedError]. Any other failure of a read is
+  /// thrown, as the read throws it: an answer the service cannot use (a plain
+  /// [SmartschoolSkoreError]) is not taken for missing rights.
+  ///
+  /// Seen live: a teacher without Skore's management rights gets an empty
+  /// set (both reads refused, #91); a Skore administrator gets both parts.
+  /// An account with only one of the two rights was not captured, and which
+  /// right Skore checks for each request was not seen: a call of a part in
+  /// the set may still be refused, with a
+  /// [SmartschoolSkoreAccessDeniedError].
+  Future<Set<SkoreAccessArea>> checkAccess() async {
+    final areas = <SkoreAccessArea>{};
+    try {
+      await getTeachers();
+      areas.add(SkoreAccessArea.reportManagement);
+    } on SmartschoolSkoreAccessDeniedError {
+      // Left out.
+    }
+    final own = await _client.getCurrentUser();
+    try {
+      await getGradebookShares(own.id);
+      areas.add(SkoreAccessArea.gradebookManagement);
+    } on SmartschoolSkoreAccessDeniedError {
+      // Left out.
+    }
+    return areas;
+  }
+
   // ---------------------------------------------------------------------------
   // Writes
   // ---------------------------------------------------------------------------
@@ -200,8 +245,10 @@ class SkoreService {
   /// never retried, not even after logging in again: a repeated add would
   /// add a second assignment. When Skore's answer does not confirm the save
   /// (it names the new assignment and the teacher asked for), this throws a
-  /// [SmartschoolSkoreSaveUnconfirmedError]: read the class again before
-  /// trying again. Calling this again is safe in itself: when the earlier
+  /// [SmartschoolSkoreAssignmentSaveUnconfirmedError] (a
+  /// [SmartschoolSkoreSaveUnconfirmedError]) with the course as read before
+  /// the save and the teacher it was saving (#120): read the class again
+  /// before trying again. Calling this again is safe in itself: when the earlier
   /// save went through, the teacher has an assignment on the course, and the
   /// call is refused.
   ///
@@ -257,8 +304,10 @@ class SkoreService {
   /// The save (Skore's `saveOwner` with the assignment's `ownerID`) is sent
   /// once and never retried, not even after logging in again. When Skore's
   /// answer does not confirm it (it names the same assignment and the teacher
-  /// asked for), this throws a [SmartschoolSkoreSaveUnconfirmedError]: read
-  /// the class again before trying again.
+  /// asked for), this throws a [SmartschoolSkoreAssignmentSaveUnconfirmedError]
+  /// (a [SmartschoolSkoreSaveUnconfirmedError]) with the course and the
+  /// assignment as read before the save, and the teacher it was saving
+  /// (#120): read the class again before trying again.
   ///
   /// The checks and the save are separate requests: do not change the same
   /// course from two places at once.
@@ -398,7 +447,9 @@ class SkoreService {
   /// [replaced], or an empty one for a new assignment ([replaced] `null`).
   /// Sent once, never retried (not even after logging in again); returns the
   /// assignment, with [course] and [replaced] as read before the save, once
-  /// Skore's answer confirms it.
+  /// Skore's answer confirms it. Otherwise throws a
+  /// [SmartschoolSkoreAssignmentSaveUnconfirmedError] with [course],
+  /// [replaced] and [teacher] (#120).
   ///
   /// Skore answers `{"ownerID": 34826, "userID": 146}`: the assignment
   /// (new, or the same for a replace) and its teacher.
@@ -418,6 +469,18 @@ class SkoreService {
         ? 'adding teacher ${teacher.id} to course $courseId of class $classId'
         : 'giving assignment $assignmentId (course $courseId of class '
               '$classId) teacher ${teacher.id}';
+    // With what the call read before the save (#120).
+    SmartschoolSkoreAssignmentSaveUnconfirmedError unconfirmedError(
+      String message, {
+      Object? cause,
+    }) => SmartschoolSkoreAssignmentSaveUnconfirmedError(
+      message,
+      cause: cause,
+      course: course,
+      replaced: replaced,
+      teacher: teacher,
+    );
+
     final dynamic result;
     try {
       result = await _ownersRpc('saveOwner', [
@@ -432,7 +495,7 @@ class SkoreService {
       rethrow;
     } on Exception catch (e, stackTrace) {
       Error.throwWithStackTrace(
-        SmartschoolSkoreSaveUnconfirmedError(
+        unconfirmedError(
           '$operation: the save ($change) was sent, but no usable answer '
           'came in ($e). $unconfirmed',
           cause: e,
@@ -454,7 +517,7 @@ class SkoreService {
       problem = null;
     }
     if (problem != null) {
-      throw SmartschoolSkoreSaveUnconfirmedError(
+      throw unconfirmedError(
         '$operation: the save ($change) was sent, but Skore\'s answer '
         '${_jsonPreview(result)} $problem. $unconfirmed',
       );
@@ -503,8 +566,11 @@ class SkoreService {
   /// again does not change the outcome: it is retried once after logging in
   /// again, as a read is. Skore must answer it with `state` 1, and reading the
   /// owner's gradebooks again must show exactly the readers and writers
-  /// saved; otherwise this throws a [SmartschoolSkoreSaveUnconfirmedError]:
-  /// read the gradebooks again before trying again.
+  /// saved; otherwise this throws a
+  /// [SmartschoolSkoreShareSaveUnconfirmedError] (a
+  /// [SmartschoolSkoreSaveUnconfirmedError]) with the gradebook as read
+  /// before the change and [teacherId], so the access they had (#120): read
+  /// the gradebooks again before trying again.
   ///
   /// The checks and the save are separate requests: do not change the shares
   /// of the same gradebook from two places at once.
@@ -624,7 +690,9 @@ class SkoreService {
   /// access of [teacherId]: Skore's `saveShared(userID, readers, writers)`,
   /// with only this gradebook in the two maps. Returns the gradebook as read
   /// again, with [gradebook] as it was before, once Skore's answer (`state`
-  /// 1) and that read confirm it.
+  /// 1) and that read confirm it. Otherwise throws a
+  /// [SmartschoolSkoreShareSaveUnconfirmedError] with [gradebook] and
+  /// [teacherId] (#120).
   ///
   /// Skore answers `{"state": 1}`.
   Future<SkoreGradebookShareChange> _saveShared(
@@ -643,6 +711,16 @@ class SkoreService {
     const unconfirmed =
         'It may or may not have been saved: read the gradebooks again '
         '(getGradebookShares) before trying again.';
+    // With what the call read before the save (#120).
+    SmartschoolSkoreShareSaveUnconfirmedError unconfirmedError(
+      String message, {
+      Object? cause,
+    }) => SmartschoolSkoreShareSaveUnconfirmedError(
+      message,
+      cause: cause,
+      before: gradebook,
+      teacherId: teacherId,
+    );
 
     final dynamic result;
     try {
@@ -657,7 +735,7 @@ class SkoreService {
       rethrow;
     } on Exception catch (e, stackTrace) {
       Error.throwWithStackTrace(
-        SmartschoolSkoreSaveUnconfirmedError(
+        unconfirmedError(
           '$operation: $what was sent, but no usable answer came in ($e). '
           '$unconfirmed',
           cause: e,
@@ -667,7 +745,7 @@ class SkoreService {
     }
     final state = result is Map ? _tryId(result['state']) : null;
     if (state != 1) {
-      throw SmartschoolSkoreSaveUnconfirmedError(
+      throw unconfirmedError(
         '$operation: $what was sent, but Skore\'s answer '
         '${_jsonPreview(result)} does not confirm it (state 1). $unconfirmed',
       );
@@ -680,7 +758,7 @@ class SkoreService {
       )).where((g) => g.gradebookId == gradebookId).firstOrNull;
     } on Exception catch (e, stackTrace) {
       Error.throwWithStackTrace(
-        SmartschoolSkoreSaveUnconfirmedError(
+        unconfirmedError(
           '$operation: Skore confirmed $what, but reading the gradebooks '
           'again to check it failed ($e). $unconfirmed',
           cause: e,
@@ -699,7 +777,7 @@ class SkoreService {
       problem = null;
     }
     if (problem != null) {
-      throw SmartschoolSkoreSaveUnconfirmedError(
+      throw unconfirmedError(
         '$operation: Skore confirmed $what, but reading the gradebooks again '
         '$problem. $unconfirmed',
       );
@@ -1062,12 +1140,15 @@ class SkoreService {
   // ---------------------------------------------------------------------------
 
   /// The body of [response], an answer to [what], a request in [area] of
-  /// Skore; throws when Skore did not answer with `200`.
+  /// Skore; throws when Skore did not answer with `200`, or sent the request
+  /// on to Smartschool's start page.
   ///
-  /// An answer with `403` (Forbidden) is a
-  /// [SmartschoolSkoreAccessDeniedError]: HTTP's answer for a request the
-  /// server refuses to the account. Not seen from Skore: what it answers an
-  /// account without the rights has not been captured yet (#91).
+  /// A [SmartschoolSkoreAccessDeniedError]:
+  /// - an answer that sends the request on to Smartschool's start page
+  ///   ([_sentToStartPage]): Skore's answer to every request of a teacher
+  ///   without the rights (seen live, #91);
+  /// - an answer with `403` (Forbidden): HTTP's answer for a request the
+  ///   server refuses to the account (#83; not seen from Skore).
   static String _body(
     Response<String> response,
     String what,
@@ -1081,10 +1162,49 @@ class SkoreService {
         area: area,
       );
     }
+    if (_sentToStartPage(response)) {
+      throw SmartschoolSkoreAccessDeniedError(
+        'Skore refused $what to the account (it sent the request on to '
+        "Smartschool's start page): it lacks the rights for "
+        '${_areaName(area)}.',
+        area: area,
+      );
+    }
     if (status != 200) {
       throw SmartschoolSkoreError('Skore answered $what with HTTP $status.');
     }
     return response.data ?? '';
+  }
+
+  /// Whether [response] sends its request on to Smartschool's start page,
+  /// `/?module=Homepage` on the same host: Skore's answer to a request of a
+  /// teacher without the rights for that part of Skore (#91).
+  ///
+  /// Seen live (2026-10-04) for every request of the service: a `302` with
+  /// `Location: /?module=Homepage` (an empty `text/html` body). The client
+  /// follows the redirect of a GET, which then ends on the start page with
+  /// `200` (its [Response.redirects] and [Response.realUri] say so); it does
+  /// not follow that of a POST, which comes as the `302` itself.
+  ///
+  /// A redirect elsewhere is not one: the client handles one to its login
+  /// pages, and another is an answer the service cannot use.
+  static bool _sentToStartPage(Response<String> response) {
+    final request = response.requestOptions.uri;
+    final status = response.statusCode ?? 0;
+    final location = Uri.tryParse(
+      response.headers.value('location')?.trim() ?? '',
+    );
+    final Uri target;
+    if (status >= 300 && status < 400 && location != null) {
+      target = request.resolveUri(location);
+    } else if (response.redirects.isNotEmpty) {
+      target = request.resolveUri(response.realUri);
+    } else {
+      return false;
+    }
+    return target.host == request.host &&
+        (target.path == '/' || target.path.isEmpty) &&
+        target.queryParameters['module'] == 'Homepage';
   }
 
   /// [area] as Skore's menus name it, for a message.

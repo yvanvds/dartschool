@@ -109,8 +109,82 @@ void main() {
     test('handles missing state/main gracefully', () {
       final c = PresenceService.parseConfig({});
       expect(c.activeClass, isNull);
+      expect(c.activePlaceholder, isNull);
       expect(c.allowedClasses, isEmpty);
       expect(c.schoolyearRefDate, isEmpty);
+    });
+
+    test('an active class that is a class: activeClass, no placeholder', () {
+      expect(config.activeClass!.isPlaceholder, isFalse);
+      expect(config.activePlaceholder, isNull);
+    });
+
+    // #117: the module's active class of a teacher who has no lesson at that
+    // moment is the placeholder -2, "Uit Planner" (seen live, read-only,
+    // 2026-10-03). Before the fix it was activeClass, and classForGroup(-2)
+    // returned it as a class of the account.
+    group('the placeholder class -2 ("Uit Planner") (#117)', () {
+      const placeholderJson = '''
+      {"state":{"activeClass":{"adminNumber":null,"groupID":-2,
+         "instituteNumber":0,"name":"Uit Planner","structID":null,
+         "studierichting":"","userCanConfirm":false},
+         "schoolyear":"2026-11-05"},
+       "main":{"allowedClasses":[
+         {"groupID":298,"name":"1A  ","adminNumber":6246,"isOfficial":1,
+          "userCanRecord":true,"instituteNumber":125252,"structID":311}]}}
+      ''';
+
+      late PresenceConfig placeholder;
+      setUpAll(
+        () => placeholder = PresenceService.parseConfig(_obj(placeholderJson)),
+      );
+
+      test('is no activeClass, but activePlaceholder', () {
+        expect(placeholder.activeClass, isNull);
+        expect(placeholder.activePlaceholder?.groupId, -2);
+        expect(placeholder.activePlaceholder?.name, 'Uit Planner');
+        expect(placeholder.activePlaceholder?.structId, isNull);
+        expect(placeholder.activePlaceholder?.isPlaceholder, isTrue);
+        expect(placeholder.allowedClasses.map((c) => c.groupId), [298]);
+      });
+
+      test('classForGroup does not return it', () {
+        expect(placeholder.classForGroup(-2), isNull);
+        expect(placeholder.classForGroup(298)?.name, '1A');
+      });
+
+      test('an active class without a groupID (read as 0) is no class '
+          'either', () {
+        final c = PresenceService.parseConfig({
+          'state': {
+            'activeClass': {'name': 'Uit Planner'},
+          },
+        });
+        expect(c.activeClass, isNull);
+        expect(c.activePlaceholder?.groupId, 0);
+        expect(c.classForGroup(0), isNull);
+      });
+
+      test('a groupID below 1 is a placeholder, 1 and above a class', () {
+        PresenceClassRef ref(int groupId) =>
+            PresenceClassRef(groupId: groupId, name: '');
+        expect(ref(-2).isPlaceholder, isTrue);
+        expect(ref(-1).isPlaceholder, isTrue);
+        expect(ref(0).isPlaceholder, isTrue);
+        expect(ref(1).isPlaceholder, isFalse);
+        expect(ref(298).isPlaceholder, isFalse);
+      });
+
+      test('classForGroup returns no placeholder from a config built by '
+          'hand either', () {
+        const byHand = PresenceConfig(
+          activeClass: PresenceClassRef(groupId: -2, name: 'Uit Planner'),
+          allowedClasses: [PresenceClassRef(groupId: -1, name: 'Other')],
+          schoolyearRefDate: '2026-11-05',
+        );
+        expect(byHand.classForGroup(-2), isNull);
+        expect(byHand.classForGroup(-1), isNull);
+      });
     });
   });
 

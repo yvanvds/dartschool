@@ -48,9 +48,11 @@ export '../models/presence_models.dart';
 /// - [SmartschoolPresenceError]: the Presence module refused the request (an
 ///   error page instead of JSON, or a non-empty `errors[]` on a save), or a
 ///   class, code or pupil could not be resolved. The session was accepted:
-///   signing in again does not help. Its subtype
-///   [SmartschoolPresenceChangeRefusedError]: the half-day holds a status
-///   that the call's `onlyReplacing` does not allow (#105); nothing was sent.
+///   signing in again does not help. Its subtypes, for which nothing was
+///   sent: [SmartschoolPresenceChangeRefusedError], the half-day holds a
+///   status that the call's `onlyReplacing` does not allow (#105); and
+///   [SmartschoolPresencePupilNotFoundError], the class, as read right before
+///   the save, does not list the pupil on that day (#116).
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session,
 ///   also after the client logged in again and retried the request once. The
 ///   request was not carried out: sign in again and retry.
@@ -223,7 +225,10 @@ class PresenceService {
   /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
   /// the server rejects the save: then its
   /// [SmartschoolPresenceError.saveErrors] has the module's errors, each with
-  /// its reason and the record that was not saved (#109).
+  /// its reason and the record that was not saved (#109). The class read
+  /// right before the save not listing the pupil on that day is its subtype
+  /// [SmartschoolPresencePupilNotFoundError], with the module's reason when
+  /// it listed no pupils (#116); nothing was sent.
   Future<PresenceSavedHalfDay?> setLate({
     required int userId,
     required int classGroupId,
@@ -253,9 +258,11 @@ class PresenceService {
   /// to clear a "Te laat" and refuse any other status (#105).
   ///
   /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
-  /// the server rejects the save, and its subtype
+  /// the server rejects the save, its subtype
   /// [SmartschoolPresenceChangeRefusedError] when [onlyReplacing] refuses the
-  /// change (nothing was sent).
+  /// change, and its subtype [SmartschoolPresencePupilNotFoundError] when the
+  /// class does not list the pupil on that day (nothing was sent for
+  /// either).
   Future<PresenceSavedHalfDay?> setPresent({
     required int userId,
     required int classGroupId,
@@ -324,20 +331,26 @@ class PresenceService {
         break;
       }
     }
+    final day = formatDate(date);
     if (pupil == null) {
       // The module's reason when it listed no pupils (#104), such as a day
       // after today.
-      final reason = pupils.isEmpty ? pupils.errorMessage : null;
+      final listedNone = pupils.isEmpty;
+      final reason = listedNone ? pupils.errorMessage : null;
       final why = reason == null
           ? ''
           : ': the Presence module listed no pupils ("$reason")';
-      throw SmartschoolPresenceError(
+      throw SmartschoolPresencePupilNotFoundError(
         'Pupil userID $userId was not found in class groupID $classGroupId on '
-        '${formatDate(date)}$why.',
+        '$day$why.',
+        userId: userId,
+        classGroupId: classGroupId,
+        date: day,
+        saveIsAllowed: listedNone ? pupils.saveIsAllowed : null,
+        errorMessage: reason,
       );
     }
 
-    final day = formatDate(date);
     final cell = pupil.halfDayFor(part, date: day);
 
     if (onlyReplacing != null) {
@@ -428,14 +441,21 @@ class PresenceService {
   // ---------------------------------------------------------------------------
 
   /// Parses a `getConfig` response body into a [PresenceConfig].
+  ///
+  /// The module's active class (`state.activeClass`) becomes
+  /// [PresenceConfig.activeClass] when it is a class, and
+  /// [PresenceConfig.activePlaceholder] when it is a placeholder (#117): a
+  /// `groupID` below 1, such as the class `-2` ("Uit Planner") of a teacher
+  /// who has no lesson at that moment ([PresenceClassRef.isPlaceholder]).
   static PresenceConfig parseConfig(Map<String, dynamic> json) {
     final state = json['state'] as Map<String, dynamic>? ?? const {};
     final main = json['main'] as Map<String, dynamic>? ?? const {};
 
     final activeRaw = state['activeClass'];
-    final activeClass = activeRaw is Map<String, dynamic>
+    final active = activeRaw is Map<String, dynamic>
         ? PresenceClassRef.fromJson(activeRaw)
         : null;
+    final placeholder = active != null && active.isPlaceholder;
 
     final allowed = <PresenceClassRef>[];
     final allowedRaw = main['allowedClasses'];
@@ -448,7 +468,8 @@ class PresenceService {
     }
 
     return PresenceConfig(
-      activeClass: activeClass,
+      activeClass: placeholder ? null : active,
+      activePlaceholder: placeholder ? active : null,
       allowedClasses: allowed,
       schoolyearRefDate: state['schoolyear'] as String? ?? '',
     );

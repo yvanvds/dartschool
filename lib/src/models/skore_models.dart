@@ -318,7 +318,8 @@ class SkoreGradebookShareChange extends SkoreGradebookShares {
   /// sent.
   ///
   /// A save that was sent but not confirmed is not returned: it throws a
-  /// `SmartschoolSkoreSaveUnconfirmedError`.
+  /// `SmartschoolSkoreShareSaveUnconfirmedError`, which carries [before] and
+  /// [teacherId] too (#120).
   final bool saved;
 
   const SkoreGradebookShareChange({

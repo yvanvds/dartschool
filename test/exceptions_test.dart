@@ -8,7 +8,13 @@ import 'package:flutter_smartschool/src/models/planner_models.dart'
 import 'package:flutter_smartschool/src/models/presence_models.dart'
     show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
-    show SkoreAccessArea;
+    show
+        SkoreAccessArea,
+        SkoreAssignment,
+        SkoreCourse,
+        SkoreGradebookShares,
+        SkoreShareAccess,
+        SkoreTeacher;
 import 'package:test/test.dart';
 
 import 'support/no_network.dart';
@@ -356,6 +362,99 @@ void main() {
         error.toString(),
         'SmartschoolSkoreSaveUnconfirmedError: unconfirmed',
       );
+    });
+
+    test('SmartschoolSkoreAssignmentSaveUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and carries the course, the replaced assignment and the teacher '
+        '(#120)', () {
+      const cause = SmartschoolConnectionError('dropped');
+      const replaced = SkoreAssignment(
+        id: 34826,
+        teacherId: 1005,
+        teacherName: 'Willems, Wim',
+      );
+      const course = SkoreCourse(
+        id: 1588,
+        classId: 2516,
+        name: 'Digitale vaardigheden',
+        label: 'Digitale vaardigheden  [Digitale vaardigheden]',
+        code: 'Digitale vaardigheden',
+        isGroupHeader: false,
+        depth: 1,
+        assignments: [replaced],
+      );
+      const teacher = SkoreTeacher(id: 1006, name: 'Maes, Mieke');
+      const error = SmartschoolSkoreAssignmentSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+        course: course,
+        replaced: replaced,
+        teacher: teacher,
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, same(cause));
+      expect(error.course, same(course));
+      expect(error.replaced, same(replaced));
+      expect(error.teacher, same(teacher));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreAssignmentSaveUnconfirmedError: unconfirmed',
+      );
+
+      // An add replaces nothing, and an answer that does not confirm the save
+      // has no cause.
+      const add = SmartschoolSkoreAssignmentSaveUnconfirmedError(
+        'unconfirmed',
+        course: course,
+        teacher: teacher,
+      );
+      expect(add.replaced, isNull);
+      expect(add.cause, isNull);
+    });
+
+    test('SmartschoolSkoreShareSaveUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and carries the gradebook before and the teacher, with the access '
+        'they had (#120)', () {
+      const before = SkoreGradebookShares(
+        gradebookId: 31886,
+        ownerId: 1005,
+        className: '5WW1',
+        courseName: 'Esthetica (1 uur)',
+        icon: 'palette2',
+        readerIds: [1001],
+        writerIds: [1003],
+      );
+      const error = SmartschoolSkoreShareSaveUnconfirmedError(
+        'unconfirmed',
+        before: before,
+        teacherId: 1001,
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, isNull);
+      expect(error.before, same(before));
+      expect(error.teacherId, 1001);
+      expect(error.accessBefore, SkoreShareAccess.read);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreShareSaveUnconfirmedError: unconfirmed',
+      );
+
+      const writer = SmartschoolSkoreShareSaveUnconfirmedError(
+        'unconfirmed',
+        before: before,
+        teacherId: 1003,
+      );
+      expect(writer.accessBefore, SkoreShareAccess.write);
+      const none = SmartschoolSkoreShareSaveUnconfirmedError(
+        'unconfirmed',
+        before: before,
+        teacherId: 1007,
+      );
+      expect(none.accessBefore, isNull);
     });
   });
 

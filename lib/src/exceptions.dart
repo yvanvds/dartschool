@@ -11,7 +11,14 @@ import 'models/planner_models.dart'
         PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
     show DayPart, PresenceHalfDay, PresenceSaveError;
-import 'models/skore_models.dart' show SkoreAccessArea;
+import 'models/skore_models.dart'
+    show
+        SkoreAccessArea,
+        SkoreAssignment,
+        SkoreCourse,
+        SkoreGradebookShares,
+        SkoreShareAccess,
+        SkoreTeacher;
 
 /// Base exception for all Smartschool API errors.
 class SmartschoolException implements Exception {
@@ -1337,6 +1344,18 @@ class SmartschoolLessonContentCourseListError
 /// the complete readers and writers of one gradebook, so sending it again
 /// does not change the outcome.
 ///
+/// The service throws one of its two subtypes, which carry what the call
+/// read before the save (#120), as its result would have:
+/// - [SmartschoolSkoreAssignmentSaveUnconfirmedError] from `addTeacher` and
+///   `replaceTeacher`: the course, the assignment it was replacing, and the
+///   teacher it was saving;
+/// - [SmartschoolSkoreShareSaveUnconfirmedError] from `shareGradebook` and
+///   `unshareGradebook`: the gradebook as read before the change, and the
+///   teacher whose access it was changing.
+///
+/// So a `catch` of this type keeps catching both. Its message names the
+/// change by IDs only (no labels or names); the subtypes carry those.
+///
 /// Deliberately not a [SmartschoolSkoreError], so a `catch` meant for the
 /// failures where nothing was saved does not catch it.
 class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
@@ -1349,4 +1368,78 @@ class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
   final Object? cause;
 
   const SmartschoolSkoreSaveUnconfirmedError(super.message, {this.cause});
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of `SkoreService.addTeacher`
+/// and `replaceTeacher`: the save went out, but Skore's answer does not
+/// confirm it. **It may or may not have been saved**: read the class again
+/// (`SkoreService.getCourses`) before trying again.
+///
+/// It carries what the call read before the save (#120), as the
+/// `SkoreSavedAssignment` it returns when the save is confirmed does (#102),
+/// so that telling the user what may have been saved, and what to look for
+/// to check it, needs no read of its own. A read after a save that may have
+/// gone through cannot tell what was there before.
+class SmartschoolSkoreAssignmentSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The course of the assignment, as the call read it right before the save
+  /// (the class's assignments page, as `SkoreService.getCourses` reads it):
+  /// its [SkoreCourse.label], [SkoreCourse.code], [SkoreCourse.id],
+  /// [SkoreCourse.classId], and its assignments **before** the save.
+  final SkoreCourse course;
+
+  /// For `replaceTeacher`, the assignment as it was before the save: its
+  /// [SkoreAssignment.id], with the teacher it had. If the save went through,
+  /// the assignment keeps that ID with [teacher] instead. `null` for
+  /// `addTeacher`, which replaces nothing.
+  final SkoreAssignment? replaced;
+
+  /// The teacher the call was saving on the course, as `SkoreService` read
+  /// them from `getTeachers` before the save: their user ID and name.
+  final SkoreTeacher teacher;
+
+  const SmartschoolSkoreAssignmentSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.course,
+    this.replaced,
+    required this.teacher,
+  });
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreService.shareGradebook` and `unshareGradebook`: the save went out,
+/// but Skore's answer, or reading the owner's gradebooks again afterwards,
+/// does not confirm it. **It may or may not have been saved**: read the
+/// gradebooks again (`SkoreService.getGradebookShares`) before trying again.
+///
+/// It carries what the call read before the save (#120), as the
+/// `SkoreGradebookShareChange` it returns when the save is confirmed does
+/// (#103): the gradebook as read before the change ([before]: its class and
+/// course names, and its readers and writers then) and the teacher whose
+/// access it was changing ([teacherId]), so the access they had before
+/// ([accessBefore]). A read after a save that may have gone through cannot
+/// tell what was there before.
+class SmartschoolSkoreShareSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook as the call read it right before the save (the owner's
+  /// gradebooks, as `SkoreService.getGradebookShares` reads them), with the
+  /// readers and writers it had then.
+  final SkoreGradebookShares before;
+
+  /// The Smartschool user ID of the teacher whose access the call was
+  /// changing (its `teacherId`).
+  final int teacherId;
+
+  const SmartschoolSkoreShareSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.before,
+    required this.teacherId,
+  });
+
+  /// The access [teacherId] had before the save, or `null` when the
+  /// gradebook was not shared with them: [before]'s
+  /// `SkoreGradebookShares.accessOf`.
+  SkoreShareAccess? get accessBefore => before.accessOf(teacherId);
 }

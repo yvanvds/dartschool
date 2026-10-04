@@ -1085,6 +1085,213 @@ void main() {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // The unconfirmed save, in its context (#120)
+  // ---------------------------------------------------------------------------
+
+  group('a save that is not confirmed carries what the call read before it: '
+      'the course, the assignment it replaced and the teacher (#120)', () {
+    // Each way the save's answer can fail to confirm it, for a save that
+    // answers assignment [ownerId] (the one of the call) with an unconfirming
+    // answer. The pages are read as they were before the save.
+    final failures = <String, _Smartschool Function(int ownerId)>{
+      'the connection drops after the save went out': (_) => _Smartschool(
+        failSave: (options) => DioException.connectionError(
+          requestOptions: options,
+          reason: 'Connection closed before full header was received',
+          error: const SocketException('Connection reset by peer'),
+        ),
+      ),
+      'an error page with HTTP 500': (_) =>
+          _Smartschool(save: (status: 500, body: _errorPage)),
+      'an HTML page': (_) => _Smartschool(save: _ok(_errorPage)),
+      'HTTP 403': (_) => _Smartschool(save: _forbidden),
+      'an answer without the assignment': (_) =>
+          _Smartschool(save: _ok(_rpcAnswer('saveOwner', '{"userID":1006}'))),
+      'an answer that names another teacher': (ownerId) => _Smartschool(
+        save: _ok(
+          _rpcAnswer('saveOwner', '{"ownerID":$ownerId,"userID":1001}'),
+        ),
+      ),
+    };
+
+    for (final MapEntry(key: name, value: smartschool) in failures.entries) {
+      test('addTeacher, $name: the course with its teachers before the add, '
+          'no replaced assignment, and the teacher', () async {
+        final server = smartschool(40001);
+        final skore = await serve(server);
+
+        await expectLater(
+          skore.addTeacher(classId: 2516, courseId: 2164, teacherId: 1006),
+          throwsA(
+            allOf(
+              _unconfirmed(contains('addTeacher'), cause: anything),
+              isA<SmartschoolSkoreAssignmentSaveUnconfirmedError>()
+                  .having((e) => e.course.id, 'course.id', 2164)
+                  .having((e) => e.course.classId, 'course.classId', 2516)
+                  .having(
+                    (e) => e.course.label,
+                    'course.label',
+                    'Aardrijkskunde (1 uur) (5e j DG) [AARDR]',
+                  )
+                  .having((e) => e.course.code, 'course.code', 'AARDR')
+                  .having((e) => _teachersOf(e.course), 'course teachers', [
+                    '31882: 1001 Janssens, Jan',
+                  ])
+                  .having((e) => e.replaced, 'replaced', isNull)
+                  .having((e) => e.teacher.id, 'teacher.id', 1006)
+                  .having((e) => e.teacher.name, 'teacher.name', 'Maes, Mieke'),
+            ),
+          ),
+        );
+        // Nothing more is read for it.
+        expect(server.log, [_readClass, _getTeachers, _saveOwner]);
+      });
+
+      test('replaceTeacher, $name: the course, the assignment with the '
+          'teacher it had, and the teacher it was saving', () async {
+        final server = smartschool(34582);
+        final skore = await serve(server);
+
+        await expectLater(
+          skore.replaceTeacher(
+            classId: 2516,
+            courseId: 1840,
+            assignmentId: 34582,
+            teacherId: 1006,
+          ),
+          throwsA(
+            allOf(
+              _unconfirmed(contains('replaceTeacher'), cause: anything),
+              isA<SmartschoolSkoreAssignmentSaveUnconfirmedError>()
+                  .having((e) => e.course.id, 'course.id', 1840)
+                  .having(
+                    (e) => e.course.label,
+                    'course.label',
+                    'Project 1 (3e graad) [PROJE1]',
+                  )
+                  .having((e) => _teachersOf(e.course), 'course teachers', [
+                    '34580: 1002 Peeters, Piet',
+                    '34582: 1003 Dupré, Céline',
+                    "34584: 1004 D'Hondt, Karel",
+                  ])
+                  .having((e) => e.replaced?.id, 'replaced.id', 34582)
+                  .having(
+                    (e) => e.replaced?.teacherId,
+                    'replaced.teacherId',
+                    1003,
+                  )
+                  .having(
+                    (e) => e.replaced?.teacherName,
+                    'replaced.teacherName',
+                    'Dupré, Céline',
+                  )
+                  .having((e) => e.teacher.id, 'teacher.id', 1006)
+                  .having((e) => e.teacher.name, 'teacher.name', 'Maes, Mieke'),
+            ),
+          ),
+        );
+        expect(server.log, [
+          _readClass,
+          _getTeachers,
+          _getMyGroups,
+          _saveOwner,
+        ]);
+      });
+    }
+
+    test('a replace answered with another assignment', () async {
+      final server = _Smartschool(
+        page: _pageWithAssignment,
+        save: _ok(_rpcAnswer('saveOwner', '{"ownerID":40001,"userID":1006}')),
+      );
+      final skore = await serve(server);
+
+      await expectLater(
+        skore.replaceTeacher(
+          classId: 2516,
+          courseId: 1588,
+          assignmentId: 34826,
+          teacherId: 1006,
+        ),
+        throwsA(
+          isA<SmartschoolSkoreAssignmentSaveUnconfirmedError>()
+              .having((e) => e.message, 'message', contains('40001 instead'))
+              .having((e) => e.replaced?.id, 'replaced.id', 34826)
+              .having(
+                (e) => e.replaced?.teacherName,
+                'replaced.teacherName',
+                'Willems, Wim',
+              )
+              .having((e) => e.course.id, 'course.id', 1588),
+        ),
+      );
+    });
+
+    test("the issue's call: a caller that catches "
+        'SmartschoolSkoreSaveUnconfirmedError names the course and the teacher '
+        'the assignment had from the error alone, as smartschool-mcp '
+        'does', () async {
+      final server = _Smartschool(
+        page: _pageWithAssignment,
+        failSave: (options) => DioException.connectionError(
+          requestOptions: options,
+          reason: 'Connection closed before full header was received',
+          error: const SocketException('Connection reset by peer'),
+        ),
+      );
+      final skore = await serve(server);
+
+      // What replace_skore_teacher tells its user, from what it caught.
+      late final String report;
+      try {
+        await skore.replaceTeacher(
+          classId: 2516,
+          courseId: 1588,
+          assignmentId: 34826,
+          teacherId: 1006,
+        );
+        fail('The save was confirmed');
+      } on SmartschoolSkoreSaveUnconfirmedError catch (e) {
+        // The catch clause written before #120 keeps catching it.
+        expect(
+          e.message,
+          allOf(
+            // The message is unchanged: IDs only.
+            contains(
+              'replaceTeacher: the save (giving assignment 34826 (course '
+              '1588 of class 2516) teacher 1006) was sent, but no usable '
+              'answer came in',
+            ),
+            isNot(contains('Willems')),
+          ),
+        );
+        expect(e.cause, isA<SmartschoolConnectionError>());
+        report = switch (e) {
+          SmartschoolSkoreAssignmentSaveUnconfirmedError(
+            :final course,
+            :final replaced?,
+            :final teacher,
+          ) =>
+            'Not confirmed: ${teacher.name} instead of ${replaced.teacherName} '
+                'on course "${course.code}" (course id ${course.id}) of '
+                'class id ${course.classId}. Check whether assignment '
+                '${replaced.id} still has ${replaced.teacherName}.',
+          _ => 'Not confirmed: ${e.message}',
+        };
+      }
+
+      expect(
+        report,
+        'Not confirmed: Maes, Mieke instead of Willems, Wim on course '
+        '"Digitale vaardigheden" (course id 1588) of class id 2516. Check '
+        'whether assignment 34826 still has Willems, Wim.',
+      );
+      // The caller read nothing itself, and the save went out once.
+      expect(server.log, [_readClass, _getTeachers, _getMyGroups, _saveOwner]);
+    });
+  });
+
   group('a session refused for the save is not retried after logging in '
       'again: no second saveOwner', () {
     test('Smartschool answers 401', () async {

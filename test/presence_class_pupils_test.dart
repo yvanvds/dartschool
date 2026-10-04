@@ -23,6 +23,13 @@
 //
 // No answer with an empty list and `saveIsAllowed: true` was seen. The fake
 // Smartschool below answers in those shapes; its pupils are made up.
+//
+// Issue #117: that class -2 was the config's `activeClass`, an ordinary
+// PresenceClassRef, and `classForGroup(-2)` returned it, so a caller that
+// lists the classes of the account (the allowed classes, plus the active
+// class when it is not among them) listed "Uit Planner" as a class. Now
+// getConfig gives it as `activePlaceholder`, `activeClass` is null for it and
+// `classForGroup` does not return it.
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -131,9 +138,12 @@ final _noLessonNow = _classAnswer(
 /// A Smartschool whose Presence module answers `getClass` with
 /// [classAnswers], by `<classID> <startDate>`.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(this.classAnswers);
+  _Smartschool(this.classAnswers, {this.config = _configJson});
 
   final Map<String, String> classAnswers;
+
+  /// The answer to `getConfig`.
+  final String config;
 
   /// Every request, as `METHOD path`.
   final List<String> log = [];
@@ -151,7 +161,7 @@ class _Smartschool implements HttpClientAdapter {
     log.add('${options.method} $path');
     switch (path) {
       case _getConfig:
-        return _json(_configJson);
+        return _json(config);
       case _getAllCodes:
         return _json(_codesJson);
       case _getClass:
@@ -185,9 +195,10 @@ void main() {
   forbidRealNetwork();
 
   Future<(PresenceService, _Smartschool)> serve(
-    Map<String, String> classAnswers,
-  ) async {
-    final server = _Smartschool(classAnswers);
+    Map<String, String> classAnswers, {
+    String config = _configJson,
+  }) async {
+    final server = _Smartschool(classAnswers, config: config);
     final client = await SmartschoolClient.create(
       AppCredentials(username: 'user', password: 'pass', mainUrl: _host),
       cacheDir: tempCacheDir(),
@@ -275,13 +286,14 @@ void main() {
       final (presence, _) = await serve({'-2 2026-10-01': _noLessonNow});
       final config = await presence.getConfig();
 
+      // The config gives it as its placeholder, not as a class (#117).
       final pupils = await classPupils(
         presence,
-        config.activeClass!.groupId,
+        config.activePlaceholder!.groupId,
         DateTime(2026, 10, 1),
       );
 
-      expect(config.activeClass!.groupId, -2);
+      expect(config.activePlaceholder!.groupId, -2);
       expect(pupils, isEmpty);
       expect(pupils.saveIsAllowed, isFalse);
       expect(pupils.errorMessage, _noLesson);
@@ -442,6 +454,117 @@ void main() {
         ),
       );
       expect(server.log, isNot(contains('POST $_save')));
+    });
+  });
+
+  group('getConfig keeps the placeholder class -2 apart from the classes '
+      '(#117)', () {
+    /// The classes of the account, as a caller such as smartschool-mcp's
+    /// `presenceClasses` (yvanvds/smartschool-mcp#84) lists them: the allowed
+    /// classes, plus the active class when it is not among them, as
+    /// [PresenceConfig.classForGroup] finds them; without its workaround,
+    /// which left out an active class with a `groupId` below 1.
+    List<PresenceClassRef> classesOf(PresenceConfig config) => [
+      ...config.allowedClasses,
+      if (config.activeClass case final active?
+          when !config.allowedClasses.any((c) => c.groupId == active.groupId))
+        active,
+    ];
+
+    /// A config whose active class is 2F ECO, a class of the account that it
+    /// may view but not record for, and not among its allowed classes.
+    const withLesson = '''
+{"hasErrors":false,"errors":[],
+ "state":{"activeClass":{"groupID":4882,"name":"2F ECO ","adminNumber":6250,
+   "isOfficial":1,"userCanConfirm":false,"userCanRecord":false,
+   "instituteNumber":125252,"structID":311},"schoolyear":"2026-11-05"},
+ "main":{"allowedClasses":[
+   {"groupID":298,"name":"1A  ","adminNumber":6246,"isOfficial":1,
+    "userCanConfirm":false,"userCanRecord":true,"instituteNumber":125252,
+    "structID":311}]}}
+''';
+
+    test('a teacher without a lesson now: the classes of the account are its '
+        'allowed classes, without "Uit Planner"', () async {
+      // Before the fix: [298, -2], "Uit Planner" listed as a class.
+      final (presence, server) = await serve(const {});
+
+      final config = await presence.getConfig();
+      final classes = classesOf(config);
+
+      expect(classes.map((c) => c.groupId), [298]);
+      expect(classes.map((c) => c.name), ['1A']);
+      expect(config.activeClass, isNull);
+      expect(config.classForGroup(-2), isNull);
+      for (final c in classes) {
+        expect(config.classForGroup(c.groupId), same(c));
+      }
+      expect(server.log, ['POST $_getConfig']);
+    });
+
+    test('the placeholder is still there, apart: a caller can tell that the '
+        'teacher has no lesson now', () async {
+      final (presence, _) = await serve({'-2 2026-10-01': _noLessonNow});
+
+      final config = await presence.getConfig();
+      final placeholder = config.activePlaceholder;
+
+      expect(placeholder?.groupId, -2);
+      expect(placeholder?.name, 'Uit Planner');
+      expect(placeholder?.isPlaceholder, isTrue);
+      // What the module says for it, read with its groupId.
+      final pupils = await classPupils(
+        presence,
+        placeholder!.groupId,
+        DateTime(2026, 10, 1),
+      );
+      expect(pupils, isEmpty);
+      expect(pupils.errorMessage, _noLesson);
+    });
+
+    test('a teacher with a lesson now: its class is the active class, and '
+        'listed with the classes of the account', () async {
+      final (presence, _) = await serve(const {}, config: withLesson);
+
+      final config = await presence.getConfig();
+
+      expect(config.activeClass?.groupId, 4882);
+      expect(config.activeClass?.isPlaceholder, isFalse);
+      expect(config.activePlaceholder, isNull);
+      expect(classesOf(config).map((c) => c.name), ['1A', '2F ECO']);
+      expect(config.classForGroup(4882)?.userCanRecord, isFalse);
+    });
+
+    test('setLate for the class -2: not among the classes of the account, '
+        'and nothing but the config is read', () async {
+      // Before the fix: classForGroup(-2) returned the placeholder, and the
+      // call failed on it as on a class: "Class groupID -2 has no structID
+      // (it looks like a virtual grouping class, not an official class)."
+      final (presence, server) = await serve({'-2 2026-10-01': _noLessonNow});
+
+      await expectLater(
+        presence.setLate(
+          userId: 11110,
+          classGroupId: -2,
+          date: DateTime(2026, 10, 1),
+          part: DayPart.morning,
+        ),
+        throwsA(
+          isA<SmartschoolPresenceError>()
+              .having(
+                (e) => e,
+                'type',
+                isNot(isA<SmartschoolPresencePupilNotFoundError>()),
+              )
+              .having(
+                (e) => e.message,
+                'message',
+                'Class groupID -2 is not among the classes this account may '
+                    'record presences for.',
+              ),
+        ),
+      );
+      expect(server.log, ['POST $_getConfig']);
     });
   });
 }

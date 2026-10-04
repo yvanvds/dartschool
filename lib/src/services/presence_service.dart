@@ -441,14 +441,21 @@ class PresenceService {
   // ---------------------------------------------------------------------------
 
   /// Parses a `getConfig` response body into a [PresenceConfig].
+  ///
+  /// The module's active class (`state.activeClass`) becomes
+  /// [PresenceConfig.activeClass] when it is a class, and
+  /// [PresenceConfig.activePlaceholder] when it is a placeholder (#117): a
+  /// `groupID` below 1, such as the class `-2` ("Uit Planner") of a teacher
+  /// who has no lesson at that moment ([PresenceClassRef.isPlaceholder]).
   static PresenceConfig parseConfig(Map<String, dynamic> json) {
     final state = json['state'] as Map<String, dynamic>? ?? const {};
     final main = json['main'] as Map<String, dynamic>? ?? const {};
 
     final activeRaw = state['activeClass'];
-    final activeClass = activeRaw is Map<String, dynamic>
+    final active = activeRaw is Map<String, dynamic>
         ? PresenceClassRef.fromJson(activeRaw)
         : null;
+    final placeholder = active != null && active.isPlaceholder;
 
     final allowed = <PresenceClassRef>[];
     final allowedRaw = main['allowedClasses'];
@@ -461,7 +468,8 @@ class PresenceService {
     }
 
     return PresenceConfig(
-      activeClass: activeClass,
+      activeClass: placeholder ? null : active,
+      activePlaceholder: placeholder ? active : null,
       allowedClasses: allowed,
       schoolyearRefDate: state['schoolyear'] as String? ?? '',
     );

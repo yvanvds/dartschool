@@ -1190,16 +1190,29 @@ A link to a web page, kept in a folder next to its files. Fields: `id`, `name`, 
 Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCreated`, `owner` (`IntradeskFileOwner`).
 
 ### `PresenceConfig`
-Returned by `PresenceService.getConfig()`. Fields: `activeClass` (`PresenceClassRef?`), `allowedClasses` (`List<PresenceClassRef>`), `schoolyearRefDate` (String, `yyyy-MM-dd`). Helper `classForGroup(groupId)`.
+Returned by `PresenceService.getConfig()`. Fields: `activeClass` (`PresenceClassRef?`, the class active in the module's web client), `activePlaceholder` (`PresenceClassRef?`), `allowedClasses` (`List<PresenceClassRef>`), `schoolyearRefDate` (String, `yyyy-MM-dd`). Helper `classForGroup(groupId)`, the class from `allowedClasses` (falling back to `activeClass`), `null` when the account has no such class.
+
+**The placeholder class `-2` (#117).** For a teacher who has no lesson at that moment, the module gives the class `-2`, "Uit Planner" (without a `structID`), as its active class: no class, `getClassPupils` lists no pupils for it ("U geeft momenteel geen les. Kies een andere klas in de keuzelijst."). `getConfig` keeps it apart: `activeClass` is `null` for it and `activePlaceholder` holds it, and `classForGroup` never returns a placeholder. The rule is `PresenceClassRef.isPlaceholder`: a `groupId` below 1. So the classes of the account, the allowed classes plus `activeClass` when it is not among them, never include it:
+
+```dart
+final config = await presence.getConfig();
+final classes = [
+  ...config.allowedClasses,
+  if (config.activeClass case final active?
+      when !config.allowedClasses.any((c) => c.groupId == active.groupId))
+    active,
+];
+final noLessonNow = config.activePlaceholder != null;
+```
 
 ### `PresenceClassRef`
-A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`.
+A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`. Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
 
 ### `PresenceCode` / `PresenceAlias`
 A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`aliasId`, `parentCodeId`, `name`). Codes are per-structure, resolved by name. `PresenceCode.aliasByName(name)` looks up an alias case-insensitively.
 
 ### `PresenceClassPupils`
-Returned by `PresenceService.getClassPupils()` (#104). The pupils of the class for the day, as a `List<PresencePupil>`, with what the Presence module said about the class that day: `saveIsAllowed` (`bool?`), `errorMessage` (`String?`, the module's reason, `null` when it gave none) and `classRef` (`PresenceClassRef?`, the class as the module names it, `null` when the module does not know the class ID). When the module lists no pupils, `saveIsAllowed` is `false` and `errorMessage` says why, in Dutch as its web client shows it. Seen live (2026-10-03): "Het is niet mogelijk om in de toekomst afwezigheden op te nemen." for a day after today, "Deze klas bevat geen leerlingen." for a class without pupils and for a class ID the module does not know (then without a `classRef`), and "U geeft momenteel geen les. Kies een andere klas in de keuzelijst." for the class `-2` ("Uit Planner").
+Returned by `PresenceService.getClassPupils()` (#104). The pupils of the class for the day, as a `List<PresencePupil>`, with what the Presence module said about the class that day: `saveIsAllowed` (`bool?`), `errorMessage` (`String?`, the module's reason, `null` when it gave none) and `classRef` (`PresenceClassRef?`, the class as the module names it, `null` when the module does not know the class ID). When the module lists no pupils, `saveIsAllowed` is `false` and `errorMessage` says why, in Dutch as its web client shows it. Seen live (2026-10-03): "Het is niet mogelijk om in de toekomst afwezigheden op te nemen." for a day after today, "Deze klas bevat geen leerlingen." for a class without pupils and for a class ID the module does not know (then without a `classRef`), and "U geeft momenteel geen les. Kies een andere klas in de keuzelijst." for the class `-2` ("Uit Planner", `PresenceConfig.activePlaceholder`).
 
 ```dart
 final pupils = await presence.getClassPupils(

@@ -4,7 +4,11 @@ import 'package:html/parser.dart' as html_parser;
 import 'models/lesson_content_models.dart' show LessonContentItem;
 import 'models/message_models.dart' show BoxType;
 import 'models/planner_models.dart'
-    show PlannedElement, PlannedElementDetail, PlannerWriteRefusalReason;
+    show
+        PlannedElement,
+        PlannedElementDetail,
+        PlannerAssignmentType,
+        PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
     show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'models/skore_models.dart' show SkoreAccessArea;
@@ -1105,8 +1109,10 @@ class SmartschoolPlannedElementNotFoundError extends SmartschoolPlannerError {
 /// Which check refused is a value an app can switch on (#100): [reason],
 /// with the [element] the check read (to name it in the app's own words:
 /// its period, name, classes, course and organisers), the
-/// [capabilityFlags] it missed or found, and for a lesfiche that is not a
-/// lesson one the [lessonContent]. The [message] says the same for a log,
+/// [capabilityFlags] it missed or found, for a lesfiche that is not a
+/// lesson one the [lessonContent], and for an assignment type the school
+/// does not have the school's [assignmentTypes] as the check read them
+/// (#119). The [message] says the same for a log,
 /// in the library's words: it names the method, the element by its type,
 /// ID and period, and ends with "Nothing was sent.".
 ///
@@ -1146,12 +1152,23 @@ class SmartschoolPlannerWriteRefusedError extends SmartschoolPlannerError {
   /// otherwise.
   final LessonContentItem? lessonContent;
 
+  /// For [PlannerWriteRefusalReason.unknownAssignmentType], the school's
+  /// assignment types as `planAssignment` read them again for the check
+  /// (`getAssignmentTypes`), in the planner's order: the types the refused
+  /// one is not among (#119). An app can list them to its user, and keep its
+  /// own copy up to date, without reading them a second time (a read that
+  /// could differ from the one the check refused on). Empty when the school
+  /// has none, and for the other reasons. The type that was refused is the
+  /// caller's own `type`.
+  final List<PlannerAssignmentType> assignmentTypes;
+
   const SmartschoolPlannerWriteRefusedError(
     super.message, {
     this.reason,
     this.element,
     this.capabilityFlags = const [],
     this.lessonContent,
+    this.assignmentTypes = const [],
   });
 
   @override

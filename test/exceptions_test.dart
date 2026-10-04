@@ -4,7 +4,7 @@ import 'package:flutter_smartschool/src/models/lesson_content_models.dart'
 import 'package:flutter_smartschool/src/models/message_models.dart'
     show BoxType;
 import 'package:flutter_smartschool/src/models/planner_models.dart'
-    show PlannedElement, PlannerWriteRefusalReason;
+    show PlannedElement, PlannerAssignmentType, PlannerWriteRefusalReason;
 import 'package:flutter_smartschool/src/models/presence_models.dart'
     show DayPart, PresenceHalfDay, PresenceSaveError;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
@@ -443,6 +443,7 @@ void main() {
       expect(error.element, isNull);
       expect(error.capabilityFlags, isEmpty);
       expect(error.lessonContent, isNull);
+      expect(error.assignmentTypes, isEmpty);
     });
 
     test('SmartschoolPlannerWriteRefusedError carries its reason, element and '
@@ -472,6 +473,40 @@ void main() {
       expect(
         error.toString(),
         'SmartschoolPlannerWriteRefusedError(notAllowed): cannot fill it',
+      );
+    });
+
+    test('SmartschoolPlannerWriteRefusedError carries the school\'s '
+        'assignment types for an unknown one, and does not show them '
+        '(#119)', () {
+      const types = [
+        PlannerAssignmentType(
+          id: 'a0000000-0000-4000-8000-000000000001',
+          platformId: 4069,
+          name: 'Kleine Overhoring',
+          abbreviation: 'KO',
+        ),
+        PlannerAssignmentType(
+          id: 'a0000000-0000-4000-8000-000000000002',
+          platformId: 4069,
+          name: 'Grote Overhoring',
+          abbreviation: 'GO',
+        ),
+      ];
+      const error = SmartschoolPlannerWriteRefusedError(
+        'not a type of the school',
+        reason: PlannerWriteRefusalReason.unknownAssignmentType,
+        assignmentTypes: types,
+      );
+      expect(error, isA<SmartschoolPlannerError>());
+      expect(error.assignmentTypes, same(types));
+      expect(error.element, isNull);
+      expect(error.capabilityFlags, isEmpty);
+      expect(error.lessonContent, isNull);
+      expect(
+        error.toString(),
+        'SmartschoolPlannerWriteRefusedError(unknownAssignmentType): '
+        'not a type of the school',
       );
     });
 

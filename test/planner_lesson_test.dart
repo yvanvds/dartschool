@@ -376,7 +376,8 @@ Future<String> _read(Stream<Uint8List>? body) async => body == null
 
 /// A check before the write refused it: nothing was sent. The error gives
 /// the check as [reason] (#100), with the ID of the [element] it read again
-/// and the capability [flags] it refused on.
+/// and the capability [flags] it refused on. It carries no assignment types
+/// (#119: only an unknown assignment type does).
 Matcher _refused(
   Object? message, {
   required PlannerWriteRefusalReason reason,
@@ -388,7 +389,8 @@ Matcher _refused(
     .having((e) => e.reason, 'reason', reason)
     .having((e) => e.element?.id, 'element', element)
     .having((e) => e.capabilityFlags, 'capabilityFlags', flags)
-    .having((e) => e.lessonContent, 'lessonContent', isNull);
+    .having((e) => e.lessonContent, 'lessonContent', isNull)
+    .having((e) => e.assignmentTypes, 'assignmentTypes', isEmpty);
 
 /// The write went out without the planner confirming it.
 Matcher _unconfirmed(

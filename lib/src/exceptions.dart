@@ -1229,6 +1229,12 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
 /// Smartschool does not accept is a [SmartschoolSessionExpiredError]
 /// instead.
 ///
+/// When `LessonContentService.getItems` read the lesfiches but the course
+/// list it reads after them to name their courses fails so, it throws the
+/// subtype [SmartschoolLessonContentCourseListError], which carries the
+/// lesfiches as read (#118). From `getItems`, an error of this type that is
+/// not of that subtype is about the lesfiches: none were read.
+///
 /// `PlannerService.planLessonContent` reads the lesfiches before it plans
 /// one; this error from it means that **nothing was sent** to the planner.
 class SmartschoolLessonContentError extends SmartschoolException {
@@ -1242,6 +1248,50 @@ class SmartschoolLessonContentError extends SmartschoolException {
   String toString() => statusCode == null
       ? '$runtimeType: $message'
       : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `LessonContentService.getItems` when it read the lesfiches, but
+/// the school's course list, which it reads after them to name their courses
+/// (#101), answered with something the service cannot use (#118): another
+/// HTTP status than `200` (in [statusCode]), an HTML page, an answer that is
+/// not valid JSON, or a list in a shape it does not recognise (such as a
+/// course without its `id` or `platformId`). Its [message] and [statusCode]
+/// are those of the course list's answer.
+///
+/// The lesfiches are not lost: [items] holds them as read, the same as
+/// `getItems(withCourseNames: false)` gives them (every course with a `null`
+/// `LessonContentCourse.name`). A caller that can do without the names lists
+/// those:
+///
+/// ```dart
+/// List<LessonContentItem> fiches;
+/// try {
+///   fiches = await lessonContent.getItems();
+/// } on SmartschoolLessonContentCourseListError catch (e) {
+///   fiches = e.items; // the courses without their names; e says why
+/// }
+/// ```
+///
+/// A [SmartschoolLessonContentError], so `catch` clauses for that type keep
+/// catching it. From `getItems`, a [SmartschoolLessonContentError] that is
+/// not of this type is about the lesfiches themselves: none were read. A
+/// session that Smartschool does not accept for the course list (also after
+/// the client logged in again), or a connection that fails for it, is thrown
+/// as for the lesfiches ([SmartschoolSessionExpiredError],
+/// [SmartschoolConnectionError]), without the lesfiches: calling `getItems`
+/// again reads both. `LessonContentService.getCourses`, which reads the
+/// course list alone, throws a plain [SmartschoolLessonContentError].
+class SmartschoolLessonContentCourseListError
+    extends SmartschoolLessonContentError {
+  /// The lesfiches `getItems` read, in the module's order, with their
+  /// courses unnamed (`LessonContentCourse.name` `null`).
+  final List<LessonContentItem> items;
+
+  const SmartschoolLessonContentCourseListError(
+    super.message, {
+    super.statusCode,
+    required this.items,
+  });
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

@@ -61,7 +61,9 @@ class LessonContentCourse {
   /// `null` when it is not known: the lesfiches were read without the course
   /// list (`LessonContentService.getItems(withCourseNames: false)`, or
   /// `LessonContentService.parseItems` without `courses`), or the course list
-  /// has no course with this ID, or one without a name.
+  /// has no course with this ID, or one without a name, or `getItems` could
+  /// not use the course list (the `items` of a
+  /// `SmartschoolLessonContentCourseListError`, #118).
   final String? name;
 
   const LessonContentCourse({

@@ -1,4 +1,6 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
+import 'package:flutter_smartschool/src/models/lesson_content_models.dart'
+    show LessonContentItem;
 import 'package:flutter_smartschool/src/models/message_models.dart'
     show BoxType;
 import 'package:flutter_smartschool/src/models/planner_models.dart'
@@ -531,6 +533,39 @@ void main() {
       expect(
         const SmartschoolLessonContentError('unknown shape').toString(),
         'SmartschoolLessonContentError: unknown shape',
+      );
+    });
+
+    test('SmartschoolLessonContentCourseListError is a '
+        'SmartschoolLessonContentError that keeps the lesfiches read, and '
+        'shows its status but not the lesfiches (#118)', () {
+      final fiche = LessonContentItem.fromJson(const {
+        'id': 'b0000000-0000-4000-8000-000000000001',
+        'platformId': 4069,
+        'type': 'lessons',
+        'name': 'Herhaling: lussen',
+      });
+      final error = SmartschoolLessonContentCourseListError(
+        'The course list answered the courses with HTTP 500: Oeps',
+        statusCode: 500,
+        items: [fiche],
+      );
+      expect(error, isA<SmartschoolLessonContentError>());
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error, isNot(isA<SmartschoolPlannerError>()));
+      expect(error.statusCode, 500);
+      expect(error.items, [fiche]);
+      expect(
+        error.toString(),
+        'SmartschoolLessonContentCourseListError(500): The course list '
+        'answered the courses with HTTP 500: Oeps',
+      );
+      expect(
+        const SmartschoolLessonContentCourseListError(
+          'invalid JSON',
+          items: [],
+        ).toString(),
+        'SmartschoolLessonContentCourseListError: invalid JSON',
       );
     });
   });

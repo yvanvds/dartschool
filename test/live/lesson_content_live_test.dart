@@ -16,6 +16,11 @@
 // a GET to them. As every live run, it takes the lock of the session first,
 // logs in at most once, and prints no credential, no cookie and no name.
 //
+// For a course list that fails (#118), one test answers the GET of the course
+// list itself, with Smartschool's error page and HTTP 500, before it goes
+// out (_FailingCourseList): Smartschool cannot be made to fail it, and the
+// lesfiches are still read live.
+//
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
 @Tags(['live'])
@@ -54,6 +59,35 @@ class _Attempts extends Interceptor {
   }
 }
 
+/// While [enabled], answers the GET of the course list with Smartschool's
+/// error page and HTTP 500 itself, so that the request does not go out: a
+/// course list that fails (#118).
+class _FailingCourseList extends Interceptor {
+  bool enabled = false;
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    if (enabled &&
+        options.method.toUpperCase() == 'GET' &&
+        options.uri.path == _coursesPath) {
+      handler.resolve(
+        Response<String>(
+          requestOptions: options,
+          statusCode: 500,
+          data:
+              '<!DOCTYPE html><html><head><title></title></head><body>'
+              '<h1>Oeps, er ging iets mis</h1></body></html>',
+          headers: Headers.fromMap({
+            Headers.contentTypeHeader: ['text/html; charset=UTF-8'],
+          }),
+        ),
+      );
+      return;
+    }
+    handler.next(options);
+  }
+}
+
 void main() {
   final credentials = liveCredentialsFile();
 
@@ -69,6 +103,7 @@ void main() {
       late LiveRun run;
       late LessonContentService lessonContent;
       late _Attempts attempts;
+      final failingCourseList = _FailingCourseList();
 
       /// The school's courses by ID, as getCourses read them.
       late Map<String, PlannerCourse> schoolCourses;
@@ -80,6 +115,8 @@ void main() {
         // request the guard refuses.
         final interceptors = run.client.dio.interceptors;
         interceptors.insert(interceptors.indexOf(run.guard), attempts);
+        // After it: the attempts see the course list GET it answers.
+        interceptors.insert(interceptors.indexOf(run.guard), failingCourseList);
         lessonContent = LessonContentService(run.client);
         schoolCourses = {
           for (final course in await lessonContent.getCourses())
@@ -148,6 +185,59 @@ void main() {
           plain.expand((f) => f.courses).map((c) => c.name),
           everyElement(isNull),
         );
+      });
+
+      test('getItems with a course list that fails (HTTP 500, answered by '
+          'the test): a SmartschoolLessonContentCourseListError with the '
+          'lesfiches as read live, the same as withCourseNames false '
+          '(#118)', () async {
+        final plain = await lessonContent.getItems(withCourseNames: false);
+        if (plain.every((f) => f.courses.isEmpty)) {
+          markTestSkipped('no lesfiche of the user has a course');
+          return;
+        }
+        final mark = attempts.requests.length;
+
+        failingCourseList.enabled = true;
+        final Object? error;
+        try {
+          error = await lessonContent.getItems().then<Object?>(
+            (fiches) => fail('getItems returned ${fiches.length} lesfiches'),
+            onError: (Object e) => e,
+          );
+        } finally {
+          failingCourseList.enabled = false;
+        }
+
+        // The lesfiches went out; the course list was answered here.
+        expect(attempts.requests.skip(mark).toList(), [
+          'GET $_fichesPath',
+          'GET $_coursesPath',
+        ]);
+        expect(
+          error,
+          isA<SmartschoolLessonContentCourseListError>()
+              .having((e) => e.statusCode, 'statusCode', 500)
+              .having(
+                (e) => e.message,
+                'message',
+                startsWith(
+                  'The course list answered the courses with HTTP 500',
+                ),
+              ),
+        );
+        final items = (error! as SmartschoolLessonContentCourseListError).items;
+        expect(items.map((f) => f.id), plain.map((f) => f.id));
+        expect(
+          items.map((f) => f.courses.map((c) => c.id).toList()),
+          plain.map((f) => f.courses.map((c) => c.id).toList()),
+        );
+        expect(
+          items.expand((f) => f.courses).map((c) => c.name),
+          everyElement(isNull),
+        );
+        expect(attempts.writesSince(mark), isEmpty);
+        expect(run.guard.violations, isEmpty);
       });
 
       test('the course list has the planner\'s course IDs: every course of '

@@ -162,9 +162,11 @@ class PresenceService {
   /// The result is a `List<PresencePupil>`. When it is empty, the module says
   /// why: [PresenceClassPupils.saveIsAllowed] is `false` and
   /// [PresenceClassPupils.errorMessage] has its reason, such as a day after
-  /// today ("Het is niet mogelijk om in de toekomst afwezigheden op te
-  /// nemen.") or a class without pupils ("Deze klas bevat geen
-  /// leerlingen."). [PresenceClassPupils.classRef] is `null` for a class ID
+  /// today for an account without the right to set the class's half-days
+  /// ("Het is niet mogelijk om in de toekomst afwezigheden op te nemen.";
+  /// an account with [PresenceClassRef.userCanConfirm] gets the pupils of
+  /// such a day in the school year, #123) or a class without pupils ("Deze
+  /// klas bevat geen leerlingen."). [PresenceClassPupils.classRef] is `null` for a class ID
   /// the module does not know, which it answers with that same reason. See
   /// [PresenceClassPupils] for what was seen live. A class the module lists
   /// no pupils for is not an error: nothing is thrown for it.

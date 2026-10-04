@@ -504,8 +504,14 @@ class PresencePupil {
 /// - for a class with pupils, on a day up to today (a Saturday or a day of
 ///   the previous school year too): the pupils, [saveIsAllowed] `true` and
 ///   no [errorMessage];
-/// - for a day after today: no pupils, `false`, "Het is niet mogelijk om in
-///   de toekomst afwezigheden op te nemen.";
+/// - for a day after today, to an account without the right to set the
+///   class's half-days ([PresenceClassRef.userCanConfirm] `false`): no
+///   pupils, `false`, "Het is niet mogelijk om in de toekomst afwezigheden
+///   op te nemen.". To an account with that right (an absence
+///   administrator's, seen 2026-10-04, #123), a day after today in the
+///   school year is answered as a day up to today: the pupils, `true`, no
+///   reason (seen up to some seventeen weeks ahead); a day of the next
+///   school year got no pupils, `false`, "Deze klas bevat geen leerlingen.";
 /// - for a class without pupils: no pupils, `false`, "Deze klas bevat geen
 ///   leerlingen.";
 /// - for a class ID it does not know: the same, but without a class:

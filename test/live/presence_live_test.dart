@@ -10,6 +10,10 @@
 // files, `dart test -P live test/live/presence_live_test.dart` alone.
 // Without a credentials.yml in the package root, it skips.
 //
+// It passes for an account with the right to set half-days
+// (`userCanConfirm`, an absence administrator's) and for one without it:
+// the module answers a day ahead differently for the two (#123).
+//
 // It only reads, with the Presence module's three POSTs that read:
 // getConfig; getClass for a class the account may record for (a week ago,
 // each of the seven days before today, and some eight weeks ahead), for a
@@ -139,20 +143,42 @@ void main() {
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });
 
-      test('the same class some eight weeks ahead: no pupils, saveIsAllowed '
-          "false and the module's reason, with the class", () async {
+      test('the same class some eight weeks ahead, with the class: for an '
+          'account without the right to set its half-days, no pupils, '
+          "saveIsAllowed false and the module's reason; with it, its pupils "
+          'and saveIsAllowed true (#123)', () async {
         final mark = attempts.requests.length;
 
         final pupils = await classPupils(
           recordable.groupId,
           day.add(const Duration(days: 56)),
         );
+        // Which of the two the module gave depends on the account's rights
+        // (#121, #123): with the absence-administrator rights switched off
+        // (userCanConfirm false), no pupils, false and a reason (seen
+        // 2026-10-03: "Het is niet mogelijk om in de toekomst afwezigheden op
+        // te nemen.", and in a run of 2026-10-04); seen 2026-10-04 with them on
+        // (userCanConfirm true), the pupils, true and no reason, as for a day
+        // up to today (up to some seventeen weeks ahead; a day of the next
+        // school year got no pupils and "Deze klas bevat geen leerlingen.",
+        // so for such an account this test holds outside the last eight
+        // weeks of a school year).
+        final mayConfirm = recordable.userCanConfirm;
+        print(
+          'a day ahead, ${mayConfirm ? 'with' : 'without'} userCanConfirm: '
+          '${pupils.length} pupils, saveIsAllowed ${pupils.saveIsAllowed}',
+        );
 
-        expect(pupils, isEmpty);
-        expect(pupils.saveIsAllowed, isFalse);
-        // Seen 2026-10-03: "Het is niet mogelijk om in de toekomst
-        // afwezigheden op te nemen."
-        expect(pupils.errorMessage, isNotNull);
+        // By count, not the list: a failure prints no pupil's name.
+        if (mayConfirm) {
+          expect(pupils.length, greaterThan(0), reason: pupils.errorMessage);
+          expect(pupils.saveIsAllowed, isTrue);
+          expect(pupils.errorMessage, isNull);
+        } else {
+          expect(pupils.length, 0);
+          expect(pupils.saveIsAllowed, isFalse);
+          expect(pupils.errorMessage, isNotNull);
+        }
         expect(pupils.classRef?.groupId, recordable.groupId);
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });

@@ -12,7 +12,10 @@
 //   `structID`, `userCanRecord`, ...), its pupils, `saveIsAllowed: true` and
 //   `errorMessage: ""`;
 // - a day after today: the class's fields, no pupils, `saveIsAllowed: false`
-//   and "Het is niet mogelijk om in de toekomst afwezigheden op te nemen.";
+//   and "Het is niet mogelijk om in de toekomst afwezigheden op te nemen."
+//   (to that account, without the right to set half-days, `userCanConfirm`
+//   false; an absence administrator's account gets the pupils of such a day
+//   in the school year, as of a day up to today, seen 2026-10-04, #123);
 // - a class without pupils (one of the school's classes): its fields, no
 //   pupils, `false` and "Deze klas bevat geen leerlingen.";
 // - a class ID it does not know: no class fields at all, no pupils, `false`

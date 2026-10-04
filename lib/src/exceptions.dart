@@ -10,7 +10,7 @@ import 'models/planner_models.dart'
         PlannerAssignmentType,
         PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
-    show DayPart, PresenceHalfDay, PresenceSaveError;
+    show DayPart, PresenceClassRef, PresenceHalfDay, PresenceSaveError;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -778,10 +778,12 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
-/// subtype [SmartschoolPresenceChangeRefusedError] (#105), and a pupil the
+/// subtype [SmartschoolPresenceChangeRefusedError] (#105), a pupil the
 /// class does not list on that day with the subtype
-/// [SmartschoolPresencePupilNotFoundError] (#116): nothing was sent for
-/// either.
+/// [SmartschoolPresencePupilNotFoundError] (#116), and a class whose
+/// half-days the account may not set (`PresenceClassRef.userCanConfirm` is
+/// `false`) with the subtype [SmartschoolPresenceNoConfirmRightError]
+/// (#121): nothing was sent for any of them.
 ///
 /// A session that Smartschool does not accept is not reported with this type
 /// but as a [SmartschoolSessionExpiredError] (a
@@ -903,6 +905,51 @@ class SmartschoolPresencePupilNotFoundError extends SmartschoolPresenceError {
     required this.date,
     this.saveIsAllowed,
     this.errorMessage,
+  });
+}
+
+/// Thrown by `PresenceService.setLate` and `setPresent` when the account may
+/// not set the half-days of the class: `getConfig` lists the class with
+/// `userCanConfirm` `false` (#121). Nothing was sent: the call read only the
+/// config.
+///
+/// `userCanConfirm` ("bevestigen") is the right the Presence module asks
+/// for a half-day; `userCanRecord` ("registreren") is not. Seen live
+/// (2026-10-04, one teacher account): with its absence-administrator rights
+/// switched off, `getConfig` gave `userCanRecord` `true` and
+/// `userCanConfirm` `false` for every class it listed, and the module
+/// refused a half-day save ("U heeft geen rechten om afwezigheden te
+/// bevestigen voor deze leerling. Contacteer uw beheerder."); with them on,
+/// `userCanConfirm` was `true` for every class. The call reads the config
+/// again before it refuses when it had one from before the call, so rights
+/// granted during the session count.
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] is empty.
+class SmartschoolPresenceNoConfirmRightError extends SmartschoolPresenceError {
+  /// The pupil's internal `userID`, as passed.
+  final int userId;
+
+  /// The class's `groupID`, as passed.
+  final int classGroupId;
+
+  /// The day the call would have changed (`yyyy-MM-dd`).
+  final String date;
+
+  /// The half of the day the call would have changed.
+  final DayPart part;
+
+  /// The class as `getConfig` lists it, with its [PresenceClassRef.name]
+  /// and both rights: [PresenceClassRef.userCanConfirm] `false`.
+  final PresenceClassRef classRef;
+
+  const SmartschoolPresenceNoConfirmRightError(
+    super.message, {
+    required this.userId,
+    required this.classGroupId,
+    required this.date,
+    required this.part,
+    required this.classRef,
   });
 }
 

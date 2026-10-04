@@ -6,7 +6,7 @@ import 'package:flutter_smartschool/src/models/message_models.dart'
 import 'package:flutter_smartschool/src/models/planner_models.dart'
     show PlannedElement, PlannerAssignmentType, PlannerWriteRefusalReason;
 import 'package:flutter_smartschool/src/models/presence_models.dart'
-    show DayPart, PresenceHalfDay, PresenceSaveError;
+    show DayPart, PresenceClassRef, PresenceHalfDay, PresenceSaveError;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -301,6 +301,42 @@ void main() {
       );
       expect(error.saveIsAllowed, isNull);
       expect(error.errorMessage, isNull);
+    });
+  });
+
+  group('SmartschoolPresenceNoConfirmRightError (#121)', () {
+    test('is a SmartschoolPresenceError without server errors, not a session '
+        'problem nor another refusal, and keeps the class', () {
+      const classRef = PresenceClassRef(
+        groupId: 298,
+        name: '1A',
+        structId: 311,
+        userCanRecord: true,
+      );
+      const error = SmartschoolPresenceNoConfirmRightError(
+        'no right',
+        userId: 1001,
+        classGroupId: 298,
+        date: '2026-10-02',
+        part: DayPart.morning,
+        classRef: classRef,
+      );
+      expect(error, isA<SmartschoolPresenceError>());
+      expect(error, isNot(isA<SmartschoolPresenceChangeRefusedError>()));
+      expect(error, isNot(isA<SmartschoolPresencePupilNotFoundError>()));
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.errors, isEmpty);
+      expect(error.saveErrors, isEmpty);
+      expect(
+        (error.userId, error.classGroupId, error.date, error.part),
+        (1001, 298, '2026-10-02', DayPart.morning),
+      );
+      expect(error.classRef, same(classRef));
+      expect(error.classRef.userCanConfirm, isFalse);
+      expect(
+        error.toString(),
+        'SmartschoolPresenceNoConfirmRightError: no right',
+      );
     });
   });
 

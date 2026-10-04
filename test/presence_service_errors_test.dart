@@ -55,12 +55,14 @@ const _getAllCodes = '/Presence/Code/getAllCodes';
 const _getClass = '/Presence/Class/getClass';
 const _save = '/Presence/Class/savePupilsPresences';
 
+/// The config of an account that may set the half-days of 1A
+/// (`userCanConfirm`, #121).
 const _configJson = '''
 {"hasErrors":false,"errors":[],
  "state":{"activeClass":{"groupID":298,"name":"1A","structID":311,
-   "userCanRecord":true},"schoolyear":"2026-09-01"},
+   "userCanConfirm":true,"userCanRecord":true},"schoolyear":"2026-09-01"},
  "main":{"allowedClasses":[{"groupID":298,"name":"1A","structID":311,
-   "userCanRecord":true}]}}
+   "userCanConfirm":true,"userCanRecord":true}]}}
 ''';
 
 const _codesJson = '''

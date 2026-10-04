@@ -559,7 +559,12 @@ Controls:
 
 Writes a pupil's absence/presence code for a specific half-day via Smartschool's **internal** Presence module. Smartschool's official (public) API cannot write presences — only this internal endpoint can. The primary use case is marking a pupil **Te laat** ("late"), optionally **Te laat zonder geldige reden** ("late without a valid reason").
 
-> **Access requirement:** this only works when the signed-in account has **Presence-handling access** for the class (`userCanRecord` is true in the module config). Without that right, the server rejects the request and a `SmartschoolPresenceError` is thrown.
+> **Access requirement:** this only works when the signed-in account may set the half-days of the class: **`userCanConfirm`** is true for it in the module config (`getConfig()`), as for an absence administrator (#121). **`userCanRecord` is not that right**: seen live (2026-10-04), a teacher account with its absence-administrator rights switched off had `userCanRecord` for all 88 classes it listed and `userCanConfirm` for none, and the module refused its half-day save ("U heeft geen rechten om afwezigheden te bevestigen voor deze leerling. Contacteer uw beheerder."); with the rights on, `userCanConfirm` was true for all 120. `setLate` and `setPresent` refuse a class without `userCanConfirm` before they send anything, with a `SmartschoolPresenceNoConfirmRightError`. A caller that offers the write (such as smartschool-mcp's `setLate` / `setPresent` tools, yvanvds/smartschool-mcp#95) gates it on `userCanConfirm`, not on `userCanRecord`:
+>
+> ```dart
+> final config = await presence.getConfig();
+> final writable = config.allowedClasses.where((c) => c.userCanConfirm);
+> ```
 
 > **Identity note:** the Presence module speaks Smartschool's **internal `userID`** (e.g. `11110`), which is *not* the public API's `AccountID` / `RegisterID` / `UID`. You supply the internal `userId` and the class `groupID` (classes map to the public API by `adminNumber`).
 
@@ -606,7 +611,7 @@ await presence.setPresent(
 |---|---|---|
 | `setLate({userId, classGroupId, date, part, withoutValidReason, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil late for a half-day; `withoutValidReason` selects the "Te laat zonder geldige reden" alias. With `onlyReplacing`, only changes a half-day that holds one of those statuses (see below). Returns the half-day as stored (#105). |
 | `setPresent({userId, classGroupId, date, part, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil present ("Aanwezig") — useful to clear a status. `onlyReplacing` and the result as for `setLate`. |
-| `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record. Cached. |
+| `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record, each with `userCanConfirm`, the right to set its half-days (#121). Cached. |
 | `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. |
 | `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). |
 
@@ -620,7 +625,7 @@ Status codes are **not hard-coded** — their numeric IDs are per-school/per-str
 
 An expired session and a missing access right need opposite actions, so they arrive as different types:
 
-- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help. For a refused save, `saveErrors` has the module's errors typed (#109): each a `PresenceSaveError` with the module's reason (`message`, in Dutch, as its web client shows it) and the record that was not saved (`date`, `part`, `userId`, and `pupilName`, the pupil's name); `errors` has their messages as text. The pupil's name is in neither `errors` nor the error's message or `toString()`, so not in a log of it. Its subtypes, for which nothing was sent: `SmartschoolPresenceChangeRefusedError`, the half-day holds a status that `onlyReplacing` does not allow (#105); and `SmartschoolPresencePupilNotFoundError`, the class, as `setLate` / `setPresent` read it right before the save, does not list the pupil on that day, such as a pupil whose movement into the class ended (#116). It carries `userId`, `classGroupId` and `date`, and, when the module listed no pupils for the class on that day, its `errorMessage` (the reason, such as a day after today) and `saveIsAllowed`.
+- `SmartschoolPresenceError` — the Presence module refused or could not handle the request (it answers with an HTML error page instead of JSON, typically HTTP `500`), the save came back with a non-empty `errors[]`, or a class, code or pupil could not be resolved (e.g. a class the account may not record for). The session was accepted: signing in again does not help. For a refused save, `saveErrors` has the module's errors typed (#109): each a `PresenceSaveError` with the module's reason (`message`, in Dutch, as its web client shows it) and the record that was not saved (`date`, `part`, `userId`, and `pupilName`, the pupil's name); `errors` has their messages as text. The pupil's name is in neither `errors` nor the error's message or `toString()`, so not in a log of it. Its subtypes, for which nothing was sent: `SmartschoolPresenceNoConfirmRightError`, the account may not set the half-days of the class (`getConfig` lists it with `userCanConfirm` false, #121), with `userId`, `classGroupId`, `date`, `part` and `classRef` (the class as `getConfig` lists it), after reading only the config (again, when the service had one from before the call, so that rights granted during the session count); `SmartschoolPresenceChangeRefusedError`, the half-day holds a status that `onlyReplacing` does not allow (#105); and `SmartschoolPresencePupilNotFoundError`, the class, as `setLate` / `setPresent` read it right before the save, does not list the pupil on that day, such as a pupil whose movement into the class ended (#116). It carries `userId`, `classGroupId` and `date`, and, when the module listed no pupils for the class on that day, its `errorMessage` (the reason, such as a day after today) and `saveIsAllowed`.
 - `SmartschoolSessionExpiredError` (a `SmartschoolAuthenticationError`) — Smartschool answered with its login chain instead of the data, also after the client logged in again and retried the request once. The request was not carried out: sign in again and retry.
 
 ```dart
@@ -630,6 +635,9 @@ try {
   // Sign in again (e.g. a new SmartschoolClient) and retry.
 } on SmartschoolAuthenticationError {
   // Logging in failed: check the credentials.
+} on SmartschoolPresenceNoConfirmRightError catch (e) {
+  // The account may not set the half-days of e.classRef (userCanConfirm is
+  // false): nothing was sent.
 } on SmartschoolPresenceChangeRefusedError catch (e) {
   // onlyReplacing left the half-day alone: it holds e.heldStatus.
 } on SmartschoolPresencePupilNotFoundError catch (e) {
@@ -1218,13 +1226,13 @@ final noLessonNow = config.activePlaceholder != null;
 ```
 
 ### `PresenceClassRef`
-A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`. Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
+A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`. `userCanConfirm` ("bevestigen") is the right to set the class's half-days, which `setLate` and `setPresent` need; `userCanRecord` ("registreren") is not, and is true for every class of a teacher without that right (seen live, #121; it looks like the registration per lesson, which this library does not do). Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
 
 ### `PresenceCode` / `PresenceAlias`
 A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`aliasId`, `parentCodeId`, `name`). Codes are per-structure, resolved by name. `PresenceCode.aliasByName(name)` looks up an alias case-insensitively.
 
 ### `PresenceClassPupils`
-Returned by `PresenceService.getClassPupils()` (#104). The pupils of the class for the day, as a `List<PresencePupil>`, with what the Presence module said about the class that day: `saveIsAllowed` (`bool?`), `errorMessage` (`String?`, the module's reason, `null` when it gave none) and `classRef` (`PresenceClassRef?`, the class as the module names it, `null` when the module does not know the class ID). When the module lists no pupils, `saveIsAllowed` is `false` and `errorMessage` says why, in Dutch as its web client shows it. Seen live (2026-10-03): "Het is niet mogelijk om in de toekomst afwezigheden op te nemen." for a day after today, "Deze klas bevat geen leerlingen." for a class without pupils and for a class ID the module does not know (then without a `classRef`), and "U geeft momenteel geen les. Kies een andere klas in de keuzelijst." for the class `-2` ("Uit Planner", `PresenceConfig.activePlaceholder`).
+Returned by `PresenceService.getClassPupils()` (#104). The pupils of the class for the day, as a `List<PresencePupil>`, with what the Presence module said about the class that day: `saveIsAllowed` (`bool?`), `errorMessage` (`String?`, the module's reason, `null` when it gave none) and `classRef` (`PresenceClassRef?`, the class as the module names it, `null` when the module does not know the class ID). When the module lists no pupils, `saveIsAllowed` is `false` and `errorMessage` says why, in Dutch as its web client shows it. Seen live (2026-10-03): "Het is niet mogelijk om in de toekomst afwezigheden op te nemen." for a day after today (to an account without the right to set the class's half-days, `userCanConfirm` false; an absence administrator's account, with `userCanConfirm`, gets the pupils of a day after today in the school year, with `saveIsAllowed` true, seen 2026-10-04, #123), "Deze klas bevat geen leerlingen." for a class without pupils and for a class ID the module does not know (then without a `classRef`), and "U geeft momenteel geen les. Kies een andere klas in de keuzelijst." for the class `-2` ("Uit Planner", `PresenceConfig.activePlaceholder`).
 
 ```dart
 final pupils = await presence.getClassPupils(

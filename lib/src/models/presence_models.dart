@@ -67,10 +67,29 @@ class PresenceClassRef {
   /// a virtual grouping class.
   final int? structId;
 
-  /// Whether the signed-in account may record presences for this class.
+  /// The module's `userCanRecord` ("registreren") for this class: **not** the
+  /// right to set a half-day, which is [userCanConfirm] (#121).
+  ///
+  /// Seen live (2026-10-04): a teacher account without the
+  /// absence-administrator rights has it `true` for every class `getConfig`
+  /// lists, and `getClass` lists the class's pupils and half-days for it, but
+  /// the module refuses that account's half-day save. What it does grant was
+  /// not established; it looks like the registration per lesson, which this
+  /// library does not do. Do not gate `setLate` / `setPresent` on it.
   final bool userCanRecord;
 
-  /// Whether the signed-in account may confirm presences for this class.
+  /// Whether the signed-in account may set the half-days of this class (the
+  /// module's `userCanConfirm`, "bevestigen"): the right `setLate` and
+  /// `setPresent` need (#121).
+  ///
+  /// Seen live (2026-10-04, one teacher account): with its
+  /// absence-administrator rights switched off, `false` for every class
+  /// `getConfig` listed (88), and the module refused a half-day save with
+  /// "U heeft geen rechten om afwezigheden te bevestigen voor deze leerling.
+  /// Contacteer uw beheerder."; with them on, `true` for every class (120).
+  /// `setLate` and `setPresent` refuse a class without it before they send
+  /// anything, with a `SmartschoolPresenceNoConfirmRightError`. Gate a write
+  /// on this flag, not on [userCanRecord].
   final bool userCanConfirm;
 
   /// Whether this is an official (administratively recognised) class.
@@ -152,6 +171,13 @@ class PresenceConfig {
   final PresenceClassRef? activePlaceholder;
 
   /// All classes the account is allowed to view/record.
+  ///
+  /// Which classes are listed depends on the account's rights too (#121):
+  /// seen live (2026-10-04), one account listed 88 classes with its
+  /// absence-administrator rights switched off and 120 with them on (more
+  /// sub-groups, such as "2A ECO", and groups outside the school structure).
+  /// [PresenceClassRef.userCanConfirm] tells, per class, whether the account
+  /// may set its half-days.
   final List<PresenceClassRef> allowedClasses;
 
   /// The schoolyear reference date (`state.schoolyear`, `yyyy-MM-dd`), passed
@@ -478,8 +504,14 @@ class PresencePupil {
 /// - for a class with pupils, on a day up to today (a Saturday or a day of
 ///   the previous school year too): the pupils, [saveIsAllowed] `true` and
 ///   no [errorMessage];
-/// - for a day after today: no pupils, `false`, "Het is niet mogelijk om in
-///   de toekomst afwezigheden op te nemen.";
+/// - for a day after today, to an account without the right to set the
+///   class's half-days ([PresenceClassRef.userCanConfirm] `false`): no
+///   pupils, `false`, "Het is niet mogelijk om in de toekomst afwezigheden
+///   op te nemen.". To an account with that right (an absence
+///   administrator's, seen 2026-10-04, #123), a day after today in the
+///   school year is answered as a day up to today: the pupils, `true`, no
+///   reason (seen up to some seventeen weeks ahead); a day of the next
+///   school year got no pupils, `false`, "Deze klas bevat geen leerlingen.";
 /// - for a class without pupils: no pupils, `false`, "Deze klas bevat geen
 ///   leerlingen.";
 /// - for a class ID it does not know: the same, but without a class:

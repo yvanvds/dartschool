@@ -239,7 +239,8 @@ Matcher _unusable([Object? message = anything]) => allOf(
 
 /// Skore's refusal of a request to an account without the rights, as HTTP
 /// defines it (403 Forbidden), with a page that names the user. What Skore
-/// really answers such an account has not been captured (#91).
+/// really answers a teacher without the rights, a redirect to the start
+/// page, is tested in skore_service_access_test.dart (#91).
 const _forbidden = (
   status: 403,
   body:

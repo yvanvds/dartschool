@@ -812,11 +812,10 @@ class SmartschoolPresenceChangeRefusedError extends SmartschoolPresenceError {
 ///   `getMyGroups` answer it does not know). Its message may quote the
 ///   answer, which can hold names: keep it in a log.
 ///
-/// What Skore answers an account without the rights has not been captured
-/// yet (#91): only an answer with HTTP 403 is reported as a
-/// [SmartschoolSkoreAccessDeniedError]. Until then, such an account may get
-/// this type itself (most likely about an HTML page instead of data), or
-/// even an empty list.
+/// A teacher without the rights gets a [SmartschoolSkoreAccessDeniedError]
+/// from every call, not this type itself, and never an empty list (seen
+/// live, #91). What Skore answers a pupil, and an account with only one of
+/// the two rights, was not captured.
 ///
 /// From the writes (`SkoreService.addTeacher`, `replaceTeacher`, #71;
 /// `shareGradebook`, `unshareGradebook`, #74), this type and all its subtypes
@@ -833,17 +832,21 @@ class SmartschoolSkoreError extends SmartschoolException {
 /// (Puntenboeken). An account can have one without the other. Ask the
 /// school's Smartschool administrator for the rights.
 ///
-/// Thrown when Skore answers a request with HTTP 403 (Forbidden). That is
-/// HTTP's own answer for a request the server refuses to the account; it has
-/// not been seen from Skore. What Skore answers an account without the
-/// rights has not been captured yet (#91), so such an account may still get
-/// a plain [SmartschoolSkoreError] instead, until it is.
+/// Thrown when Skore sends the request on to Smartschool's start page (a
+/// redirect to `/?module=Homepage`): its answer to every request of the
+/// service from a teacher without Skore's management rights, seen live
+/// (#91). The request was refused: no data came. Also thrown when Skore
+/// answers with HTTP 403 (Forbidden), HTTP's own answer for a request the
+/// server refuses to the account (#83; not seen from Skore). What Skore
+/// answers a pupil, and an account with only one of the two rights, was not
+/// captured. `SkoreService.checkAccess` tells which parts the account can
+/// use.
 ///
 /// Its message names the request and the part of Skore, and quotes nothing
 /// of the answer, so it can be shown to the user. A
 /// [SmartschoolSkoreError], so `catch` clauses for that type keep catching
 /// it. From the writes, it comes from a read before the save: nothing was
-/// saved. When Skore answers a save itself with HTTP 403, the write throws a
+/// saved. When Skore answers a save itself so, the write throws a
 /// [SmartschoolSkoreSaveUnconfirmedError] with this error as its `cause`.
 class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
   /// The part of Skore the refused request belongs to.
@@ -1170,8 +1173,9 @@ class SmartschoolLessonContentError extends SmartschoolException {
 class SmartschoolSkoreSaveUnconfirmedError extends SmartschoolException {
   /// The failure of the save when no usable answer came in, such as a
   /// [SmartschoolConnectionError] or a [SmartschoolSkoreError] about the
-  /// answer (a [SmartschoolSkoreAccessDeniedError] for an answer with HTTP
-  /// 403), or of the read that checks a gradebook share afterwards; `null`
+  /// answer (a [SmartschoolSkoreAccessDeniedError] for an answer that sends
+  /// the save on to Smartschool's start page, or with HTTP 403), or of the
+  /// read that checks a gradebook share afterwards; `null`
   /// when Skore answered with a result that does not confirm the save.
   final Object? cause;
 

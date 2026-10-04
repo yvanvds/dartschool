@@ -652,7 +652,14 @@ dart run example/set_late_example.dart
 
 Reads Smartschool's **Skore** module (grading and reports): what Skore shows under Rapporten > Modellen > (model) > Leden > (group) > (class). And assigns a teacher to a course of a class there (`addTeacher`, `replaceTeacher`). It also reads the gradebooks of a teacher with the teachers they are shared with, and shares a gradebook or stops sharing it (`shareGradebook`, `unshareGradebook`), as Skore's "share gradebooks" manager does (Puntenboeken > the share button next to a teacher). Nothing else changes Skore, and nothing deletes an assignment or a gradebook.
 
-> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has. An account can have one without the other (`SkoreAccessArea.reportManagement`, `.gradebookManagement`). When Skore refuses a request with HTTP 403, the call throws a `SmartschoolSkoreAccessDeniedError` that names the part of Skore. What Skore answers an account without the rights has not been captured yet (#91): until it is, such an account may get a plain `SmartschoolSkoreError` instead (most likely about an HTML page instead of data), or even an empty list.
+> **Access requirement:** the account needs access to Skore's report management (Rapporten > Modellen) and its gradebooks management (Puntenboeken), as a Skore administrator has. An account can have one without the other (`SkoreAccessArea.reportManagement`, `.gradebookManagement`); `checkAccess()` tells which ones it has. Skore answers every request of a teacher without the rights by sending it on to Smartschool's start page (a redirect to `/?module=Homepage`, seen live, #91), never with an empty list: every call then throws a `SmartschoolSkoreAccessDeniedError` that names the part of Skore (so does an answer with HTTP 403). What Skore answers a pupil, and an account with only one of the two rights, was not captured.
+
+```dart
+final areas = await SkoreService(client).checkAccess(); // empty without rights
+if (!areas.contains(SkoreAccessArea.reportManagement)) {
+  print('No rights for Skore report management.');
+}
+```
 
 > **Identity note:** class and course IDs are Skore's own. A teacher ID is the Smartschool user ID: the middle part of the ID `getCurrentUser()` reads (`4069_146_0` → `146`). A gradebook ID is the ID of the assignment that holds the gradebook (`SkoreAssignment.id`); its owner is that assignment's teacher.
 
@@ -680,6 +687,7 @@ final teachers = await skore.getTeachers();        // List<SkoreTeacher>
 | `getGradebookShares(ownerId)` | `Future<List<SkoreGradebookShares>>` | The gradebooks of a teacher, each with the teachers who may read it and those who may read and change it. Empty for a teacher without gradebooks, and for a user ID Skore does not know. |
 | `shareGradebook({ownerId, gradebookId, teacherId, access})` | `Future<SkoreGradebookShareChange>` | Shares a gradebook of the owner with the teacher, with `SkoreShareAccess.read` or `.write`; a teacher with the other access is moved. Returns the gradebook as read again, with the gradebook as read before the change and whether anything was saved. |
 | `unshareGradebook({ownerId, gradebookId, teacherId})` | `Future<SkoreGradebookShareChange>` | Stops sharing a gradebook of the owner with the teacher. Returns the gradebook as read again, with the gradebook as read before the change and whether anything was saved. |
+| `checkAccess()` | `Future<Set<SkoreAccessArea>>` | The parts of Skore the account can use, for a status check: reads the teachers (report management) and the account's own gradebooks (gradebook management), and leaves out a part whose read Skore refuses. Any other failure is thrown. Empty for a teacher without Skore's management rights (seen live, #91). |
 
 A course code is **not** unique within a class: a course and its sub-course can both end in the same `[CODE]`. Tell them apart by `id` (or `label`). Group headers (`isGroupHeader`) are headings for the courses under them and cannot get a teacher.
 
@@ -764,7 +772,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 `SmartschoolSkoreError` has a type for each case a caller handles differently (#83): a missing right, a refused change, and (the type itself) an answer the service cannot use. A `catch` of `SmartschoolSkoreError` catches all of them, and from `addTeacher`, `replaceTeacher`, `shareGradebook` and `unshareGradebook` every `SmartschoolSkoreError` means nothing was saved.
 
-- `SmartschoolSkoreAccessDeniedError` — Skore refused the request to the account, which lacks the rights for that part of Skore (carries `area`: `SkoreAccessArea.reportManagement` or `.gradebookManagement`). Thrown for an answer with HTTP 403; see the access requirement above for what is not known yet. Its message quotes nothing of the answer, so it can be shown to the user.
+- `SmartschoolSkoreAccessDeniedError` — Skore refused the request to the account, which lacks the rights for that part of Skore (carries `area`: `SkoreAccessArea.reportManagement` or `.gradebookManagement`). Thrown when Skore sends the request on to Smartschool's start page, its answer to every request of a teacher without the rights (#91), and for an answer with HTTP 403. Its message quotes nothing of the answer, so it can be shown to the user.
 - `SmartschoolSkoreChangeRefusedError` — a check before the save refused the change (the checks are listed above). Nothing was saved. Its message says which check refused and why, so the call can be corrected.
 - `SmartschoolSkoreMyGroupsError` (a `SmartschoolSkoreChangeRefusedError`) — `replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, and `teacherName` as read from the class). Nothing was saved.
 - `SmartschoolSkoreError` itself (none of the types above) — Skore answered with something the service cannot use: another HTTP status than `200`, an HTML page instead of data, invalid JSON, an RPC answer without a `result`, or data in an unknown shape (also a gradebook without its list of readers or writers, or a `getMyGroups` answer it does not recognise). The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log.

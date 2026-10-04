@@ -256,6 +256,46 @@ void main() {
     });
   });
 
+  group('SmartschoolPresencePupilNotFoundError (#116)', () {
+    test('is a SmartschoolPresenceError without server errors, not a session '
+        'problem nor a refusal of onlyReplacing, and keeps the read', () {
+      const error = SmartschoolPresencePupilNotFoundError(
+        'not listed',
+        userId: 1001,
+        classGroupId: 298,
+        date: '2026-11-03',
+        saveIsAllowed: false,
+        errorMessage: 'Deze klas bevat geen leerlingen.',
+      );
+      expect(error, isA<SmartschoolPresenceError>());
+      expect(error, isNot(isA<SmartschoolPresenceChangeRefusedError>()));
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.errors, isEmpty);
+      expect(error.saveErrors, isEmpty);
+      expect(
+        (error.userId, error.classGroupId, error.date),
+        (1001, 298, '2026-11-03'),
+      );
+      expect(error.saveIsAllowed, isFalse);
+      expect(error.errorMessage, 'Deze klas bevat geen leerlingen.');
+      expect(
+        error.toString(),
+        'SmartschoolPresencePupilNotFoundError: not listed',
+      );
+    });
+
+    test('made without what the module said: both null', () {
+      const error = SmartschoolPresencePupilNotFoundError(
+        'not listed',
+        userId: 1,
+        classGroupId: 2,
+        date: '2026-06-01',
+      );
+      expect(error.saveIsAllowed, isNull);
+      expect(error.errorMessage, isNull);
+    });
+  });
+
   group('Skore write errors (#71)', () {
     test('SmartschoolSkoreMyGroupsError is a SmartschoolSkoreError: nothing '
         'was saved', () {

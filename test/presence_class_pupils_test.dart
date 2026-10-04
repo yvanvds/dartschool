@@ -365,11 +365,32 @@ void main() {
     });
   });
 
-  group('setLate / setPresent for a pupil the module does not list (#104)', () {
-    test("a day after today: the error has the module's reason, and nothing "
-        'is saved', () async {
-      // Before the fix: "Pupil userID 11110 was not found in class groupID
-      // 298 on 2026-11-03.", without the reason.
+  group('setLate / setPresent for a pupil the module does not list (#104, '
+      '#116)', () {
+    /// A [SmartschoolPresencePupilNotFoundError] (#116), which existing
+    /// `catch` clauses for [SmartschoolPresenceError] keep catching.
+    Matcher notListed({
+      required int userId,
+      required String date,
+      required bool? saveIsAllowed,
+      required String? errorMessage,
+      required String message,
+    }) => allOf(
+      isA<SmartschoolPresenceError>(),
+      isA<SmartschoolPresencePupilNotFoundError>()
+          .having((e) => e.userId, 'userId', userId)
+          .having((e) => e.classGroupId, 'classGroupId', 298)
+          .having((e) => e.date, 'date', date)
+          .having((e) => e.saveIsAllowed, 'saveIsAllowed', saveIsAllowed)
+          .having((e) => e.errorMessage, 'errorMessage', errorMessage)
+          .having((e) => e.message, 'message', message),
+    );
+
+    test("a day after today: the error has the module's reason and "
+        'saveIsAllowed, and nothing is saved', () async {
+      // Before #104: "Pupil userID 11110 was not found in class groupID 298
+      // on 2026-11-03.", without the reason. Before #116: a plain
+      // SmartschoolPresenceError, with the reason in its message only.
       final (presence, server) = await serve({
         '298 2026-11-03': _dayInTheFuture,
       });
@@ -382,10 +403,13 @@ void main() {
           part: DayPart.morning,
         ),
         throwsA(
-          isA<SmartschoolPresenceError>().having(
-            (e) => e.message,
-            'message',
-            'Pupil userID 11110 was not found in class groupID 298 on '
+          notListed(
+            userId: 11110,
+            date: '2026-11-03',
+            saveIsAllowed: false,
+            errorMessage: _future,
+            message:
+                'Pupil userID 11110 was not found in class groupID 298 on '
                 '2026-11-03: the Presence module listed no pupils '
                 '("$_future").',
           ),
@@ -394,8 +418,8 @@ void main() {
       expect(server.log, isNot(contains('POST $_save')));
     });
 
-    test('a class it lists, without the pupil: the error as before, without a '
-        'reason', () async {
+    test('a class it lists, without the pupil: the message as before, '
+        'without a reason, and no saveIsAllowed', () async {
       final (presence, server) = await serve({'298 2026-10-01': _listed});
 
       await expectLater(
@@ -406,10 +430,13 @@ void main() {
           part: DayPart.afternoon,
         ),
         throwsA(
-          isA<SmartschoolPresenceError>().having(
-            (e) => e.message,
-            'message',
-            'Pupil userID 42 was not found in class groupID 298 on '
+          notListed(
+            userId: 42,
+            date: '2026-10-01',
+            saveIsAllowed: null,
+            errorMessage: null,
+            message:
+                'Pupil userID 42 was not found in class groupID 298 on '
                 '2026-10-01.',
           ),
         ),

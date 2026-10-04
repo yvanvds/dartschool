@@ -767,7 +767,10 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
-/// subtype [SmartschoolPresenceChangeRefusedError] (#105): nothing was sent.
+/// subtype [SmartschoolPresenceChangeRefusedError] (#105), and a pupil the
+/// class does not list on that day with the subtype
+/// [SmartschoolPresencePupilNotFoundError] (#116): nothing was sent for
+/// either.
 ///
 /// A session that Smartschool does not accept is not reported with this type
 /// but as a [SmartschoolSessionExpiredError] (a
@@ -845,6 +848,50 @@ class SmartschoolPresenceChangeRefusedError extends SmartschoolPresenceError {
     this.halfDay,
     this.heldStatus,
     this.onlyReplacing = const {},
+  });
+}
+
+/// Thrown by `PresenceService.setLate` and `setPresent` when the class, as
+/// the call read it right before the save (`Presence/Class/getClass`), does
+/// not list the pupil on that day (#116). Nothing was sent.
+///
+/// A fact about the pupil on that day, not a refusal of the module: the
+/// pupil is not (or no longer) in the class on that day, such as a pupil
+/// whose movement into the class ended, or a `userId` the class does not
+/// list at all. When the module listed no pupils for the class on that day
+/// (a day after today, a class without pupils), [errorMessage] has its
+/// reason and [saveIsAllowed] what it answered with it (#104).
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] is empty.
+class SmartschoolPresencePupilNotFoundError extends SmartschoolPresenceError {
+  /// The pupil's internal `userID`, as passed.
+  final int userId;
+
+  /// The class's `groupID`, as passed.
+  final int classGroupId;
+
+  /// The day the call would have changed (`yyyy-MM-dd`).
+  final String date;
+
+  /// When the module listed no pupils for the class on that day: its
+  /// `saveIsAllowed` (`false` in every such answer seen live), or `null`
+  /// when its answer did not say. `null` when it listed other pupils.
+  final bool? saveIsAllowed;
+
+  /// When the module listed no pupils for the class on that day: its reason,
+  /// as it shows it to the user (such as "Het is niet mogelijk om in de
+  /// toekomst afwezigheden op te nemen."), or `null` when it gave none.
+  /// `null` when it listed other pupils.
+  final String? errorMessage;
+
+  const SmartschoolPresencePupilNotFoundError(
+    super.message, {
+    required this.userId,
+    required this.classGroupId,
+    required this.date,
+    this.saveIsAllowed,
+    this.errorMessage,
   });
 }
 

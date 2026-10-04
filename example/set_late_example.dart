@@ -8,8 +8,9 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 /// `userID` (not the public API's AccountID/UID). You supply the pupil's
 /// internal `userId` and the class `groupID`.
 ///
-/// This only works when the signed-in account has **Presence-handling access**
-/// for the class.
+/// This only works when the signed-in account may set the half-days of the
+/// class: `userCanConfirm` in the module config (`getConfig`), as for an
+/// absence administrator. `userCanRecord` is not that right (#121).
 ///
 /// Run with:
 ///   dart run example/set_late_example.dart
@@ -26,8 +27,20 @@ Future<void> main() async {
 
   final presence = PresenceService(client);
 
-  // Read the current half-day status so we can restore it afterwards.
+  // Check the right to set the half-days of the class first (#121):
+  // setLate would refuse it with a SmartschoolPresenceNoConfirmRightError.
   final config = await presence.getConfig();
+  final classRef = config.classForGroup(classGroupId);
+  if (classRef == null || !classRef.userCanConfirm) {
+    print(
+      'This account may not set the half-days of class $classGroupId '
+      '(${classRef == null ? 'not listed' : 'userCanConfirm is false'}).',
+    );
+    await client.dispose();
+    return;
+  }
+
+  // Read the current half-day status so we can restore it afterwards.
   final pupils = await presence.getClassPupils(
     classGroupId: classGroupId,
     date: date,

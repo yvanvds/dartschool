@@ -78,12 +78,14 @@ const _skoreResults = {
 
 /// The Presence module's answers to its reads (#104, #105), by path, with a
 /// made-up pupil; any other Presence request is answered as a save that went
-/// through.
+/// through. The account may set the half-days of the class
+/// (`userCanConfirm`, #121), so that `setLate` gets as far as its save.
 const _presenceAnswers = {
   '/Presence/Main/getConfig':
       '{"hasErrors":false,"errors":[],"state":{"activeClass":null,'
       '"schoolyear":"2026-11-05"},"main":{"allowedClasses":[{"groupID":298,'
-      '"name":"1A  ","structID":311,"userCanRecord":true}]}}',
+      '"name":"1A  ","structID":311,"userCanConfirm":true,'
+      '"userCanRecord":true}]}}',
   '/Presence/Code/getAllCodes':
       '[{"codeID":497,"code":"L","name":"Te laat","alias":[]}]',
   '/Presence/Class/getClass':

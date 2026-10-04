@@ -37,10 +37,16 @@ export '../models/presence_models.dart';
 /// ```
 ///
 /// ### Access requirement
-/// This only works when the signed-in account has **Presence-handling access**
-/// for the class (i.e. `userCanRecord` is true in the module config). Accounts
-/// without that right receive a rejection from the server, surfaced as a
-/// [SmartschoolPresenceError].
+/// This only works when the signed-in account may set the half-days of the
+/// class: [PresenceClassRef.userCanConfirm] is `true` in the module config
+/// ([getConfig]), as for an absence administrator (#121).
+/// [PresenceClassRef.userCanRecord] is not that right: seen live, a teacher
+/// without it has `userCanRecord` for every class, and the module refuses
+/// that teacher's save ("U heeft geen rechten om afwezigheden te bevestigen
+/// voor deze leerling."). [setLate] and [setPresent] refuse a class without
+/// `userCanConfirm` before they send anything, with a
+/// [SmartschoolPresenceNoConfirmRightError]; a caller that offers the write
+/// gates it on `userCanConfirm`.
 ///
 /// ### Errors
 /// The failures a caller has to tell apart arrive as different types:
@@ -50,9 +56,11 @@ export '../models/presence_models.dart';
 ///   class, code or pupil could not be resolved. The session was accepted:
 ///   signing in again does not help. Its subtypes, for which nothing was
 ///   sent: [SmartschoolPresenceChangeRefusedError], the half-day holds a
-///   status that the call's `onlyReplacing` does not allow (#105); and
+///   status that the call's `onlyReplacing` does not allow (#105);
 ///   [SmartschoolPresencePupilNotFoundError], the class, as read right before
-///   the save, does not list the pupil on that day (#116).
+///   the save, does not list the pupil on that day (#116); and
+///   [SmartschoolPresenceNoConfirmRightError], the account may not set the
+///   half-days of the class (`userCanConfirm` is `false`, #121).
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the session,
 ///   also after the client logged in again and retried the request once. The
 ///   request was not carried out: sign in again and retry.
@@ -104,6 +112,10 @@ class PresenceService {
   // ---------------------------------------------------------------------------
 
   /// Returns the Presence module configuration for the signed-in account.
+  ///
+  /// Per class, [PresenceClassRef.userCanConfirm] says whether the account
+  /// may set its half-days ([setLate], [setPresent]); `userCanRecord` does
+  /// not (#121).
   ///
   /// Cached after the first call; pass [forceRefresh] to re-fetch.
   Future<PresenceConfig> getConfig({bool forceRefresh = false}) async {
@@ -222,6 +234,13 @@ class PresenceService {
   /// record of the half-day: the save itself was confirmed (no `errors`), so
   /// read the class to see what it holds.
   ///
+  /// The account needs [PresenceClassRef.userCanConfirm] for the class (not
+  /// [PresenceClassRef.userCanRecord], #121). For a class `getConfig` lists
+  /// without it, the call throws a [SmartschoolPresenceNoConfirmRightError]
+  /// and sends nothing: it reads only the config, and reads it again first
+  /// when it had one from before the call, so that rights granted during the
+  /// session count.
+  ///
   /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
   /// the server rejects the save: then its
   /// [SmartschoolPresenceError.saveErrors] has the module's errors, each with
@@ -255,14 +274,18 @@ class PresenceService {
   ///
   /// Useful to clear a previously recorded status. [onlyReplacing] and the
   /// result are as for [setLate]: pass, say, `{PresenceService.lateCodeName}`
-  /// to clear a "Te laat" and refuse any other status (#105).
+  /// to clear a "Te laat" and refuse any other status (#105). The account
+  /// needs [PresenceClassRef.userCanConfirm] for the class, as for [setLate]
+  /// (#121).
   ///
   /// Throws [SmartschoolPresenceError] if the class/code cannot be resolved or
   /// the server rejects the save, its subtype
+  /// [SmartschoolPresenceNoConfirmRightError] when the account may not set
+  /// the half-days of the class, its subtype
   /// [SmartschoolPresenceChangeRefusedError] when [onlyReplacing] refuses the
   /// change, and its subtype [SmartschoolPresencePupilNotFoundError] when the
-  /// class does not list the pupil on that day (nothing was sent for
-  /// either).
+  /// class does not list the pupil on that day (nothing was sent for any of
+  /// them).
   Future<PresenceSavedHalfDay?> setPresent({
     required int userId,
     required int classGroupId,
@@ -283,9 +306,10 @@ class PresenceService {
     );
   }
 
-  /// Resolves the class, code (and optional alias) and half-day cell, checks
-  /// the cell against [onlyReplacing], then saves the presence and returns
-  /// the half-day as stored. Shared engine behind [setLate] / [setPresent].
+  /// Resolves the class (and checks the account's right to set its
+  /// half-days), code (and optional alias) and half-day cell, checks the
+  /// cell against [onlyReplacing], then saves the presence and returns the
+  /// half-day as stored. Shared engine behind [setLate] / [setPresent].
   Future<PresenceSavedHalfDay?> _setStatusByName({
     required int userId,
     required int classGroupId,
@@ -296,12 +320,34 @@ class PresenceService {
     required String motivation,
     required Set<String>? onlyReplacing,
   }) async {
-    final config = await getConfig();
-    final classRef = config.classForGroup(classGroupId);
+    final day = formatDate(date);
+    final readBefore = _config != null;
+    var config = await getConfig();
+    var classRef = config.classForGroup(classGroupId);
+    if (readBefore && classRef != null && !classRef.userCanConfirm) {
+      // The rights of the account can change during the session (#121):
+      // refuse on a config read now, not on one read before the call.
+      config = await getConfig(forceRefresh: true);
+      classRef = config.classForGroup(classGroupId);
+    }
     if (classRef == null) {
       throw SmartschoolPresenceError(
         'Class groupID $classGroupId is not among the classes this account '
         'may record presences for.',
+      );
+    }
+    if (!classRef.userCanConfirm) {
+      throw SmartschoolPresenceNoConfirmRightError(
+        'This account may not set the half-days of class groupID '
+        '$classGroupId ("${classRef.name}"): getConfig gives it '
+        'userCanConfirm false, and the Presence module refuses such a save '
+        '("geen rechten om afwezigheden te bevestigen"). Nothing was sent for '
+        'the ${part.name} of $day of pupil userID $userId.',
+        userId: userId,
+        classGroupId: classGroupId,
+        date: day,
+        part: part,
+        classRef: classRef,
       );
     }
     final structId = classRef.structId;
@@ -331,7 +377,6 @@ class PresenceService {
         break;
       }
     }
-    final day = formatDate(date);
     if (pupil == null) {
       // The module's reason when it listed no pupils (#104), such as a day
       // after today.
@@ -813,7 +858,8 @@ class PresenceService {
   /// may also lack Presence access). The session was accepted, so signing in
   /// again does not help: this is a [SmartschoolPresenceError]. (A class the
   /// account may not record for is answered in JSON, not here: `getConfig`
-  /// does not list it, and `setLate` / `setPresent` check that first. So is
+  /// does not list it, or lists it without `userCanConfirm` (#121), and
+  /// `setLate` / `setPresent` check that first. So is
   /// a class `getClass` lists no pupils for: [getClassPupils] returns the
   /// module's reason with the empty list, #104.)
   ///

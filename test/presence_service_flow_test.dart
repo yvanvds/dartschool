@@ -49,6 +49,12 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('PresenceService.parseConfig', () {
+    // The config of an account that may set half-days (#121): its active
+    // class, with both userCanConfirm and userCanRecord true, matches in
+    // every field it has the one captured live (read-only, 2026-10-04) with
+    // an absence administrator's account, which gave both flags true for
+    // every class it listed (120), the virtual 2A among them. (Its origin
+    // was not noted before, and its allowed classes had userCanRecord only.)
     const configJson = '''
     {
       "state": {
@@ -60,9 +66,11 @@ void main() {
       "main": {
         "allowedClasses": [
           {"groupID":298,"name":"1A  ","adminNumber":6246,"isOfficial":1,
-           "userCanRecord":true,"instituteNumber":125252,"structID":311},
+           "userCanConfirm":true,"userCanRecord":true,
+           "instituteNumber":125252,"structID":311},
           {"groupID":1650,"name":"2A  ","adminNumber":"","isOfficial":0,
-           "userCanRecord":true,"instituteNumber":"","structID":""}
+           "userCanConfirm":true,"userCanRecord":true,"instituteNumber":"",
+           "structID":""}
         ]
       }
     }
@@ -81,7 +89,15 @@ void main() {
       expect(config.activeClass!.structId, 311);
       expect(config.activeClass!.adminNumber, 6246);
       expect(config.activeClass!.userCanRecord, isTrue);
+      expect(config.activeClass!.userCanConfirm, isTrue);
       expect(config.activeClass!.isOfficial, isTrue);
+    });
+
+    test('both rights of each allowed class (#121)', () {
+      expect(
+        config.allowedClasses.map((c) => (c.userCanRecord, c.userCanConfirm)),
+        [(true, true), (true, true)],
+      );
     });
 
     test('allowedClasses count', () {

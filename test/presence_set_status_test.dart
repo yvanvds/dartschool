@@ -67,13 +67,16 @@ const _zonderReden = 14;
 /// A code that is not among the codes of the structure.
 const _unknownCode = 999;
 
+/// The config of an account that may set the half-days of 1A
+/// (`userCanConfirm`, #121), as an absence administrator's (seen live,
+/// 2026-10-04).
 const _configJson = '''
 {"hasErrors":false,"errors":[],
  "state":{"activeClass":{"groupID":-2,"name":"Uit Planner","structID":null},
    "schoolyear":"2026-05-15"},
  "main":{"allowedClasses":[{"groupID":298,"name":"1A  ","adminNumber":6246,
-   "isOfficial":1,"userCanRecord":true,"instituteNumber":125252,
-   "structID":311}]}}
+   "isOfficial":1,"userCanConfirm":true,"userCanRecord":true,
+   "instituteNumber":125252,"structID":311}]}}
 ''';
 
 const _codesJson = '''

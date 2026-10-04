@@ -54,6 +54,9 @@ const _noPupils = 'Deze klas bevat geen leerlingen.';
 const _noLesson =
     'U geeft momenteel geen les. Kies een andere klas in de keuzelijst.';
 
+/// The config as captured (2026-10-03) with an account whose
+/// absence-administrator rights were switched off: `userCanRecord` but not
+/// `userCanConfirm`, so it may not set the half-days of 1A (#121).
 const _configJson = '''
 {"hasErrors":false,"errors":[],
  "state":{"activeClass":{"adminNumber":null,"groupID":-2,"instituteNumber":0,
@@ -64,6 +67,14 @@ const _configJson = '''
     "userCanConfirm":false,"userCanRecord":true,"instituteNumber":125252,
     "structID":311}]}}
 ''';
+
+/// [_configJson] for an account that may set the half-days of 1A
+/// (`userCanConfirm`, as an absence administrator's, seen live 2026-10-04,
+/// #121): `setLate` and `setPresent` read the class for it.
+final _configWithHalfDayRight = _configJson.replaceFirst(
+  '"userCanConfirm":false,"userCanRecord":true',
+  '"userCanConfirm":true,"userCanRecord":true',
+);
 
 const _codesJson = '''
 [{"codeID":70,"code":"|","name":"Aanwezig","alias":[]},
@@ -405,7 +416,7 @@ void main() {
       // SmartschoolPresenceError, with the reason in its message only.
       final (presence, server) = await serve({
         '298 2026-11-03': _dayInTheFuture,
-      });
+      }, config: _configWithHalfDayRight);
 
       await expectLater(
         presence.setLate(
@@ -432,7 +443,9 @@ void main() {
 
     test('a class it lists, without the pupil: the message as before, '
         'without a reason, and no saveIsAllowed', () async {
-      final (presence, server) = await serve({'298 2026-10-01': _listed});
+      final (presence, server) = await serve({
+        '298 2026-10-01': _listed,
+      }, config: _configWithHalfDayRight);
 
       await expectLater(
         presence.setPresent(

@@ -13,12 +13,12 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
 - Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, replies linked to the original message, archive, trash, labels, reply-all recipient resolution.
 - **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
-- Intradesk read support (`IntradeskService`): root/folder listing and file download.
+- Intradesk support (`IntradeskService`): root/folder listing and file download; add a folder, a weblink or uploaded files to a folder and move them to Intradesk's trash again, with checks before each write and creates that are never retried.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
-- Lesfiches read support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner.
+- Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
 
 ---
 
@@ -525,6 +525,27 @@ final download = await intradesk.downloadFileStream(
 );
 print('${download.fileName}: ${download.contentLength} bytes');
 await download.stream.pipe(File('output.docx').openWrite());
+
+// Add a folder, a weblink in it and a file (#128). Intradesk renames an
+// item whose name is taken ("Toetsen (1)"), so use what it answers.
+final folder = await intradesk.createFolder(
+  parentFolderId: sub.folders.first.id,
+  name: 'Toetsen',
+  color: 'blue',
+);
+await intradesk.createWeblink(
+  parentFolderId: folder.id,
+  name: 'Oefenplatform',
+  url: 'example.com/oefenen', // sent as http://example.com/oefenen
+);
+final upload = await intradesk.uploadFiles(
+  parentFolderId: folder.id,
+  filePaths: ['toets 1.pdf'],
+);
+print(upload.files.map((f) => f.name)); // [toets 1.pdf]
+
+// And move it to Intradesk's trash again (kept there for 30 days)
+await intradesk.trashFile(upload.files.single.id);
 ```
 
 ### Methods
@@ -535,8 +556,20 @@ await download.stream.pipe(File('output.docx').openWrite());
 | `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. Throws a `SmartschoolIntradeskFolderNotFoundError` when Smartschool knows no folder with that ID (an unknown ID, or the ID of a file or a weblink). |
 | `downloadFile(fileId, {maxBytes})` | `Future<Uint8List>` | Raw bytes of the identified file. With `maxBytes`, throws a `SmartschoolDownloadTooLargeError` as soon as the file turns out larger (see *Downloads* above). A `SmartschoolDownloadError` with status `404` when there is no such file. |
 | `downloadFileStream(fileId, {maxBytes})` | `Future<SmartschoolDownload>` | The same file as a stream, with its size and name, as soon as the headers are in (see *Downloads* above). |
+| `createFolder({parentFolderId, name, color = 'yellow', confidential = false})` | `Future<IntradeskFolder>` | Adds a folder to the folder `parentFolderId` (`''` for the root) and returns the folder Intradesk made. `color` is one of `IntradeskService.folderColors` (`red`, `brown`, `orange`, `yellow`, `green`, `aqua`, `blue`, `purple`, `pink`, `white`, `black`). With `confidential`, a confidential folder (`folders/as-confidential`), which Intradesk refuses in an ordinary folder. |
+| `createWeblink({parentFolderId, name, url, icon = 'earth'})` | `Future<IntradeskWeblink>` | Adds a weblink to a folder (not the root) and returns the weblink Intradesk made. `url` is sent as the web client sends it (`normalizeWeblinkUrl`): without white space, with `http://` in front when it has no `http(s)://`. Intradesk does not check `icon`, but needs one. |
+| `uploadFiles({parentFolderId, filePaths})` | `Future<IntradeskUploadResult>` | Uploads files into a folder (not the root), each under the last segment of its path, and returns the files Intradesk added (`files`) and those it did not take, with its reason (`failures`). Asks for a new upload directory for every call, uploads each file into it (`/Upload/Upload/Index`, the step message attachments use), then has Intradesk take the directory once (`files/upload`). |
+| `trashFolder(folderId)` / `trashWeblink(weblinkId)` / `trashFile(fileId)` | `Future<void>` | Moves the item to Intradesk's trash (`.../trash`, answered with `204`). Intradesk keeps its trash for 30 days; the service never deletes for good. |
+| `isAllowedName(name)` | `bool` (static) | Whether Smartschool allows the name of a folder, weblink or file: none of `/ : * ? " \ < > \|`, no dot at its start or end (the web client's check). |
+| `normalizeWeblinkUrl(url)` | `String?` (static) | The address as the web client sends it, or `null` when it would refuse it. |
 
-> **Not yet implemented**: file upload — the server-side endpoint and required form fields have not been captured safely.  
+**The writes (#128).** All were tried live on 2026-10-05, in a test folder.
+- **A name that is taken is not refused**: Intradesk adds the item under a new name, `name (1)` (`name (1).ext` for a file). The name of the item a create returns can differ from the one asked for; tell items by their IDs.
+- **A create is sent once**: never again after logging in again, nor retried otherwise, since a second one adds a second item. `uploadFiles` uses a new upload directory for every call: Intradesk takes the files of a directory again every time it is told to. A move to the trash is retried once after logging in again: Intradesk answers it for an item in the trash already with `204` too.
+- **Checks before sending**: Intradesk answers a bad name, colour, icon or parent with a bare HTTP `500` that does not say why, so the writes throw an `ArgumentError`, before anything is sent, for an empty name or one `isAllowedName` refuses, a colour not in `folderColors`, an empty icon, an address `normalizeWeblinkUrl` refuses, a parent ID that is not a UUID, a weblink or a file at the root (the web client offers neither), and a file that does not exist or two files with the same name.
+- **Errors**: `SmartschoolIntradeskWriteRefusedError` (HTTP `400`–`499`, with Intradesk's reasons in `violations`, such as "De URL die je hebt ingegeven is niet geldig."; nothing made); `SmartschoolIntradeskFolderNotFoundError` for a parent Smartschool knows no folder for (nothing made); `SmartschoolAttachmentUploadError` when the upload step fails, with Smartschool's text in `serverMessage` (Intradesk was not told to take the files); `SmartschoolIntradeskSaveUnconfirmedError` when the write went out but Intradesk's answer does not confirm it (a bare `500` for another reason, an answer that is not the item made, or no answer): list the folder before trying again.
+- Not covered: renames, moves, copies, colour changes, a new version of a file, rights, restoring from the trash, and deleting for good. Not seen live: a weblink, folder or file at the root, a folder without `canAdd`, a confidential folder Intradesk made, and a non-empty `exceptions` in an upload's answer.
+
 > **Not scoped**: the `/recent` endpoint returns an SPA HTML shell, not a JSON listing.
 
 ### Example
@@ -612,8 +645,8 @@ await presence.setPresent(
 | `setLate({userId, classGroupId, date, part, withoutValidReason, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil late for a half-day; `withoutValidReason` selects the "Te laat zonder geldige reden" alias. With `onlyReplacing`, only changes a half-day that holds one of those statuses (see below). Returns the half-day as stored (#105). |
 | `setPresent({userId, classGroupId, date, part, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil present ("Aanwezig") — useful to clear a status. `onlyReplacing` and the result as for `setLate`. |
 | `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record, each with `userCanConfirm`, the right to set its half-days (#121). Cached. |
-| `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. |
-| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). |
+| `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. A grouping class has no structure: see `PresenceHalfDay.statusName` and `PresencePupil.officialClassId` (#126). |
+| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). Each pupil has its `officialClassId` and each half-day its `statusName`, also for a grouping class (#126). |
 
 Status codes are **not hard-coded** — their numeric IDs are per-school/per-structure, so they are resolved dynamically by name (`Te laat`, `Te laat zonder geldige reden`, `Aanwezig`). The service handles both updating an existing half-day cell and creating one where none exists, and surfaces a non-empty server `errors[]` as a `SmartschoolPresenceError`.
 
@@ -794,7 +827,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ## `PlannerService`
 
-Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name and the workload calls, POSTs that only read.
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name, the lookup of a calendar by its ID and the workload calls, POSTs that only read.
 
 In the **own planner** only, it fills an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library (see `LessonContentService`) and clears the hour again (see *Lessons in the own planner*), adds an assignment for classes and moves it to the planner's trash again (see *Assignments in the own planner*), and changes the name and info of an own lesson or assignment: eight writes, each for one element, after checks that keep them out of colleagues' elements.
 
@@ -806,6 +839,10 @@ final hits = await planner.searchCalendars('6A1');  // List<PlannerSearchResult>
 final klas = hits
     .firstWhere((hit) => hit.kind == PlannerSearchResultKind.group)
     .calendar!;                                    // PlannerCalendar
+
+// A calendar named by its ID; null when the planner does not know it.
+final named = await planner.getCalendar(klas);     // PlannerSearchResult?
+print(named?.name ?? 'no such planner');
 
 // The own planner of one week.
 final me = await planner.ownCalendar();            // PlannerCalendar
@@ -857,6 +894,23 @@ for (final test in tests) {
 | `PlannerSearchResultKind.other` | anything else | `null` |
 
 **Users are not told apart**: teachers, pupils and co-accounts come with the same fields, and no field says which is which. A co-account has an ID of its own (ending in its number, such as `_1`) and a `description` such as `Interimaris van ...`; the `title` of the pupils seen live ended in their class, but that is display text, which the library does not rely on. To keep teachers only, compare the user ID (the middle part of the calendar ID) with `SkoreService.getTeachers()`. The search is a `POST quick-search/planner/search` with `{"searchString": text, "searchOptions": []}`, as the web client sends it; it only reads. The planner's `include-deleted` option is not sent, and the favourites of the search (which the planner keeps per user) are not touched.
+
+### Naming a calendar by its ID
+
+`getCalendar(calendar)` names a calendar by its ID, as the planner's search names it (a `PlannerSearchResult` whose `calendar` is the one asked for: `name`, `title`, `description`, `isDeleted`, ...), or returns `null` when the planner does not know the ID (#127). This tells a calendar ID that names no planner from a planner with nothing planned, which `getPlannedElements` does not: the planner does not check the ID whose elements it lists (seen live, 2026-10-05):
+
+| Calendar ID | `getPlannedElements` | `getCalendar` |
+|---|---|---|
+| a user, class or room with nothing planned | `[]` | the user, class or room |
+| a room the planner does not have | `[]` | `null` |
+| a user or class the planner does not have (a made-up ID, a co-account number the user does not have, an ID of another platform) | `SmartschoolPlannerError` with `statusCode` `500` | `null` |
+| a group the planner's search does not find either (seen live: groups with the icon `star_green`, whose planner page `/planner/main/group/{id}` does name them) | `[]` | `null` |
+
+- A **deleted user** is named, with `isDeleted` set (the search leaves deleted users out).
+- The **own calendar** is named after the authenticated user (`authenticatedUser.name`): the planner itself names it `%quicksearch.me%` (`Mezelf` in the web client).
+- The lookup is a `POST quick-search/planner/start` with `{"users": [], "groups": [], "miniDbItems": []}` and the calendar ID in the list of its kind (a location in `miniDbItems`): the request with which the planner's web client opens its search field, whose `selection` names the calendars it is given. It only reads; the search's suggestions and the user's favourites in its answer are not returned.
+- A `SmartschoolPlannerError` when the planner answers with another status (`500` for a class ID whose part after the platform ID is not a number, such as `4069_abc`), or names another calendar than the one asked for (it reads the parts of a user or class ID as numbers, and answered `4069_04256` as `4069_4256`).
+- Whether the planner names other users' calendars for an account that may not see other planners was not tried.
 
 ### Assignment types and workload
 
@@ -1060,7 +1114,8 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 |---|---|---|
 | `ownCalendar()` | `Future<PlannerCalendar>` | The planner of the authenticated user. |
 | `searchCalendars(text)` | `Future<List<PlannerSearchResult>>` | The users, classes and locations whose name holds `text`, in the planner's order, each with its calendar (see *Finding a calendar by name*). An empty text throws an `ArgumentError` before anything is sent. |
-| `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. |
+| `getCalendar(calendar)` | `Future<PlannerSearchResult?>` | The calendar named by its ID, as the planner's search names it (a deleted user too, with `isDeleted`; the own calendar after the authenticated user); `null` when the planner does not know the ID (see *Naming a calendar by its ID*). |
+| `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. The planner does not check the calendar ID: a room it does not have is an empty list, a user or class it does not have a `SmartschoolPlannerError` with `statusCode` `500`; `getCalendar` tells them apart. |
 | `getPlannedElement({type, typeName, platformId, id})` | `Future<PlannedElementDetail>` | The full detail of one element, by its `type` or by its `typeName`, the planner's name of the type (`planned-lessons`, as `PlannedElement.typeName` keeps it; also for a type the library does not know): pass one of the two. Neither or both, `PlannedElementType.other`, a `typeName` not of the planner's form (`planned-` and words of lowercase letters and digits joined by hyphens) or an empty `id` throw an `ArgumentError` before anything is sent. |
 | `getDetail(element)` | `Future<PlannedElementDetail>` | The same, for a listed element (also one of a type the library does not know). |
 | `getAssignmentTypes()` | `Future<List<PlannerAssignmentType>>` | The school's assignment types (such as `Kleine Overhoring`, `KO`), in the planner's order. |
@@ -1087,7 +1142,7 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 
 ### Errors
 
-- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID). The session was accepted: signing in again does not help.
+- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses, or `500` for the elements of a user or class it does not have), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID, and a lookup of `getCalendar` that names another calendar than the one asked for). The session was accepted: signing in again does not help.
 - `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash, or a `typeName` the planner does not have (carries `elementType`, `platformId`, `elementId`). Also from a write, for the element it reads again first (such as a slot that was filled since it was read): nothing was sent.
 - `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, an assignment type the school does not have, ...). Nothing was sent. Carries the check as `reason` (a `PlannerWriteRefusalReason`), the `element` as read again, the `capabilityFlags`, for a lesfiche that is not a lesson one the `lessonContent`, and for an assignment type the school does not have the school's `assignmentTypes` as the check read them (see *Why a write was refused*). From the writes, every `SmartschoolPlannerError` means nothing was sent.
 - `SmartschoolLessonContentError` — `planLessonContent` could not read the lesfiches before planning one (see `LessonContentService`). Nothing was sent.
@@ -1099,7 +1154,7 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 
 ## `LessonContentService`
 
-Reads Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lesfiches a teacher keeps there, lessons and assignments, with their labels (such as `JAAR 6`, `TRIMESTER 1`) and courses, to plan into the planner. It only reads, with GETs to the module's JSON API (`/lesson-content/api/v1/`) and to the school's course list (`/course-list/api/v1/courses`), which names the courses: the module's list gives them by ID only. A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent` (see *Lessons in the own planner*).
+Reads and builds the lesfiches of Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lessons and assignments a teacher keeps in the own library ("Mijn lesfiches"), with their labels (such as `JAAR 6`, `TRIMESTER 1`), courses, weblinks and attachments, to plan into the planner. It reads with GETs to the module's JSON API (`/lesson-content/api/v1/`) and to the school's course list (`/course-list/api/v1/courses`), which names the courses: the module gives them by ID only. In the own library it also makes lesfiches, changes them and moves them to the module's trash (#129). A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent` (see *Lessons in the own planner*), so a lesfiche prepared once can be planned as often as needed.
 
 ```dart
 final lessonContent = LessonContentService(client);
@@ -1108,15 +1163,56 @@ for (final fiche in fiches.where((f) => f.type == LessonContentType.lesson)) {
   print('${fiche.name}  ${fiche.courses.map((c) => c.name).join(', ')}  '
       '${fiche.labels.map((l) => l.text).join(', ')}');
 }
+
+// A complete lesfiche in one create (#129): info, a course, a weblink and an
+// attachment, each with when pupils see it.
+final informatica = (await lessonContent.getCourses())
+    .firstWhere((c) => c.name == 'informatica');
+final fiche = await lessonContent.createLesson(      // LessonContentDetail
+  name: 'Lussen',
+  publicInfo: '<p>Hoofdstuk 3</p>',
+  courseIds: [informatica.id],
+  weblinks: [
+    NewLessonContentWeblink(
+      name: 'Oefeningen',
+      url: 'example.com/lussen',                     // sent as http://example.com/lussen
+      visibility: LessonContentVisibility.atEnd,
+    ),
+  ],
+  attachments: [
+    NewLessonContentAttachment(
+      'lussen.pdf',
+      visibility: LessonContentVisibility.afterEnd(3),
+    ),
+  ],
+);
+await lessonContent.rename(fiche, 'Lussen (herhaling)');
+final bytes = await lessonContent.downloadAttachment(
+  fiche,
+  fiche.attachments.single.id,
+);
+await lessonContent.trash([fiche]);                  // the module's trash, never deleted for good
 ```
 
 ### Methods
 
 | Method | Returns | Description |
 |---|---|---|
-| `getItems({withCourseNames = true})` | `Future<List<LessonContentItem>>` | The lesfiches of the authenticated user, lessons and assignments, hidden ones included, in the module's order (`GET lesson-content/`). With `withCourseNames` (the default) and a lesfiche with a course, it then reads the course list (`getCourses`, one request more) and names each course after the course with the same ID in it; `false` sends the one request, and leaves every course name `null`. A course list it cannot use does not lose the lesfiches: it throws a `SmartschoolLessonContentCourseListError` whose `items` are the lesfiches as read, with every course name `null` (#118). |
-| `getCourses()` | `Future<List<PlannerCourse>>` | The school's courses (all of them, not only the teacher's), in the course list's order (`GET /course-list/api/v1/courses`): `id` (the ID of a lesfiche's course and of a planner course), `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`. The list the Lesfiches web client names its course filter from. |
-| `parseItems(json, {courses})` (static) | `List<LessonContentItem>` | Parses the module's list, naming the courses after `courses` (the school's courses). |
+| `getItems({withCourseNames = true})` | `Future<List<LessonContentItem>>` | The lesfiches of the authenticated user, lessons and assignments, hidden ones included (not those in the trash), in the module's order (`GET lesson-content/`). With `withCourseNames` (the default) and a lesfiche with a course, it then reads the course list (`getCourses`, one request more) and names each course after the course with the same ID in it; `false` sends the one request, and leaves every course name `null`. A course list it cannot use does not lose the lesfiches: it throws a `SmartschoolLessonContentCourseListError` whose `items` are the lesfiches as read, with every course name `null` (#118). |
+| `getDetail(item, {withCourseNames = true})` / `getDetailById(type, id, {withCourseNames = true})` | `Future<LessonContentDetail>` | One lesfiche in full (`GET lessons/{id}` or `assignments/{id}`, #129): a `LessonContentItem` with its `privateInfo`, its `weblinks` (`LessonContentWeblink`: `id`, `name`, `url`, `icon`, `visibility`) and its `attachments` (`LessonContentAttachment`: `id`, `fileName`, `fileSize`, `mimeType`, `visibility`). No dates. Courses named as `getItems` names them. A `404` (an unknown ID, or one of the other kind) is a `SmartschoolLessonContentNotFoundError`. |
+| `getCourses()` | `Future<List<PlannerCourse>>` | The school's courses (all of them, not only the teacher's), in the course list's order (`GET /course-list/api/v1/courses`): `id` (the ID of a lesfiche's course and of a planner course), `name`, `scheduleCodes`, `icon`, `clusterId`, `clusterName`, `isVisible`. The list the Lesfiches web client names its course filter from, and the course IDs the writes take. |
+| `createLesson({name, icon, publicInfo, privateInfo, courseIds, weblinks, attachments})` | `Future<LessonContentDetail>` | Makes a lesson lesfiche in the own library, with everything in one create, and returns it as read back (see below). |
+| `createAssignment({name, assignmentTypeId, ...})` | `Future<LessonContentDetail>` | The same for an assignment lesfiche of one of the school's assignment types (`PlannerService.getAssignmentTypes`), checked against the module's own list first. |
+| `rename(item, name)` / `changeIcon(item, icon)` / `changePublicInfo(item, html)` / `changePrivateInfo(item, html)` | `Future<LessonContentDetail>` | Change one value (`POST {type}/{id}/rename`, `change-icon`, `change-public-info`, `change-private-info`); the module answers with the whole lesfiche. |
+| `changeCourses(item, courseIds)` | `Future<LessonContentDetail>` | Sets the courses (`change-courses`), after checking each ID against `getCourses`; empty clears them. The answer has the courses named. |
+| `setVisible(item, visible)` | `Future<LessonContentDetail>` | Shows or hides the lesfiche in the module (`mark-as-visible` / `mark-as-invisible`). |
+| `addWeblink(item, weblink)` / `changeWeblink(item, weblinkId, weblink)` / `removeWeblink(item, weblinkId)` | `Future<LessonContentWeblink>` / `Future<void>` | A weblink of the lesfiche (`POST {type}/{id}/weblinks`, `.../weblinks/{id}`; `DELETE .../weblinks/{id}`, answered with `204`). `changeWeblink` sends every value: name, address, icon and visibility. |
+| `addAttachments(item, attachments)` | `Future<List<LessonContentAttachment>>` | Uploads files into a new upload directory and has the module take it (`POST {type}/{id}/attachments` with `{"randomDir"}`); returns the new attachments, told apart from the ones there by reading the lesfiche first. The module gives each new one `always`, so another visibility is set after (`changeAttachmentVisibility`). |
+| `changeAttachmentVisibility(item, attachmentId, visibility)` / `removeAttachment(item, attachmentId)` | `Future<LessonContentDetail>` / `Future<void>` | `POST .../attachments/{id}/change-visibility`; `DELETE .../attachments/{id}` (answered with `204`). |
+| `downloadAttachment(item, attachmentId, {maxBytes})` / `downloadAttachmentStream(...)` | `Future<Uint8List>` / `Future<SmartschoolDownload>` | The file of an attachment, unchanged (`GET .../attachments/{id}/download`), sent without `Accept: application/json` (with it, Smartschool answered `503` and an HTML page). See *Downloads* above. |
+| `trash(items)` | `Future<void>` | Moves lesfiches to the module's trash (`POST lesson-content/trash/bulk`, answered with `{"exceptions": []}`). They leave `getItems`; their detail is still answered. |
+| `normalizeWeblinkUrl(url)` (static) | `String?` | The address as the Lesfiches web client sends it (`http://` in front when it has none, no white space before the `?`, the query encoded as `encodeURI` does), or `null` when its weblink dialog would refuse it. |
+| `parseItems(json, {courses})` / `parseDetail(json, {courses})` (static) | `List<LessonContentItem>` / `LessonContentDetail` | Parse the module's list and the detail of a lesfiche, naming the courses after `courses` (the school's courses). |
 | `parseCourses(json)` (static) | `List<PlannerCourse>` | Parses the course list. |
 
 A course of a lesfiche that the course list does not have (or names with an empty name) keeps a `null` name. `PlannerService.planLessonContent` reads the lesfiches without the course names.
@@ -1132,13 +1228,24 @@ try {
 }
 ```
 
-The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, unlike the planner): the school's local time, read as the local time of the machine. The detail of one lesfiche is not read: the module answers `lesson-content/{id}` with its web app, not with JSON. Creating, changing, sharing or trashing lesfiches is not covered. The school's assignment types, which the planner also reads from this module, come from `PlannerService.getAssignmentTypes()`.
+The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, unlike the planner): the school's local time, read as the local time of the machine. The school's assignment types, which the planner also reads from this module, come from `PlannerService.getAssignmentTypes()`.
+
+**The writes (#129).** All were tried live on 2026-10-05, in the own library, which is private to the teacher.
+- **When pupils see a weblink or an attachment** is a `LessonContentVisibility`: `always` (the default), `never`, `atStart` and `atEnd` (of the lesson the lesfiche is planned in), or `afterEnd(days)` for the 1 to 14 days the web client offers.
+- **A create answers with the new ID only** (`201` with `{"id"}`), so `createLesson` and `createAssignment` read the lesfiche back (`GET lessons/{id}`) and return its detail, which must show the name, courses, weblinks and attachments sent. The create carries everything, as the web client's does: the attachments are uploaded into a new upload directory first (the step Intradesk uploads and message attachments use), which goes out as `randomDir`, with each file's visibility by name in `visibilityOptions`. A body with only a name gets a bare `400`, so the service sends every list the web client sends (goals, labels, partner weblinks, deeplinks and mini-DB items empty). A name that is taken is kept: the module makes a second lesfiche of that name.
+- **A create is sent once**: never again after logging in again, since a second one makes a second lesfiche. The same for `addWeblink` and the take of `addAttachments` (the module takes the files of a directory again every time it is told to, and keeps two attachments of the same name). The edits set a value, and the removals and the move to the trash name what they act on, so they are retried once after logging in again, as a read is.
+- **Checks before sending**: the module answers a bad name or address with a bare `400`, and stores a course it does not know without complaint. So the writes throw an `ArgumentError`, before anything is sent, for an empty name or one longer than 255 characters (the web client's field), an empty icon, a weblink without a name or with an address `normalizeWeblinkUrl` refuses, a visibility the web client does not offer, a file that does not exist or whose name Smartschool does not allow, two files of the same name in one call, an ID that is not a UUID, and a lesfiche of a kind the library does not know. A course ID that is not one of `getCourses`, and an assignment type that is not one of the module's, are refused the same way after reading those lists.
+- Not covered: labels, goals, duplicating, merging, converting between lesson and assignment, sharing, year plans and lesson clusters, method lessons of publishers, printing, restoring from the trash and deleting for good. Whether `planLessonContent` copies a lesfiche's attachments, weblinks and visibility into the planned lesson was not checked.
 
 ### Errors
 
-- `SmartschoolLessonContentError` — the module, or the course list, answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page (its web app, for a route it does not know), invalid JSON, or data in an unknown shape (such as a lesfiche without its `id` or `type`, or a course without its `id`). The session was accepted: signing in again does not help. From `getItems`, one that is not the subtype below is about the lesfiches: none were read.
-- `SmartschoolLessonContentCourseListError` (a `SmartschoolLessonContentError`) — `getItems` read the lesfiches, but the course list it reads after them to name their courses answered so; its `message` and `statusCode` are the course list's. It carries the lesfiches as read in `items`, every course with a `null` name, the same as `getItems(withCourseNames: false)` gives them (#118). `getCourses()`, which reads the course list alone, throws the plain type. A session refused for the course list, or a connection that fails for it, is thrown as for the lesfiches (`SmartschoolSessionExpiredError`, `SmartschoolConnectionError`), without them.
-- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once.
+- `SmartschoolLessonContentError` — the module, or the course list, answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page (its web app, for a route it does not know), invalid JSON, or data in an unknown shape (such as a lesfiche without its `id` or `type`, or a course without its `id`). The session was accepted: signing in again does not help. From `getItems`, one that is not the subtype below is about the lesfiches: none were read. From a write, this type and its subtypes mean that nothing was changed.
+- `SmartschoolLessonContentCourseListError` (a `SmartschoolLessonContentError`) — `getItems` or `getDetail` read the lesfiches, but the course list they read after them to name their courses answered so; its `message` and `statusCode` are the course list's. It carries the lesfiches as read in `items`, every course with a `null` name, the same as `getItems(withCourseNames: false)` gives them (#118). `getCourses()`, which reads the course list alone, throws the plain type. A session refused for the course list, or a connection that fails for it, is thrown as for the lesfiches (`SmartschoolSessionExpiredError`, `SmartschoolConnectionError`), without them.
+- `SmartschoolLessonContentNotFoundError` (a `SmartschoolLessonContentError`, #129) — the module answered `404`: no lesfiche of that kind with that ID (an unknown ID; for a write, also a lesfiche in the trash), or no such weblink or attachment. Carries the `type` and `id`. Nothing was changed.
+- `SmartschoolLessonContentWriteRefusedError` (a `SmartschoolLessonContentError`, #129) — the module refused a write with another status from `400` to `499` (seen live: a bare `400`), with its reasons in `violations` when it gives any. Nothing was changed.
+- `SmartschoolAttachmentUploadError` — the upload step of a create or of `addAttachments` failed. Nothing was changed.
+- `SmartschoolLessonContentSaveUnconfirmedError` (#129) — a write went out, but the module's answer does not confirm it (a `500`, an answer without the change, no answer, or `exceptions` from a move to the trash; a lesfiche in the trash already is answered with `500`). Read the lesfiche before trying again. For a create, `lessonContentId` is the new lesfiche's ID when the module answered with one: it was made, only reading it back failed (or did not show everything sent).
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once (for a create, without that retry). Nothing was changed.
 
 ---
 
@@ -1209,6 +1316,12 @@ A link to a web page, kept in a folder next to its files. Fields: `id`, `name`, 
 ### `IntradeskFileRevision`
 Current revision metadata. Fields: `id`, `fileId`, `fileSize`, `label`, `dateCreated`, `owner` (`IntradeskFileOwner`).
 
+### `IntradeskFolderCapabilities`
+Fields: `canManage`, `canAdd` (the user may add to the folder), `canAddConfidentialFolder` (#128: the user may add a confidential folder here; `false` when the answer does not carry it, as the folder listings do not), `canSeeHistory`, `canSeeViewHistory`.
+
+### `IntradeskUploadResult`
+Returned by `IntradeskService.uploadFiles` (#128). Fields: `files` (`List<IntradeskFile>`, the files Intradesk added, from the `files` of its answer, an object keyed by file ID; a file's name can differ from the uploaded one when the name was taken), `failures` (`List<IntradeskUploadFailure>`, the files it did not take: `key`, `violations`, and `message`, the first violation; empty when it took all of them).
+
 ### `PresenceConfig`
 Returned by `PresenceService.getConfig()`. Fields: `activeClass` (`PresenceClassRef?`, the class active in the module's web client), `activePlaceholder` (`PresenceClassRef?`), `allowedClasses` (`List<PresenceClassRef>`), `schoolyearRefDate` (String, `yyyy-MM-dd`). Helper `classForGroup(groupId)`, the class from `allowedClasses` (falling back to `activeClass`), `null` when the account has no such class.
 
@@ -1226,7 +1339,7 @@ final noLessonNow = config.activePlaceholder != null;
 ```
 
 ### `PresenceClassRef`
-A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`. `userCanConfirm` ("bevestigen") is the right to set the class's half-days, which `setLate` and `setPresent` need; `userCanRecord` ("registreren") is not, and is true for every class of a teacher without that right (seen live, #121; it looks like the registration per lesson, which this library does not do). Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
+A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `downStreamGroupIds` (`List<int>`, the `groupID`s of the classes it groups, the module's `downStreamGroups`, #126), `userCanRecord`, `userCanConfirm`, `isOfficial`. `userCanConfirm` ("bevestigen") is the right to set the class's half-days, which `setLate` and `setPresent` need; `userCanRecord` ("registreren") is not, and is true for every class of a teacher without that right (seen live, #121; it looks like the registration per lesson, which this library does not do). Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
 
 ### `PresenceCode` / `PresenceAlias`
 A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`aliasId`, `parentCodeId`, `name`). Codes are per-structure, resolved by name. `PresenceCode.aliasByName(name)` looks up an alias case-insensitively.
@@ -1248,7 +1361,27 @@ if (pupils.isEmpty) {
 ```
 
 ### `PresencePupil` / `PresenceHalfDay`
-Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell. `PresenceService.statusNameOf(halfDay, codes)` names the status a cell holds (#105).
+Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell. `PresenceService.statusNameOf(halfDay, codes)` names the status a cell holds (#105). `PresencePupil.officialClassId` (`int?`) is the `groupID` of the pupil's official class (the module's `officialClass`), and `PresenceHalfDay.statusName` (`String?`) the name of the status the module gives with the record (the `name` of its `code`, an alias's name for an alias), `null` when the record carries none (#126).
+
+**Grouping classes (#126).** A grouping class (`isOfficial` false, `structId` `null`, such as "2A" or "Taalatelier groep 1") has no structure to ask `getAllCodes` for, but `getClassPupils` lists its pupils with their half-days, the same records as in their official classes. Name their statuses with `halfDay.statusName`, which needs no other request, or with the codes of the structure of each pupil's official class. Do not ask for the codes without a structure: seen live (read-only, 2026-10-05), the module answers an empty `structID` with the four codes of the per-lesson rows ("Aanwezig", "Te laat", "Afwezig", "Online aanwezig"), which name none of the half-days. Seen live, both names were the same for every half-day (some 1700, of grouping and official classes), and every pupil of the school's 17 grouping classes had an official class that `getConfig` listed with the school's structure (to an account with the absence-administrator rights). `downStreamGroupIds` is not the list of those official classes: 11 of the 17 grouping classes name none, and one listed a pupil who had moved to a class it does not name. `setLate` / `setPresent` still refuse a grouping class: set the half-day in the pupil's official class.
+
+```dart
+final config = await presence.getConfig();
+final pupils = await presence.getClassPupils(
+  classGroupId: 1650, // a grouping class: structId is null
+  date: DateTime(2026, 10, 2),
+  schoolyearRefDate: config.schoolyearRefDate,
+);
+for (final pupil in pupils) {
+  final structId = config.classForGroup(pupil.officialClassId ?? 0)?.structId;
+  final codes = structId == null ? null : await presence.getAllCodes(structId);
+  for (final halfDay in pupil.halfDays) {
+    print(codes == null
+        ? halfDay.statusName
+        : PresenceService.statusNameOf(halfDay, codes));
+  }
+}
+```
 
 ### `PresenceSavedHalfDay`
 Returned by `PresenceService.setLate()` / `setPresent()` (#105): a `PresenceHalfDay`, the record the Presence module answered the save with (a new `presenceId` for a half-day that had no record; `codeId` `null` for an alias), with `before` (`PresenceHalfDay?`), the half-day as the call read it right before the save. The calls return `null` when the save's answer holds no record of the half-day.
@@ -1278,7 +1411,7 @@ Returned by `SkoreService.shareGradebook()` and `unshareGradebook()`. The gradeb
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
 
 ### `PlannerSearchResult`
-Returned by `PlannerService.searchCalendars()`. Fields: `id` (the planner's ID, the calendar ID for a user, class or location), `typeName` (the planner's type: `user`, `group`, `mini-db-2`, ...), `kind` (`PlannerSearchResultKind`), `calendar` (`PlannerCalendar?`; `null` for `other`), `name` (a user first name first, a class, a room), `title` (as the search list shows it: a user last name first, a pupil with the class), `description` (`""` when none: a class's full name, `Interimaris van ...` for a co-account, `Locatie` for a room), `pictureUrl` (`String?`, users), `icon` (`String?`), and `raw` (the hit as the planner gave it, read-only).
+Returned by `PlannerService.searchCalendars()`, and by `PlannerService.getCalendar()` (the calendar named by its ID). Fields: `id` (the planner's ID, the calendar ID for a user, class or location), `typeName` (the planner's type: `user`, `group`, `mini-db-2`, ...), `kind` (`PlannerSearchResultKind`), `calendar` (`PlannerCalendar?`; `null` for `other`), `name` (a user first name first, a class, a room), `title` (as the search list shows it: a user last name first, a pupil with the class), `description` (`""` when none: a class's full name, `Interimaris van ...` for a co-account, `Locatie` for a room), `pictureUrl` (`String?`, users), `icon` (`String?`), `isDeleted` (the planner counts the user as deleted, `state.deleted.isDeleted`; never set on a search hit, which leaves deleted users out), and `raw` (the hit as the planner gave it, read-only).
 
 ### `PlannedElement`
 Returned by `PlannerService.getPlannedElements()`. Fields: `id` (a UUID), `platformId`, `type` (`PlannedElementType`; `other` for a type the library does not know), `typeName` (the planner's name of the type, such as `planned-lessons`), `name` (`String?`; `null` on a timetable slot), `period` (`PlannerPeriod`: `from`, `to` in local time, `wholeDay`, `deadline`), `organiserUsers` / `organiserGroups`, `participantUsers` / `participantGroups`, `isParticipant`, `capabilities` (`PlannedElementCapabilities`), `icon` (`String?`), `courses`, `locations`, `assignmentType` (`PlannerAssignmentType?`, assignments only), `resolvedStatus` (`String?`, assignments only), `pinned`, `unconfirmed`, `color`, and `raw` (the element as the planner gave it, read-only, for the fields the model does not cover).
@@ -1319,7 +1452,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 | `SkoreShareAccess` | `read` (Skore's `readers`), `write` (Skore's `writers`: read and change) |
 | `PlannerCalendarType` | `user`, `group`, `location` (`wireName`: the name in the planner's URL) |
-| `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found) |
+| `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found, or `getCalendar` named) |
 | `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
 | `LessonContentType` | `lesson` (`lessons`), `assignment` (`assignments`), `other` (`wireName`: the Lesfiches module's name; `null` for `other`) |
 | `PlannerVisibilityOption` | `always`, `never`, `atStart` (`at-start`), `atEnd` (`at-end`), `daysAfterEnd` (`days-after-end`), `other` (`wireName`: the planner's name; `null` for `other`). From when pupils see an attachment or weblink of a planned element; only `always` was seen live |
@@ -1344,7 +1477,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolComposeError` | The compose form cannot be used (its tokens or the current user's IDs are missing), or Smartschool does not register a recipient on it (the message names the recipient). From `sendMessage` or `sendReply`, before the message is submitted: nothing was sent. `sendReply` also throws it when Smartschool does not answer with the reply form of the message, or does not take a recipient that the reply form names and `params` leave out off the form (the message names the recipient). Both throw it too when the form does not offer the LVS copy or the delayed send that `params.options` asks for (#47) |
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolMoveUncheckedError` | `MessagesService.moveToTrashFrom` sent the move and Smartschool answered it, but the check after it failed (carries the `msgId`, `boxType` and `boxId` of the move, and the check's error as its `cause`: a `SmartschoolSessionExpiredError`, `SmartschoolUnexpectedPageError`, `SmartschoolParsingError`, `SmartschoolConnectionError` or another login failure). The move may have been made: check with `getMessage(msgId, boxType: boxType)` before moving it again (#115). Not a `SmartschoolAuthenticationError`, so code that repeats a call on `SmartschoolSessionExpiredError` does not repeat the move |
-| `SmartschoolAttachmentUploadError` | An attachment upload step fails |
+| `SmartschoolAttachmentUploadError` | Smartschool's upload step fails: for an attachment of `sendMessage` / `sendReply` (nothing was sent), or for `IntradeskService.uploadFiles` (no upload directory, or a file Smartschool did not take; nothing was added). Carries the `fileName`, the `statusCode` and, for a refusal in Smartschool's own words (such as the `400` for a name with a character it does not allow), its `serverMessage` (#128) |
 | `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
 | `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, `teacherName`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError`. Always one of its two subtypes, with what the call read before the save (#120) |
@@ -1360,7 +1493,9 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolPresenceChangeRefusedError` | `PresenceService.setLate` / `setPresent` with `onlyReplacing`: the half-day, as read right before the save, holds a status it does not allow (carries `userId`, `part`, `date`, `halfDay`, `heldStatus`, `onlyReplacing`). Nothing was sent. A `SmartschoolPresenceError` (#105) |
 | `SmartschoolPresencePupilNotFoundError` | `PresenceService.setLate` / `setPresent`: the class, as read right before the save, does not list the pupil on that day (carries `userId`, `classGroupId`, `date`, and, when the module listed no pupils, its `saveIsAllowed` and `errorMessage`). Nothing was sent. A `SmartschoolPresenceError` (#116) |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
-| `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with |
+| `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with. Also from `createFolder`, `createWeblink` and `uploadFiles` for such a parent folder: nothing was made (#128) |
+| `SmartschoolIntradeskWriteRefusedError` | An `IntradeskService` write that Intradesk refused with HTTP `400`–`499` (carries the `statusCode` and Intradesk's reasons in `violations`, such as an invalid URL or a confidential folder in an ordinary folder). Nothing was made (#128) |
+| `SmartschoolIntradeskSaveUnconfirmedError` | An `IntradeskService` write went out, but Intradesk's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: list the folder before trying again (a create sent again adds a second item). Not a `SmartschoolIntradeskWriteRefusedError` (#128) |
 | `SmartschoolPagingRestartedError` | `getHeaderPages` / `getArchiveHeaderPages`, and so `getAllHeaders` / `getAllArchiveHeaders`: the box was listed again while it was being paged, so Smartschool restarted the paging halfway. A listing on the same client (`getHeaders`, or a later paging of the box) fails the paging before its next page (#80); one elsewhere shows as Smartschool sending the second page again (#76). The headers so far are correct but not the whole box: list it again. Not a session problem |
 | `SmartschoolClientDisposedError` | A request on a client that was disposed, or one that was running when it was disposed (also the stream of a download being read). A `StateError`, not a `SmartschoolException`: see below |
 
@@ -1444,6 +1579,10 @@ The `live` preset runs the tests tagged `live` only, in the paths named on the c
 What it checks, on messages it sends to the own account: `sendMessage` is confirmed and arrives once, in the inbox and the sent box; a small attachment; `sendReply` is linked to the message it answers (`hasReply`); `sendReply(all: true)`; `sendReply` moving the recipient from To to CC; `MessageSendOptions(requestReadReceipt: true)` throws before any request; `moveToTrashFrom` out of the archive folder: a message moved to the archive with `moveToArchive` is listed by `getArchiveHeaders`, and after its sent-box copy, `moveToTrashFrom(id, boxType: BoxType.inbox, boxId: <getArchiveBoxId()>)` takes it out of the archive and leaves it in the trash (#64); and `moveToTrashFrom`, which cleans up: moving the sent-box copy of each message to the trash leaves its inbox copy in the inbox, and moving the inbox copy then takes it out of the inbox and leaves the message in the trash (#60). For each move, `moveToTrashFrom` returns `true`, and `getMessage` agrees with the listings: `null` in the box the copy left, the other copy in its box (the inbox copy also in the archive folder), the message in the trash (#96).
 
 `test/live/messages_search_live_test.dart` only reads: `searchRecipientsForCompose` finds the own account by its name, with one search on its compose form (#97), and `searchRecipientsForComposeAll` searches a name that is no one's and then the own name on one compose form, and the second search finds the own account (#107). The guard lets a recipient search out only on a compose form loaded through it, with the empty selection the library sends; a search registers no one on the form.
+
+`test/live/intradesk_write_live_test.dart` writes in Intradesk, in one folder only: `tests` in `2. SMA` at the root, found by name, which must be empty when the run starts (#128). It adds a folder (`createFolder`) and checks it in the listing, adds it a second time and checks that Intradesk renames the new one (`name (1)`), adds a weblink to the new folder with an address without `http://` (`createWeblink`), uploads a file to it (`uploadFiles`) and downloads it back unchanged, and then moves all of it to Intradesk's trash (`trashFile`, `trashWeblink`, `trashFolder`) and checks that the test folder is empty again. Every folder and weblink it makes is named `dartschool test <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes for good. The guard lets an Intradesk write out only in that folder, as Smartschool's own listings name it (read through the guard), and in the folders the run made there; refuses a name without the run's tag, a move to the trash of anything the run did not make, a second take of an upload directory, and every other Intradesk POST (a confidential folder, a rename, a move, a copy, a restore).
+
+`test/live/lesson_content_write_live_test.dart` writes in the Lesfiches module, in the own library only, which is private to the teacher (#129). It makes a lesson lesfiche with a course, a weblink and an attachment in one create (`createLesson`) and checks it with `getDetail` and `getItems`, downloads the attachment back unchanged (also as a stream), changes its name, icon, info, courses and visibility, adds, changes and removes a weblink and an attachment, checks that an empty name, an address the web client refuses and a course the school does not have send no write, makes an assignment lesfiche of a school assignment type (`createAssignment`), and moves both to the module's trash (`trash`), after which `getItems` no longer lists them. Every lesfiche it makes is named `[dartschool test] <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes a lesfiche for good, never shares or plans one, and sends no label or goal. The guard lets a lesfiche write out only for a lesfiche the run made (as Smartschool answered its create) and did not move to the trash: a create named after the run, without labels, goals or other lists, at most two per run; a rename to a name after the run, the other edits, its weblinks and attachments (the DELETE of one of them is the only DELETE the live suite sends), an upload directory handed out through the guard once; and the move to the trash of what the run made. It refuses everything else in the module (labels, goals, deeplinks, a share, a restore, `delete/bulk`).
 
 Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
 

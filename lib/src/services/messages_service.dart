@@ -13,6 +13,7 @@ import '../models/message_models.dart';
 import '../models/notification_models.dart';
 import 'message_send_options.dart';
 import 'send_message_params.dart';
+import 'smartschool_uploader.dart';
 
 const String _xpathMessage = './/data/message';
 
@@ -2511,7 +2512,9 @@ class MessagesService {
     );
   }
 
-  /// Uploads a single attachment file to `/Upload/Upload/Index`.
+  /// Uploads a single attachment file to `/Upload/Upload/Index`, with the
+  /// upload step that `IntradeskService.uploadFiles` shares
+  /// ([SmartschoolUploader.uploadFile], #128).
   ///
   /// [uploadDir] should be the `randomDir` token from the compose form,
   /// [form]. It belongs to the session the form was loaded in, so the upload
@@ -2521,85 +2524,23 @@ class MessagesService {
     String filePath,
     String uploadDir,
     Response<String> form,
-  ) async {
-    final file = File(filePath);
-    if (!file.existsSync()) {
-      throw SmartschoolAttachmentUploadError(
-        'Attachment file not found: $filePath',
-      );
-    }
-
-    final fileName = file.uri.pathSegments.last;
-    final mimeType = guessMimeType(fileName);
-    final bytes = await file.readAsBytes();
-
-    final formData = FormData.fromMap({
-      'file': MultipartFile.fromBytes(
-        bytes,
-        filename: fileName,
-        contentType: DioMediaType.parse(mimeType),
-      ),
-      'uploadDir': uploadDir,
-    });
-
-    final response = await _client.postMultipartRaw(
-      '/Upload/Upload/Index',
-      formData,
+  ) {
+    return SmartschoolUploader(_client).uploadFile(
+      uploadDir,
+      filePath,
       retryAfterLogin: false,
       sameSessionAs: form,
-    );
-
-    final result = response.trim().toLowerCase();
-    if (result == 'true') return;
-    if (result == 'false') {
-      throw SmartschoolAttachmentUploadError(
-        "Attachment upload failed for '$fileName': server returned false.",
-      );
-    }
-    throw SmartschoolAttachmentUploadError(
-      "Attachment upload returned unexpected response for '$fileName': "
-      '${response.length > 100 ? response.substring(0, 100) : response}',
     );
   }
 
   /// Returns a MIME type string for [fileName] based on file extension.
   ///
   /// Falls back to `application/octet-stream` for unknown types.
-  /// Exposed as a public static for testing and custom compose flows.
-  static String guessMimeType(String fileName) {
-    const table = {
-      'pdf': 'application/pdf',
-      'jpg': 'image/jpeg',
-      'jpeg': 'image/jpeg',
-      'png': 'image/png',
-      'gif': 'image/gif',
-      'svg': 'image/svg+xml',
-      'webp': 'image/webp',
-      'txt': 'text/plain',
-      'html': 'text/html',
-      'htm': 'text/html',
-      'csv': 'text/csv',
-      'xml': 'application/xml',
-      'json': 'application/json',
-      'zip': 'application/zip',
-      'tar': 'application/x-tar',
-      'gz': 'application/gzip',
-      'doc': 'application/msword',
-      'docx':
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      'xls': 'application/vnd.ms-excel',
-      'xlsx':
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'ppt': 'application/vnd.ms-powerpoint',
-      'pptx':
-          'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'mp3': 'audio/mpeg',
-      'mp4': 'video/mp4',
-      'mov': 'video/quicktime',
-    };
-    final ext = fileName.split('.').lastOrNull?.toLowerCase() ?? '';
-    return table[ext] ?? 'application/octet-stream';
-  }
+  /// Exposed as a public static for testing and custom compose flows. The
+  /// upload step that the services share uses it for every file it uploads
+  /// (#128).
+  static String guessMimeType(String fileName) =>
+      SmartschoolUploader.guessMimeType(fileName);
 
   void _rescheduleIncrementalTimer({
     required String key,

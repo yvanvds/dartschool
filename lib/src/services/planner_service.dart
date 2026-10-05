@@ -15,7 +15,8 @@ export '../models/planner_models.dart';
 /// account itself, or another teacher), of a class or of a location, as
 /// `/planner/main/user/...`, `/planner/main/group/...` and
 /// `/planner/main/location/...` show it; [searchCalendars] finds one by
-/// name.
+/// name, and [getCalendar] names one by its ID, or tells that the planner
+/// does not know it.
 ///
 /// In the authenticated user's own planner, it fills a lesson hour with a
 /// new lesson ([planLesson]) or with a lesfiche of the Lesfiches library
@@ -41,6 +42,10 @@ export '../models/planner_models.dart';
 /// final klas = hits
 ///     .firstWhere((hit) => hit.kind == PlannerSearchResultKind.group)
 ///     .calendar!;
+///
+/// // A calendar named by its ID; null when the planner does not know it.
+/// final named = await planner.getCalendar(PlannerCalendar.group('4069_2001'));
+/// print(named?.name ?? 'no such planner'); // 6A1
 ///
 /// final me = await planner.ownCalendar();
 /// final week = await planner.getPlannedElements(
@@ -85,8 +90,9 @@ export '../models/planner_models.dart';
 /// The reads go through the planner's JSON API (`/planner/api/v1/`; the
 /// assignment types through the lesson-content API,
 /// `/lesson-content/api/v1/`): GET requests, and POSTs that only read: the
-/// search of [searchCalendars] and the workload calls of
-/// [getAssignmentsOfGroups], [getWorkloadSchedule] and [calculateWorkload].
+/// search of [searchCalendars], the lookup of [getCalendar] and the
+/// workload calls of [getAssignmentsOfGroups], [getWorkloadSchedule] and
+/// [calculateWorkload].
 ///
 /// ### Writes
 /// Only [planLesson], [planLessonContent], [clearLesson], [planAssignment],
@@ -223,10 +229,12 @@ class PlannerService {
   /// The base path of the planner's JSON API.
   ///
   /// The reads send GET requests, and POSTs that only read:
-  /// `quick-search/planner/search`, and `workload/planned-elements`,
+  /// `quick-search/planner/search` and `quick-search/planner/start`
+  /// ([getCalendar], #127), and `workload/planned-elements`,
   /// `workload/schedule` and `workload/calculate` (checked in the web
-  /// client's code: it reads with them, and `calculate` is the check it runs
-  /// before it saves an assignment). The writes send, for one element each,
+  /// client's code: it reads with them, it sends `start` each time its
+  /// search field opens, and `calculate` is the check it runs before it
+  /// saves an assignment). The writes send, for one element each,
   /// `planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco`
   /// ([planLesson]), `.../replace/planned-lessons` ([planLessonContent]),
   /// `planned-elements/clear` ([clearLesson]),
@@ -309,6 +317,75 @@ class PlannerService {
     );
   }
 
+  /// Names [calendar] by its ID (#127): the user, class or location whose
+  /// planner it is, as the planner's search names it, with its
+  /// [PlannerSearchResult.name], [PlannerSearchResult.title] and
+  /// [PlannerSearchResult.description] (a class's full name), and whether a
+  /// user was deleted ([PlannerSearchResult.isDeleted]); its
+  /// [PlannerSearchResult.calendar] is [calendar]. Returns `null` when the
+  /// planner does not know the ID.
+  ///
+  /// This tells a calendar ID that names no planner from a planner with
+  /// nothing planned, which [getPlannedElements] does not: it answers a
+  /// location ID the planner does not have with an empty list, as a room
+  /// with nothing planned, and a user or class ID it does not have with HTTP
+  /// `500`, an error that does not say why (seen live, 2026-10-05).
+  ///
+  /// `null` means that the planner does not offer the calendar (seen live,
+  /// 2026-10-05, with an account that may see other planners): no such
+  /// user, class or location (a made-up ID, a co-account number the user
+  /// does not have, an ID of another platform), and also a group that the
+  /// planner's search does not find by name either, such as the groups with
+  /// the icon `star_green` seen live. The planner's page still names the
+  /// planner of such a group (`/planner/main/group/{id}`), and
+  /// [getPlannedElements] answered the one tried with an empty list.
+  /// Whether the planner names other users' calendars for an account that
+  /// may not see other planners was not tried.
+  ///
+  /// A deleted user is named, with [PlannerSearchResult.isDeleted] set:
+  /// unlike [searchCalendars], which leaves deleted users out. The own
+  /// calendar ([ownCalendar]) is named after the authenticated user (from
+  /// `authenticatedUser.name`, which the client read at login; when it has
+  /// none yet, it reads it from a Smartschool page first): the planner names
+  /// it `%quicksearch.me%` (`Mezelf` in the web client), which this replaces.
+  ///
+  /// Sends `POST quick-search/planner/start` with `{"users": [], "groups":
+  /// [], "miniDbItems": []}` and the calendar ID in the list of its kind (a
+  /// location in `miniDbItems`): the request with which the planner's web
+  /// client opens its search field, whose answer names the calendars it is
+  /// given (`selection`), next to the search's suggestions and the user's
+  /// favourites, which are not returned. It only reads: the web client sends
+  /// it each time the search field opens, and the favourites stayed as they
+  /// were.
+  ///
+  /// Throws a [SmartschoolPlannerError] when the planner answers with
+  /// another HTTP status (it answered a class ID whose part after the
+  /// platform ID is not a number, `4069_abc`, with `500`), or names another
+  /// calendar than [calendar]: it reads the parts of a user or class ID as
+  /// numbers, and answered `4069_04256` as `4069_4256`.
+  Future<PlannerSearchResult?> getCalendar(PlannerCalendar calendar) async {
+    final id = calendar.id;
+    final response = await _client.postJsonResponse(
+      '$_apiPath/quick-search/planner/start',
+      data: {
+        'users': [if (calendar.type == PlannerCalendarType.user) id],
+        'groups': [if (calendar.type == PlannerCalendarType.group) id],
+        'miniDbItems': [if (calendar.type == PlannerCalendarType.location) id],
+      },
+    );
+    final what = 'the lookup of $calendar';
+    final named = parseCalendarLookup(_decode(response, what));
+    if (named.isEmpty) return null;
+    final hit = named.where((hit) => hit.calendar == calendar).firstOrNull;
+    if (hit == null) {
+      throw SmartschoolPlannerError(
+        'The planner answered $what with ${named.join(', ')}, not with that '
+        'calendar.',
+      );
+    }
+    return _namedAfterOwnUser(hit);
+  }
+
   /// Returns the elements of [calendar] in the period from [from] to [to],
   /// in the planner's order.
   ///
@@ -323,6 +400,14 @@ class PlannerService {
   /// filter); `null` (the default) returns every type. Several types go out
   /// comma-separated, as the planner's web client sends them; only one type
   /// at a time was tried on the live site.
+  ///
+  /// The planner does not check that [calendar] names a planner (seen live,
+  /// 2026-10-05, #127): it answers a location ID it does not have with an
+  /// empty list, the same as a room with nothing planned, and a user or
+  /// class ID it does not have with HTTP `500`, a [SmartschoolPlannerError]
+  /// with that [SmartschoolPlannerError.statusCode] that does not say why.
+  /// [getCalendar] tells a calendar the planner does not know apart, and
+  /// names one with nothing planned.
   ///
   /// Throws an [ArgumentError], without sending anything, when [to] is
   /// before [from], or [types] is empty or holds [PlannedElementType.other].
@@ -1672,6 +1757,48 @@ class PlannerService {
     return detail;
   }
 
+  /// The name the planner gives the authenticated user in the answer to
+  /// [getCalendar] (`origin.name`, `origin.nameReverse` and the `title`):
+  /// a key of the web client's texts, which it shows as `Mezelf` (seen
+  /// live, 2026-10-05). The search names the user by name.
+  static const _ownUserPlaceholder = '%quicksearch.me%';
+
+  /// [hit], or, when the planner named the authenticated user with
+  /// [_ownUserPlaceholder], [hit] with the user's name from
+  /// `authenticatedUser.name` (first name first, and last name first as the
+  /// title). Reads the authenticated user only then.
+  Future<PlannerSearchResult> _namedAfterOwnUser(
+    PlannerSearchResult hit,
+  ) async {
+    if (hit.kind != PlannerSearchResultKind.user ||
+        (hit.name != _ownUserPlaceholder && hit.title != _ownUserPlaceholder)) {
+      return hit;
+    }
+    final user = await _client.authenticatedUser;
+    final names = user['name'];
+    String nameOf(String key) {
+      final value = names is Map ? names[key] : null;
+      return value is String ? value.trim() : '';
+    }
+
+    final name = nameOf('startingWithFirstName');
+    if (user['id'] != hit.id || name.isEmpty) return hit;
+    final title = nameOf('startingWithLastName');
+    return PlannerSearchResult(
+      id: hit.id,
+      typeName: hit.typeName,
+      kind: hit.kind,
+      calendar: hit.calendar,
+      name: name,
+      title: title.isEmpty ? name : title,
+      description: hit.description,
+      pictureUrl: hit.pictureUrl,
+      icon: hit.icon,
+      isDeleted: hit.isDeleted,
+      raw: hit.raw,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Pure helpers (exposed for testing)
   // ---------------------------------------------------------------------------
@@ -1744,6 +1871,37 @@ class PlannerService {
           throw SmartschoolPlannerError(
             'The planner gave hit $index of a search as ${item.runtimeType} '
             'instead of an object.',
+          ),
+    ];
+  }
+
+  /// Parses the calendars the planner names in its answer to the lookup of
+  /// [getCalendar] (`quick-search/planner/start`): the hits of its
+  /// `selection`, in the form of the search's hits. An empty `selection` is
+  /// an empty list; the rest of the answer (the search's suggestions, the
+  /// user's favourites, its options) is left out.
+  static List<PlannerSearchResult> parseCalendarLookup(dynamic json) {
+    if (json is! Map<String, dynamic>) {
+      throw SmartschoolPlannerError(
+        'The planner gave the lookup of a calendar as ${json.runtimeType} '
+        'instead of an object.',
+      );
+    }
+    final selection = json['selection'];
+    if (selection is! List) {
+      throw SmartschoolPlannerError(
+        'The planner gave the calendars of a lookup (selection) as '
+        '${selection.runtimeType} instead of a list.',
+      );
+    }
+    return [
+      for (final (index, item) in selection.indexed)
+        if (item is Map<String, dynamic>)
+          PlannerSearchResult.fromJson(item)
+        else
+          throw SmartschoolPlannerError(
+            'The planner gave calendar $index of a lookup as '
+            '${item.runtimeType} instead of an object.',
           ),
     ];
   }

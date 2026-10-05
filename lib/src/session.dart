@@ -296,6 +296,31 @@ class SmartschoolClient {
     );
   }
 
+  /// Performs an authenticated DELETE and returns the whole [Response]: the
+  /// status code, the headers and the final URL (`realUri`) as well as the
+  /// body, which is not decoded.
+  ///
+  /// Like [postJsonResponse], it does not throw for a status other than
+  /// `200`, so that a service can read a JSON API's answers itself (such as
+  /// the `204` with which the Lesfiches module answers the removal of a
+  /// weblink or an attachment from a lesfiche, #129). A session that
+  /// Smartschool refuses is handled as for every request: the client logs
+  /// in again and retries the request once, unless `retryAfterLogin` is
+  /// `false` (see [postJsonResponse]).
+  Future<Response<String>> deleteResponse(
+    String path, {
+    Map<String, dynamic>? query,
+    bool retryAfterLogin = true,
+  }) {
+    return _send(
+      () => _dio.delete<String>(
+        path,
+        queryParameters: query,
+        options: Options(extra: _sessionStateExtra(retryAfterLogin, null)),
+      ),
+    );
+  }
+
   /// Executes the Smartschool XML command protocol.
   ///
   /// Builds the `<request>` XML, POSTs it to the dispatcher URL, parses the

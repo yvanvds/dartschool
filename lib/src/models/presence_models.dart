@@ -44,8 +44,27 @@ enum DayPart {
 /// A class as listed by the Presence module's config (`Presence/Main/getConfig`).
 ///
 /// Official teaching classes carry a real [structId] / [adminNumber]; virtual
-/// grouping classes (which only aggregate down-stream groups) report empty
-/// values for those, which are parsed here as `null`.
+/// grouping classes report empty values for those, which are parsed here as
+/// `null`.
+///
+/// ### Grouping classes (#126)
+/// Seen live (read-only, 2026-10-05, an account with the
+/// absence-administrator rights): `getConfig` listed 120 classes, 103
+/// official ones with the school's one structure (`isOfficial` 1, `structID`
+/// 311) and 17 grouping classes (`isOfficial` 0, `structID`, `adminNumber`
+/// and `instituteNumber` `""`). Six of those group official classes of a
+/// year, which they name in [downStreamGroupIds] (2A: 2A MAW, 2A MOW, 2A
+/// STEMW and 2A ECO); the other eleven, such as "Taalatelier groep 1" or
+/// "Huiswerkatelier", name none, and their pupils come from official classes
+/// across the school. `getClass` lists a grouping class's pupils with their
+/// half-days, the same records (`presenceID`, `codeID`) as in their official
+/// classes.
+///
+/// A grouping class has no structure to ask `PresenceService.getAllCodes`
+/// for. Its half-days are named by the status the module gives with each
+/// record ([PresenceHalfDay.statusName]), or by the codes of the structure of
+/// each pupil's official class ([PresencePupil.officialClassId], whose
+/// [structId] `getConfig` gives); see `PresenceService.statusNameOf`.
 class PresenceClassRef {
   /// Presence "groupID" of the class — the identifier callers pass as
   /// `classGroupId`.
@@ -65,7 +84,25 @@ class PresenceClassRef {
 
   /// School "structure" ID — required to resolve presence codes, or `null` for
   /// a virtual grouping class.
+  ///
+  /// For a grouping class, name the statuses of its half-days with
+  /// [PresenceHalfDay.statusName], or with the codes of the structure of each
+  /// pupil's official class ([PresencePupil.officialClassId]) (#126).
   final int? structId;
+
+  /// The `groupID`s of the classes this class groups (the module's
+  /// `downStreamGroups`), or empty when it names none (#126).
+  ///
+  /// Seen live (read-only, 2026-10-05): empty for every official class; for
+  /// six of the school's seventeen grouping classes, the official classes of
+  /// a year it groups (2A: the `groupID`s of 2A MAW, 2A MOW, 2A STEMW and 2A
+  /// ECO); empty for the other grouping classes, whose pupils come from
+  /// official classes across the school. It is not the list of the official
+  /// classes of its pupils: the grouping class 2C listed a pupil whose
+  /// official class ([PresencePupil.officialClassId]) is 2E ECO, which it
+  /// does not name. For the codes of a pupil's half-day, take the pupil's
+  /// official class.
+  final List<int> downStreamGroupIds;
 
   /// The module's `userCanRecord` ("registreren") for this class: **not** the
   /// right to set a half-day, which is [userCanConfirm] (#121).
@@ -101,6 +138,7 @@ class PresenceClassRef {
     this.adminNumber,
     this.instituteNumber,
     this.structId,
+    this.downStreamGroupIds = const [],
     this.userCanRecord = false,
     this.userCanConfirm = false,
     this.isOfficial = false,
@@ -129,6 +167,7 @@ class PresenceClassRef {
       adminNumber: _asInt(json['adminNumber']),
       instituteNumber: _asInt(json['instituteNumber']),
       structId: _asInt(json['structID']),
+      downStreamGroupIds: _asIntList(json['downStreamGroups']),
       userCanRecord: json['userCanRecord'] == true,
       userCanConfirm: json['userCanConfirm'] == true,
       isOfficial: _asInt(json['isOfficial']) == 1 || json['isOfficial'] == true,
@@ -324,6 +363,31 @@ class PresenceHalfDay {
   /// The currently stored motivation text.
   final String motivation;
 
+  /// The name of the status the record holds, as the Presence module gives
+  /// it with the record (#126): the `name` of the record's `code`, trimmed,
+  /// such as "Aanwezig", "Doktersattest" or, for an alias, "Te laat zonder
+  /// geldige reden". `null` when the record carries no `code`, or one
+  /// without a name (and for a half-day built by hand).
+  ///
+  /// This names the half-days of a grouping class, which has no structure
+  /// to ask `PresenceService.getAllCodes` for: its records carry their codes
+  /// as those of any class. The module's own web client shows a record's
+  /// status from this `code` (its glyph and name).
+  ///
+  /// Seen live (read-only, 2026-10-05): `getClass` gave a `code` with every
+  /// half-day record, in grouping classes and official classes, over a
+  /// month of two classes and one school day of all seventeen grouping
+  /// classes. For a code, it is the code with the fields `getAllCodes` gives
+  /// it for the school's structure (`codeID`, `code`, `name`, `structID`,
+  /// ...) and `isAlias` `false`; for an alias, the alias (`aliasID`,
+  /// `parentCodeID`, `name`, `isAlias` `true`, its `codeID` set to the
+  /// `aliasID`). Its name was the
+  /// name `PresenceService.statusNameOf` gives the half-day from the codes
+  /// of the structure each time. A record the module answers a save with
+  /// (`PresenceSavedHalfDay`) gets it when the answer carries the `code`
+  /// too, which was not captured live.
+  final String? statusName;
+
   const PresenceHalfDay({
     required this.presenceId,
     required this.presenceDate,
@@ -331,6 +395,7 @@ class PresenceHalfDay {
     required this.codeId,
     required this.aliasId,
     required this.motivation,
+    this.statusName,
   });
 
   @override
@@ -356,6 +421,7 @@ class PresenceSavedHalfDay extends PresenceHalfDay {
     required super.codeId,
     required super.aliasId,
     required super.motivation,
+    super.statusName,
     this.before,
   });
 
@@ -368,6 +434,7 @@ class PresenceSavedHalfDay extends PresenceHalfDay {
         codeId: stored.codeId,
         aliasId: stored.aliasId,
         motivation: stored.motivation,
+        statusName: stored.statusName,
         before: before,
       );
 
@@ -465,11 +532,30 @@ class PresencePupil {
   /// The half-day (am/pm) presence cells found for this pupil.
   final List<PresenceHalfDay> halfDays;
 
+  /// The `groupID` of the pupil's official class, as the Presence module
+  /// gives it with the pupil (its `officialClass`), or `null` when it gives
+  /// none (#126).
+  ///
+  /// For a pupil of a grouping class, which has no structure
+  /// ([PresenceClassRef.structId] `null`), this is the class whose structure
+  /// names the pupil's half-days: `PresenceConfig.classForGroup` gives its
+  /// `structId`, for `PresenceService.getAllCodes`. Seen live (read-only,
+  /// 2026-10-05): every pupil of all seventeen grouping classes of the
+  /// school had one, an official class that `getConfig` listed with the
+  /// school's structure (to an account with the absence-administrator
+  /// rights; one without them is listed fewer classes, #121, so it may not
+  /// list the pupil's official class). In an official class, it was that
+  /// class. A pupil who had moved from 2C ECO to 2E ECO in September, listed
+  /// in the grouping class 2C on a day in October, had 2E ECO, the class it
+  /// was in on that day.
+  final int? officialClassId;
+
   const PresencePupil({
     required this.userId,
     required this.movementId,
     required this.name,
     this.halfDays = const [],
+    this.officialClassId,
   });
 
   /// Returns the half-day cell for [part] on [date] (`yyyy-MM-dd`), or `null`
@@ -588,4 +674,11 @@ int? _asInt(dynamic value) {
     return int.tryParse(trimmed);
   }
   return null;
+}
+
+/// Parses [value] leniently to a list of `int`s, skipping the entries that
+/// [_asInt] cannot read; empty when [value] is not a list.
+List<int> _asIntList(dynamic value) {
+  if (value is! List) return const [];
+  return List.unmodifiable([for (final entry in value) ?_asInt(entry)]);
 }

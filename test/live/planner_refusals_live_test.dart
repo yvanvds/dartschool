@@ -14,11 +14,12 @@
 // never an element of a colleague or of a class. Two guards keep any write
 // from going out should a check let one through: LiveWireGuard
 // (support/live_wire_guard.dart) refuses every planner and lesfiche POST,
-// which are not requests the live suite sends, and each test checks that
-// the library did not even try one. The last test reads the week again and
-// finds it as it was. As every live run, it takes the lock of the session
-// first, logs in at most once, and prints no credential, no cookie and no
-// name.
+// which are not requests the live suite sends (but the planner's lookup of
+// a calendar by ID, which only reads and which these tests do not send,
+// #127), and each test checks that the library did not even try one. The
+// last test reads the week again and finds it as it was. As every live run,
+// it takes the lock of the session first, logs in at most once, and prints
+// no credential, no cookie and no name.
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).

@@ -57,6 +57,45 @@
 //   the live suite changes nothing in Skore, which drives the school's
 //   grading and has no test instance, and both services also hold methods
 //   that write, delete or lock (saveOwner, saveShared, deleteTeacher, ...);
+// - any POST to the planner but its lookup of a calendar by ID
+//   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
+//   only reads: the live suite changes nothing in the planner, whose POSTs
+//   also fill and clear lesson hours, add assignments and move a whole
+//   period to the trash;
+// - any Intradesk POST but the writes of IntradeskService that the live
+//   suite tries (#128), and those only in the Intradesk folder it may write
+//   in: "tests" in "2. SMA" at the root, as Smartschool's listings name it
+//   and the run allows it (allowIntradeskFolder), or a folder the run made
+//   there. So: the create of a folder (not a confidential one) or a weblink
+//   in such a folder, named after the run ("dartschool test <run tag>");
+//   taking an upload directory into such a folder (`files/upload`), once
+//   per directory (a second time adds its files again), and only a
+//   directory Smartschool handed out through the guard
+//   (`get-upload-directory`); and the move to the trash of an item the run
+//   made, of its kind, until Smartschool answered one for it. Never a
+//   rename, move, copy or restore, and never a DELETE (deleted for good);
+// - any request to the Lesfiches module (`/lesson-content/`) that writes,
+//   but those of LessonContentService that the live suite tries (#129), and
+//   those only for lesfiches the run made itself, in the own library (a
+//   create makes a lesfiche there; nothing else does): the create of a
+//   lesson or an assignment named after the run ("[dartschool test] <run
+//   tag> ..."), without labels, goals, partner weblinks, deeplinks, mini-DB
+//   items or a lesfiche it continues, with at most one upload directory
+//   handed out through the guard and not yet taken; on a lesfiche the run
+//   made (as Smartschool answered its create) and did not move to the
+//   trash: a rename to a name after the run, a change of its icon, info,
+//   courses or visibility, the add or change of a weblink, the take of an
+//   upload directory as above, the change of an attachment's visibility,
+//   and the DELETE of one of its weblinks or attachments (the only DELETE
+//   the live suite sends); and the move to the trash
+//   (`lesson-content/trash/bulk`) of lesfiches the run made, of their kind,
+//   until Smartschool answered one for them. Never a label, a goal, a share,
+//   a duplicate, merge or conversion, a year plan, a restore, and never
+//   `lesson-content/delete/bulk` (deleted for good);
+// - an upload (`/Upload/Upload/Index`) into another directory than the one
+//   of a compose form loaded through the guard or one handed out through it
+//   and not yet taken into Intradesk or a lesfiche, or of a file the live
+//   suite did not make;
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -68,6 +107,8 @@
 // login page, its title and main heading, and the start of its text, without
 // its scripts and forms (SmartschoolUnexpectedPageError.fromPage). It lets
 // such an answer through: the library reports it.
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:flutter_smartschool/src/xml_interface.dart';
@@ -79,8 +120,20 @@ import 'package:xml/xml.dart';
 /// the run's tag (a reply's subject starts with `Re: ` before it).
 const liveSubjectPrefix = '[dartschool test]';
 
-/// The start of the name of every file the live suite attaches.
+/// The start of the name of every file the live suite attaches or uploads.
 const liveFilePrefix = 'dartschool-test-';
+
+/// The start of the name of every folder and weblink the live suite adds to
+/// Intradesk (#128), before the run's tag.
+const liveIntradeskPrefix = 'dartschool test';
+
+/// The Intradesk folder the live suite may write in (#128): `tests`, in the
+/// folder `2. SMA` at the root, as (parent, folder).
+const liveIntradeskFolder = ('2. SMA', 'tests');
+
+/// The start of the name of every lesfiche the live suite makes (#129),
+/// before the run's tag: the same as the subject of its messages.
+const liveLessonContentPrefix = liveSubjectPrefix;
 
 /// A request that [LiveWireGuard] did not let out, or an answer it did not
 /// let through.
@@ -105,6 +158,12 @@ class LiveWireGuard extends Interceptor {
     // One per message of messages_live_test.dart: seven sends, and the
     // read-receipt one, which throws before any request (#43).
     this.maxSubmits = 8,
+    // The creates of intradesk_write_live_test.dart: two folders, a weblink
+    // and an upload (#128).
+    this.maxIntradeskCreates = 6,
+    // The creates of lesson_content_write_live_test.dart: a lesson and an
+    // assignment (#129).
+    this.maxLessonContentCreates = 2,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -116,6 +175,13 @@ class LiveWireGuard extends Interceptor {
 
   /// How many messages the run may send at most.
   final int maxSubmits;
+
+  /// How many Intradesk creates (a folder, a weblink, an upload) the run may
+  /// send at most (#128).
+  final int maxIntradeskCreates;
+
+  /// How many lesfiches the run may make at most (#129).
+  final int maxLessonContentCreates;
 
   final void Function(LiveGuardViolation violation) _onViolation;
 
@@ -135,6 +201,12 @@ class LiveWireGuard extends Interceptor {
 
   /// How many recipient searches it let out (#97).
   int searches = 0;
+
+  /// How many Intradesk creates it let out (#128).
+  int intradeskCreates = 0;
+
+  /// How many lesfiche creates it let out (#129).
+  int lessonContentCreates = 0;
 
   /// The own account: the only recipient a message may have.
   MessageSearchUser? get own => _own;
@@ -187,6 +259,45 @@ class LiveWireGuard extends Interceptor {
 
   /// How often each step of a login went out.
   final Map<String, int> _loginSteps = {};
+
+  /// The Intradesk folders Smartschool listed as `2. SMA` at the root.
+  final Set<String> _intradeskParents = {};
+
+  /// The Intradesk folders Smartschool listed as `tests` in a folder of
+  /// [_intradeskParents].
+  final Set<String> _intradeskTestFolders = {};
+
+  /// The test folders the run allowed writes in ([allowIntradeskFolder]).
+  final Set<String> _intradeskAllowed = {};
+
+  /// What the run made in Intradesk, as Smartschool answered its creates: the
+  /// kind (`folders`, `weblinks`, `files`) by ID.
+  final Map<String, String> _intradeskMade = {};
+
+  /// The items the run made that Smartschool answered a move to the trash
+  /// for.
+  final Set<String> _intradeskTrashed = {};
+
+  /// The upload directories Smartschool handed out through the guard
+  /// (`get-upload-directory`, #128).
+  final Set<String> _uploadDirs = {};
+
+  /// The upload directories the run had Intradesk (`files/upload`) or the
+  /// Lesfiches module (a create, `attachments`, #129) take.
+  final Set<String> _uploadDirsTaken = {};
+
+  /// The lesfiches the run made, as Smartschool answered their creates: the
+  /// kind (`lessons`, `assignments`) by ID (#129).
+  final Map<String, String> _lessonContentMade = {};
+
+  /// The lesfiches the run made that Smartschool answered a move to the
+  /// trash for.
+  final Set<String> _lessonContentTrashed = {};
+
+  /// The IDs of the lesfiches the run made, as Smartschool answered their
+  /// creates (#129).
+  Set<String> get lessonContentMade =>
+      Set.unmodifiable(_lessonContentMade.keys);
 
   /// Smartschool's answers to the moves to the trash out of a box, by
   /// (message ID, box), as they came in.
@@ -244,6 +355,15 @@ class LiveWireGuard extends Interceptor {
   /// listed there with the run's subject too, whatever this allows, and that
   /// the run did not move to the trash.
   void allowMark(int msgId) => _markable.add(msgId);
+
+  /// Lets the run write in the Intradesk folder [folderId] (#128): the test
+  /// folder, `tests` in `2. SMA` at the root.
+  ///
+  /// The guard lets a write in it out only when Smartschool listed it so
+  /// too (the root listing and that of `2. SMA`, read through the guard),
+  /// whatever this allows; and in the folders the run made in it.
+  void allowIntradeskFolder(String folderId) =>
+      _intradeskAllowed.add(folderId.toLowerCase());
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
@@ -320,6 +440,9 @@ class LiveWireGuard extends Interceptor {
     }
     final method = options.method.toUpperCase();
     if (method == 'GET') return null;
+    if (method == 'DELETE' && uri.path.startsWith(_lessonContentApi)) {
+      return _lessonContentDeleteRefusal(uri.path);
+    }
     if (method != 'POST') return 'the live suite sends no $method';
 
     final path = uri.path;
@@ -333,6 +456,13 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/Presence/')) return _presenceRefusal(path);
     if (path.startsWith('/modules/Skore/')) {
       return _skoreRefusal(path, options.data);
+    }
+    if (path.startsWith('/planner/')) return _plannerRefusal(path);
+    if (path.startsWith('/intradesk/')) {
+      return _intradeskRefusal(path, options.data);
+    }
+    if (path.startsWith('/lesson-content/')) {
+      return _lessonContentRefusal(path, options.data);
     }
 
     final query = uri.queryParameters;
@@ -394,6 +524,317 @@ class LiveWireGuard extends Interceptor {
     return 'the live suite changes nothing in Skore: it sends no Skore POST '
         'but the reads getTeachers (owners.php) and getCourses '
         '(rapportbeheer/rpc/data.php) (#91)';
+  }
+
+  /// The planner's POSTs that the live suite sends, which only read: the
+  /// lookup of a calendar by ID (PlannerService.getCalendar, #127).
+  static const _plannerReads = {'/planner/api/v1/quick-search/planner/start'};
+
+  /// Why the planner POST to [path] may not go out, or `null`: only the
+  /// lookup goes out, never a write.
+  String? _plannerRefusal(String path) {
+    if (_plannerReads.contains(path)) return null;
+    return 'the live suite changes nothing in the planner: it sends no '
+        'planner POST but the lookup of a calendar by ID, '
+        'quick-search/planner/start (#127)';
+  }
+
+  /// An Intradesk API path: the platform and the rest.
+  static final _intradeskPath = RegExp(r'^/intradesk/api/v1/(\d+)/(.+)$');
+
+  /// A move to the trash of an Intradesk item: its kind and its ID.
+  static final _intradeskTrash = RegExp(
+    r'^(folders|weblinks|files)/([^/]+)/trash$',
+  );
+
+  /// The start of the name of every folder and weblink of the run.
+  String get _intradeskTagged => '$liveIntradeskPrefix $runTag';
+
+  /// Why the Intradesk POST to [path] with the JSON body [data] may not go
+  /// out, or `null` (#128).
+  String? _intradeskRefusal(String path, Object? data) {
+    final rest = _intradeskPath.firstMatch(path)?.group(2);
+    switch (rest) {
+      case 'folders/':
+        return _intradeskCreateRefusal('a folder', data);
+      case 'weblinks/':
+        return _intradeskCreateRefusal('a weblink', data);
+      case 'files/upload':
+        return _intradeskTakeRefusal(data);
+    }
+    final trash = rest == null ? null : _intradeskTrash.firstMatch(rest);
+    if (trash != null) {
+      return _intradeskTrashRefusal(trash.group(1)!, trash.group(2)!);
+    }
+    return 'the live suite sends no Intradesk POST but the creates of a '
+        'folder (not a confidential one) and a weblink, the take of an upload '
+        '(files/upload) and moves to the trash of what it made (#128)';
+  }
+
+  /// Whether the run may add to the Intradesk folder [folderId]: the test
+  /// folder, as Smartschool listed it and the run allowed it, or a folder
+  /// the run made (in it) and did not move to the trash.
+  bool _mayWriteIn(String folderId) {
+    final id = folderId.toLowerCase();
+    if (_intradeskTestFolders.contains(id) && _intradeskAllowed.contains(id)) {
+      return true;
+    }
+    return _intradeskMade[id] == 'folders' && !_intradeskTrashed.contains(id);
+  }
+
+  /// Why the parent folder of the Intradesk write [data] may not be written
+  /// in, or `null`.
+  String? _intradeskParentRefusal(Map<dynamic, dynamic> data) {
+    final parent = data['parentFolderId'];
+    if (parent is String && _mayWriteIn(parent)) return null;
+    return 'it adds to Intradesk folder "$parent", which is neither the test '
+        'folder ("${liveIntradeskFolder.$1}" > "${liveIntradeskFolder.$2}", '
+        'as Smartschool listed it and the run allowed it) nor a folder the '
+        'run made there';
+  }
+
+  /// Why the create of [item] with the JSON body [data] may not go out, or
+  /// `null`.
+  String? _intradeskCreateRefusal(String item, Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    final parent = _intradeskParentRefusal(data);
+    if (parent != null) return parent;
+    final name = data['name'];
+    if (name is! String || !name.startsWith(_intradeskTagged)) {
+      return 'the name of $item does not start with "$_intradeskTagged"';
+    }
+    return _countIntradeskCreate();
+  }
+
+  /// Why the take of an upload directory into Intradesk (`files/upload`)
+  /// with the JSON body [data] may not go out, or `null`.
+  String? _intradeskTakeRefusal(Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    final parent = _intradeskParentRefusal(data);
+    if (parent != null) return parent;
+    final dir = data['uploadDir'];
+    if (dir is! String || !_uploadDirs.contains(dir)) {
+      return 'its upload directory was not handed out through the guard';
+    }
+    if (_uploadDirsTaken.contains(dir)) {
+      return 'its upload directory was taken into Intradesk already: a '
+          'second time adds its files again';
+    }
+    final count = _countIntradeskCreate();
+    if (count != null) return count;
+    _uploadDirsTaken.add(dir);
+    return null;
+  }
+
+  /// Counts an Intradesk create; refuses one more than
+  /// [maxIntradeskCreates].
+  String? _countIntradeskCreate() {
+    if (intradeskCreates >= maxIntradeskCreates) {
+      return 'the run sent $maxIntradeskCreates Intradesk creates already, '
+          'its maximum';
+    }
+    intradeskCreates++;
+    return null;
+  }
+
+  /// Why the move of the Intradesk item [id] of the kind [kind] to the
+  /// trash may not go out, or `null`: only an item the run made, of that
+  /// kind, until Smartschool answered a move to the trash for it.
+  String? _intradeskTrashRefusal(String kind, String id) {
+    final made = _intradeskMade[id.toLowerCase()];
+    if (made == null) {
+      return 'it moves Intradesk item $id to the trash, which this run did '
+          'not make';
+    }
+    if (made != kind) {
+      return 'it moves Intradesk item $id to the trash as one of the $kind, '
+          'but the run made it as one of the $made';
+    }
+    if (_intradeskTrashed.contains(id.toLowerCase())) {
+      return 'Intradesk item $id was moved to the trash already in this run';
+    }
+    return null;
+  }
+
+  /// The Lesfiches module's JSON API (#129).
+  static const _lessonContentApi = '/lesson-content/api/v1/';
+
+  /// A write on one lesfiche: its kind, its ID and the action.
+  static final _lessonContentAction = RegExp(
+    r'^(lessons|assignments)/([^/]+)/(.+)$',
+  );
+
+  /// The actions on a lesfiche of the run that the live suite sends (#129),
+  /// but those on one weblink or attachment, and those that take a body to
+  /// check (`rename`, `attachments`).
+  static const _lessonContentEdits = {
+    'change-icon',
+    'change-public-info',
+    'change-private-info',
+    'change-courses',
+    'mark-as-visible',
+    'mark-as-invisible',
+    'weblinks',
+  };
+
+  /// A change of a weblink or of the visibility of an attachment.
+  static final _lessonContentSubEdit = RegExp(
+    r'^(weblinks/[^/]+|attachments/[^/]+/change-visibility)$',
+  );
+
+  /// The removal of a weblink or an attachment.
+  static final _lessonContentRemoval = RegExp(
+    r'^(weblinks|attachments)/[^/]+$',
+  );
+
+  /// The start of the name of every lesfiche of the run.
+  String get _lessonContentTagged => '$liveLessonContentPrefix $runTag';
+
+  /// Why the Lesfiches POST to [path] with the JSON body [data] may not go
+  /// out, or `null` (#129).
+  String? _lessonContentRefusal(String path, Object? data) {
+    final rest = path.startsWith(_lessonContentApi)
+        ? path.substring(_lessonContentApi.length)
+        : null;
+    switch (rest) {
+      case 'lessons/' || 'assignments/':
+        return _lessonContentCreateRefusal(data);
+      case 'lesson-content/trash/bulk':
+        return _lessonContentTrashRefusal(data);
+    }
+    final action = rest == null ? null : _lessonContentAction.firstMatch(rest);
+    if (action == null) {
+      return 'the live suite sends no Lesfiches POST but the creates, edits, '
+          'weblinks, attachments and moves to the trash of lesfiches it '
+          'made (#129)';
+    }
+    final kind = action.group(1)!;
+    final id = action.group(2)!;
+    final what = action.group(3)!;
+    final made = _madeLessonContentRefusal(kind, id);
+    if (made != null) return made;
+    if (data is! Map) return 'it carries no JSON body';
+    if (what == 'rename') {
+      final name = data['newName'];
+      if (name is! String || !name.startsWith(_lessonContentTagged)) {
+        return 'it renames lesfiche $id to a name that does not start with '
+            '"$_lessonContentTagged"';
+      }
+      return null;
+    }
+    if (what == 'attachments') return _lessonContentTakeRefusal(data);
+    if (_lessonContentEdits.contains(what) ||
+        _lessonContentSubEdit.hasMatch(what)) {
+      return null;
+    }
+    return 'the live suite sends no "$what" to a lesfiche: only renames, '
+        'changes of the icon, info, courses and visibility, and its weblinks '
+        'and attachments; never labels, goals, deeplinks or partner weblinks '
+        '(#129)';
+  }
+
+  /// Why the create of a lesfiche with the JSON body [data] may not go out,
+  /// or `null`.
+  String? _lessonContentCreateRefusal(Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    final name = data['name'];
+    if (name is! String || !name.startsWith(_lessonContentTagged)) {
+      return 'the name of the lesfiche does not start with '
+          '"$_lessonContentTagged"';
+    }
+    for (final key in const [
+      'labels',
+      'goals',
+      'partnerWeblinks',
+      'deeplinks',
+      'miniDBItems',
+    ]) {
+      final value = data[key];
+      if (value is! List || value.isNotEmpty) {
+        return 'it makes a lesfiche with $key: the live suite sends none';
+      }
+    }
+    if (data['previousLessonContent'] != null) {
+      return 'it makes a lesfiche that continues another one';
+    }
+    if (lessonContentCreates >= maxLessonContentCreates) {
+      return 'the run made $maxLessonContentCreates lesfiches already, its '
+          'maximum';
+    }
+    if (data['randomDir'] != null) {
+      final take = _lessonContentTakeRefusal(data);
+      if (take != null) return take;
+    }
+    lessonContentCreates++;
+    return null;
+  }
+
+  /// Why the take of the upload directory in the JSON body [data] (its
+  /// `randomDir`) into a lesfiche may not go out, or `null`: only a
+  /// directory handed out through the guard, once.
+  String? _lessonContentTakeRefusal(Map<dynamic, dynamic> data) {
+    final dir = data['randomDir'];
+    if (dir is! String || !_uploadDirs.contains(dir)) {
+      return 'its upload directory (randomDir) was not handed out through '
+          'the guard';
+    }
+    if (!_uploadDirsTaken.add(dir)) {
+      return 'its upload directory was taken already: a second time adds '
+          'its files again';
+    }
+    return null;
+  }
+
+  /// Why a write on the lesfiche [id] of the kind [kind] may not go out, or
+  /// `null`: only a lesfiche the run made, of that kind, that it did not move
+  /// to the trash.
+  String? _madeLessonContentRefusal(String kind, String id) {
+    final made = _lessonContentMade[id.toLowerCase()];
+    if (made == null) {
+      return 'it writes to lesfiche $id, which this run did not make';
+    }
+    if (made != kind) {
+      return 'it writes to lesfiche $id as one of the $kind, but the run '
+          'made it as one of the $made';
+    }
+    if (_lessonContentTrashed.contains(id.toLowerCase())) {
+      return 'lesfiche $id was moved to the trash already in this run';
+    }
+    return null;
+  }
+
+  /// Why the move to the trash with the JSON body [data] may not go out, or
+  /// `null`: only lesfiches the run made, of their kind, not yet in the
+  /// trash.
+  String? _lessonContentTrashRefusal(Object? data) {
+    final list = data is Map ? data['lessonContent'] : null;
+    if (list is! List || list.isEmpty) {
+      return 'it moves no lesfiche to the trash';
+    }
+    for (final entry in list) {
+      if (entry is! Map || entry['id'] is! String || entry['type'] is! String) {
+        return 'it moves a lesfiche to the trash that it does not name';
+      }
+      final made = _madeLessonContentRefusal(
+        entry['type'] as String,
+        entry['id'] as String,
+      );
+      if (made != null) return made;
+    }
+    return null;
+  }
+
+  /// Why the DELETE of [path] may not go out, or `null`: only of a weblink
+  /// or an attachment of a lesfiche the run made (#129). Never a lesfiche
+  /// itself.
+  String? _lessonContentDeleteRefusal(String path) {
+    final rest = path.substring(_lessonContentApi.length);
+    final action = _lessonContentAction.firstMatch(rest);
+    if (action == null || !_lessonContentRemoval.hasMatch(action.group(3)!)) {
+      return 'the live suite sends no DELETE but of a weblink or an '
+          'attachment of a lesfiche it made (#129)';
+    }
+    return _madeLessonContentRefusal(action.group(1)!, action.group(2)!);
   }
 
   /// The XML commands that only read.
@@ -648,9 +1089,14 @@ class LiveWireGuard extends Interceptor {
   String? _uploadRefusal(Object? data) {
     if (data is! FormData) return 'it is not a multipart upload';
     final folder = _field(data, 'uploadDir');
-    if (folder == null || !_forms.values.any((f) => f.randomDir == folder)) {
-      return 'it uploads to a folder that is not the one of a compose form '
-          'loaded through the guard';
+    final handedOut =
+        _uploadDirs.contains(folder) && !_uploadDirsTaken.contains(folder);
+    if (folder == null ||
+        !(handedOut || _forms.values.any((f) => f.randomDir == folder))) {
+      return 'it uploads to a folder that is neither the one of a compose '
+          'form loaded through the guard nor an upload directory handed out '
+          'through it and not yet taken into Intradesk or a lesfiche (#128, '
+          '#129)';
     }
     if (data.files.isEmpty) return 'it uploads no file';
     for (final file in data.files) {
@@ -744,6 +1190,15 @@ class LiveWireGuard extends Interceptor {
     final body = response.data is String ? response.data as String : '';
     if (uri.path == _archivePath) {
       _recordArchiveAnswer(options.data, body);
+      return null;
+    }
+    if (uri.path.startsWith('/intradesk/') ||
+        uri.path == _uploadDirectoryPath) {
+      _recordIntradeskAnswer(options, response.statusCode ?? 0, body);
+      return null;
+    }
+    if (uri.path.startsWith(_lessonContentApi)) {
+      _recordLessonContentAnswer(options, response.statusCode ?? 0, body);
       return null;
     }
     if (uri.path != '/' || query['module'] != 'Messages') return null;
@@ -911,6 +1366,136 @@ class LiveWireGuard extends Interceptor {
         final id = int.tryParse(_param(xml, 'msgID') ?? '');
         if (id == null) return;
         markAnswers.add((action: action, id: id, answer: body));
+    }
+  }
+
+  /// The path that hands out an upload directory (#128).
+  static const _uploadDirectoryPath = '/upload/api/v1/get-upload-directory';
+
+  /// Keeps what Smartschool's answer [body], with [status], to the Intradesk
+  /// request [options] (or to a request for an upload directory) says the
+  /// run may write in or to (#128): the upload directory it hands out, the
+  /// test folder its listings name, the items the run made, and those it
+  /// moved to the trash. An answer the guard cannot read says nothing.
+  void _recordIntradeskAnswer(RequestOptions options, int status, String body) {
+    final path = options.uri.path;
+    final method = options.method.toUpperCase();
+    Object? json() {
+      try {
+        return jsonDecode(body);
+      } on FormatException {
+        return null;
+      }
+    }
+
+    if (path == _uploadDirectoryPath) {
+      final answer = json();
+      final dir = answer is Map ? answer['uploadDir'] : null;
+      if (status == 200 && dir is String && dir.isNotEmpty) {
+        _uploadDirs.add(dir);
+      }
+      return;
+    }
+    final rest = _intradeskPath.firstMatch(path)?.group(2);
+    if (rest == null) return;
+    if (method == 'GET') {
+      _recordIntradeskListing(rest, status, json());
+      return;
+    }
+    if (status < 200 || status >= 300) return;
+    if (rest == 'folders/' || rest == 'weblinks/') {
+      final answer = json();
+      final id = answer is Map ? answer['id'] : null;
+      if (id is String && id.isNotEmpty) {
+        _intradeskMade[id.toLowerCase()] = rest.substring(0, rest.length - 1);
+      }
+      return;
+    }
+    if (rest == 'files/upload') {
+      final answer = json();
+      final files = answer is Map ? answer['files'] : null;
+      if (files is Map) {
+        for (final id in files.keys) {
+          _intradeskMade['$id'.toLowerCase()] = 'files';
+        }
+      }
+      return;
+    }
+    final trash = _intradeskTrash.firstMatch(rest);
+    if (trash != null) _intradeskTrashed.add(trash.group(2)!.toLowerCase());
+  }
+
+  /// Keeps what Smartschool's answer [body], with [status], to the Lesfiches
+  /// request [options] says the run may write to (#129): the lesfiches it
+  /// made (the `id` of a create's answer), and those it moved to the trash
+  /// (an answer with no `exceptions`). An answer the guard cannot read says
+  /// nothing.
+  void _recordLessonContentAnswer(
+    RequestOptions options,
+    int status,
+    String body,
+  ) {
+    if (options.method.toUpperCase() != 'POST') return;
+    if (status < 200 || status >= 300) return;
+    final rest = options.uri.path.substring(_lessonContentApi.length);
+    Object? answer;
+    try {
+      answer = jsonDecode(body);
+    } on FormatException {
+      return;
+    }
+    if (rest == 'lessons/' || rest == 'assignments/') {
+      final id = answer is Map ? answer['id'] : null;
+      if (id is String && id.isNotEmpty) {
+        _lessonContentMade[id.toLowerCase()] = rest.substring(
+          0,
+          rest.length - 1,
+        );
+      }
+      return;
+    }
+    if (rest == 'lesson-content/trash/bulk') {
+      final exceptions = answer is Map ? answer['exceptions'] : null;
+      final data = options.data;
+      final list = data is Map ? data['lessonContent'] : null;
+      if (exceptions is! List || exceptions.isNotEmpty || list is! List) {
+        return;
+      }
+      for (final entry in list) {
+        if (entry is Map && entry['id'] is String) {
+          _lessonContentTrashed.add((entry['id'] as String).toLowerCase());
+        }
+      }
+    }
+  }
+
+  /// Keeps the test folder that the Intradesk listing [answer] of [rest]
+  /// (`directory-listing/forTreeOnlyFolders[/<id>]`) names: `2. SMA` at the
+  /// root, and `tests` in it.
+  void _recordIntradeskListing(String rest, int status, Object? answer) {
+    const listing = 'directory-listing/forTreeOnlyFolders';
+    if (status != 200 || answer is! Map) return;
+    final folders = answer['folders'];
+    if (folders is! List) return;
+    final String listed;
+    if (rest == listing) {
+      listed = '';
+    } else if (rest.startsWith('$listing/')) {
+      listed = rest.substring(listing.length + 1).toLowerCase();
+    } else {
+      return;
+    }
+    final (parentName, folderName) = liveIntradeskFolder;
+    for (final folder in folders.whereType<Map<dynamic, dynamic>>()) {
+      final id = folder['id'];
+      final parent = '${folder['parentFolderId'] ?? ''}'.toLowerCase();
+      if (id is! String || parent != listed) continue;
+      if (listed.isEmpty && folder['name'] == parentName) {
+        _intradeskParents.add(id.toLowerCase());
+      } else if (_intradeskParents.contains(listed) &&
+          folder['name'] == folderName) {
+        _intradeskTestFolders.add(id.toLowerCase());
+      }
     }
   }
 

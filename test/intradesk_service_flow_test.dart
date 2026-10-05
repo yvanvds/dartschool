@@ -8,11 +8,12 @@
 // - Guard-rail behaviour when optional sub-objects are absent
 // - toString helpers
 //
-// There is no end-to-end test for Intradesk: it is checked against an
-// authenticated session with the live MCP researcher
-// (`bin/smartschool_researcher_mcp.dart`). The live suite in `test/live/`
-// (`dart test -P live test/live`, see "Live tests" in the README) covers
-// messages only.
+// The reads of Intradesk are checked against an authenticated session with
+// the live MCP researcher (`bin/smartschool_researcher_mcp.dart`). The writes
+// (#128) have a live test in the live suite,
+// `test/live/intradesk_write_live_test.dart` (`dart test -P live
+// test/live`, see "Live tests" in the README), and offline tests in
+// `intradesk_write_test.dart`.
 
 import 'dart:convert';
 

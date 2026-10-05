@@ -2,8 +2,11 @@
 // pupils of a class, or the module's reason for listing none, against the
 // Presence module of credentials.yml; the names of the statuses its
 // half-days hold, which the onlyReplacing check of setLate and setPresent
-// compares (#105); and the active class of getConfig, a class or none, with
-// a placeholder such as the class -2 ("Uit Planner") kept apart (#117).
+// compares (#105); the active class of getConfig, a class or none, with
+// a placeholder such as the class -2 ("Uit Planner") kept apart (#117); and
+// the names of the statuses of a grouping class, which has no structure:
+// the name the module gives with each half-day, and the codes of the
+// structure of each pupil's official class (#126).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -18,10 +21,13 @@
 // getConfig; getClass for a class the account may record for (a week ago,
 // each of the seven days before today, and some eight weeks ahead), for a
 // class ID the module does not know and, when getConfig gives one, for the
-// placeholder active class; and getAllCodes for the class's school
-// structure. It changes no presence: it calls no setLate or setPresent, so
-// the onlyReplacing check and the half-day a save returns (#105) are tested
-// offline only (presence_set_status_test.dart); LiveWireGuard
+// placeholder active class, and for a grouping class (from yesterday back to
+// the last day with half-days, at most a week); and getAllCodes for the
+// class's school structure and for those of the official classes of the
+// grouping class's pupils. It changes no presence: it calls no setLate or
+// setPresent, so the onlyReplacing check and the half-day a save returns
+// (#105) are tested offline only (presence_set_status_test.dart);
+// LiveWireGuard
 // (support/live_wire_guard.dart) refuses every Presence request but those
 // three reads, a save of presences above all, and each test checks that the
 // library did not even try one. As every live run, it takes the lock of the
@@ -268,6 +274,9 @@ void main() {
                     '${halfDay.codeId}, aliasID ${halfDay.aliasId}, which '
                     'getAllCodes(${recordable.structId}) does not name',
               );
+              // The name the module gives with the record is the same
+              // (#126).
+              expect(halfDay.statusName, status);
               held.add(status!);
             }
           }
@@ -288,6 +297,109 @@ void main() {
         );
         expect(halfDays, greaterThan(0), reason: 'no half-day in a week');
         expect(held, isNotEmpty);
+        expect(attempts.presenceWritesSince(mark), isEmpty);
+      });
+
+      test('a grouping class, without a structure: each half-day carries the '
+          "name of its status, which the codes of the structure of the pupil's "
+          'official class give too (#126)', () async {
+        final mark = attempts.requests.length;
+        final groupingClasses = [
+          for (final c in config.allowedClasses)
+            if (c.structId == null && !c.isPlaceholder) c,
+        ];
+        // Seen 2026-10-05, with the absence-administrator rights on: 17
+        // grouping classes, 6 of them naming the classes they group (such as
+        // 2A), beside 103 official classes.
+        print(
+          'getConfig: ${groupingClasses.length} grouping classes, '
+          '${groupingClasses.where((c) => c.downStreamGroupIds.isNotEmpty).length} '
+          'naming the classes they group',
+        );
+        if (groupingClasses.isEmpty) {
+          markTestSkipped('getConfig lists no grouping class to this account');
+          return;
+        }
+
+        // An official class groups none; the classes a grouping class names
+        // are official classes, when getConfig lists them.
+        for (final c in config.allowedClasses) {
+          if (c.structId != null) {
+            expect(c.downStreamGroupIds, isEmpty, reason: '${c.groupId}');
+          }
+        }
+        for (final c in groupingClasses) {
+          for (final id in c.downStreamGroupIds) {
+            final grouped = config.classForGroup(id);
+            if (grouped != null) {
+              expect(grouped.structId, isNotNull, reason: '$id');
+            }
+          }
+        }
+
+        // One that names the classes it groups when there is one.
+        final grouping = groupingClasses.firstWhere(
+          (c) => c.downStreamGroupIds.isNotEmpty,
+          orElse: () => groupingClasses.first,
+        );
+        var halfDays = 0;
+        var byOfficialClass = 0;
+        final unresolved = <int?>{};
+        // Back from yesterday to the last day with half-days, at most a week.
+        for (var back = 1; back <= 7 && halfDays == 0; back++) {
+          final pupils = await classPupils(
+            grouping.groupId,
+            day.subtract(Duration(days: back)),
+          );
+          for (final pupil in pupils) {
+            final official = pupil.officialClassId == null
+                ? null
+                : config.classForGroup(pupil.officialClassId!);
+            final structId = official?.structId;
+            if (structId == null) unresolved.add(pupil.officialClassId);
+            final codes = structId == null
+                ? null
+                : await presence.getAllCodes(structId);
+            for (final halfDay in pupil.halfDays) {
+              halfDays++;
+              expect(
+                halfDay.statusName,
+                isNotNull,
+                reason:
+                    'a half-day of ${halfDay.presenceDate} in class '
+                    '${grouping.groupId} (codeID ${halfDay.codeId}, aliasID '
+                    '${halfDay.aliasId}) carries no name',
+              );
+              if (codes != null) {
+                byOfficialClass++;
+                expect(
+                  PresenceService.statusNameOf(halfDay, codes),
+                  halfDay.statusName,
+                  reason:
+                      'codeID ${halfDay.codeId}, aliasID ${halfDay.aliasId} '
+                      'in getAllCodes($structId)',
+                );
+              }
+            }
+          }
+        }
+        print(
+          'grouping class ${grouping.groupId} '
+          '(${grouping.downStreamGroupIds.length} classes named): '
+          '$halfDays half-days, $byOfficialClass named by the codes of the '
+          "pupil's official class; official classes not resolved: "
+          '${unresolved.length}',
+        );
+
+        expect(halfDays, greaterThan(0), reason: 'no half-day in a week');
+        expect(grouping.structId, isNull);
+        // Seen 2026-10-05 with the rights on (userCanConfirm): getConfig
+        // listed the official class of every pupil of all seventeen grouping
+        // classes. An account without them is listed fewer classes (#121).
+        if (grouping.userCanConfirm) {
+          expect(unresolved, isEmpty);
+          expect(byOfficialClass, halfDays);
+        }
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });
 

@@ -132,6 +132,18 @@ class PresenceService {
 
   /// Returns the presence codes for [structId], resolved by structure.
   ///
+  /// [structId] is a class's [PresenceClassRef.structId]. A grouping class
+  /// has none (#126): name the statuses of its half-days with
+  /// [PresenceHalfDay.statusName], the status the module gives with each
+  /// record, or with the codes of the structure of each pupil's official
+  /// class: [PresencePupil.officialClassId], whose `structId`
+  /// [PresenceConfig.classForGroup] gives. Do not ask the module for the
+  /// codes without a structure: seen live (read-only, 2026-10-05), it
+  /// answers an empty `structID` with four codes of no structure ("Aanwezig",
+  /// "Te laat", "Afwezig" and "Online aanwezig", `codeID` 1, 2, 3 and 591),
+  /// those of the per-lesson rows, not the codes the half-days hold (such as
+  /// `codeID` 70, "Aanwezig", of the school's structure).
+  ///
   /// Cached per structure; pass [forceRefresh] to re-fetch.
   Future<List<PresenceCode>> getAllCodes(
     int structId, {
@@ -170,6 +182,11 @@ class PresenceService {
   /// the module does not know, which it answers with that same reason. See
   /// [PresenceClassPupils] for what was seen live. A class the module lists
   /// no pupils for is not an error: nothing is thrown for it.
+  ///
+  /// A grouping class (without a [PresenceClassRef.structId]) is listed as
+  /// any class (#126): each pupil with its [PresencePupil.officialClassId],
+  /// and each half-day with its [PresenceHalfDay.statusName], which name its
+  /// status without the codes of a structure (see [statusNameOf]).
   Future<PresenceClassPupils> getClassPupils({
     required int classGroupId,
     required DateTime date,
@@ -580,6 +597,7 @@ class PresenceService {
           movementId: movementId,
           name: p['name'] as String? ?? '',
           halfDays: halfDays,
+          officialClassId: _asInt(p['officialClass']),
         ),
       );
     }
@@ -589,10 +607,15 @@ class PresenceService {
   /// Parses a presence record (of `getClass`, or of the answer to a save) as
   /// a half-day cell, or `null` for a per-lesson row (`hourID` set, or a
   /// `partOfDay` other than `"am"` / `"pm"`).
+  ///
+  /// The status name is the `name` of the record's `code`, the code or
+  /// alias the module gives with the record (#126).
   static PresenceHalfDay? _parseHalfDay(Map<String, dynamic> e) {
     if (e['hourID'] != null) return null; // per-lesson row, not a half-day
     final part = DayPart.fromWire(e['partOfDay'] as String?);
     if (part == null) return null;
+    final code = e['code'];
+    final name = code is Map ? code['name'] : null;
     return PresenceHalfDay(
       presenceId: _asInt(e['presenceID']),
       presenceDate: e['presenceDate'] as String? ?? '',
@@ -600,6 +623,7 @@ class PresenceService {
       codeId: _asInt(e['codeID']),
       aliasId: _asInt(e['aliasID']),
       motivation: e['motivation'] as String? ?? '',
+      statusName: name is String ? _named(name.trim()) : null,
     );
   }
 
@@ -653,6 +677,18 @@ class PresenceService {
   /// - [nothingRecorded] (`""`) when it has neither, or there is no
   ///   [halfDay] (no record yet);
   /// - `null` when its code or alias is not among [codes], or has no name.
+  ///
+  /// For a grouping class, which has no structure ([PresenceClassRef.structId]
+  /// `null`), pass the codes of the structure of the pupil's official class
+  /// ([PresencePupil.officialClassId], whose `structId`
+  /// [PresenceConfig.classForGroup] gives), or take the half-day's own
+  /// [PresenceHalfDay.statusName], the name the module gives with the record
+  /// (#126). Seen live (read-only, 2026-10-05, some 1700 half-days of
+  /// grouping and official classes), both gave the same name for every
+  /// half-day. A record stores its `codeID` without a structure: name it
+  /// with the codes of the pupil's own structure, not those of whichever
+  /// class lists it (the school seen live has one structure, so codes of
+  /// another were not seen).
   static String? statusNameOf(
     PresenceHalfDay? halfDay,
     List<PresenceCode> codes,

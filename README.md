@@ -612,8 +612,8 @@ await presence.setPresent(
 | `setLate({userId, classGroupId, date, part, withoutValidReason, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil late for a half-day; `withoutValidReason` selects the "Te laat zonder geldige reden" alias. With `onlyReplacing`, only changes a half-day that holds one of those statuses (see below). Returns the half-day as stored (#105). |
 | `setPresent({userId, classGroupId, date, part, motivation, onlyReplacing})` | `Future<PresenceSavedHalfDay?>` | Mark a pupil present ("Aanwezig") — useful to clear a status. `onlyReplacing` and the result as for `setLate`. |
 | `getConfig({forceRefresh})` | `Future<PresenceConfig>` | Module config: schoolyear ref date + the classes the account may record, each with `userCanConfirm`, the right to set its half-days (#121). Cached. |
-| `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. |
-| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). |
+| `getAllCodes(structId, {forceRefresh})` | `Future<List<PresenceCode>>` | Presence status codes for a school structure. Cached per structure. A grouping class has no structure: see `PresenceHalfDay.statusName` and `PresencePupil.officialClassId` (#126). |
+| `getClassPupils({classGroupId, date, schoolyearRefDate})` | `Future<PresenceClassPupils>` | Pupils and their am/pm half-day cells for a single day: a `List<PresencePupil>` with what the module said about the class that day (`saveIsAllowed`, `errorMessage`, `classRef`). When it lists no pupils, `errorMessage` says why (#104). Each pupil has its `officialClassId` and each half-day its `statusName`, also for a grouping class (#126). |
 
 Status codes are **not hard-coded** — their numeric IDs are per-school/per-structure, so they are resolved dynamically by name (`Te laat`, `Te laat zonder geldige reden`, `Aanwezig`). The service handles both updating an existing half-day cell and creating one where none exists, and surfaces a non-empty server `errors[]` as a `SmartschoolPresenceError`.
 
@@ -1226,7 +1226,7 @@ final noLessonNow = config.activePlaceholder != null;
 ```
 
 ### `PresenceClassRef`
-A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `userCanRecord`, `userCanConfirm`, `isOfficial`. `userCanConfirm` ("bevestigen") is the right to set the class's half-days, which `setLate` and `setPresent` need; `userCanRecord` ("registreren") is not, and is true for every class of a teacher without that right (seen live, #121; it looks like the registration per lesson, which this library does not do). Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
+A class as listed by the Presence config. Fields: `groupId`, `name`, `adminNumber` (`int?`), `instituteNumber` (`int?`), `structId` (`int?` — `null` for virtual grouping classes), `downStreamGroupIds` (`List<int>`, the `groupID`s of the classes it groups, the module's `downStreamGroups`, #126), `userCanRecord`, `userCanConfirm`, `isOfficial`. `userCanConfirm` ("bevestigen") is the right to set the class's half-days, which `setLate` and `setPresent` need; `userCanRecord` ("registreren") is not, and is true for every class of a teacher without that right (seen live, #121; it looks like the registration per lesson, which this library does not do). Getter `isPlaceholder`: no class but a placeholder the module gives in the place of one, a `groupId` below 1, such as the class `-2` ("Uit Planner") (#117).
 
 ### `PresenceCode` / `PresenceAlias`
 A presence status code (`codeId`, `code`, `name`, `aliases`) and its aliases (`aliasId`, `parentCodeId`, `name`). Codes are per-structure, resolved by name. `PresenceCode.aliasByName(name)` looks up an alias case-insensitively.
@@ -1248,7 +1248,27 @@ if (pupils.isEmpty) {
 ```
 
 ### `PresencePupil` / `PresenceHalfDay`
-Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell. `PresenceService.statusNameOf(halfDay, codes)` names the status a cell holds (#105).
+Returned by `PresenceService.getClassPupils()`, as a `PresenceClassPupils`. A pupil (`userId`, `movementId`, `name`, `halfDays`) and its half-day cells (`presenceId` — `null` when no record yet, `presenceDate`, `part`, `codeId`, `aliasId`, `motivation`). `PresencePupil.halfDayFor(part, {date})` returns the matching cell. `PresenceService.statusNameOf(halfDay, codes)` names the status a cell holds (#105). `PresencePupil.officialClassId` (`int?`) is the `groupID` of the pupil's official class (the module's `officialClass`), and `PresenceHalfDay.statusName` (`String?`) the name of the status the module gives with the record (the `name` of its `code`, an alias's name for an alias), `null` when the record carries none (#126).
+
+**Grouping classes (#126).** A grouping class (`isOfficial` false, `structId` `null`, such as "2A" or "Taalatelier groep 1") has no structure to ask `getAllCodes` for, but `getClassPupils` lists its pupils with their half-days, the same records as in their official classes. Name their statuses with `halfDay.statusName`, which needs no other request, or with the codes of the structure of each pupil's official class. Do not ask for the codes without a structure: seen live (read-only, 2026-10-05), the module answers an empty `structID` with the four codes of the per-lesson rows ("Aanwezig", "Te laat", "Afwezig", "Online aanwezig"), which name none of the half-days. Seen live, both names were the same for every half-day (some 1700, of grouping and official classes), and every pupil of the school's 17 grouping classes had an official class that `getConfig` listed with the school's structure (to an account with the absence-administrator rights). `downStreamGroupIds` is not the list of those official classes: 11 of the 17 grouping classes name none, and one listed a pupil who had moved to a class it does not name. `setLate` / `setPresent` still refuse a grouping class: set the half-day in the pupil's official class.
+
+```dart
+final config = await presence.getConfig();
+final pupils = await presence.getClassPupils(
+  classGroupId: 1650, // a grouping class: structId is null
+  date: DateTime(2026, 10, 2),
+  schoolyearRefDate: config.schoolyearRefDate,
+);
+for (final pupil in pupils) {
+  final structId = config.classForGroup(pupil.officialClassId ?? 0)?.structId;
+  final codes = structId == null ? null : await presence.getAllCodes(structId);
+  for (final halfDay in pupil.halfDays) {
+    print(codes == null
+        ? halfDay.statusName
+        : PresenceService.statusNameOf(halfDay, codes));
+  }
+}
+```
 
 ### `PresenceSavedHalfDay`
 Returned by `PresenceService.setLate()` / `setPresent()` (#105): a `PresenceHalfDay`, the record the Presence module answered the save with (a new `presenceId` for a half-day that had no record; `codeId` `null` for an alias), with `before` (`PresenceHalfDay?`), the half-day as the call read it right before the save. The calls return `null` when the save's answer holds no record of the half-day.

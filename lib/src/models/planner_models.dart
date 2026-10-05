@@ -15,7 +15,9 @@
 /// [PlannerUser.calendar], [PlannerGroup.calendar] and
 /// [PlannerLocation.calendar] give the calendar of a user, class or location
 /// that an element names; [PlannerSearchResult.calendar] that of a user,
-/// class or location found by name.
+/// class or location found by name. `PlannerService.getCalendar` names a
+/// calendar by its ID, as a [PlannerSearchResult], or tells that the planner
+/// does not know it (#127).
 library;
 
 import '../exceptions.dart';
@@ -156,6 +158,9 @@ enum PlannerSearchResultKind {
 /// Returned by `PlannerService.searchCalendars`. Read the calendar with
 /// `PlannerService.getPlannedElements(result.calendar!, ...)`.
 ///
+/// `PlannerService.getCalendar` returns one too: the calendar it was given,
+/// named by its ID, in the same form (#127).
+///
 /// Users are not told apart: teachers, pupils and co-accounts come in the
 /// same form. A co-account has an ID of its own (ending in its number, such
 /// as `_1`) and a [description] such as `Interimaris van ...`. To keep
@@ -199,6 +204,15 @@ class PlannerSearchResult {
   /// The icon the search list shows (`briefcase` for a class), or `null`.
   final String? icon;
 
+  /// Whether the planner counts what was found as deleted
+  /// (`state.deleted.isDeleted`): a user who left the school.
+  ///
+  /// The search leaves deleted users out (the service does not send the
+  /// planner's `include-deleted` option), so its hits are not deleted;
+  /// `PlannerService.getCalendar` names a deleted user too, with this set
+  /// (seen live, 2026-10-05, #127).
+  final bool isDeleted;
+
   /// The hit as the planner gave it (decoded JSON, read-only), for the
   /// fields this model does not cover.
   final Map<String, dynamic> raw;
@@ -213,6 +227,7 @@ class PlannerSearchResult {
     this.description = '',
     this.pictureUrl,
     this.icon,
+    this.isDeleted = false,
     this.raw = const {},
   });
 
@@ -259,6 +274,12 @@ class PlannerSearchResult {
     final name = (_optionalString(origin['name']) ?? '').trim();
     final description = (_optionalString(origin['description']) ?? '').trim();
     final picture = _optionalString(origin['userPictureUrl']) ?? '';
+    final state =
+        _optionalMap(json['state'], 'the state of $what') ??
+        const <String, dynamic>{};
+    final deleted =
+        _optionalMap(state['deleted'], 'the deleted state of $what') ??
+        const <String, dynamic>{};
     return PlannerSearchResult(
       id: id,
       typeName: typeName,
@@ -273,6 +294,7 @@ class PlannerSearchResult {
           ? picture
           : (graphic['type'] == 'image' ? graphicValue : null),
       icon: graphic['type'] == 'icon' ? graphicValue : null,
+      isDeleted: _bool(deleted['isDeleted']),
       raw: Map.unmodifiable(json),
     );
   }
@@ -280,7 +302,8 @@ class PlannerSearchResult {
   @override
   String toString() =>
       'PlannerSearchResult($typeName $id, $name'
-      '${description.isEmpty ? '' : ' ($description)'})';
+      '${description.isEmpty ? '' : ' ($description)'}'
+      '${isDeleted ? ', deleted' : ''})';
 }
 
 /// The text of a list of highlighted parts (`[{"part": "6A", "isHighlighted":

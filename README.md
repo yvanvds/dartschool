@@ -794,7 +794,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ## `PlannerService`
 
-Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name and the workload calls, POSTs that only read.
+Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name, the lookup of a calendar by its ID and the workload calls, POSTs that only read.
 
 In the **own planner** only, it fills an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library (see `LessonContentService`) and clears the hour again (see *Lessons in the own planner*), adds an assignment for classes and moves it to the planner's trash again (see *Assignments in the own planner*), and changes the name and info of an own lesson or assignment: eight writes, each for one element, after checks that keep them out of colleagues' elements.
 
@@ -806,6 +806,10 @@ final hits = await planner.searchCalendars('6A1');  // List<PlannerSearchResult>
 final klas = hits
     .firstWhere((hit) => hit.kind == PlannerSearchResultKind.group)
     .calendar!;                                    // PlannerCalendar
+
+// A calendar named by its ID; null when the planner does not know it.
+final named = await planner.getCalendar(klas);     // PlannerSearchResult?
+print(named?.name ?? 'no such planner');
 
 // The own planner of one week.
 final me = await planner.ownCalendar();            // PlannerCalendar
@@ -857,6 +861,23 @@ for (final test in tests) {
 | `PlannerSearchResultKind.other` | anything else | `null` |
 
 **Users are not told apart**: teachers, pupils and co-accounts come with the same fields, and no field says which is which. A co-account has an ID of its own (ending in its number, such as `_1`) and a `description` such as `Interimaris van ...`; the `title` of the pupils seen live ended in their class, but that is display text, which the library does not rely on. To keep teachers only, compare the user ID (the middle part of the calendar ID) with `SkoreService.getTeachers()`. The search is a `POST quick-search/planner/search` with `{"searchString": text, "searchOptions": []}`, as the web client sends it; it only reads. The planner's `include-deleted` option is not sent, and the favourites of the search (which the planner keeps per user) are not touched.
+
+### Naming a calendar by its ID
+
+`getCalendar(calendar)` names a calendar by its ID, as the planner's search names it (a `PlannerSearchResult` whose `calendar` is the one asked for: `name`, `title`, `description`, `isDeleted`, ...), or returns `null` when the planner does not know the ID (#127). This tells a calendar ID that names no planner from a planner with nothing planned, which `getPlannedElements` does not: the planner does not check the ID whose elements it lists (seen live, 2026-10-05):
+
+| Calendar ID | `getPlannedElements` | `getCalendar` |
+|---|---|---|
+| a user, class or room with nothing planned | `[]` | the user, class or room |
+| a room the planner does not have | `[]` | `null` |
+| a user or class the planner does not have (a made-up ID, a co-account number the user does not have, an ID of another platform) | `SmartschoolPlannerError` with `statusCode` `500` | `null` |
+| a group the planner's search does not find either (seen live: groups with the icon `star_green`, whose planner page `/planner/main/group/{id}` does name them) | `[]` | `null` |
+
+- A **deleted user** is named, with `isDeleted` set (the search leaves deleted users out).
+- The **own calendar** is named after the authenticated user (`authenticatedUser.name`): the planner itself names it `%quicksearch.me%` (`Mezelf` in the web client).
+- The lookup is a `POST quick-search/planner/start` with `{"users": [], "groups": [], "miniDbItems": []}` and the calendar ID in the list of its kind (a location in `miniDbItems`): the request with which the planner's web client opens its search field, whose `selection` names the calendars it is given. It only reads; the search's suggestions and the user's favourites in its answer are not returned.
+- A `SmartschoolPlannerError` when the planner answers with another status (`500` for a class ID whose part after the platform ID is not a number, such as `4069_abc`), or names another calendar than the one asked for (it reads the parts of a user or class ID as numbers, and answered `4069_04256` as `4069_4256`).
+- Whether the planner names other users' calendars for an account that may not see other planners was not tried.
 
 ### Assignment types and workload
 
@@ -1060,7 +1081,8 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 |---|---|---|
 | `ownCalendar()` | `Future<PlannerCalendar>` | The planner of the authenticated user. |
 | `searchCalendars(text)` | `Future<List<PlannerSearchResult>>` | The users, classes and locations whose name holds `text`, in the planner's order, each with its calendar (see *Finding a calendar by name*). An empty text throws an `ArgumentError` before anything is sent. |
-| `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. |
+| `getCalendar(calendar)` | `Future<PlannerSearchResult?>` | The calendar named by its ID, as the planner's search names it (a deleted user too, with `isDeleted`; the own calendar after the authenticated user); `null` when the planner does not know the ID (see *Naming a calendar by its ID*). |
+| `getPlannedElements(calendar, {from, to, types})` | `Future<List<PlannedElement>>` | The elements of the calendar in the period, in the planner's order. `types` keeps only those types (`null`: every type). A whole school year in one request works. The planner does not check the calendar ID: a room it does not have is an empty list, a user or class it does not have a `SmartschoolPlannerError` with `statusCode` `500`; `getCalendar` tells them apart. |
 | `getPlannedElement({type, typeName, platformId, id})` | `Future<PlannedElementDetail>` | The full detail of one element, by its `type` or by its `typeName`, the planner's name of the type (`planned-lessons`, as `PlannedElement.typeName` keeps it; also for a type the library does not know): pass one of the two. Neither or both, `PlannedElementType.other`, a `typeName` not of the planner's form (`planned-` and words of lowercase letters and digits joined by hyphens) or an empty `id` throw an `ArgumentError` before anything is sent. |
 | `getDetail(element)` | `Future<PlannedElementDetail>` | The same, for a listed element (also one of a type the library does not know). |
 | `getAssignmentTypes()` | `Future<List<PlannerAssignmentType>>` | The school's assignment types (such as `Kleine Overhoring`, `KO`), in the planner's order. |
@@ -1087,7 +1109,7 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 
 ### Errors
 
-- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID). The session was accepted: signing in again does not help.
+- `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses, or `500` for the elements of a user or class it does not have), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID, and a lookup of `getCalendar` that names another calendar than the one asked for). The session was accepted: signing in again does not help.
 - `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash, or a `typeName` the planner does not have (carries `elementType`, `platformId`, `elementId`). Also from a write, for the element it reads again first (such as a slot that was filled since it was read): nothing was sent.
 - `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, an assignment type the school does not have, ...). Nothing was sent. Carries the check as `reason` (a `PlannerWriteRefusalReason`), the `element` as read again, the `capabilityFlags`, for a lesfiche that is not a lesson one the `lessonContent`, and for an assignment type the school does not have the school's `assignmentTypes` as the check read them (see *Why a write was refused*). From the writes, every `SmartschoolPlannerError` means nothing was sent.
 - `SmartschoolLessonContentError` — `planLessonContent` could not read the lesfiches before planning one (see `LessonContentService`). Nothing was sent.
@@ -1298,7 +1320,7 @@ Returned by `SkoreService.shareGradebook()` and `unshareGradebook()`. The gradeb
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
 
 ### `PlannerSearchResult`
-Returned by `PlannerService.searchCalendars()`. Fields: `id` (the planner's ID, the calendar ID for a user, class or location), `typeName` (the planner's type: `user`, `group`, `mini-db-2`, ...), `kind` (`PlannerSearchResultKind`), `calendar` (`PlannerCalendar?`; `null` for `other`), `name` (a user first name first, a class, a room), `title` (as the search list shows it: a user last name first, a pupil with the class), `description` (`""` when none: a class's full name, `Interimaris van ...` for a co-account, `Locatie` for a room), `pictureUrl` (`String?`, users), `icon` (`String?`), and `raw` (the hit as the planner gave it, read-only).
+Returned by `PlannerService.searchCalendars()`, and by `PlannerService.getCalendar()` (the calendar named by its ID). Fields: `id` (the planner's ID, the calendar ID for a user, class or location), `typeName` (the planner's type: `user`, `group`, `mini-db-2`, ...), `kind` (`PlannerSearchResultKind`), `calendar` (`PlannerCalendar?`; `null` for `other`), `name` (a user first name first, a class, a room), `title` (as the search list shows it: a user last name first, a pupil with the class), `description` (`""` when none: a class's full name, `Interimaris van ...` for a co-account, `Locatie` for a room), `pictureUrl` (`String?`, users), `icon` (`String?`), `isDeleted` (the planner counts the user as deleted, `state.deleted.isDeleted`; never set on a search hit, which leaves deleted users out), and `raw` (the hit as the planner gave it, read-only).
 
 ### `PlannedElement`
 Returned by `PlannerService.getPlannedElements()`. Fields: `id` (a UUID), `platformId`, `type` (`PlannedElementType`; `other` for a type the library does not know), `typeName` (the planner's name of the type, such as `planned-lessons`), `name` (`String?`; `null` on a timetable slot), `period` (`PlannerPeriod`: `from`, `to` in local time, `wholeDay`, `deadline`), `organiserUsers` / `organiserGroups`, `participantUsers` / `participantGroups`, `isParticipant`, `capabilities` (`PlannedElementCapabilities`), `icon` (`String?`), `courses`, `locations`, `assignmentType` (`PlannerAssignmentType?`, assignments only), `resolvedStatus` (`String?`, assignments only), `pinned`, `unconfirmed`, `color`, and `raw` (the element as the planner gave it, read-only, for the fields the model does not cover).
@@ -1339,7 +1361,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `DayPart` | `morning` (`"am"`), `afternoon` (`"pm"`) |
 | `SkoreShareAccess` | `read` (Skore's `readers`), `write` (Skore's `writers`: read and change) |
 | `PlannerCalendarType` | `user`, `group`, `location` (`wireName`: the name in the planner's URL) |
-| `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found) |
+| `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found, or `getCalendar` named) |
 | `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
 | `LessonContentType` | `lesson` (`lessons`), `assignment` (`assignments`), `other` (`wireName`: the Lesfiches module's name; `null` for `other`) |
 | `PlannerVisibilityOption` | `always`, `never`, `atStart` (`at-start`), `atEnd` (`at-end`), `daysAfterEnd` (`days-after-end`), `other` (`wireName`: the planner's name; `null` for `other`). From when pupils see an attachment or weblink of a planned element; only `always` was seen live |

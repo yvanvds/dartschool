@@ -76,6 +76,18 @@ const _skoreResults = {
       '"class":"5WW1","readers":[],"writers":[]}]',
 };
 
+/// The planner's lookup of a calendar by ID (#127), the one planner POST the
+/// live suite sends.
+const _plannerLookup = '/planner/api/v1/quick-search/planner/start';
+
+/// The planner's answer to the lookup of class `4069_2001`, trimmed to the
+/// class (made up).
+const _plannerLookupAnswer =
+    '{"selection":[{"identifier":{"id":"4069_2001","type":"group"},'
+    '"title":[{"part":"6A1","isHighlighted":false}],"description":[],'
+    '"origin":{"groupIdentifier":"4069_2001","name":"6A1",'
+    '"description":"6 Latijn 1"}}],"suggestions":[],"favourites":[]}';
+
 /// The Presence module's answers to its reads (#104, #105), by path, with a
 /// made-up pupil; any other Presence request is answered as a save that went
 /// through. The account may set the half-days of the class
@@ -231,6 +243,8 @@ class _Smartschool implements HttpClientAdapter {
           '{"result":${_skoreResults[method] ?? '{"state":1}'},"session":1}',
           contentType: 'application/json',
         );
+      case (true, _plannerLookup, _, _):
+        return _answer(_plannerLookupAnswer, contentType: 'application/json');
       case (false, '/', 'index', 'main'):
         final folder = archiveFolder;
         return _answer(
@@ -685,6 +699,19 @@ void main() {
         '$_skoreOwners getTeachers',
         '$_skoreGradebooks getCourses',
       ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the planner\'s lookup of a calendar by ID (#127)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+
+      final klas = await PlannerService(
+        client,
+      ).getCalendar(PlannerCalendar.group('4069_2001'));
+
+      expect(klas!.name, '6A1');
+      expect(server.log, ['POST $_plannerLookup']);
       expect(guard.violations, isEmpty);
     });
 
@@ -1537,6 +1564,41 @@ void main() {
           ),
       ]);
     });
+
+    test(
+      'any planner POST but its lookup of a calendar by ID (#127)',
+      () async {
+        final server = _Smartschool(replyForm: _replyFormFromOwn);
+        final (_, guard) = await _guardedClient(server);
+        final dio = _dio(server, guard);
+
+        // The search (which only reads, but the live suite does not send it),
+        // a change of the user's favourites, the clear of a lesson hour, and
+        // the move of a whole period to the trash.
+        final others = [
+          '/planner/api/v1/quick-search/planner/search',
+          '/planner/api/v1/quick-search/planner/mark-as-favourite',
+          '/planner/api/v1/planned-elements/clear',
+          '/planner/api/v1/planned-elements/user/4069_1001_0/trash'
+              '?from=2026-10-05&to=2026-10-09',
+        ];
+        for (final path in others) {
+          await expectLater(
+            dio.post<String>(path, data: {'users': <Object>[]}),
+            throwsA(isA<DioException>()),
+          );
+        }
+
+        expect(server.log, isEmpty);
+        expect(_violations(guard), [
+          for (final path in others)
+            allOf(
+              contains('POST $path was not sent'),
+              contains('changes nothing in the planner'),
+            ),
+        ]);
+      },
+    );
 
     test('a recipient search on a compose form not loaded through it, or with '
         'a selection (#97)', () async {

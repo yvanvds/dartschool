@@ -57,6 +57,11 @@
 //   the live suite changes nothing in Skore, which drives the school's
 //   grading and has no test instance, and both services also hold methods
 //   that write, delete or lock (saveOwner, saveShared, deleteTeacher, ...);
+// - any POST to the planner but its lookup of a calendar by ID
+//   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
+//   only reads: the live suite changes nothing in the planner, whose POSTs
+//   also fill and clear lesson hours, add assignments and move a whole
+//   period to the trash;
 // - any other request that changes something, and a second login.
 //
 // A refused request fails the test that sent it, as forbidRealNetwork() does
@@ -334,6 +339,7 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/modules/Skore/')) {
       return _skoreRefusal(path, options.data);
     }
+    if (path.startsWith('/planner/')) return _plannerRefusal(path);
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -394,6 +400,19 @@ class LiveWireGuard extends Interceptor {
     return 'the live suite changes nothing in Skore: it sends no Skore POST '
         'but the reads getTeachers (owners.php) and getCourses '
         '(rapportbeheer/rpc/data.php) (#91)';
+  }
+
+  /// The planner's POSTs that the live suite sends, which only read: the
+  /// lookup of a calendar by ID (PlannerService.getCalendar, #127).
+  static const _plannerReads = {'/planner/api/v1/quick-search/planner/start'};
+
+  /// Why the planner POST to [path] may not go out, or `null`: only the
+  /// lookup goes out, never a write.
+  String? _plannerRefusal(String path) {
+    if (_plannerReads.contains(path)) return null;
+    return 'the live suite changes nothing in the planner: it sends no '
+        'planner POST but the lookup of a calendar by ID, '
+        'quick-search/planner/start (#127)';
   }
 
   /// The XML commands that only read.

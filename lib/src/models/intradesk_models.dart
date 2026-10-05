@@ -68,7 +68,26 @@ class IntradeskPlatform {
 /// Capabilities attached to a folder.
 class IntradeskFolderCapabilities {
   final bool canManage;
+
+  /// Whether the user may add to the folder: an ordinary folder, a weblink
+  /// or a file, in an ordinary folder; a confidential folder, in a
+  /// confidential one (`IntradeskService.createFolder`, `createWeblink`,
+  /// `uploadFiles`, #128). The web client offers none of them without it.
   final bool canAdd;
+
+  /// Whether the user may add a confidential folder here
+  /// (`IntradeskService.createFolder(confidential: true)`, #128): Smartschool's
+  /// `canAddConfidentialFolder`, `false` when the answer does not carry it.
+  ///
+  /// The web client's folder model has it (default `false`), and offers a
+  /// confidential folder at the root only when it is set; the platform
+  /// capabilities in the Intradesk page's configuration carry it. The folder
+  /// listings do not: none of the folders listed live (2026-10-05) carried
+  /// it, so it is `false` for every folder of a listing. Inside a
+  /// confidential folder, the web client offers a confidential folder on
+  /// [canAdd] instead.
+  final bool canAddConfidentialFolder;
+
   final bool canSeeHistory;
   final bool canSeeViewHistory;
 
@@ -77,12 +96,14 @@ class IntradeskFolderCapabilities {
     required this.canAdd,
     required this.canSeeHistory,
     required this.canSeeViewHistory,
+    this.canAddConfidentialFolder = false,
   });
 
   factory IntradeskFolderCapabilities.fromJson(Map<String, dynamic> json) =>
       IntradeskFolderCapabilities(
         canManage: _bool(json, 'canManage'),
         canAdd: _bool(json, 'canAdd'),
+        canAddConfidentialFolder: _bool(json, 'canAddConfidentialFolder'),
         canSeeHistory: _bool(json, 'canSeeHistory'),
         canSeeViewHistory: _bool(json, 'canSeeViewHistory'),
       );
@@ -504,4 +525,120 @@ class IntradeskListing {
   String toString() =>
       'IntradeskListing(folders: ${folders.length}, '
       'files: ${files.length}, weblinks: ${weblinks.length})';
+}
+
+/// A file that Intradesk did not take in an upload (#128): an entry of the
+/// `exceptions` of its answer to `files/upload`.
+///
+/// Not seen live: Intradesk answered every upload tried on 2026-10-05 with
+/// an empty list of exceptions. This follows the web client
+/// (`handleExceptionArray` of `@smartschool/errorhandler`), which reads the
+/// exceptions as an object with an entry per failure, each with a
+/// `violations` object whose first value is the message it shows.
+class IntradeskUploadFailure {
+  /// The key Intradesk gives the failure, going by the web client one per
+  /// file; for an entry of a list, its position in it.
+  final String key;
+
+  /// Intradesk's reasons, in its own words and order (the values of the
+  /// entry's `violations`); empty when it gave none.
+  final List<String> violations;
+
+  const IntradeskUploadFailure({required this.key, required this.violations});
+
+  /// The first of [violations], the one the web client shows; empty when
+  /// there is none.
+  String get message => violations.isEmpty ? '' : violations.first;
+
+  /// Reads the entry [key] of the `exceptions` of an upload answer.
+  factory IntradeskUploadFailure.fromJson(String key, Object? json) {
+    final raw = json is Map ? json['violations'] : json;
+    final List<String> violations;
+    if (raw is Map) {
+      violations = [for (final v in raw.values) '$v'];
+    } else if (raw is List) {
+      violations = [for (final v in raw) '$v'];
+    } else if (raw is String) {
+      violations = [raw];
+    } else {
+      violations = const [];
+    }
+    return IntradeskUploadFailure(
+      key: key,
+      violations: List.unmodifiable(violations),
+    );
+  }
+
+  @override
+  String toString() => 'IntradeskUploadFailure(key: "$key", "$message")';
+}
+
+/// What Intradesk made of an upload (`IntradeskService.uploadFiles`, #128):
+/// its answer to `files/upload`.
+class IntradeskUploadResult {
+  /// The files Intradesk added, as it answered them: the `files` of its
+  /// answer, an object keyed by file ID (not a list), in its order.
+  ///
+  /// A file's name is the name it was uploaded under, unless the folder held
+  /// a file of that name already: Intradesk then renames the new one (seen
+  /// live, 2026-10-05: `dartschool-test.txt` became `dartschool-test
+  /// (1).txt`), so tell the files by their [IntradeskFile.id], not by name.
+  final List<IntradeskFile> files;
+
+  /// The files Intradesk did not take, as its answer lists them in
+  /// `exceptions`; empty when it took all of them (an empty list, as seen
+  /// live).
+  final List<IntradeskUploadFailure> failures;
+
+  const IntradeskUploadResult({required this.files, required this.failures});
+
+  /// Reads Intradesk's answer to `files/upload`:
+  /// `{"files": {"<fileId>": {...}}, "exceptions": []}`.
+  ///
+  /// Throws a [SmartschoolParsingError] when `files` is missing or neither
+  /// an object nor a list, or a file in it lacks a field it must have (such
+  /// as its dates).
+  factory IntradeskUploadResult.fromJson(Map<String, dynamic> json) {
+    final filesRaw = json['files'];
+    final Iterable<Object?> fileEntries;
+    if (filesRaw is Map) {
+      fileEntries = filesRaw.values;
+    } else if (filesRaw is List) {
+      fileEntries = filesRaw;
+    } else {
+      throw SmartschoolParsingError(
+        'An Intradesk upload answer without its files: '
+        '${filesRaw == null ? 'no "files"' : '"files" is a ${filesRaw.runtimeType}'}',
+      );
+    }
+    final files = <IntradeskFile>[];
+    for (final entry in fileEntries) {
+      if (entry is! Map<String, dynamic>) {
+        throw SmartschoolParsingError(
+          'An Intradesk upload answer with a file that is a '
+          '${entry.runtimeType}, not an object',
+        );
+      }
+      files.add(IntradeskFile.fromJson(entry));
+    }
+
+    final exceptionsRaw = json['exceptions'];
+    final failures = <IntradeskUploadFailure>[
+      if (exceptionsRaw is Map)
+        for (final entry in exceptionsRaw.entries)
+          IntradeskUploadFailure.fromJson('${entry.key}', entry.value)
+      else if (exceptionsRaw is List)
+        for (var i = 0; i < exceptionsRaw.length; i++)
+          IntradeskUploadFailure.fromJson('$i', exceptionsRaw[i]),
+    ];
+    return IntradeskUploadResult(
+      files: List.unmodifiable(files),
+      failures: List.unmodifiable(failures),
+    );
+  }
+
+  @override
+  String toString() =>
+      'IntradeskUploadResult(files: ${files.length}, '
+      'failures: ${failures.length})';
 }

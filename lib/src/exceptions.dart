@@ -597,6 +597,13 @@ class SmartschoolJsonError extends SmartschoolDownloadError {
 ///
 /// It is a [SmartschoolDownloadError] with the [statusCode] of the listing
 /// (`500`), so a `catch` of that type still catches it.
+///
+/// The creates of `IntradeskService` throw it too (#128), for a parent
+/// folder Smartschool knows no folder for: `createFolder`, `createWeblink`
+/// and `uploadFiles`. Smartschool answers such a create with the same bare
+/// `500` (seen live, 2026-10-05, for a folder in a made-up parent), and the
+/// service asks for the parents of the parent folder the same way. Nothing
+/// was made then; [folderId] is the parent folder's ID.
 class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
   /// The ID that was asked for.
   final String folderId;
@@ -609,9 +616,147 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
       );
 }
 
-/// Thrown when uploading a message attachment fails.
+/// Thrown by the writes of `IntradeskService` (#128) when Intradesk refused
+/// the write: it answered with an HTTP status from `400` to `499`. **Nothing
+/// was made**: no folder, weblink or file was added, and nothing was moved
+/// to the trash. Seen live (2026-10-05): the listing of the folder showed
+/// nothing new after each such answer.
+///
+/// Intradesk says why in [violations], in its own words (Dutch), when it
+/// gives a reason; seen live with HTTP `400`:
+/// - `createWeblink` with an address that is not a valid URL: "De URL die je
+///   hebt ingegeven is niet geldig." (`createWeblink` checks the URL the way
+///   the web client does before it sends anything, so this only comes from
+///   an address that Intradesk refuses after all);
+/// - `createFolder(confidential: true)` in an ordinary folder: "In een gewone
+///   map kan je enkel gewone mappen toevoegen. Vertrouwelijke mappen kan je
+///   hier niet toevoegen."
+///
+/// `uploadFiles` throws it when Intradesk refuses to take the files of the
+/// upload directory, such as a directory that holds no files (seen live:
+/// HTTP `400` without violations). The files stay in the upload directory,
+/// which is not used again.
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept for the write is a
+/// [SmartschoolSessionExpiredError] instead (nothing was made either: the
+/// creates are never sent again after logging in again). A parent folder
+/// that Smartschool does not know is a
+/// [SmartschoolIntradeskFolderNotFoundError]; Intradesk's answer to other
+/// failures, a bare HTTP `500`, is a
+/// [SmartschoolIntradeskSaveUnconfirmedError].
+class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
+  /// The HTTP status of Intradesk's answer (`400` to `499`).
+  final int statusCode;
+
+  /// Intradesk's reasons, in its own words, in its order; empty when it
+  /// gave none (a bare `{"status":400,"title":"Bad Request"}`).
+  final List<String> violations;
+
+  const SmartschoolIntradeskWriteRefusedError(
+    super.message, {
+    required this.statusCode,
+    this.violations = const [],
+  });
+
+  @override
+  String toString() => '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by the writes of `IntradeskService` (#128) when the write went out
+/// to Intradesk, but Intradesk's answer does not confirm it.
+///
+/// **The change may or may not have been made.** List the folder
+/// (`IntradeskService.getFolderListing`) before trying again: a create that
+/// is sent again when the first one went through adds a second item, since
+/// Intradesk does not refuse a name that is taken but renames the new item
+/// (`name (1)`, seen live on 2026-10-05). `uploadFiles` is the same: sending
+/// its last step again adds the files again (`name (1).ext`). Moving an item
+/// to the trash again is harmless: Intradesk answers the trash of an item
+/// that is in the trash already with `204`, as the first time (seen live).
+///
+/// Thrown when Intradesk answers the write with a status from `500` up
+/// (other than for a parent folder it does not know, which is a
+/// [SmartschoolIntradeskFolderNotFoundError]), or with another status the
+/// write does not expect ([statusCode]); when it answers a create with
+/// something that is not the item made (a body that is not JSON, or JSON in
+/// another shape); and when the write failed after it went out, before an
+/// answer came in ([cause] holds the failure, typically a
+/// [SmartschoolConnectionError]).
+///
+/// The bare `500` (`{"status":500,"title":"Internal Server Error",
+/// "detail":"","type":""}`) is what Intradesk answered, live, for a name
+/// with a `/`, an empty name, a colour it does not know, a missing colour or
+/// icon, and a made-up parent folder; nothing was made for any of them.
+/// `IntradeskService` refuses those before it sends anything (an
+/// [ArgumentError]) or tells the made-up parent apart, so a `500` that
+/// reaches this error has a cause the service does not know, and it does
+/// not assume that nothing was made.
+///
+/// A session that Smartschool refuses for the write is not this error but a
+/// [SmartschoolSessionExpiredError] (or another
+/// [SmartschoolAuthenticationError]): Smartschool refused it before handling
+/// it, so nothing was made.
+///
+/// Deliberately not a [SmartschoolIntradeskWriteRefusedError], so a `catch`
+/// meant for the failures where nothing was made does not catch it.
+class SmartschoolIntradeskSaveUnconfirmedError extends SmartschoolException {
+  /// The HTTP status of Intradesk's answer to the write, or `null` when no
+  /// answer came in (see [cause]).
+  final int? statusCode;
+
+  /// The failure of the write when no usable answer came in, typically a
+  /// [SmartschoolConnectionError]; `null` when Intradesk answered.
+  final Object? cause;
+
+  const SmartschoolIntradeskSaveUnconfirmedError(
+    super.message, {
+    this.statusCode,
+    this.cause,
+  });
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown when Smartschool's upload step fails: the step every module that
+/// takes files goes through first, which uploads the files one by one into
+/// an upload directory (`POST /Upload/Upload/Index`) before the module is
+/// told to take them (#128).
+///
+/// From `MessagesService.sendMessage` and `sendReply`, for an attachment:
+/// the message was not submitted, so nothing was sent. From
+/// `IntradeskService.uploadFiles` (#128): Smartschool gave no upload
+/// directory, or did not take a file into it; Intradesk was not told to take
+/// the files, so nothing was added to it.
+///
+/// Seen live (2026-10-05): a file name with one of `/ : * ? " \ < > |`, or
+/// one that starts with a dot, gets HTTP `400` with the rule in Smartschool's
+/// words as plain text, which [serverMessage] holds. (`IntradeskService`
+/// refuses such a name before it sends anything, with an [ArgumentError].)
 class SmartschoolAttachmentUploadError extends SmartschoolException {
-  const SmartschoolAttachmentUploadError(super.message);
+  /// The name the file was uploaded under, or `null` when the error is not
+  /// about one file (such as an upload directory Smartschool did not give,
+  /// or a file that was not found).
+  final String? fileName;
+
+  /// The HTTP status of Smartschool's answer, or `null` when the error is
+  /// not about an answer (a file that was not found).
+  final int? statusCode;
+
+  /// Smartschool's own words when it refused the file, such as the `400`
+  /// for a name with a character it does not allow; `null` when it did not
+  /// give any.
+  final String? serverMessage;
+
+  const SmartschoolAttachmentUploadError(
+    super.message, {
+    this.fileName,
+    this.statusCode,
+    this.serverMessage,
+  });
 }
 
 /// Thrown when Smartschool's message compose form cannot be used: its hidden

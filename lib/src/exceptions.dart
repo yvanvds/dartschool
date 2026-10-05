@@ -1,7 +1,8 @@
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
-import 'models/lesson_content_models.dart' show LessonContentItem;
+import 'models/lesson_content_models.dart'
+    show LessonContentItem, LessonContentType;
 import 'models/message_models.dart' show BoxType;
 import 'models/planner_models.dart'
     show
@@ -730,12 +731,16 @@ class SmartschoolIntradeskSaveUnconfirmedError extends SmartschoolException {
 /// the message was not submitted, so nothing was sent. From
 /// `IntradeskService.uploadFiles` (#128): Smartschool gave no upload
 /// directory, or did not take a file into it; Intradesk was not told to take
-/// the files, so nothing was added to it.
+/// the files, so nothing was added to it. From the creates of
+/// `LessonContentService` and its `addAttachments` (#129), for an
+/// attachment of a lesfiche: the lesfiche was not made, or the module was
+/// not told to take the files, so nothing was changed.
 ///
 /// Seen live (2026-10-05): a file name with one of `/ : * ? " \ < > |`, or
 /// one that starts with a dot, gets HTTP `400` with the rule in Smartschool's
-/// words as plain text, which [serverMessage] holds. (`IntradeskService`
-/// refuses such a name before it sends anything, with an [ArgumentError].)
+/// words as plain text, which [serverMessage] holds. (`IntradeskService` and
+/// `LessonContentService` refuse such a name before they send anything, with
+/// an [ArgumentError].)
 class SmartschoolAttachmentUploadError extends SmartschoolException {
   /// The name the file was uploaded under, or `null` when the error is not
   /// about one file (such as an upload directory Smartschool did not give,
@@ -1453,6 +1458,16 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
 ///
 /// `PlannerService.planLessonContent` reads the lesfiches before it plans
 /// one; this error from it means that **nothing was sent** to the planner.
+///
+/// From the writes of `LessonContentService` (#129: the creates, the edits,
+/// the weblinks and attachments, the move to the trash), this type and its
+/// subtypes always mean that **nothing was changed**: a read before the
+/// write failed (the school's courses, the assignment types, or the
+/// lesfiche itself for `addAttachments`), or Smartschool refused the write
+/// ([SmartschoolLessonContentWriteRefusedError]), or knows no such lesfiche,
+/// weblink or attachment ([SmartschoolLessonContentNotFoundError]). A write
+/// that went out without Smartschool confirming it is a
+/// [SmartschoolLessonContentSaveUnconfirmedError] instead.
 class SmartschoolLessonContentError extends SmartschoolException {
   /// The HTTP status of the module's answer when it was not `200`; `null`
   /// when the answer had status `200` but could not be used.
@@ -1497,10 +1512,16 @@ class SmartschoolLessonContentError extends SmartschoolException {
 /// [SmartschoolConnectionError]), without the lesfiches: calling `getItems`
 /// again reads both. `LessonContentService.getCourses`, which reads the
 /// course list alone, throws a plain [SmartschoolLessonContentError].
+///
+/// `LessonContentService.getDetail` and `getDetailById` (#129) throw it the
+/// same way, when they read the detail of a lesfiche but not the course list
+/// that names its courses: [items] then holds that one lesfiche, a
+/// `LessonContentDetail` with its courses unnamed.
 class SmartschoolLessonContentCourseListError
     extends SmartschoolLessonContentError {
   /// The lesfiches `getItems` read, in the module's order, with their
-  /// courses unnamed (`LessonContentCourse.name` `null`).
+  /// courses unnamed (`LessonContentCourse.name` `null`); from `getDetail`,
+  /// the one `LessonContentDetail` it read.
   final List<LessonContentItem> items;
 
   const SmartschoolLessonContentCourseListError(
@@ -1508,6 +1529,129 @@ class SmartschoolLessonContentCourseListError
     super.statusCode,
     required this.items,
   });
+}
+
+/// Thrown by `LessonContentService` when the Lesfiches module answers `404`
+/// (#129): it has no lesfiche of that kind with that ID, or, for a write on
+/// a weblink or an attachment, the lesfiche has no such weblink or
+/// attachment.
+///
+/// Seen live (2026-10-05): the detail of a made-up ID, and of a lesson's ID
+/// asked for as an assignment (`assignments/{id}`), answer `404`, and so
+/// does a rename of a lesfiche that is in the trash (whose detail the module
+/// still answers with `200`). From a write, **nothing was changed**.
+///
+/// A [SmartschoolLessonContentError] with [statusCode] `404`.
+class SmartschoolLessonContentNotFoundError
+    extends SmartschoolLessonContentError {
+  /// The kind of lesfiche that was asked for.
+  final LessonContentType type;
+
+  /// The lesfiche ID that was asked for.
+  final String id;
+
+  const SmartschoolLessonContentNotFoundError(
+    super.message, {
+    required this.type,
+    required this.id,
+  }) : super(statusCode: 404);
+}
+
+/// Thrown by the writes of `LessonContentService` (#129) when the Lesfiches
+/// module refused the write: it answered with an HTTP status from `400` to
+/// `499` (other than `404`, a [SmartschoolLessonContentNotFoundError]).
+/// **Nothing was changed.**
+///
+/// The module rarely says why. Seen live (2026-10-05), each with a bare
+/// `{"status":400,"title":"Bad Request","detail":"","type":""}`: a create
+/// with only a name (without the lists the web client sends), a rename to
+/// `""`, and a weblink whose address is not a URL or lacks `http(s)://`.
+/// `LessonContentService` refuses the last two before it sends anything (an
+/// [ArgumentError]), so a `400` that reaches this error has another cause.
+/// When the module gives its reasons (`violations`, as Intradesk does), they
+/// are in [violations].
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept for the write is a
+/// [SmartschoolSessionExpiredError] instead (nothing was changed either: a
+/// create is never sent again after logging in again).
+class SmartschoolLessonContentWriteRefusedError
+    extends SmartschoolLessonContentError {
+  /// The module's reasons, in its own words, in its order; empty when it
+  /// gave none (a bare `400`).
+  final List<String> violations;
+
+  const SmartschoolLessonContentWriteRefusedError(
+    super.message, {
+    required int super.statusCode,
+    this.violations = const [],
+  });
+}
+
+/// Thrown by the writes of `LessonContentService` (#129) when the write went
+/// out to the Lesfiches module, but its answer does not confirm it.
+///
+/// **The change may or may not have been made.** Read the lesfiche
+/// (`LessonContentService.getDetail`, or `getItems` for a create or a move
+/// to the trash) before trying again. The edits set a value, so sending one
+/// again is harmless; but a create that is sent again when the first went
+/// through makes a second lesfiche (the module keeps a name that is taken,
+/// seen live), `addWeblink` a second weblink and `addAttachments` the files
+/// a second time (the module keeps two attachments of the same name, seen
+/// live). A lesfiche that is in the trash already is answered with a bare
+/// `500` when it is moved to the trash again (seen live).
+///
+/// Thrown when the module answers the write with a status from `500` up, or
+/// another status the write does not expect ([statusCode]); with something
+/// that is not what the write made (not JSON, another lesfiche, a value
+/// other than the one sent, a weblink or an attachment missing from the
+/// lesfiche); when a move to the trash answers with `exceptions`; and when
+/// the write failed after it went out, before a usable answer came in
+/// ([cause] holds the failure, typically a [SmartschoolConnectionError]).
+///
+/// A create that the module answered with the new lesfiche's ID, but whose
+/// detail could not be read back, or does not hold everything sent, carries
+/// that ID in [lessonContentId]: **the lesfiche was made** then; read it
+/// with `LessonContentService.getDetailById`, or move it to the trash.
+///
+/// A session that Smartschool refuses for the write is not this error but a
+/// [SmartschoolSessionExpiredError] (or another
+/// [SmartschoolAuthenticationError]): Smartschool refused it before handling
+/// it, so nothing was changed.
+///
+/// Deliberately not a [SmartschoolLessonContentError], so a `catch` meant
+/// for the failures where nothing was changed does not catch it.
+class SmartschoolLessonContentSaveUnconfirmedError
+    extends SmartschoolException {
+  /// The HTTP status of the module's answer to the write, or `null` when no
+  /// answer came in (see [cause]), or the write was confirmed and a later
+  /// step failed.
+  final int? statusCode;
+
+  /// The failure when no usable answer came in, such as a
+  /// [SmartschoolConnectionError], or of the step after the write (the read
+  /// of a new lesfiche's detail, the visibility of an added attachment);
+  /// `null` when the module answered with something that does not confirm
+  /// the write.
+  final Object? cause;
+
+  /// The ID of the lesfiche the write was for: the lesfiche that was edited,
+  /// or, for a create, the ID the module answered with (the lesfiche was
+  /// made); `null` for a create that no ID came back for, and for a move to
+  /// the trash.
+  final String? lessonContentId;
+
+  const SmartschoolLessonContentSaveUnconfirmedError(
+    super.message, {
+    this.statusCode,
+    this.cause,
+    this.lessonContentId,
+  });
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

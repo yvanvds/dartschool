@@ -11,10 +11,12 @@
 // It only reads, with GET requests: the own lesfiches, the school's course
 // list and the own planner from four weeks before to four weeks after today
 // (smartschool-mcp's window), never an element of a colleague or of a class.
-// LiveWireGuard (support/live_wire_guard.dart) refuses every planner and
-// lesfiche POST, and each test checks that the library tried no request but
-// a GET to them. As every live run, it takes the lock of the session first,
-// logs in at most once, and prints no credential, no cookie and no name.
+// LiveWireGuard (support/live_wire_guard.dart) refuses every planner POST
+// but the lookup of a calendar, and every lesfiche write but those of
+// lesson_content_write_live_test.dart on the lesfiches that run made (#129);
+// each test here checks that the library tried no request but a GET to
+// them. As every live run, it takes the lock of the session first, logs in
+// at most once, and prints no credential, no cookie and no name.
 //
 // For a course list that fails (#118), one test answers the GET of the course
 // list itself, with Smartschool's error page and HTTP 500, before it goes

@@ -5,6 +5,7 @@
 //
 // This file is not tagged `live`: it runs offline, in every `dart test`.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -292,6 +293,105 @@ class _Smartschool implements HttpClientAdapter {
     return _answer('{}', contentType: 'application/json');
   }
 
+  /// The lesfiches it made (#129), each as its detail, by ID.
+  final Map<String, Map<String, Object?>> lessonContent = {};
+
+  /// Each Lesfiches write and upload that reached it, as `METHOD <path>`.
+  List<String> get lessonContentWrites => [
+    for (final line in log)
+      if (line.startsWith('POST /lesson-content/') ||
+          line.startsWith('DELETE /lesson-content/') ||
+          line == 'POST /Upload/Upload/Index')
+        line,
+  ];
+
+  /// A new UUID of the fake.
+  String _uuid() =>
+      'dddd${(++_made).toString().padLeft(4, '0')}-0000-4000-8000-000000000000';
+
+  /// Answers a request to the Lesfiches module (#129) as the module does,
+  /// keeping the lesfiches it made: a create with the new ID only, the
+  /// detail of a lesfiche, an edit with the lesfiche, a weblink with the
+  /// weblink, a removal with `204`, and a move to the trash with no
+  /// exceptions.
+  ResponseBody _lessonContentAnswer(RequestOptions options) {
+    const api = '/lesson-content/api/v1/';
+    const json = 'application/json';
+    final path = options.uri.path.substring(api.length);
+    final body = options.data is Map ? options.data as Map : const {};
+    if (path == 'lessons/' || path == 'assignments/') {
+      final id = _uuid();
+      lessonContent[id] = {
+        'id': id,
+        'platformId': 49,
+        'name': body['name'],
+        'icon': body['icon'],
+        'publicInfo': body['publicInfo'],
+        'privateInfo': body['privateInfo'],
+        'isVisible': true,
+        'owner': '49_777_0',
+        'courses': body['courses'],
+        'labels': [],
+        'weblinks': [
+          for (final link in body['weblinks'] as List)
+            {...link as Map, 'id': _uuid()},
+        ],
+        'attachments': [
+          for (final MapEntry(:key, :value)
+              in (body['visibilityOptions'] as Map).entries)
+            {'id': _uuid(), 'fileName': key, 'visibility': value},
+        ],
+        'type': path.substring(0, path.length - 1),
+      };
+      return _answer('{"id":"$id"}', contentType: json, status: 201);
+    }
+    if (path == 'lesson-content/trash/bulk') {
+      return _answer('{"exceptions":[]}', contentType: json);
+    }
+    if (path == 'assignments/applicable-assignment-types') {
+      return _answer(
+        '[{"id":"a0000000-0000-4000-8000-000000000004","platformId":49,'
+        '"name":"Kleine Taak","abbreviation":"KT","isVisible":true,'
+        '"defaultTiming":"deadline","weight":0}]',
+        contentType: json,
+      );
+    }
+    final match = RegExp(
+      r'^(lessons|assignments)/([^/]+)(?:/(.*))?$',
+    ).firstMatch(path);
+    final fiche = lessonContent[match?.group(2)];
+    if (fiche == null) {
+      return _answer(
+        '{"status":404,"title":"Not Found","detail":"","type":""}',
+        contentType: json,
+        status: 404,
+      );
+    }
+    final action = match!.group(3);
+    if (options.method == 'DELETE') {
+      final [kind, id] = action!.split('/');
+      (fiche[kind] as List).removeWhere((item) => (item as Map)['id'] == id);
+      return _answer('', status: 204);
+    }
+    switch (action) {
+      case 'rename':
+        fiche['name'] = body['newName'];
+      case 'mark-as-visible' || 'mark-as-invisible':
+        fiche['isVisible'] = action == 'mark-as-visible';
+      case 'weblinks':
+        final link = {
+          'id': _uuid(),
+          'name': body['newName'],
+          'url': body['newUrl'],
+          'icon': body['newIcon'],
+          'visibility': body['newVisibility'],
+        };
+        (fiche['weblinks'] as List).add(link);
+        return _answer(jsonEncode(link), contentType: json);
+    }
+    return _answer(jsonEncode(fiche), contentType: json);
+  }
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -352,6 +452,9 @@ class _Smartschool implements HttpClientAdapter {
           when path.startsWith('/intradesk/') ||
               path == '/upload/api/v1/get-upload-directory':
         return _intradeskAnswer(options);
+      case (_, final path, _, _)
+          when path.startsWith('/lesson-content/api/v1/'):
+        return _lessonContentAnswer(options);
       case (false, '/', 'index', 'main'):
         final folder = archiveFolder;
         return _answer(
@@ -457,6 +560,7 @@ Future<(SmartschoolClient, LiveWireGuard)> _guardedClient(
   bool own = true,
   int maxSubmits = 6,
   int maxIntradeskCreates = 6,
+  int maxLessonContentCreates = 2,
 }) async {
   final client = await SmartschoolClient.create(
     AppCredentials(username: 'user', password: 'pass', mainUrl: _host),
@@ -469,6 +573,7 @@ Future<(SmartschoolClient, LiveWireGuard)> _guardedClient(
     runTag: _tag,
     maxSubmits: maxSubmits,
     maxIntradeskCreates: maxIntradeskCreates,
+    maxLessonContentCreates: maxLessonContentCreates,
     onViolation: (_) {},
   );
   client.dio.interceptors.add(guard);
@@ -518,6 +623,9 @@ List<String> _violations(LiveWireGuard guard) =>
 
 /// The name of an Intradesk folder or weblink of the run (#128).
 String _intradeskName(String what) => '$liveIntradeskPrefix $_tag $what';
+
+/// The name of a lesfiche of the run (#129).
+String _lessonName(String what) => '$liveLessonContentPrefix $_tag $what';
 
 /// An [IntradeskService] on a guarded client of [server] (#128), which has
 /// read the root and "2. SMA" through the guard, and allowed the test folder
@@ -1135,6 +1243,279 @@ void main() {
         ]);
       },
     );
+  });
+
+  group('lets out (Lesfiches, #129)', () {
+    test('the create of a lesfiche named after the run, with an upload '
+        'directory handed out through the guard; on it, a rename after the '
+        'run, a change of its visibility, the add and the removal of a '
+        'weblink; and its move to the trash', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+
+      final made = await lessonContent.createLesson(
+        name: _lessonName('les'),
+        attachments: [
+          NewLessonContentAttachment(_tempFile('${liveFilePrefix}x.txt').path),
+        ],
+      );
+      await lessonContent.rename(made, _lessonName('les 2'));
+      await lessonContent.setVisible(made, false);
+      final link = await lessonContent.addWeblink(
+        made,
+        const NewLessonContentWeblink(
+          name: 'Oefeningen',
+          url: 'https://example.com',
+        ),
+      );
+      await lessonContent.removeWeblink(made, link.id);
+      await lessonContent.trash([made]);
+
+      const api = '/lesson-content/api/v1';
+      expect(server.lessonContentWrites, [
+        'POST /Upload/Upload/Index',
+        'POST $api/lessons/',
+        'POST $api/lessons/${made.id}/rename',
+        'POST $api/lessons/${made.id}/mark-as-invisible',
+        'POST $api/lessons/${made.id}/weblinks',
+        'DELETE $api/lessons/${made.id}/weblinks/${link.id}',
+        'POST $api/lesson-content/trash/bulk',
+      ]);
+      expect(guard.lessonContentCreates, 1);
+      expect(guard.lessonContentMade, {made.id});
+      expect(guard.violations, isEmpty);
+    });
+  });
+
+  group('refuses before it reaches Smartschool (Lesfiches, #129)', () {
+    const api = '/lesson-content/api/v1';
+
+    /// The body of a create as the library sends it, named [name], with
+    /// [extra] keys over it.
+    Map<String, Object?> create(
+      String name, [
+      Map<String, Object?> extra = const {},
+    ]) => {
+      'name': name,
+      'icon': 'document_observation',
+      'publicInfo': '',
+      'privateInfo': '',
+      'courses': <Object>[],
+      'goals': <Object>[],
+      'labels': <Object>[],
+      'weblinks': <Object>[],
+      'partnerWeblinks': <Object>[],
+      'miniDBItems': <Object>[],
+      'deeplinks': <Object>[],
+      'randomDir': null,
+      'previousLessonContent': null,
+      'visibilityOptions': <String, Object>{},
+      ...extra,
+    };
+
+    test('a create named without the run\'s tag, with labels, goals, '
+        'deeplinks or a lesfiche it continues, and more creates than the '
+        'run may send', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(
+        server,
+        maxLessonContentCreates: 1,
+      );
+      final lessonContent = LessonContentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+
+      await refused(lessonContent.createLesson(name: 'Lussen'));
+      await refused(
+        lessonContent.createLesson(name: '$liveSubjectPrefix run-other les'),
+      );
+      for (final extra in [
+        {
+          'labels': [
+            {'type': 'platform', 'identifier': '49_x'},
+          ],
+        },
+        {
+          'goals': ['x'],
+        },
+        {
+          'deeplinks': ['x'],
+        },
+        {'previousLessonContent': 'x'},
+      ]) {
+        await refused(
+          dio.post<String>(
+            '$api/lessons/',
+            data: create(_lessonName('a'), extra),
+          ),
+        );
+      }
+      await lessonContent.createLesson(name: _lessonName('b'));
+      await refused(
+        lessonContent.createAssignment(
+          name: _lessonName('c'),
+          assignmentTypeId: 'a0000000-0000-4000-8000-000000000004',
+        ),
+      );
+
+      expect(server.lessonContentWrites, ['POST $api/lessons/']);
+      expect(_violations(guard), [
+        contains('does not start with "$liveSubjectPrefix $_tag"'),
+        contains('does not start with "$liveSubjectPrefix $_tag"'),
+        contains('with labels'),
+        contains('with goals'),
+        contains('with deeplinks'),
+        contains('continues another one'),
+        contains('1 lesfiches already'),
+      ]);
+    });
+
+    test('an upload directory that was not handed out through the guard, or '
+        'was taken already, in a create or an add of attachments', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+
+      await refused(
+        dio.post<String>(
+          '$api/lessons/',
+          data: create(_lessonName('a'), {'randomDir': 'made-up'}),
+        ),
+      );
+      final made = await lessonContent.createLesson(
+        name: _lessonName('b'),
+        attachments: [
+          NewLessonContentAttachment(_tempFile('${liveFilePrefix}x.txt').path),
+        ],
+      );
+      // dir1 was handed out and taken by the create above.
+      await refused(
+        dio.post<String>(
+          '$api/lessons/${made.id}/attachments',
+          data: {'randomDir': 'dir1'},
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/lessons/${made.id}/attachments',
+          data: {'randomDir': 'made-up'},
+        ),
+      );
+
+      expect(server.lessonContentWrites, [
+        'POST /Upload/Upload/Index',
+        'POST $api/lessons/',
+      ]);
+      expect(_violations(guard), [
+        contains('not handed out through the guard'),
+        contains('taken already'),
+        contains('not handed out through the guard'),
+      ]);
+    });
+
+    test('a write to a lesfiche the run did not make, or as another kind; a '
+        'rename to a name without the run\'s tag; labels, goals and the '
+        'rest; a DELETE of the lesfiche itself; a delete for good or a '
+        'restore; and anything after its move to the trash', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+      const other = 'eeee0001-0000-4000-8000-000000000000';
+      final otherItem = LessonContentItem.fromJson(const {
+        'id': other,
+        'platformId': 49,
+        'type': 'lessons',
+      });
+
+      final made = await lessonContent.createLesson(name: _lessonName('a'));
+      final fiche = '$api/lessons/${made.id}';
+      // Not made by the run.
+      await refused(lessonContent.rename(otherItem, _lessonName('x')));
+      await refused(lessonContent.removeWeblink(otherItem, other));
+      await refused(lessonContent.trash([otherItem]));
+      await refused(lessonContent.trash([made, otherItem]));
+      // Made by the run, but as another kind.
+      await refused(
+        dio.post<String>(
+          '$api/assignments/${made.id}/rename',
+          data: {'newName': _lessonName('x')},
+        ),
+      );
+      // Made by the run, but not a write the live suite sends.
+      await refused(lessonContent.rename(made, 'Lussen'));
+      for (final action in [
+        'change-labels',
+        'change-goals',
+        'deeplinks',
+        'partner-weblinks/bulk',
+      ]) {
+        await refused(dio.post<String>('$fiche/$action', data: {'x': 1}));
+      }
+      await refused(dio.delete<String>(fiche));
+      await refused(
+        dio.post<String>(
+          '$api/lesson-content/delete/bulk',
+          data: {
+            'lessonContent': [
+              {'id': made.id, 'type': 'lessons', 'platformId': 49},
+            ],
+          },
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/lesson-content/restore/bulk',
+          data: {'lessonContent': <Object>[]},
+        ),
+      );
+      // After its move to the trash.
+      await lessonContent.trash([made]);
+      await refused(lessonContent.trash([made]));
+      await refused(lessonContent.setVisible(made, true));
+
+      expect(server.lessonContentWrites, [
+        'POST $api/lessons/',
+        'POST $api/lesson-content/trash/bulk',
+      ]);
+      expect(_violations(guard), [
+        contains('which this run did not make'),
+        contains('which this run did not make'),
+        contains('which this run did not make'),
+        contains('which this run did not make'),
+        contains(
+          'as one of the assignments, but the run made it as one of '
+          'the lessons',
+        ),
+        contains('to a name that does not start with'),
+        for (var i = 0; i < 4; i++) contains('to a lesfiche: only renames'),
+        contains('sends no DELETE but of a weblink or an attachment'),
+        contains('sends no Lesfiches POST but'),
+        contains('sends no Lesfiches POST but'),
+        contains('moved to the trash already'),
+        contains('moved to the trash already'),
+      ]);
+    });
+
+    test('a DELETE elsewhere is still refused', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guardedClient(server);
+
+      await expectLater(
+        _dio(server, guard).delete<String>('/planner/api/v1/x'),
+        throwsA(anything),
+      );
+
+      expect(server.log, isEmpty);
+      expect(_violations(guard), [contains('the live suite sends no DELETE')]);
+    });
   });
 
   group('refuses before it reaches Smartschool', () {

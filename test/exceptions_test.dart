@@ -1,6 +1,6 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/models/lesson_content_models.dart'
-    show LessonContentItem;
+    show LessonContentItem, LessonContentType;
 import 'package:flutter_smartschool/src/models/message_models.dart'
     show BoxType;
 import 'package:flutter_smartschool/src/models/planner_models.dart'
@@ -736,6 +736,74 @@ void main() {
           items: [],
         ).toString(),
         'SmartschoolLessonContentCourseListError: invalid JSON',
+      );
+    });
+
+    test('SmartschoolLessonContentNotFoundError and '
+        'SmartschoolLessonContentWriteRefusedError are '
+        'SmartschoolLessonContentErrors (nothing was changed), with their '
+        'status (#129)', () {
+      const missing = SmartschoolLessonContentNotFoundError(
+        'no such lesfiche',
+        type: LessonContentType.assignment,
+        id: 'b0000000-0000-4000-8000-000000000001',
+      );
+      expect(missing, isA<SmartschoolLessonContentError>());
+      expect(missing.statusCode, 404);
+      expect(missing.type, LessonContentType.assignment);
+      expect(missing.id, 'b0000000-0000-4000-8000-000000000001');
+      expect(
+        missing.toString(),
+        'SmartschoolLessonContentNotFoundError(404): no such lesfiche',
+      );
+
+      const refused = SmartschoolLessonContentWriteRefusedError(
+        'refused',
+        statusCode: 400,
+      );
+      expect(refused, isA<SmartschoolLessonContentError>());
+      expect(refused, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(refused.statusCode, 400);
+      expect(refused.violations, isEmpty);
+      expect(
+        refused.toString(),
+        'SmartschoolLessonContentWriteRefusedError(400): refused',
+      );
+      expect(
+        const SmartschoolLessonContentWriteRefusedError(
+          'refused',
+          statusCode: 422,
+          violations: ['Naam is verplicht.'],
+        ).violations,
+        ['Naam is verplicht.'],
+      );
+    });
+
+    test('SmartschoolLessonContentSaveUnconfirmedError is not a '
+        'SmartschoolLessonContentError (it may have been changed), and keeps '
+        'its status, cause and lesfiche ID (#129)', () {
+      const cause = SmartschoolConnectionError('reset');
+      const error = SmartschoolLessonContentSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+        lessonContentId: 'b0000000-0000-4000-8000-000000000001',
+      );
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolLessonContentError>()));
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.statusCode, isNull);
+      expect(error.cause, same(cause));
+      expect(error.lessonContentId, 'b0000000-0000-4000-8000-000000000001');
+      expect(
+        error.toString(),
+        'SmartschoolLessonContentSaveUnconfirmedError: unconfirmed',
+      );
+      expect(
+        const SmartschoolLessonContentSaveUnconfirmedError(
+          'unconfirmed',
+          statusCode: 500,
+        ).toString(),
+        'SmartschoolLessonContentSaveUnconfirmedError(500): unconfirmed',
       );
     });
   });

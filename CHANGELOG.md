@@ -1,4 +1,4 @@
-## Unreleased
+## 0.3.6 - 2026-10-07
 
 ### Added
 - Intradesk: a folder can be read by its ID alone, with the new `IntradeskService.getFolder`, `getFolderPath` and `getFolderParentIds` (#132). `getFolderListing(id)` answers what is *in* a folder, not the folder itself: its own entry (its `capabilities`, such as `canAdd`, whether it is `confidential` or `inConfidentialFolder`, its name, `parentFolderId`) only came with the listing of the folder above it, and nothing said which folder that is. The writes of #128 need exactly that before they send anything: `canAdd` decides whether the web client offers them, and a confidential folder can only be made in a confidential one. Smartschool has no request for one folder (`GET .../folders/{id}` answers the web client's page, not JSON), so the new reads do what the web client does when it opens a folder by its address (its `getParents`): ask for the folder's parents, then list them. All of it was tried live on 2026-10-07 (read-only, apart from a folder made in the live suite's test folder and moved to the trash again).

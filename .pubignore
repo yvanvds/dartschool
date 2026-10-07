@@ -30,3 +30,8 @@
 
 # Optional: exclude heavy test fixtures from package tarball
 /test/fixtures/
+
+# Full changelog entries of 0.3.0 to 0.3.4 (moved out of CHANGELOG.md in
+# 0.3.7, as pub.dev limits CHANGELOG.md to 256 KB); CHANGELOG.md links to it
+# on GitHub
+/doc/CHANGELOG-archive.md

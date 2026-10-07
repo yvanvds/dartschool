@@ -51,6 +51,71 @@ T? _optionalOf<T>(
 // Models
 // ---------------------------------------------------------------------------
 
+/// The kind of an Intradesk item: a folder, a weblink or a file (#133).
+///
+/// Intradesk keeps each kind under its own path (`folders/{id}`,
+/// `weblinks/{id}`, `files/{id}`), and an ID names an item of one kind only:
+/// it answers a move to the trash of the ID of a file as a folder
+/// (`folders/{fileId}/trash`) with `404`, as for an ID it does not know (seen
+/// live, 2026-10-07). `SmartschoolIntradeskItemNotFoundError.kind` says
+/// which kind was asked for.
+enum IntradeskItemKind {
+  /// A folder (`folders`).
+  folder('folders'),
+
+  /// A weblink (`weblinks`).
+  weblink('weblinks'),
+
+  /// A file (`files`).
+  file('files');
+
+  const IntradeskItemKind(this.pathSegment);
+
+  /// The kind's part of Intradesk's paths: `folders`, `weblinks` or `files`.
+  final String pathSegment;
+}
+
+/// Why `IntradeskService` refused to add a folder, a weblink or a file to a
+/// folder, after reading that folder and before sending anything: the
+/// [SmartschoolIntradeskAddRefusedError.reason] (#138). Nothing was sent.
+///
+/// The rules are those of Intradesk's web client (its "Toevoegen" button and
+/// its right-click menu, `/production/Intradesk/intradesk-app/bundles/main.js`,
+/// read 2026-10-07), which offers only what they allow:
+/// - an ordinary folder: in a folder with `canAdd` that is not confidential,
+///   or at the root with the platform's `canAdd`;
+/// - a confidential folder: in a confidential folder with `canAdd`, or at
+///   the root with the platform's `canAddConfidentialFolder`;
+/// - a weblink or a file: in a folder with `canAdd`, confidential or not
+///   (never at the root).
+enum IntradeskAddRefusalReason {
+  /// The user may not add to the folder: its
+  /// [IntradeskFolderCapabilities.canAdd] is `false` (at the root, the
+  /// platform's). The web client offers no folder, weblink or file there.
+  /// Intradesk's own answer to such a write was not seen live (the live
+  /// account is an administrator, with `canAdd` on every folder).
+  cannotAdd,
+
+  /// A confidential folder at the root, where the platform does not allow
+  /// one: its [IntradeskFolderCapabilities.canAddConfidentialFolder] is
+  /// `false`. The web client does not offer one there then.
+  cannotAddConfidentialFolder,
+
+  /// A confidential folder in an ordinary folder (one that is not
+  /// [IntradeskFolder.confidential]). The web client offers none there, and
+  /// Intradesk refuses it with HTTP `400`: "In een gewone map kan je enkel
+  /// gewone mappen toevoegen. Vertrouwelijke mappen kan je hier niet
+  /// toevoegen." (seen live, 2026-10-05).
+  ordinaryParent,
+
+  /// An ordinary folder in a confidential folder
+  /// ([IntradeskFolder.confidential]): the web client offers only a
+  /// confidential folder there (and a weblink or a file). Intradesk's own
+  /// answer was not seen live (no folder the live account sees is
+  /// confidential).
+  confidentialParent,
+}
+
 /// Platform reference embedded in folder and file objects.
 class IntradeskPlatform {
   final int id;
@@ -70,9 +135,13 @@ class IntradeskFolderCapabilities {
   final bool canManage;
 
   /// Whether the user may add to the folder: an ordinary folder, a weblink
-  /// or a file, in an ordinary folder; a confidential folder, in a
-  /// confidential one (`IntradeskService.createFolder`, `createWeblink`,
-  /// `uploadFiles`, #128). The web client offers none of them without it.
+  /// or a file, in an ordinary folder; a confidential folder, a weblink or a
+  /// file, in a confidential one (`IntradeskService.createFolder`,
+  /// `createWeblink`, `uploadFiles`, #128). The web client offers none of
+  /// them without it, and the writes refuse them without it, after reading
+  /// the folder's own entry with `IntradeskService.getFolder` (#132, #138:
+  /// [IntradeskAddRefusalReason.cannotAdd]). At the root, the platform's
+  /// (`IntradeskService.getRootCapabilities`, #138).
   final bool canAdd;
 
   /// Whether the user may add a confidential folder here
@@ -81,7 +150,8 @@ class IntradeskFolderCapabilities {
   ///
   /// The web client's folder model has it (default `false`), and offers a
   /// confidential folder at the root only when it is set; the platform
-  /// capabilities in the Intradesk page's configuration carry it. The folder
+  /// capabilities in the Intradesk page's configuration carry it, which
+  /// `IntradeskService.getRootCapabilities` reads (#138). The folder
   /// listings do not: none of the folders listed live (2026-10-05) carried
   /// it, so it is `false` for every folder of a listing. Inside a
   /// confidential folder, the web client offers a confidential folder on

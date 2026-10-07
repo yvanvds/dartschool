@@ -142,9 +142,16 @@ typedef _Courses = ({
 ///   the module's answer does not confirm it. Read the lesfiche before
 ///   trying again; for a create, its `lessonContentId` is the ID of the
 ///   lesfiche when the module answered with one.
+/// - [SmartschoolLessonContentVisibilityNotSetError] (a
+///   [SmartschoolLessonContentSaveUnconfirmedError], #135): [addAttachments]
+///   added the files, but setting the visibility of one of them failed. It
+///   carries the attachments made and the visibilities not set; do not add
+///   the files again.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
-///   once (for a create, without that retry). Nothing was changed.
+///   once (for a create, without that retry). Nothing was changed. Calling
+///   the method again is enough: the client logs in before its next request
+///   (#134).
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached for a
@@ -900,9 +907,19 @@ class LessonContentService {
   /// [SmartschoolLessonContentError] (a
   /// [SmartschoolLessonContentNotFoundError] for a lesfiche the module does
   /// not know), and one of step 2 a [SmartschoolAttachmentUploadError]:
-  /// nothing was changed. When step 4 fails, the files were added: a
-  /// [SmartschoolLessonContentSaveUnconfirmedError] says which visibility
-  /// was not set. See the class doc for the other errors.
+  /// nothing was changed. A step 3 that is unconfirmed (no answer, a `500`,
+  /// an answer that is not the lesfiche, or new attachments that are not the
+  /// files uploaded) is a
+  /// [SmartschoolLessonContentSaveUnconfirmedError]: the files may or may
+  /// not have been added. When step 4 fails, the files were added: that is
+  /// its subtype [SmartschoolLessonContentVisibilityNotSetError] (#135),
+  /// which carries the attachments the module made
+  /// ([SmartschoolLessonContentVisibilityNotSetError.addedAttachments]), the
+  /// one whose visibility failed, and the visibilities not set (that one's,
+  /// and those of the attachments after it, which were not tried); its
+  /// `cause` is the failure of [changeAttachmentVisibility]. Do not add the
+  /// files again then: set those visibilities. See the class doc for the
+  /// other errors.
   Future<List<LessonContentAttachment>> addAttachments(
     LessonContentItem item,
     List<NewLessonContentAttachment> attachments,
@@ -969,9 +986,14 @@ class LessonContentService {
       );
     }
 
+    // The attachment of each file, in the order of the files.
+    final taken = [
+      for (final file in files)
+        added.firstWhere((a) => a.fileName == file.fileName),
+    ];
     final result = <LessonContentAttachment>[];
-    for (final file in files) {
-      final attachment = added.firstWhere((a) => a.fileName == file.fileName);
+    for (final (index, file) in files.indexed) {
+      final attachment = taken[index];
       if (attachment.visibility == file.visibility) {
         result.add(attachment);
         continue;
@@ -985,14 +1007,15 @@ class LessonContentService {
         );
       } on Exception catch (e, stackTrace) {
         Error.throwWithStackTrace(
-          SmartschoolLessonContentSaveUnconfirmedError(
-            '$operation: $change went through (attachment "${file.fileName}" '
-            'is ${attachment.id}), but setting its visibility to '
-            '${file.visibility.optionName} failed ($e). Do not add the files '
-            'again: set the visibility with changeAttachmentVisibility, after '
-            'reading the lesfiche (getDetail).',
-            cause: e,
-            lessonContentId: item.id,
+          _visibilityNotSet(
+            operation,
+            item,
+            change,
+            files,
+            taken,
+            result,
+            index,
+            e,
           ),
           stackTrace,
         );
@@ -1004,6 +1027,53 @@ class LessonContentService {
       );
     }
     return result;
+  }
+
+  /// The error of [addAttachments] when the module took [files] (their
+  /// attachments [taken], in the same order) and setting the visibility of
+  /// file [index] failed with [failure], after the call set those before it
+  /// ([done]): the files were added (#135).
+  static SmartschoolLessonContentVisibilityNotSetError _visibilityNotSet(
+    String operation,
+    LessonContentItem item,
+    String change,
+    List<_File> files,
+    List<LessonContentAttachment> taken,
+    List<LessonContentAttachment> done,
+    int index,
+    Exception failure,
+  ) {
+    final file = files[index];
+    final attachment = taken[index];
+    // The files after it whose visibility the call would have changed.
+    final later = [
+      for (var i = index + 1; i < files.length; i++)
+        if (taken[i].visibility != files[i].visibility) i,
+    ];
+    final notSet = <String, LessonContentVisibility>{
+      attachment.id: file.visibility,
+      for (final i in later) taken[i].id: files[i].visibility,
+    };
+    final untried = [
+      for (final i in later)
+        'attachment "${files[i].fileName}" (${taken[i].id}) to '
+            '${files[i].visibility.optionName}',
+    ];
+    return SmartschoolLessonContentVisibilityNotSetError(
+      '$operation: $change went through, but setting the visibility of '
+      'attachment "${file.fileName}" (${attachment.id}) to '
+      '${file.visibility.optionName} failed ($failure).'
+      '${untried.isEmpty ? '' : ' Not tried after it: ${untried.join(', ')}.'} '
+      'Do not add the files again: that adds them a second time. Set the '
+      'visibilities with changeAttachmentVisibility (visibilitiesNotSet); '
+      'sending one that went through again is harmless.',
+      cause: failure,
+      lessonContentId: item.id,
+      addedAttachments: List.unmodifiable([...done, ...taken.skip(index)]),
+      attachment: attachment,
+      visibility: file.visibility,
+      visibilitiesNotSet: Map.unmodifiable(notSet),
+    );
   }
 
   /// Sets when pupils see the attachment [attachmentId] of the lesfiche

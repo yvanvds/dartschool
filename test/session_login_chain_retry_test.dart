@@ -564,7 +564,8 @@ void main() {
       expect(server.jsonBodies, ['{"name":"Les 1"}']);
     });
 
-    test('the next refused request logs in as usual', () async {
+    test('the next request logs in before it is sent, and goes out once '
+        '(#134)', () async {
       final server = await serve(
         _Smartschool(loggedIn: true, expiresBefore: _send),
       );
@@ -579,7 +580,9 @@ void main() {
 
       await client.postFormRaw(_addRecipientPath, {'id': '1'});
 
-      expect(server.log, [_send, _addRecipient, ..._login, _addRecipient]);
+      // Before #134: the request went out in the refused session first, was
+      // refused, logged in, and was sent again.
+      expect(server.log, [_send, ..._login, _addRecipient]);
     });
 
     test('an accepted request is answered as usual; postMultipartResponse '

@@ -106,6 +106,13 @@ const _intradeskFolders = {
   _otherRoot: [(_otherTests, 'tests')],
 };
 
+/// The fields of a folder of a listing that the creates read before they
+/// send anything (#138): an ordinary folder the account may add to.
+const _intradeskFolderFields =
+    ',"color":"yellow","confidential":false,"inConfidentialFolder":false,'
+    '"capabilities":{"canManage":true,"canAdd":true,"canSeeHistory":true,'
+    '"canSeeViewHistory":true}';
+
 /// An Intradesk item as Smartschool answers it (#128), with [extra] keys.
 String _intradeskItem(
   String id,
@@ -225,6 +232,11 @@ class _Smartschool implements HttpClientAdapter {
   /// How many Intradesk items and upload directories it made (#128).
   int _made = 0;
 
+  /// The kind (`folders`, `weblinks`, `files`) of each Intradesk item it
+  /// made, by ID: it answers a move to the trash of another ID, or of one as
+  /// another kind, with `404`, as Intradesk does (#133).
+  final Map<String, String> _intradeskKinds = {};
+
   /// Each Intradesk POST and upload that reached it, as `POST <path>`.
   List<String> get intradeskWrites => [
     for (final line in log)
@@ -233,12 +245,33 @@ class _Smartschool implements HttpClientAdapter {
         line,
   ];
 
+  /// The folders it made, by ID, as (parent, name) (#138): its listings and
+  /// the parents hold them until they are moved to the trash.
+  final Map<String, (String, String)> _intradeskMadeFolders = {};
+
+  /// The IDs of the Intradesk items it moved to the trash.
+  final Set<String> _intradeskTrashed = {};
+
+  /// The parent of the Intradesk folder [id] (`''` at the root), or `null`
+  /// for an ID it has no folder for.
+  String? _intradeskParentOf(String id) {
+    for (final MapEntry(key: listed, value: folders)
+        in _intradeskFolders.entries) {
+      if (folders.any((f) => f.$1 == id)) return listed;
+    }
+    return _intradeskMadeFolders[id]?.$1;
+  }
+
   /// Answers an Intradesk request or a request for an upload directory
-  /// (#128): the listings of [_intradeskFolders], a new directory, and the
-  /// creates and moves to the trash as Smartschool answers them.
+  /// (#128): the listings of [_intradeskFolders] and of the folders it made,
+  /// the parents of a folder (`[]` for one in the trash, as Smartschool,
+  /// #132), a new directory, and the creates and moves to the trash as
+  /// Smartschool answers them (a move to the trash of an ID it has no such
+  /// item for with `404`, #133).
   ResponseBody _intradeskAnswer(RequestOptions options) {
     final path = options.uri.path;
     const listing = '$_intradesk/directory-listing/forTreeOnlyFolders';
+    const notFound = '{"status":404,"title":"Not Found","detail":"","type":""}';
     if (options.method == 'GET') {
       if (path == '/upload/api/v1/get-upload-directory') {
         return _answer(
@@ -246,14 +279,41 @@ class _Smartschool implements HttpClientAdapter {
           contentType: 'application/json',
         );
       }
+      final parents = RegExp(
+        '^$_intradesk/folders/([^/]+)/parents\$',
+      ).firstMatch(path);
+      if (parents != null) {
+        final id = parents.group(1)!;
+        if (_intradeskTrashed.contains(id)) {
+          return _answer('[]', contentType: 'application/json');
+        }
+        final chain = <String>[];
+        for (var at = _intradeskParentOf(id); at != null && at.isNotEmpty;) {
+          chain.insert(0, at);
+          at = _intradeskParentOf(at);
+        }
+        if (_intradeskParentOf(id) == null) {
+          return _answer(
+            notFound,
+            contentType: 'application/problem+json',
+            status: 404,
+          );
+        }
+        return _answer(jsonEncode(chain), contentType: 'application/json');
+      }
       final listed = path == listing
           ? ''
           : path.startsWith('$listing/')
           ? path.substring(listing.length + 1)
           : null;
-      final folders = _intradeskFolders[listed] ?? const [];
+      final folders = [
+        ...?_intradeskFolders[listed],
+        for (final MapEntry(key: id, value: (parent, name))
+            in _intradeskMadeFolders.entries)
+          if (parent == listed && !_intradeskTrashed.contains(id)) (id, name),
+      ];
       return _answer(
-        '{"folders":[${[for (final (id, name) in folders) _intradeskItem(id, name, listed ?? '', ',"color":"yellow"')].join(',')}],'
+        '{"folders":[${[for (final (id, name) in folders) _intradeskItem(id, name, listed ?? '', _intradeskFolderFields)].join(',')}],'
         '"files":[],"weblinks":[]}',
         contentType: 'application/json',
       );
@@ -263,6 +323,8 @@ class _Smartschool implements HttpClientAdapter {
     final id =
         'bbbb${(++_made).toString().padLeft(4, '0')}-0000-4000-8000-000000000000';
     if (path == '$_intradesk/folders/') {
+      _intradeskKinds[id] = 'folders';
+      _intradeskMadeFolders[id] = (parent, '${body['name']}');
       return _answer(
         _intradeskItem(id, '${body['name']}', parent, ',"color":"yellow"'),
         contentType: 'application/json',
@@ -270,6 +332,7 @@ class _Smartschool implements HttpClientAdapter {
       );
     }
     if (path == '$_intradesk/weblinks/') {
+      _intradeskKinds[id] = 'weblinks';
       return _answer(
         _intradeskItem(
           id,
@@ -282,6 +345,7 @@ class _Smartschool implements HttpClientAdapter {
       );
     }
     if (path == '$_intradesk/files/upload') {
+      _intradeskKinds[id] = 'files';
       return _answer(
         '{"files":{"$id":${_intradeskItem(id, '$liveFilePrefix$_tag.txt', parent)}},'
         '"exceptions":[]}',
@@ -289,7 +353,20 @@ class _Smartschool implements HttpClientAdapter {
         status: 201,
       );
     }
-    if (path.endsWith('/trash')) return _answer('', status: 204);
+    final trash = RegExp(
+      '^$_intradesk/(folders|weblinks|files)/([^/]+)/trash\$',
+    ).firstMatch(path);
+    if (trash != null) {
+      if (_intradeskKinds[trash.group(2)] == trash.group(1)) {
+        _intradeskTrashed.add(trash.group(2)!);
+        return _answer('', status: 204);
+      }
+      return _answer(
+        notFound,
+        contentType: 'application/problem+json',
+        status: 404,
+      );
+    }
     return _answer('{}', contentType: 'application/json');
   }
 
@@ -590,6 +667,27 @@ Dio _dio(_Smartschool server, LiveWireGuard guard) {
   addTearDown(dio.close);
   return dio;
 }
+
+/// The create of a folder named [name] in [parent], sent bare through
+/// [guard] as `IntradeskService.createFolder` sends it, without its read of
+/// the parent: since #138 the service reads the parent first and refuses a
+/// parent it does not find (a made-up ID, a folder in the trash) itself,
+/// and that read lists folders through the guard. The guard must refuse
+/// such a create on the wire as well.
+Future<Response<String>> _bareFolderCreate(
+  _Smartschool server,
+  LiveWireGuard guard, {
+  required String parent,
+  required String name,
+}) => _dio(server, guard).post<String>(
+  '$_intradesk/folders/',
+  data: {
+    'name': name,
+    'color': 'yellow',
+    'parentFolderId': parent,
+    'platform': {'id': 49},
+  },
+);
 
 SendMessageParams _params({
   List<MessageSearchUser> to = const [_own],
@@ -900,6 +998,24 @@ void main() {
       expect(guard.violations, isEmpty);
     });
 
+    test('the read of the folder tree (quickactions / requestmovelist, '
+        'MessagesService.getFolders, #136)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn)
+        ..dispatcherPages.add(
+          File(
+            'test/fixtures/smartschool/requests/post/quickactions/'
+            'requestmovelist.xml',
+          ).readAsStringSync(),
+        );
+      final (messages, guard) = await _guarded(server);
+
+      final folders = await messages.getFolders();
+
+      expect(folders.map((f) => f.id), [208, 30650]);
+      expect(server.log, ['POST /?module=Messages&file=dispatcher']);
+      expect(guard.violations, isEmpty);
+    });
+
     test('the Presence reads: the config, the pupils of a class on a day '
         '(#104), and the codes of a school structure (#105)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
@@ -1037,6 +1153,61 @@ void main() {
       expect(guard.intradeskCreates, 3);
       expect(guard.violations, isEmpty);
     });
+
+    test('a move to the trash of a made-up ID that the guard handed out, once '
+        'per kind, and of an item the run made as another kind, once, when '
+        'the run allowed it (#133); the 404 of Intradesk for them leaves the '
+        'items the run may move to the trash', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (intradesk, guard) = await _intradeskRun(server);
+      Future<void> notFound(Future<void> trash) => expectLater(
+        trash,
+        throwsA(isA<SmartschoolIntradeskItemNotFoundError>()),
+      );
+
+      final madeUp = guard.newMadeUpIntradeskId();
+      final folder = await intradesk.createFolder(
+        parentFolderId: _tests,
+        name: _intradeskName('map'),
+      );
+      final link = await intradesk.createWeblink(
+        parentFolderId: folder.id,
+        name: _intradeskName('link'),
+        url: 'https://example.com/dartschool',
+      );
+      await notFound(intradesk.trashFolder(madeUp));
+      await notFound(intradesk.trashWeblink(madeUp));
+      await notFound(intradesk.trashFile(madeUp));
+      guard.allowIntradeskTrashAs(link.id, 'folders');
+      guard.allowIntradeskTrashAs(folder.id.toUpperCase(), 'files');
+      await notFound(intradesk.trashFolder(link.id));
+      await notFound(intradesk.trashFile(folder.id));
+      await intradesk.trashWeblink(link.id);
+      await intradesk.trashFolder(folder.id);
+
+      expect(
+        madeUp,
+        matches(
+          RegExp(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-'
+            r'[0-9a-f]{12}$',
+          ),
+        ),
+      );
+      expect(guard.newMadeUpIntradeskId(), isNot(madeUp));
+      expect(server.intradeskWrites, [
+        'POST $_intradesk/folders/',
+        'POST $_intradesk/weblinks/',
+        'POST $_intradesk/folders/$madeUp/trash',
+        'POST $_intradesk/weblinks/$madeUp/trash',
+        'POST $_intradesk/files/$madeUp/trash',
+        'POST $_intradesk/folders/${link.id}/trash',
+        'POST $_intradesk/files/${folder.id}/trash',
+        'POST $_intradesk/weblinks/${link.id}/trash',
+        'POST $_intradesk/folders/${folder.id}/trash',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
   });
 
   group('refuses before it reaches Smartschool (Intradesk, #128)', () {
@@ -1052,8 +1223,10 @@ void main() {
       // Not listed through the guard yet, though the run allows it.
       guard.allowIntradeskFolder(_tests);
       await refused(
-        intradesk.createFolder(
-          parentFolderId: _tests,
+        _bareFolderCreate(
+          server,
+          guard,
+          parent: _tests,
           name: _intradeskName('a'),
         ),
       );
@@ -1069,7 +1242,7 @@ void main() {
         ),
       );
       await refused(
-        intradesk.createFolder(parentFolderId: '', name: _intradeskName('c')),
+        _bareFolderCreate(server, guard, parent: '', name: _intradeskName('c')),
       );
       await refused(
         intradesk.createFolder(
@@ -1205,8 +1378,10 @@ void main() {
         await refused(intradesk.trashFolder(folder.id));
         // A folder the run trashed is no longer one it may write in.
         await refused(
-          intradesk.createFolder(
-            parentFolderId: folder.id,
+          _bareFolderCreate(
+            server,
+            guard,
+            parent: folder.id,
             name: _intradeskName('in de prullenbak'),
           ),
         );
@@ -1243,6 +1418,79 @@ void main() {
         ]);
       },
     );
+
+    test('(#133) a second move of a made-up ID as the same kind, a create in '
+        'it, a move as another kind without the run allowing it or a second '
+        'time, one of an item the run did not make, and one as another kind '
+        'of an item it moved to the trash already', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (intradesk, guard) = await _intradeskRun(server);
+      Future<void> refused(Future<Object?> write) => expectLater(
+        write,
+        throwsA(isNot(isA<SmartschoolIntradeskItemNotFoundError>())),
+      );
+      Future<void> notFound(Future<void> trash) => expectLater(
+        trash,
+        throwsA(isA<SmartschoolIntradeskItemNotFoundError>()),
+      );
+
+      final madeUp = guard.newMadeUpIntradeskId();
+      final folder = await intradesk.createFolder(
+        parentFolderId: _tests,
+        name: _intradeskName('map'),
+      );
+      final link = await intradesk.createWeblink(
+        parentFolderId: folder.id,
+        name: _intradeskName('link'),
+        url: 'https://example.com/dartschool',
+      );
+      await notFound(intradesk.trashFolder(madeUp));
+      await refused(intradesk.trashFolder(madeUp));
+      await refused(
+        _bareFolderCreate(
+          server,
+          guard,
+          parent: madeUp,
+          name: _intradeskName('in een verzonnen map'),
+        ),
+      );
+      // Not allowed, and allowed for an item the run did not make.
+      await refused(intradesk.trashWeblink(folder.id));
+      guard.allowIntradeskTrashAs(_tests, 'files');
+      await refused(intradesk.trashFile(_tests));
+      // Allowed once: Intradesk answers it with 404, and the allowance is
+      // used up.
+      guard.allowIntradeskTrashAs(link.id, 'files');
+      await notFound(intradesk.trashFile(link.id));
+      await refused(intradesk.trashFile(link.id));
+      // The folder in the trash, then as another kind.
+      await intradesk.trashFolder(folder.id);
+      guard.allowIntradeskTrashAs(folder.id, 'weblinks');
+      await refused(intradesk.trashWeblink(folder.id));
+
+      expect(server.intradeskWrites, [
+        'POST $_intradesk/folders/',
+        'POST $_intradesk/weblinks/',
+        'POST $_intradesk/folders/$madeUp/trash',
+        'POST $_intradesk/files/${link.id}/trash',
+        'POST $_intradesk/folders/${folder.id}/trash',
+      ]);
+      expect(_violations(guard), [
+        contains(
+          'made-up Intradesk ID $madeUp to the trash as one of the folders a '
+          'second time',
+        ),
+        contains('neither the test folder'),
+        contains(
+          'as one of the weblinks, but the run made it as one of the folders',
+        ),
+        contains('which this run did not make'),
+        contains(
+          'as one of the files, but the run made it as one of the weblinks',
+        ),
+        contains('moved to the trash already'),
+      ]);
+    });
   });
 
   group('lets out (Lesfiches, #129)', () {
@@ -1708,6 +1956,38 @@ void main() {
       expect(server.log, isNot(contains('POST /Upload/Upload/Index')));
       expect(server.submits, isEmpty);
       expect(_violations(guard), [contains('did not make')]);
+    });
+
+    test('another quickactions command than the read of the folder tree, '
+        'and a requestmovelist of another subsystem (#136)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
+      Future<void> send(String subsystem, String action) => expectLater(
+        dio.post<String>(
+          '/?module=Messages&file=dispatcher',
+          data: {
+            'command': XmlInterface.buildCommand(subsystem, action, const {}),
+          },
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
+      );
+
+      await send('quickactions', 'requestmovelists');
+      await send('quickactions', 'move messages');
+      await send('postboxes', 'requestmovelist');
+
+      expect(server.log, isEmpty);
+      expect(_violations(guard), [
+        contains(
+          'the live suite sends no "quickactions" command but requestmovelist',
+        ),
+        contains(
+          'the live suite sends no "quickactions" command but requestmovelist',
+        ),
+        contains('the live suite sends no "requestmovelist" command'),
+      ]);
     });
 
     test('a quick delete (moveToTrash), of any ID: of 0, and of a message '
@@ -2397,8 +2677,11 @@ void main() {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (_, guard) = await _guarded(server);
       final dio = _dio(server, guard);
+      expect(guard.loggedIn, isFalse);
 
       await dio.post<String>('/login', data: 'login form');
+      // A test that logs in on purpose asks this first (#134).
+      expect(guard.loggedIn, isTrue);
       await dio.post<String>('/2fa/api/v1/google-authenticator', data: '{}');
       await expectLater(
         dio.post<String>('/login', data: 'login form'),

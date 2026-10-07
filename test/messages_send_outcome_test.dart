@@ -567,9 +567,12 @@ void main() {
 
       await messages.sendMessage(_message());
 
+      // The client knows that Smartschool refused the session for the
+      // submit, so it logs in before it loads the compose form (#134).
+      // Before #134, the form went out in the refused session first, and was
+      // refused, which logged in.
       expect(server.logSinceExpiry, [
         _submit,
-        _compose,
         ..._login,
         _compose,
         _addRecipient,

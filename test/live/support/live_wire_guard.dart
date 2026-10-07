@@ -72,8 +72,14 @@
 //   per directory (a second time adds its files again), and only a
 //   directory Smartschool handed out through the guard
 //   (`get-upload-directory`); and the move to the trash of an item the run
-//   made, of its kind, until Smartschool answered one for it. Never a
-//   rename, move, copy or restore, and never a DELETE (deleted for good);
+//   made, of its kind, until Smartschool answered one for it. To see how
+//   Intradesk answers an ID it has no such item for (#133), also the move
+//   to the trash of an item the run made as another kind, once, when the
+//   run allows it (allowIntradeskTrashAs) and before it moved the item to
+//   the trash; and that of a made-up ID that the guard made up itself
+//   (newMadeUpIntradeskId), a random UUID that names no item, once per
+//   kind. Never a rename, move, copy or restore, and never a DELETE
+//   (deleted for good);
 // - any request to the Lesfiches module (`/lesson-content/`) that writes,
 //   but those of LessonContentService that the live suite tries (#129), and
 //   those only for lesfiches the run made itself, in the own library (a
@@ -108,6 +114,7 @@
 // its scripts and forms (SmartschoolUnexpectedPageError.fromPage). It lets
 // such an answer through: the library reports it.
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
@@ -208,6 +215,12 @@ class LiveWireGuard extends Interceptor {
   /// How many lesfiche creates it let out (#129).
   int lessonContentCreates = 0;
 
+  /// Whether a step of a login (the password, the 2FA code, the account
+  /// verification answer) came through the guard in this run (#134). The
+  /// run logs in at most once, so a test that makes the client log in on
+  /// purpose needs a run that has not.
+  bool get loggedIn => _loginSteps.isNotEmpty;
+
   /// The own account: the only recipient a message may have.
   MessageSearchUser? get own => _own;
   MessageSearchUser? _own;
@@ -277,6 +290,18 @@ class LiveWireGuard extends Interceptor {
   /// The items the run made that Smartschool answered a move to the trash
   /// for.
   final Set<String> _intradeskTrashed = {};
+
+  /// The moves to the trash of an item the run made as another kind that the
+  /// run allowed ([allowIntradeskTrashAs]) and did not send yet, as (kind,
+  /// ID) (#133).
+  final Set<(String, String)> _intradeskTrashAs = {};
+
+  /// The made-up Intradesk IDs the guard handed out
+  /// ([newMadeUpIntradeskId], #133).
+  final Set<String> _intradeskMadeUp = {};
+
+  /// The moves to the trash of a made-up ID that went out, as (kind, ID).
+  final Set<(String, String)> _intradeskMadeUpTrashes = {};
 
   /// The upload directories Smartschool handed out through the guard
   /// (`get-upload-directory`, #128).
@@ -364,6 +389,39 @@ class LiveWireGuard extends Interceptor {
   /// whatever this allows; and in the folders the run made in it.
   void allowIntradeskFolder(String folderId) =>
       _intradeskAllowed.add(folderId.toLowerCase());
+
+  /// Lets the run move the Intradesk item [id] that it made to the trash as
+  /// one of the [kind] (`folders`, `weblinks` or `files`) other than its
+  /// own, once: to see how Intradesk answers the ID of an item of another
+  /// kind (#133; seen live, 2026-10-07: `404`, and nothing moved).
+  ///
+  /// The guard lets it out only for an item the run made (as Smartschool
+  /// answered its create) and did not move to the trash, whatever this
+  /// allows: if Intradesk ever took the ID for the item it names, it would
+  /// move one of the run's own items.
+  void allowIntradeskTrashAs(String id, String kind) =>
+      _intradeskTrashAs.add((kind, id.toLowerCase()));
+
+  /// A new made-up Intradesk ID, a random UUID (version 4) that names no
+  /// item, which the run may send to the trash once per kind: to see how
+  /// Intradesk answers an ID it does not know (#133; seen live, 2026-10-07:
+  /// `404`). The guard lets out no other write of it.
+  String newMadeUpIntradeskId() {
+    final random = Random.secure();
+    final bytes = [for (var i = 0; i < 16; i++) random.nextInt(256)];
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    final id = [
+      hex.substring(0, 8),
+      hex.substring(8, 12),
+      hex.substring(12, 16),
+      hex.substring(16, 20),
+      hex.substring(20),
+    ].join('-');
+    _intradeskMadeUp.add(id);
+    return id;
+  }
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
@@ -639,19 +697,29 @@ class LiveWireGuard extends Interceptor {
 
   /// Why the move of the Intradesk item [id] of the kind [kind] to the
   /// trash may not go out, or `null`: only an item the run made, of that
-  /// kind, until Smartschool answered a move to the trash for it.
+  /// kind (or of another kind, once, when the run allowed it, #133), until
+  /// Smartschool answered a move to the trash for it; or a made-up ID the
+  /// guard handed out, once per kind (#133).
   String? _intradeskTrashRefusal(String kind, String id) {
-    final made = _intradeskMade[id.toLowerCase()];
+    final key = id.toLowerCase();
+    if (_intradeskMadeUp.contains(key)) {
+      if (!_intradeskMadeUpTrashes.add((kind, key))) {
+        return 'it moves made-up Intradesk ID $id to the trash as one of the '
+            '$kind a second time';
+      }
+      return null;
+    }
+    final made = _intradeskMade[key];
     if (made == null) {
       return 'it moves Intradesk item $id to the trash, which this run did '
           'not make';
     }
-    if (made != kind) {
+    if (_intradeskTrashed.contains(key)) {
+      return 'Intradesk item $id was moved to the trash already in this run';
+    }
+    if (made != kind && !_intradeskTrashAs.remove((kind, key))) {
       return 'it moves Intradesk item $id to the trash as one of the $kind, '
           'but the run made it as one of the $made';
-    }
-    if (_intradeskTrashed.contains(id.toLowerCase())) {
-      return 'Intradesk item $id was moved to the trash already in this run';
     }
     return null;
   }
@@ -851,8 +919,15 @@ class LiveWireGuard extends Interceptor {
     final xml = XmlDocument.parse(command);
     final subsystem = _text(xml, 'subsystem');
     final action = _text(xml, 'action');
+    // The folder tree of the web client's "move messages" dialog
+    // (MessagesService.getFolders, #136): it only reads. The dialog's moves
+    // are `postboxes` commands, refused below.
+    if (subsystem == 'quickactions' && action == 'requestmovelist') {
+      return null;
+    }
     if (subsystem != 'postboxes') {
-      return 'the live suite sends no "$subsystem" command';
+      return 'the live suite sends no "$subsystem" command'
+          '${subsystem == 'quickactions' ? ' but requestmovelist' : ''}';
     }
     if (_readActions.contains(action)) return null;
     if (action == 'quickmove messages') return _moveRefusal(xml);

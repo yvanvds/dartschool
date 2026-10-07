@@ -1,8 +1,18 @@
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
+import 'models/intradesk_models.dart'
+    show
+        IntradeskAddRefusalReason,
+        IntradeskFolder,
+        IntradeskFolderCapabilities,
+        IntradeskItemKind;
 import 'models/lesson_content_models.dart'
-    show LessonContentItem, LessonContentType;
+    show
+        LessonContentAttachment,
+        LessonContentItem,
+        LessonContentType,
+        LessonContentVisibility;
 import 'models/message_models.dart' show BoxType;
 import 'models/planner_models.dart'
     show
@@ -11,7 +21,12 @@ import 'models/planner_models.dart'
         PlannerAssignmentType,
         PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
-    show DayPart, PresenceClassRef, PresenceHalfDay, PresenceSaveError;
+    show
+        DayPart,
+        PresenceClassRef,
+        PresenceHalfDay,
+        PresenceSaveError,
+        PresenceUnreadableAnswerKind;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -226,9 +241,13 @@ class SmartschoolAccountVerificationRejectedError
 /// Also thrown, without logging in again and without a retry, for a request
 /// that must not be retried in a new session because it carries state of the
 /// session that was refused (`retryAfterLogin: false` on the request methods
-/// of `SmartschoolClient`). `MessagesService.sendMessage` sends every step
-/// after loading the compose form that way (#25): the message was not sent,
-/// and calling `sendMessage` again logs in and starts from a new compose form.
+/// of `SmartschoolClient`), or must not be sent twice, such as a create. The
+/// client remembers that Smartschool refused the session: its next request
+/// logs in before it is sent (#134), so calling the method again sends the
+/// request once, in a new session, also when that request is its first.
+/// `MessagesService.sendMessage` sends every step after loading the compose
+/// form that way (#25): the message was not sent, and calling `sendMessage`
+/// again logs in and starts from a new compose form.
 ///
 /// Also thrown, without sending the request, for a request that must go out
 /// in the session of an earlier answer (`sameSessionAs` on the POST methods
@@ -601,20 +620,51 @@ class SmartschoolJsonError extends SmartschoolDownloadError {
 ///
 /// The creates of `IntradeskService` throw it too (#128), for a parent
 /// folder Smartschool knows no folder for: `createFolder`, `createWeblink`
-/// and `uploadFiles`. Smartschool answers such a create with the same bare
-/// `500` (seen live, 2026-10-05, for a folder in a made-up parent), and the
-/// service asks for the parents of the parent folder the same way. Nothing
-/// was made then; [folderId] is the parent folder's ID.
+/// and `uploadFiles`. Since #138 they read the parent first
+/// (`IntradeskService.getFolder`), so they throw it from that read, with its
+/// [statusCode] (`404` or `200`, below), before anything of the write is
+/// sent; also for a parent in Intradesk's trash. A parent that is gone after
+/// that read: Smartschool answers the create with the same bare `500` (seen
+/// live, 2026-10-05, for a folder in a made-up parent), and the service asks
+/// for the parents of the parent folder the same way. Nothing was made then;
+/// [folderId] is the parent folder's ID.
+///
+/// The reads of a folder's own entry throw it too (#132):
+/// `IntradeskService.getFolderParentIds`, `getFolder` and `getFolderPath`.
+/// There [statusCode] is the status of the answer that showed it:
+/// - `404`, Smartschool's answer to the parents of an ID that is not a
+///   folder (an unknown ID, or the ID of a file or a weblink);
+/// - `200`, when Smartschool answered the parents, but the listing where they
+///   put the folder (answered with `200`) does not hold it: a folder in
+///   Intradesk's trash (seen live, 2026-10-07: Smartschool answers its
+///   parents as those of a top-level folder, `[]`, and the root listing does
+///   not hold it), or a folder that the user does not see. The [message]
+///   says so.
+///
+/// `IntradeskService.trashFolder` does not throw it: a move to the trash of
+/// an ID Intradesk has no folder for is a
+/// [SmartschoolIntradeskItemNotFoundError] (#133), a
+/// [SmartschoolIntradeskWriteRefusedError] as before, not a
+/// [SmartschoolDownloadError].
 class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
   /// The ID that was asked for.
   final String folderId;
 
-  SmartschoolIntradeskFolderNotFoundError(this.folderId)
-    : super(
-        'Intradesk has no folder with ID "$folderId": the ID is unknown, or '
-        'it is the ID of a file or a weblink.',
-        500,
-      );
+  /// [statusCode] is the status of the answer that showed that there is no
+  /// such folder: `500` (the default) for a listing or a create, `404` and
+  /// `200` for the reads of #132 (see the class doc). [message] replaces the
+  /// default message, which says the ID is unknown or names a file or a
+  /// weblink.
+  SmartschoolIntradeskFolderNotFoundError(
+    this.folderId, {
+    int statusCode = 500,
+    String? message,
+  }) : super(
+         message ??
+             'Intradesk has no folder with ID "$folderId": the ID is unknown, '
+                 'or it is the ID of a file or a weblink.',
+         statusCode,
+       );
 }
 
 /// Thrown by the writes of `IntradeskService` (#128) when Intradesk refused
@@ -631,12 +681,26 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
 ///   an address that Intradesk refuses after all);
 /// - `createFolder(confidential: true)` in an ordinary folder: "In een gewone
 ///   map kan je enkel gewone mappen toevoegen. Vertrouwelijke mappen kan je
-///   hier niet toevoegen."
+///   hier niet toevoegen." (Since #138 the service does not send that: it
+///   reads the parent first and throws a
+///   [SmartschoolIntradeskAddRefusedError] instead.)
 ///
 /// `uploadFiles` throws it when Intradesk refuses to take the files of the
 /// upload directory, such as a directory that holds no files (seen live:
 /// HTTP `400` without violations). The files stay in the upload directory,
 /// which is not used again.
+///
+/// The moves to the trash throw its subclass
+/// [SmartschoolIntradeskItemNotFoundError] for Intradesk's `404`: it has no
+/// item of that kind with that ID (#133).
+///
+/// The creates throw its subclass [SmartschoolIntradeskAddRefusedError]
+/// when the service refused the write itself, after reading the parent
+/// folder and **before sending it** (#138): the user may not add to it
+/// (`canAdd`), or it is of the wrong kind (a confidential folder in an
+/// ordinary one, which Intradesk answered with the `400` above before, or an
+/// ordinary folder in a confidential one). There is no answer of Intradesk
+/// then, so its [statusCode] is `null`.
 ///
 /// The session was accepted: signing in again does not help. A session that
 /// Smartschool does not accept for the write is a
@@ -647,8 +711,10 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
 /// failures, a bare HTTP `500`, is a
 /// [SmartschoolIntradeskSaveUnconfirmedError].
 class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
-  /// The HTTP status of Intradesk's answer (`400` to `499`).
-  final int statusCode;
+  /// The HTTP status of Intradesk's answer (`400` to `499`); `null` when the
+  /// service refused the write itself, before sending it
+  /// ([SmartschoolIntradeskAddRefusedError], #138).
+  final int? statusCode;
 
   /// Intradesk's reasons, in its own words, in its order; empty when it
   /// gave none (a bare `{"status":400,"title":"Bad Request"}`).
@@ -662,6 +728,111 @@ class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
 
   @override
   String toString() => '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `IntradeskService.trashFolder`, `trashWeblink` and `trashFile`
+/// when Intradesk has no item of that [kind] with that [id] (#133): it
+/// answered the move to the trash with `404`. **Nothing was moved to the
+/// trash.**
+///
+/// Seen live (2026-10-07), each answered with
+/// `404 {"status":404,"title":"Not Found","detail":"","type":""}` and with
+/// nothing moved:
+/// - a made-up ID, sent as a folder, a weblink and a file;
+/// - the ID of an item of another kind: a file or a weblink sent as a folder
+///   (`folders/{fileId}/trash`), a folder or a file as a weblink, a folder
+///   or a weblink as a file. The item stayed where it was;
+/// - the ID of an item of another kind that is in the trash already.
+///
+/// So a caller can tell "there is no such item" from a move that went
+/// through: Intradesk answers the move of an item that is in the trash
+/// already, of its own kind, with `204`, as the first move. An item deleted
+/// for good was not tried (the library never deletes for good), nor an item
+/// the user may not manage (`capabilities.canManage` false, #139), which may
+/// be answered otherwise.
+///
+/// A [SmartschoolIntradeskWriteRefusedError] with [statusCode] `404` (and
+/// Intradesk's [violations], none seen), as a move to the trash answered
+/// `404` was before #133, so a `catch` of that type still catches it. Not a
+/// [SmartschoolIntradeskFolderNotFoundError], also for a folder: that one is
+/// a [SmartschoolDownloadError], the error of a read.
+class SmartschoolIntradeskItemNotFoundError
+    extends SmartschoolIntradeskWriteRefusedError {
+  /// The kind of item the move to the trash asked for: the one Intradesk has
+  /// no item of with [id].
+  final IntradeskItemKind kind;
+
+  /// The ID that was asked for.
+  final String id;
+
+  const SmartschoolIntradeskItemNotFoundError(
+    super.message, {
+    required this.kind,
+    required this.id,
+    super.violations,
+  }) : super(statusCode: 404);
+}
+
+/// Thrown by `IntradeskService.createFolder`, `createWeblink` and
+/// `uploadFiles` when the folder they add to does not allow what they add,
+/// as Intradesk's web client tells it (#138). **Nothing was sent**: the
+/// service read the folder first and refused the write before any request
+/// of it (also before an upload step).
+///
+/// Which rule refused is the [reason] (an app can switch on it), with the
+/// folder as the service read it: [parent] (its entry, from
+/// `IntradeskService.getFolder`; `null` at the root) and the [capabilities]
+/// the rule looked at (the folder's, or at the root the platform's, from
+/// `IntradeskService.getRootCapabilities`). The [message] says the same for
+/// a log and ends with "Nothing was sent.".
+/// - [IntradeskAddRefusalReason.cannotAdd]: the user may not add to the
+///   folder (`canAdd` false);
+/// - [IntradeskAddRefusalReason.cannotAddConfidentialFolder]: a
+///   confidential folder at the root, which the platform does not allow;
+/// - [IntradeskAddRefusalReason.ordinaryParent]: a confidential folder in an
+///   ordinary folder, which Intradesk refused with HTTP `400` before #138
+///   (seen live, 2026-10-05);
+/// - [IntradeskAddRefusalReason.confidentialParent]: an ordinary folder in a
+///   confidential folder.
+///
+/// These are the web client's rules, which offers nothing else: Intradesk's
+/// own answer was seen live only for [IntradeskAddRefusalReason.ordinaryParent]
+/// (the live account is an administrator, with `canAdd` on every folder it
+/// sees, none of them confidential).
+///
+/// A [SmartschoolIntradeskWriteRefusedError] (as the `400` for a
+/// confidential folder in an ordinary one was before), so a `catch` of that
+/// type still catches it, with [statusCode] `null`: Intradesk did not
+/// answer, nothing was sent to it. Not thrown for a parent that the read
+/// does not find: that is a [SmartschoolIntradeskFolderNotFoundError], also
+/// before anything was sent.
+class SmartschoolIntradeskAddRefusedError
+    extends SmartschoolIntradeskWriteRefusedError {
+  /// Which rule refused the write.
+  final IntradeskAddRefusalReason reason;
+
+  /// The ID of the folder the write added to, as the caller gave it: `''`
+  /// for the root.
+  final String parentFolderId;
+
+  /// The folder the write added to, as the service read it
+  /// (`IntradeskService.getFolder`); `null` at the root, which has no entry.
+  final IntradeskFolder? parent;
+
+  /// The capabilities the rule looked at: those of [parent], or at the root
+  /// the platform's (`IntradeskService.getRootCapabilities`).
+  final IntradeskFolderCapabilities capabilities;
+
+  const SmartschoolIntradeskAddRefusedError(
+    super.message, {
+    required this.reason,
+    required this.parentFolderId,
+    required this.capabilities,
+    this.parent,
+  }) : super(statusCode: null);
+
+  @override
+  String toString() => '$runtimeType(${reason.name}): $message';
 }
 
 /// Thrown by the writes of `IntradeskService` (#128) when the write went out
@@ -918,13 +1089,18 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// Thrown when a Presence (attendance) operation fails.
 ///
 /// This covers a rejected save (the server returns a non-empty `errors[]`
-/// array, exposed via [saveErrors], typed, and [errors], as text), a request
-/// the Presence module refuses or cannot handle (it answers with an HTML page
-/// instead of JSON, such as its generic `500` error page: the request is
-/// invalid, or the account may lack Presence access), and precondition
-/// failures such as an unknown class, an unresolvable status code, or a pupil
-/// not present in the class. The session was accepted for all of them, so
-/// signing in again does not help.
+/// array, exposed via [saveErrors], typed, and [errors], as text), an answer
+/// that cannot be read (empty, an HTML page instead of JSON, such as
+/// Smartschool's generic `500` error page, or not valid JSON), and
+/// precondition failures such as an unknown class, an unresolvable status
+/// code, or a pupil not present in the class. The session was accepted for
+/// all of them, so signing in again does not help.
+///
+/// An answer that cannot be read is reported with the subtype
+/// [SmartschoolPresenceUnreadableAnswerError] (#137), with the HTTP status
+/// of the answer and what made it unreadable: unlike a refused save or a
+/// failed precondition, it can be gone a moment later (a proxy's `502`, an
+/// answer cut off), so a caller that retries can tell it apart.
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
@@ -1101,6 +1277,134 @@ class SmartschoolPresenceNoConfirmRightError extends SmartschoolPresenceError {
     required this.part,
     required this.classRef,
   });
+}
+
+/// Thrown by `PresenceService` when an answer of the Presence module cannot
+/// be read (#137): it is empty, an HTML page instead of JSON, or not valid
+/// JSON. [kind] says which, [statusCode] gives the HTTP status of the
+/// answer and [path] the endpoint that gave it.
+///
+/// Not a session problem: the client logs in again, and retries once, on
+/// the answers with which Smartschool refuses a session (a `401`, or a
+/// redirect to its login chain), and reports a retry refused again as a
+/// [SmartschoolSessionExpiredError]. Every other status, `429` and the
+/// `5xx` ones included, comes this far as an answer. So this is what a
+/// caller sees of a hiccup between it and the module, such as a proxy's
+/// `502`, `503` or `504`, or an answer cut off, which can be gone a moment
+/// later: unlike a save the module refused (its `errors[]`, in [saveErrors]
+/// of a plain [SmartschoolPresenceError]) and the checks before a save (an
+/// unknown class, code or pupil, and the other subtypes of
+/// [SmartschoolPresenceError]), which give the same answer the next time.
+/// Smartschool's generic error page (HTTP `500`, "Oeps, er ging iets mis")
+/// is also how the module answers a request it cannot handle, such as an
+/// invalid one (seen live, #5), so a retry can get the same page again:
+/// retry a limited number of times.
+///
+/// What a caller may assume depends on the request, its [path]:
+///
+/// - a read (`/Presence/Main/getConfig`, `/Presence/Code/getAllCodes` or
+///   `/Presence/Class/getClass`: `getConfig`, `getAllCodes`,
+///   `getClassPupils`, and the reads with which `setLate` and `setPresent`
+///   start): nothing changed on Smartschool.
+/// - the save (`/Presence/Class/savePupilsPresences`, the last request of
+///   `setLate` and `setPresent`): it is **not known** whether the save
+///   landed. Calling `setLate` or `setPresent` again is safe: the call reads
+///   the class again first and so sends the half-day's record (its
+///   `presenceID`) when the first save stored one, which the module updates
+///   rather than adding a second record for the half-day. With
+///   `onlyReplacing`, that read may find the status the first save stored
+///   (such as "Te laat" for `setLate`): let `onlyReplacing` allow it
+///   (`PresenceService.lateCodeName`, or `lateWithoutReasonAliasName` with
+///   `withoutValidReason`; `presentCodeName` for `setPresent`), or the call
+///   is refused with a [SmartschoolPresenceChangeRefusedError] that names
+///   it.
+///
+/// For an HTML page, it keeps the page's [title] and [heading], read and
+/// masked as [SmartschoolUnexpectedPageError] reads them (#110): Smartschool's
+/// error pages say what went wrong in their heading. Both are in the
+/// [message] too; nothing else of the answer is, nor of an answer that is
+/// not valid JSON, which can name pupils: its [message] has the JSON
+/// parser's reason and where the JSON breaks off.
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] and [saveErrors] are empty. Of these answers,
+/// only the HTML `500` of a request the module cannot handle was seen live
+/// (#5); the others are tested offline. (The empty `401` of an expired
+/// session, seen live on a release before #8 as "Empty response", is a
+/// session refusal now: the client logs in again for it.)
+class SmartschoolPresenceUnreadableAnswerError
+    extends SmartschoolPresenceError {
+  /// The Presence endpoint that gave the answer: `/Presence/Main/getConfig`,
+  /// `/Presence/Code/getAllCodes`, `/Presence/Class/getClass`, or
+  /// `/Presence/Class/savePupilsPresences` for the save (whether it landed
+  /// is not known, see above).
+  final String path;
+
+  /// The HTTP status of the answer, such as `502`, or `null` when it is not
+  /// known.
+  final int? statusCode;
+
+  /// What made the answer unreadable: empty, an HTML page, or not valid
+  /// JSON.
+  final PresenceUnreadableAnswerKind kind;
+
+  /// For an HTML page ([PresenceUnreadableAnswerKind.html]): its `<title>`,
+  /// or `null` when it has none, as [SmartschoolUnexpectedPageError.title]
+  /// reads it: without scripts, styles and forms, e-mail addresses and
+  /// token-like strings masked, cut off after
+  /// [SmartschoolUnexpectedPageError.maxLabelLength] characters. `null` for
+  /// the other kinds.
+  final String? title;
+
+  /// For an HTML page ([PresenceUnreadableAnswerKind.html]): its first
+  /// `<h1>`, or else its first `<h2>`, or `null` when it has neither, read
+  /// as [title] is. On Smartschool's own error pages it says what went wrong
+  /// (such as "Oeps, er ging iets mis"). `null` for the other kinds.
+  final String? heading;
+
+  const SmartschoolPresenceUnreadableAnswerError(
+    super.message, {
+    required this.path,
+    required this.kind,
+    this.statusCode,
+    this.title,
+    this.heading,
+  });
+
+  /// The error for [page], the HTML that Smartschool answered the Presence
+  /// endpoint [path] with, with the [statusCode] of that answer.
+  ///
+  /// Reads the [title] and [heading] of [page] and builds a [message] that
+  /// names them, with [path] and [statusCode].
+  factory SmartschoolPresenceUnreadableAnswerError.fromPage(
+    String page, {
+    required String path,
+    int? statusCode,
+  }) {
+    final document = html_parser.parse(page);
+    final title = SmartschoolUnexpectedPageError._label(
+      document.querySelector('title'),
+      SmartschoolUnexpectedPageError.maxLabelLength,
+    );
+    final heading = SmartschoolUnexpectedPageError._label(
+      document.querySelector('h1') ?? document.querySelector('h2'),
+      SmartschoolUnexpectedPageError.maxLabelLength,
+    );
+    final details = [
+      statusCode == null ? 'status unknown' : 'HTTP $statusCode',
+      if (title != null) 'title "$title"',
+      if (heading != null) 'heading "$heading"',
+    ].join(', ');
+    return SmartschoolPresenceUnreadableAnswerError(
+      'Smartschool answered $path with an HTML page instead of JSON '
+      '($details).',
+      path: path,
+      kind: PresenceUnreadableAnswerKind.html,
+      statusCode: statusCode,
+      title: title,
+      heading: heading,
+    );
+  }
 }
 
 /// Thrown by `SkoreService` when Smartschool's Skore module (grading and
@@ -1619,6 +1923,13 @@ class SmartschoolLessonContentWriteRefusedError
 /// [SmartschoolAuthenticationError]): Smartschool refused it before handling
 /// it, so nothing was changed.
 ///
+/// `addAttachments` throws the subtype
+/// [SmartschoolLessonContentVisibilityNotSetError] when the module took the
+/// files and only setting the visibility of one of them failed (#135): the
+/// files were added then, and the error carries their attachments. From
+/// `addAttachments`, this error itself (not of that subtype) means that the
+/// take is unconfirmed: the files may or may not have been added.
+///
 /// Deliberately not a [SmartschoolLessonContentError], so a `catch` meant
 /// for the failures where nothing was changed does not catch it.
 class SmartschoolLessonContentSaveUnconfirmedError
@@ -1630,9 +1941,10 @@ class SmartschoolLessonContentSaveUnconfirmedError
 
   /// The failure when no usable answer came in, such as a
   /// [SmartschoolConnectionError], or of the step after the write (the read
-  /// of a new lesfiche's detail, the visibility of an added attachment);
-  /// `null` when the module answered with something that does not confirm
-  /// the write.
+  /// of a new lesfiche's detail, or, in a
+  /// [SmartschoolLessonContentVisibilityNotSetError], the visibility of an
+  /// added attachment); `null` when the module answered with something that
+  /// does not confirm the write.
   final Object? cause;
 
   /// The ID of the lesfiche the write was for: the lesfiche that was edited,
@@ -1652,6 +1964,86 @@ class SmartschoolLessonContentSaveUnconfirmedError
   String toString() => statusCode == null
       ? '$runtimeType: $message'
       : '$runtimeType($statusCode): $message';
+}
+
+/// The [SmartschoolLessonContentSaveUnconfirmedError] of
+/// `LessonContentService.addAttachments` when **the files were added**, and
+/// only setting the visibility of one of them failed (#135).
+///
+/// `addAttachments` has the module take the uploaded files (`POST
+/// {type}/{id}/attachments`), which gives every new attachment the
+/// visibility [LessonContentVisibility.always] (seen live), and then sets the
+/// visibility asked for of each attachment that asks for another one, one at
+/// a time, with `changeAttachmentVisibility`. This error means that the take
+/// went through, with exactly the files uploaded (their attachments are in
+/// [addedAttachments]), and that the change of the visibility of
+/// [attachment] to [visibility] failed. The call stopped there: the
+/// attachments after it whose visibility it would have changed still have
+/// the module's `always` too. [visibilitiesNotSet] holds all of them.
+///
+/// [cause] is the failure of that change: a [SmartschoolLessonContentError]
+/// (the module refused it, such as a
+/// [SmartschoolLessonContentWriteRefusedError]: the visibility was not set),
+/// a [SmartschoolLessonContentSaveUnconfirmedError] (sent, but not confirmed:
+/// it may or may not have been set), or a [SmartschoolAuthenticationError]
+/// (the session was refused, also after logging in again: not set).
+///
+/// **Do not add the files again**: that adds them a second time (the module
+/// keeps two attachments of the same name, seen live). Set the visibilities
+/// instead; a visibility change sets a value, so sending one that went
+/// through again is harmless:
+///
+/// ```dart
+/// try {
+///   await lessonContent.addAttachments(fiche, files);
+/// } on SmartschoolLessonContentVisibilityNotSetError catch (e) {
+///   // The files are on the lesfiche: e.addedAttachments.
+///   for (final MapEntry(key: id, value: visibility)
+///       in e.visibilitiesNotSet.entries) {
+///     await lessonContent.changeAttachmentVisibility(fiche, id, visibility);
+///   }
+/// }
+/// ```
+///
+/// Its [statusCode] is `null` and its [lessonContentId] the ID of the
+/// lesfiche. From `addAttachments`, a
+/// [SmartschoolLessonContentSaveUnconfirmedError] that is not of this type
+/// means that the take itself is unconfirmed: the files may or may not have
+/// been added, and the error carries no attachments.
+class SmartschoolLessonContentVisibilityNotSetError
+    extends SmartschoolLessonContentSaveUnconfirmedError {
+  /// The attachments the module made of the files, one per file, in the
+  /// order of the call's `attachments`, each with the visibility it has as
+  /// far as the call knows: for those before [attachment], the one asked for
+  /// (as the module answered its change); for [attachment] and those after
+  /// it, the one the module gave them ([LessonContentVisibility.always], seen
+  /// live).
+  final List<LessonContentAttachment> addedAttachments;
+
+  /// The attachment whose visibility could not be set, as the module answered
+  /// the take: one of [addedAttachments].
+  final LessonContentAttachment attachment;
+
+  /// The visibility asked for [attachment].
+  final LessonContentVisibility visibility;
+
+  /// The visibilities asked for that the call did not set, by attachment ID
+  /// ([LessonContentAttachment.id]), in the order of the call's
+  /// `attachments`: [visibility] for [attachment] first, then, for each
+  /// attachment after it that asks for another visibility than the module
+  /// gave it, the one asked for (the call did not try those). Each can be set
+  /// with `LessonContentService.changeAttachmentVisibility`.
+  final Map<String, LessonContentVisibility> visibilitiesNotSet;
+
+  const SmartschoolLessonContentVisibilityNotSetError(
+    super.message, {
+    required Object super.cause,
+    required String super.lessonContentId,
+    required this.addedAttachments,
+    required this.attachment,
+    required this.visibility,
+    required this.visibilitiesNotSet,
+  });
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

@@ -13,7 +13,7 @@ import 'exceptions.dart';
 /// `MessagesService` the answers of its recipient search (`searchUsers`),
 /// which is a form POST, not a command: so both tell the same answers apart.
 ///
-/// - HTML, a page or a piece of one (see [_isHtmlAnswer]): a
+/// - HTML, a page or a piece of one (see [isHtmlAnswer]): a
 ///   [SmartschoolUnexpectedPageError] built from it, which says whether it is
 ///   Smartschool's login page, with the status, content type and URL of
 ///   [answer];
@@ -48,7 +48,7 @@ T readXmlAnswer<T>(
   }
 
   final contentType = answer.headers.value(Headers.contentTypeHeader);
-  if (_isHtmlAnswer(trimmed)) {
+  if (isHtmlAnswer(trimmed)) {
     throw SmartschoolUnexpectedPageError.fromPage(
       body,
       action: action,
@@ -84,7 +84,8 @@ T readXmlAnswer<T>(
 }
 
 /// Whether [body], an answer that should be XML without its leading white
-/// space, is HTML: a page, or a piece of one (#106, #110).
+/// space, is HTML: a page, or a piece of one (#106, #110). `PresenceService`
+/// tells an HTML answer where it expects JSON apart with it too (#137).
 ///
 /// After any white space, comments, processing instructions (such as the
 /// XML declaration of an XHTML page) and doctypes other than HTML's, it
@@ -95,7 +96,7 @@ T readXmlAnswer<T>(
 /// it happens to be well-formed XML. The answers of the XML dispatcher
 /// (`<server>`, `<results>`, `<users>`) and of the recipient search
 /// (`<results>`) are not.
-bool _isHtmlAnswer(String body) {
+bool isHtmlAnswer(String body) {
   final start = _beforeContent.matchAsPrefix(body)?.end ?? 0;
   final content = _contentStart.matchAsPrefix(body, start);
   if (content == null) return false;

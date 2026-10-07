@@ -21,7 +21,11 @@
 //   action) gets HTTP `500` with Smartschool's generic "Oeps, er ging iets
 //   mis" page: `SmartschoolPresenceError`. Signing in again does not help.
 //   (A class the account may not record for is answered in JSON: an empty
-//   `pupils` list, `saveIsAllowed: false` and an `errorMessage`.)
+//   `pupils` list, `saveIsAllowed: false` and an `errorMessage`.) Since #137
+//   it is the subtype `SmartschoolPresenceUnreadableAnswerError`, with the
+//   status, `kind` html and the page's heading, which a caller that retries
+//   tells apart from a refused save (presence_unreadable_answer_test.dart
+//   has the other unreadable answers).
 //
 // The fake Smartschool below serves the Presence endpoints from canned
 // answers; its pupil data is made up.
@@ -264,6 +268,24 @@ Matcher _presenceRefusal({Object? message = anything}) => allOf(
   isA<SmartschoolPresenceError>().having((e) => e.message, 'message', message),
 );
 
+/// The HTML page [path] was answered with, with [status] (#137): a
+/// [SmartschoolPresenceUnreadableAnswerError], which is a
+/// [SmartschoolPresenceError] too.
+Matcher _unreadablePage(
+  String path,
+  int status, {
+  Object? title,
+  Object? heading,
+}) => allOf(
+  _presenceRefusal(),
+  isA<SmartschoolPresenceUnreadableAnswerError>()
+      .having((e) => e.path, 'path', path)
+      .having((e) => e.statusCode, 'statusCode', status)
+      .having((e) => e.kind, 'kind', PresenceUnreadableAnswerKind.html)
+      .having((e) => e.title, 'title', title)
+      .having((e) => e.heading, 'heading', heading),
+);
+
 void main() {
   forbidRealNetwork();
 
@@ -307,8 +329,11 @@ void main() {
       await expectLater(
         PresenceService(client).getConfig(),
         throwsA(
-          _presenceRefusal(
-            message: allOf(contains('HTTP 500'), isNot(contains('expired'))),
+          allOf(
+            _presenceRefusal(
+              message: allOf(contains('HTTP 500'), isNot(contains('expired'))),
+            ),
+            _unreadablePage(_getConfig, 500, heading: 'Oeps, er ging iets mis'),
           ),
         ),
       );
@@ -324,7 +349,9 @@ void main() {
           date: DateTime(2026, 9, 30),
           schoolyearRefDate: '2026-09-01',
         ),
-        throwsA(_presenceRefusal()),
+        throwsA(
+          _unreadablePage(_getClass, 500, heading: 'Oeps, er ging iets mis'),
+        ),
       );
     });
 
@@ -334,7 +361,7 @@ void main() {
 
       await expectLater(
         _setLate(PresenceService(client)),
-        throwsA(_presenceRefusal()),
+        throwsA(_unreadablePage(_save, 500, heading: 'Oeps, er ging iets mis')),
       );
       expect(server.posts(_save), 1);
     });
@@ -344,7 +371,7 @@ void main() {
 
       await expectLater(
         PresenceService(client).getConfig(),
-        throwsA(_presenceRefusal()),
+        throwsA(_unreadablePage(_getConfig, 302, title: 'Redirecting to /')),
       );
     });
   });
@@ -453,6 +480,49 @@ void main() {
     });
   });
 
+  group('an empty answer: a 502 is unreadable, a 401 a refused session '
+      '(#137)', () {
+    test('an empty 502 is a SmartschoolPresenceUnreadableAnswerError, '
+        'without a login', () async {
+      final server = await serve({
+        _getConfig: () => _response('', status: 502),
+      });
+
+      await expectLater(
+        PresenceService(client).getConfig(),
+        throwsA(
+          allOf(
+            _presenceRefusal(message: contains('HTTP 502')),
+            isA<SmartschoolPresenceUnreadableAnswerError>()
+                .having((e) => e.statusCode, 'statusCode', 502)
+                .having(
+                  (e) => e.kind,
+                  'kind',
+                  PresenceUnreadableAnswerKind.empty,
+                ),
+          ),
+        ),
+      );
+      expect(server.log, ['POST $_getConfig'], reason: 'no login, no retry');
+    });
+
+    test(
+      'an empty 401, as an expired session was answered live (2026-10-07, '
+      'on a release before #8), logs in again and returns the data',
+      () async {
+        final server = await serve({
+          _getConfig: () => _json(_configJson),
+        }, sessionAccepted: false);
+
+        final config = await PresenceService(client).getConfig();
+
+        expect(config.classForGroup(298)?.userCanConfirm, isTrue);
+        expect(server.posts(_getConfig), 2, reason: '401, then the retry');
+        expect(server.posts('/login'), 1);
+      },
+    );
+  });
+
   group('a caller can act on the type (#5)', () {
     Future<String> classify(Future<void> Function() call) async {
       try {
@@ -466,6 +536,10 @@ void main() {
     }
 
     test('a refused save and an expired session take opposite paths', () async {
+      // Since #137 the error page is a SmartschoolPresenceUnreadableAnswerError,
+      // which this catch, written before that type, still catches as a
+      // SmartschoolPresenceError (presence_unreadable_answer_test.dart has a
+      // caller that tells the two apart).
       await serve(_recordable(save: _refused));
       expect(
         await classify(() => _setLate(PresenceService(client))),

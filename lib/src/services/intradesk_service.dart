@@ -34,22 +34,29 @@ export '../models/intradesk_models.dart';
 ///   print('${link.name}: ${link.url}');
 /// }
 ///
+/// // Read a folder by its ID alone: its own entry, and the folders above
+/// // it (#132)
+/// final folder = await intradesk.getFolder(folderId);
+/// print('${folder.name}, may add: ${folder.capabilities.canAdd}');
+/// final path = await intradesk.getFolderPath(folderId);
+/// print(path.map((f) => f.name).join(' > ')); // 2. SMA > tests
+///
 /// // Download a file
 /// final bytes = await intradesk.downloadFile(sub.files.first.id);
 ///
 /// // Add a folder, a weblink in it and a file (#128). Intradesk renames an
 /// // item whose name is taken, so use what it answers.
-/// final folder = await intradesk.createFolder(
+/// final toetsen = await intradesk.createFolder(
 ///   parentFolderId: sub.folders.first.id,
 ///   name: 'Toetsen',
 /// );
 /// await intradesk.createWeblink(
-///   parentFolderId: folder.id,
+///   parentFolderId: toetsen.id,
 ///   name: 'Oefenplatform',
 ///   url: 'https://example.com/oefenen',
 /// );
 /// final upload = await intradesk.uploadFiles(
-///   parentFolderId: folder.id,
+///   parentFolderId: toetsen.id,
 ///   filePaths: ['toets 1.pdf'],
 /// );
 /// print(upload.files.map((f) => f.name));
@@ -86,6 +93,17 @@ export '../models/intradesk_models.dart';
 ///   ([normalizeWeblinkUrl]), a parent folder ID that is not a UUID, a
 ///   weblink or a file at the root (the web client offers neither), and a
 ///   file that does not exist.
+/// - **The parent folder is read first (#138).** The creates read the
+///   folder they add to ([getFolder]: two requests; at the root
+///   [getRootCapabilities]: one) and add only what Intradesk's web client
+///   offers there: nothing without `canAdd`, no confidential folder in an
+///   ordinary folder (Intradesk answers one with HTTP `400`), no ordinary
+///   folder in a confidential one, and a confidential folder at the root
+///   only with the platform's `canAddConfidentialFolder`. Anything else is a
+///   [SmartschoolIntradeskAddRefusedError], and a parent the read does not
+///   find (an unknown ID, a folder in the trash) a
+///   [SmartschoolIntradeskFolderNotFoundError], both before anything of the
+///   write is sent.
 ///
 /// ### Errors of the writes
 /// - [ArgumentError]: a check before sending refused the write; nothing was
@@ -93,8 +111,19 @@ export '../models/intradesk_models.dart';
 /// - [SmartschoolIntradeskWriteRefusedError]: Intradesk refused the write
 ///   with an HTTP status from `400` to `499`, with its reasons in
 ///   `violations` when it gave any. Nothing was made.
+/// - [SmartschoolIntradeskAddRefusedError], one of those: the parent folder
+///   does not allow what a create adds, as the web client tells it (#138:
+///   its `reason`, with the folder as it was read). Nothing was sent; its
+///   `statusCode` is `null`.
+/// - [SmartschoolIntradeskItemNotFoundError], one of those: Intradesk has no
+///   item of that kind with the ID of a move to the trash (`404`: a made-up
+///   ID, or the ID of an item of another kind, #133). Nothing was moved.
 /// - [SmartschoolIntradeskFolderNotFoundError]: Smartschool knows no folder
-///   with the parent folder ID of a create. Nothing was made.
+///   with the parent folder ID of a create, or the folder is in the trash or
+///   not visible to the user (seen in the read of the parent before the
+///   create, #138, or told apart after a bare `500`, #37). Nothing was made.
+/// - [SmartschoolDownloadError] (and the other errors of a read): the read
+///   of the parent folder before a create failed (#138). Nothing was sent.
 /// - [SmartschoolAttachmentUploadError]: [uploadFiles] got no upload
 ///   directory, or Smartschool did not take a file into it. Intradesk was
 ///   not told to take the files, so nothing was added.
@@ -103,7 +132,8 @@ export '../models/intradesk_models.dart';
 ///   an answer that is not the item made, or no answer). List the folder
 ///   before trying again.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
-///   session for the write. Nothing was made.
+///   session for the write. Nothing was made. Calling the method again is
+///   enough: the client logs in before its next request (#134).
 /// - [SmartschoolConnectionError]: Smartschool could not be reached for a
 ///   request before the write (such as an upload step). When the write
 ///   itself fails so, it may have gone out: a
@@ -182,6 +212,319 @@ class IntradeskService {
     } on Exception {
       return false;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // A folder's own entry (#132)
+  // -------------------------------------------------------------------------
+
+  /// The IDs of the folders above the folder [folderId]: the folder at the
+  /// root first, the folder's parent last (#132).
+  ///
+  /// Calls `GET /intradesk/api/v1/{platformId}/folders/{folderId}/parents`,
+  /// which Smartschool answers with a JSON list of folder IDs in that order
+  /// (seen live, 2026-10-07: `["<2. SMA>"]` for "2. SMA" > "tests",
+  /// `["<2. SMA>", "<tests>"]` for a folder in "tests"). The web client asks
+  /// it when it opens a folder by its address, to list the folders above it.
+  ///
+  /// **An empty list does not mean the folder is at the root**: Smartschool
+  /// answers `[]` for a folder at the root, and also for a folder in
+  /// Intradesk's trash (seen live: a folder moved to the trash from "tests"
+  /// answered `["<2. SMA>", "<tests>"]` before, and `[]` after). [getFolder]
+  /// and [getFolderPath] tell them apart: they look the folder up where its
+  /// parents put it.
+  ///
+  /// One request. Throws an [ArgumentError], without sending anything, when
+  /// [folderId] is not a UUID (Smartschool answers such an ID with a bare
+  /// HTTP `500`). Throws a [SmartschoolIntradeskFolderNotFoundError] (with
+  /// [SmartschoolDownloadError.statusCode] `404`) when Smartschool knows no
+  /// folder with [folderId]: an unknown ID, or the ID of a file or a weblink,
+  /// which it answers with `404` (#37). Another status is a
+  /// [SmartschoolDownloadError] with that status, an answer that is not JSON
+  /// a [SmartschoolJsonError], and one that is not a list of IDs a
+  /// [SmartschoolParsingError].
+  Future<List<String>> getFolderParentIds(String folderId) async {
+    _checkFolderId(folderId);
+    final platformId = await _client.platformId;
+    final dynamic data;
+    try {
+      data = await _client.getJson(
+        '/intradesk/api/v1/$platformId/folders/$folderId/parents',
+      );
+    } on SmartschoolDownloadError catch (e) {
+      if (e.statusCode == 404) {
+        throw SmartschoolIntradeskFolderNotFoundError(
+          folderId,
+          statusCode: 404,
+        );
+      }
+      rethrow;
+    }
+    return parseFolderParentIds(data);
+  }
+
+  /// The folder [folderId] as Intradesk lists it: its entry in the listing
+  /// of the folder above it (#132), with its name, colour, `confidential`,
+  /// `inConfidentialFolder`, `parentFolderId`, `hasChildren` and
+  /// `capabilities` ([IntradeskFolderCapabilities.canAdd] says whether the
+  /// user may add to it, as [createFolder], [createWeblink] and [uploadFiles]
+  /// do).
+  ///
+  /// [getFolderListing] answers what is *in* a folder, not the folder
+  /// itself, and Smartschool has no request for one folder (`GET
+  /// .../folders/{folderId}` answers the web client's page, not JSON). So
+  /// this asks for the folder's parents ([getFolderParentIds]) and lists the
+  /// last of them ([getFolderListing]), or the root ([getRootListing]) for a
+  /// folder at the root, as the web client does when it opens a folder by
+  /// its address: two requests. [getFolderPath] reads the folders above it
+  /// too.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [folderId] is
+  /// not a UUID. Throws a [SmartschoolIntradeskFolderNotFoundError] when
+  /// Smartschool knows no folder with [folderId] (status `404`, see
+  /// [getFolderParentIds]), and when the listing where its parents put it
+  /// does not hold it (status `200`): a folder in Intradesk's trash (seen
+  /// live, 2026-10-07: its parents are `[]`, and the root listing does not
+  /// hold it), or a folder the user does not see. A listing that fails
+  /// throws as [getFolderListing] and [getRootListing] do.
+  Future<IntradeskFolder> getFolder(String folderId) async {
+    final parentIds = await getFolderParentIds(folderId);
+    final parentId = parentIds.isEmpty ? '' : parentIds.last;
+    final listing = await _listingOf(parentId);
+    return _listed(listing, folderId, parentId, folderId);
+  }
+
+  /// The folders from the root down to the folder [folderId]: the folder at
+  /// the root first, the folder itself last, each one an entry of the
+  /// listing of the one before it (#132). The path the web client shows
+  /// above a folder; `getFolderPath(id).last` is [getFolder]'s folder, and
+  /// the folders before it are those above it, as [IntradeskFolder]s.
+  ///
+  /// Asks for the folder's parents ([getFolderParentIds]), then lists the
+  /// root and each of the parents in turn, as the web client does when it
+  /// opens a folder by its address: one request more than the folder has
+  /// folders above it, plus the parents (three for "2. SMA" > "tests").
+  ///
+  /// Throws as [getFolder]: an [ArgumentError] for a [folderId] that is not
+  /// a UUID; a [SmartschoolIntradeskFolderNotFoundError] for an ID that is
+  /// not a folder (status `404`), and when a listing does not hold the
+  /// folder that the parents put in it (status `200`; a folder in the trash,
+  /// one the user does not see, or a folder that was moved in between).
+  Future<List<IntradeskFolder>> getFolderPath(String folderId) async {
+    final parentIds = await getFolderParentIds(folderId);
+    final path = <IntradeskFolder>[];
+    var where = '';
+    for (final id in [...parentIds, folderId]) {
+      final listing = await _listingOf(where);
+      final folder = _listed(listing, id, where, folderId);
+      path.add(folder);
+      where = folder.id;
+    }
+    return List.unmodifiable(path);
+  }
+
+  /// Reads Smartschool's answer to `folders/{folderId}/parents` (#132): a
+  /// JSON list of folder IDs, the folder at the root first.
+  ///
+  /// Throws a [SmartschoolParsingError] for anything else: not a list, or an
+  /// entry that is not a non-empty string.
+  ///
+  /// Exposed for testing.
+  static List<String> parseFolderParentIds(Object? data) {
+    if (data is! List) {
+      throw SmartschoolParsingError(
+        'Intradesk answered the parents of a folder with '
+        '${data.runtimeType}, not a list of folder IDs',
+      );
+    }
+    return List.unmodifiable([
+      for (final id in data)
+        if (id is String && id.isNotEmpty)
+          id
+        else
+          throw SmartschoolParsingError(
+            'Intradesk answered the parents of a folder with an entry that '
+            'is not a folder ID: $id',
+          ),
+    ]);
+  }
+
+  /// The listing of the folder [folderId], or of the root for `''`.
+  Future<IntradeskListing> _listingOf(String folderId) =>
+      folderId.isEmpty ? getRootListing() : getFolderListing(folderId);
+
+  /// The folder [id] of [listing], the listing of [where] (`''` for the
+  /// root), where the parents of [asked] put it; a
+  /// [SmartschoolIntradeskFolderNotFoundError] for [asked] when the listing
+  /// does not hold it.
+  static IntradeskFolder _listed(
+    IntradeskListing listing,
+    String id,
+    String where,
+    String asked,
+  ) {
+    final key = id.toLowerCase();
+    for (final folder in listing.folders) {
+      if (folder.id.toLowerCase() == key) return folder;
+    }
+    final which = key == asked.toLowerCase()
+        ? 'folder $asked in ${_where(where)}, where its parents put it'
+        : 'folder $id in ${_where(where)}, where the parents of folder '
+              '$asked put it';
+    throw SmartschoolIntradeskFolderNotFoundError(
+      asked,
+      statusCode: 200,
+      message:
+          'Intradesk does not list $which: the folder is in Intradesk\'s '
+          'trash (Smartschool answers the parents of a folder in the trash '
+          'as those of a folder at the root), the user does not see it, or '
+          'it was moved.',
+    );
+  }
+
+  /// Throws an [ArgumentError] unless [folderId] is a folder UUID.
+  static void _checkFolderId(String folderId) {
+    if (!_uuid.hasMatch(folderId)) {
+      throw ArgumentError.value(folderId, 'folderId', 'is not a folder UUID');
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // The root's capabilities (#138)
+  // -------------------------------------------------------------------------
+
+  /// What the user may do at the root of Intradesk: the capabilities of the
+  /// school's own platform (#138), where a folder's come with its entry
+  /// ([getFolder]). [IntradeskFolderCapabilities.canAdd] says whether the
+  /// user may add a folder at the root, and
+  /// [IntradeskFolderCapabilities.canAddConfidentialFolder] whether a
+  /// confidential one ([createFolder] checks both before it adds a folder at
+  /// the root).
+  ///
+  /// The root has no entry in any listing, and Intradesk's JSON API has no
+  /// request for these: its web client takes them from the configuration
+  /// that the Intradesk page (`GET /intradesk`) carries in a script,
+  /// `SMSC.vars.config.ownPlatform.capabilities`, and gives them to its root
+  /// item. So this reads that page (one request, about 100 KB) and takes the
+  /// same object ([parseRootCapabilities]). Seen live (2026-10-07, an
+  /// administrator): `{"canManage": true, "canAlterConfidentialState":
+  /// false, "canAdd": true, "canAddConfidentialFolder": false}`. A missing
+  /// capability is `false`; `canAlterConfidentialState` is not kept.
+  ///
+  /// Throws a [SmartschoolDownloadError] when Smartschool answers the page
+  /// with another status than `200`, and a [SmartschoolParsingError] when the
+  /// page carries no such configuration.
+  Future<IntradeskFolderCapabilities> getRootCapabilities() async {
+    final response = await _client.getResponse('/intradesk');
+    final status = response.statusCode ?? 0;
+    if (status != 200) {
+      throw SmartschoolDownloadError(
+        'Smartschool answered the Intradesk page (/intradesk) with HTTP '
+        '$status, so the capabilities of the root are not known.',
+        status,
+      );
+    }
+    return parseRootCapabilities(response.data ?? '');
+  }
+
+  /// Reads the capabilities of the root from the Intradesk page [html]
+  /// (#138): `vars.config.ownPlatform.capabilities` of the first
+  /// configuration the page hands its scripts (`JSON.parse('...')`) that
+  /// carries it, as the web client reads them.
+  ///
+  /// Throws a [SmartschoolParsingError] when no configuration of the page
+  /// carries them as an object.
+  ///
+  /// Exposed for testing.
+  static IntradeskFolderCapabilities parseRootCapabilities(String html) {
+    for (final match in _jsonParseCall.allMatches(html)) {
+      final Object? config;
+      try {
+        config = jsonDecode(_unescapeJsString(match.group(1)!));
+      } on FormatException {
+        continue;
+      }
+      final capabilities = _at(config, const [
+        'vars',
+        'config',
+        'ownPlatform',
+        'capabilities',
+      ]);
+      if (capabilities is Map<String, dynamic>) {
+        return IntradeskFolderCapabilities.fromJson(capabilities);
+      }
+    }
+    throw const SmartschoolParsingError(
+      'The Intradesk page carries no capabilities of the root '
+      '(SMSC.vars.config.ownPlatform.capabilities in its configuration).',
+    );
+  }
+
+  /// A configuration that a Smartschool page hands its scripts:
+  /// `JSON.parse('...')`, with the JSON as a JavaScript string between
+  /// single quotes.
+  static final _jsonParseCall = RegExp(
+    r"JSON\s*\.\s*parse\s*\(\s*'((?:[^'\\]|\\.)*)'\s*\)",
+  );
+
+  /// The value at [path] of the JSON [value], or `null`.
+  static Object? _at(Object? value, List<String> path) {
+    var at = value;
+    for (final key in path) {
+      if (at is! Map) return null;
+      at = at[key];
+    }
+    return at;
+  }
+
+  /// The text of the JavaScript string literal whose content (between its
+  /// quotes) is [literal]: its escapes (a `u` with four hex digits, an `x`
+  /// with two, `\\`, `\'`, `\/`, `\n`, ...) undone, in one pass.
+  static String _unescapeJsString(String literal) {
+    final out = StringBuffer();
+    for (var i = 0; i < literal.length; i++) {
+      final char = literal[i];
+      if (char != r'\' || i + 1 == literal.length) {
+        out.write(char);
+        continue;
+      }
+      final escaped = literal[++i];
+      final hexDigits = switch (escaped) {
+        'u' => 4,
+        'x' => 2,
+        _ => 0,
+      };
+      if (hexDigits > 0 && i + hexDigits < literal.length) {
+        final code = int.tryParse(
+          literal.substring(i + 1, i + 1 + hexDigits),
+          radix: 16,
+        );
+        if (code != null) {
+          out.writeCharCode(code);
+          i += hexDigits;
+          continue;
+        }
+      }
+      switch (escaped) {
+        case 'n':
+          out.write('\n');
+        case 'r':
+          out.write('\r');
+        case 't':
+          out.write('\t');
+        case 'b':
+          out.write('\b');
+        case 'f':
+          out.write('\f');
+        case 'v':
+          out.write('\v');
+        case '\n':
+          break; // A line continuation.
+        default:
+          out.write(escaped);
+      }
+    }
+    return out.toString();
   }
 
   // -------------------------------------------------------------------------
@@ -300,9 +643,9 @@ class IntradeskService {
   /// [IntradeskFolder.hasChildren] is `false`). With [confidential], it
   /// sends the same to `.../folders/as-confidential`, the web client's
   /// confidential folder. Intradesk refuses that in an ordinary folder (HTTP
-  /// `400`, seen live: a [SmartschoolIntradeskWriteRefusedError]); the web
-  /// client offers it inside a confidential folder (where it offers no
-  /// ordinary folder) and at the root when the platform allows it
+  /// `400`, seen live), so the service does not send it there (see below);
+  /// the web client offers it inside a confidential folder (where it offers
+  /// no ordinary folder) and at the root when the platform allows it
   /// ([IntradeskFolderCapabilities.canAddConfidentialFolder]). A confidential
   /// folder that Intradesk made was not seen live.
   ///
@@ -312,15 +655,27 @@ class IntradeskService {
   /// ([IntradeskFolderCapabilities.canAdd]): the live account is an
   /// administrator.
   ///
+  /// **The parent is read first (#138)**, and the folder is added only where
+  /// the web client offers it: [getFolder] reads the parent's entry (two
+  /// requests), and the folder needs its `canAdd`, and, for an ordinary
+  /// folder, a parent that is not [IntradeskFolder.confidential], for a
+  /// confidential one ([confidential]) a parent that is. At the root,
+  /// [getRootCapabilities] reads the platform's capabilities (one request):
+  /// an ordinary folder needs their `canAdd`, a confidential one their
+  /// `canAddConfidentialFolder` (the web client's right-click menu offers it
+  /// on that alone). Otherwise a [SmartschoolIntradeskAddRefusedError], with
+  /// the [IntradeskAddRefusalReason]; a confidential folder in an ordinary
+  /// one, which Intradesk answered with `400` before, is refused so too.
+  ///
   /// The create is sent **once**, never again after logging in again: a
   /// second one would add a second folder (see the class doc).
   ///
   /// Throws an [ArgumentError], without sending anything, when [name] is
   /// empty or not allowed ([isAllowedName]), [color] is not one of
   /// [folderColors], or [parentFolderId] is neither `''` nor a UUID. A
-  /// parent that Smartschool knows no folder for is a
-  /// [SmartschoolIntradeskFolderNotFoundError]. See the class doc for the
-  /// other errors.
+  /// parent that Smartschool knows no folder for, or that is in the trash,
+  /// is a [SmartschoolIntradeskFolderNotFoundError] (from the read before the
+  /// create, so nothing was sent). See the class doc for the other errors.
   Future<IntradeskFolder> createFolder({
     required String parentFolderId,
     required String name,
@@ -340,6 +695,11 @@ class IntradeskService {
     }
     final platformId = await _client.platformId;
     final kind = confidential ? 'confidential folder' : 'folder';
+    await _checkParentAllows(
+      operation,
+      confidential ? _Addition.confidentialFolder : _Addition.folder,
+      parentFolderId: parentFolderId,
+    );
     final what = 'the creation of $kind "$name" in ${_where(parentFolderId)}';
     final json = await _create(
       operation,
@@ -399,13 +759,21 @@ class IntradeskService {
   /// **once**, never again after logging in again: a second one would add a
   /// second weblink.
   ///
+  /// **The parent is read first (#138)** ([getFolder]: two requests): a
+  /// folder without `canAdd` ([IntradeskFolderCapabilities.canAdd]), where
+  /// the web client offers no weblink, is a
+  /// [SmartschoolIntradeskAddRefusedError]
+  /// ([IntradeskAddRefusalReason.cannotAdd]), before the create is sent. A
+  /// confidential folder takes a weblink (the web client offers one there).
+  ///
   /// Throws an [ArgumentError], without sending anything, when [name] is
   /// empty or not allowed ([isAllowedName]), [url] is not an address the web
   /// client takes, [icon] is empty, or [parentFolderId] is not a folder UUID:
   /// the web client offers no weblink at the root (`''`), and that was not
-  /// tried live. A parent that Smartschool knows no folder for is a
-  /// [SmartschoolIntradeskFolderNotFoundError]. See the class doc for the
-  /// other errors.
+  /// tried live. A parent that Smartschool knows no folder for, or that is in
+  /// the trash, is a [SmartschoolIntradeskFolderNotFoundError] (from the read
+  /// before the create, so nothing was sent). See the class doc for the other
+  /// errors.
   Future<IntradeskWeblink> createWeblink({
     required String parentFolderId,
     required String name,
@@ -427,6 +795,11 @@ class IntradeskService {
       throw ArgumentError.value(icon, 'icon', 'is empty');
     }
     final platformId = await _client.platformId;
+    await _checkParentAllows(
+      operation,
+      _Addition.weblink,
+      parentFolderId: parentFolderId,
+    );
     final what =
         'the creation of weblink "$name" (${_preview(address)}) in '
         '${_where(parentFolderId)}';
@@ -495,6 +868,13 @@ class IntradeskService {
   /// The uploaded file downloads back unchanged through [downloadFile] (seen
   /// live).
   ///
+  /// **The parent is read first (#138)**, before step 1 ([getFolder]: two
+  /// requests): a folder without `canAdd`
+  /// ([IntradeskFolderCapabilities.canAdd]), where the web client offers no
+  /// upload, is a [SmartschoolIntradeskAddRefusedError]
+  /// ([IntradeskAddRefusalReason.cannotAdd]), and no file is uploaded. A
+  /// confidential folder takes files (the web client offers an upload there).
+  ///
   /// Throws an [ArgumentError], without sending anything, when [filePaths]
   /// is empty, names a file that does not exist, a file whose name is not
   /// allowed ([isAllowedName], which Smartschool refuses at step 2 with HTTP
@@ -502,9 +882,9 @@ class IntradeskService {
   /// not a folder UUID: the web client offers no upload at the root (`''`),
   /// and that was not tried live. A failure of step 1 or 2 is a
   /// [SmartschoolAttachmentUploadError] (nothing was added); a parent that
-  /// Smartschool knows no folder for, a
-  /// [SmartschoolIntradeskFolderNotFoundError]. See the class doc for the
-  /// other errors.
+  /// Smartschool knows no folder for, or that is in the trash, a
+  /// [SmartschoolIntradeskFolderNotFoundError] (from the read before step 1,
+  /// so nothing was sent). See the class doc for the other errors.
   Future<IntradeskUploadResult> uploadFiles({
     required String parentFolderId,
     required List<String> filePaths,
@@ -532,6 +912,11 @@ class IntradeskService {
       }
     }
     final platformId = await _client.platformId;
+    await _checkParentAllows(
+      operation,
+      _Addition.file,
+      parentFolderId: parentFolderId,
+    );
 
     final uploader = SmartschoolUploader(_client);
     final uploadDir = await uploader.newDirectory();
@@ -579,28 +964,47 @@ class IntradeskService {
   /// for good (`DELETE`).
   ///
   /// Intradesk answers the trash of a folder that is in the trash already
-  /// with `204` as well (seen live, for a weblink), so the move is retried
-  /// once after logging in again, like a read.
+  /// with `204` as well (seen live, 2026-10-07, for a folder, a weblink and a
+  /// file), so the move is retried once after logging in again, like a read.
+  ///
+  /// Intradesk answers `404` when it has no folder with [folderId] (#133,
+  /// seen live 2026-10-07): a made-up ID, or the ID of a file or a weblink
+  /// (also one in the trash). It moves nothing then, also not the file or
+  /// weblink with that ID. That is a [SmartschoolIntradeskItemNotFoundError]
+  /// (with [IntradeskItemKind.folder]), so a caller can tell "there is no
+  /// such folder" apart from a move that went through (`204`, also for a
+  /// folder in the trash already) and from a move that may or may not have
+  /// gone through.
   ///
   /// Throws an [ArgumentError], without sending anything, when [folderId] is
-  /// not a UUID. A refusal by Intradesk (HTTP `400` to `499`) is a
-  /// [SmartschoolIntradeskWriteRefusedError]; another answer than `2xx`, a
-  /// [SmartschoolIntradeskSaveUnconfirmedError]. Neither the answer for an
-  /// unknown ID nor that for an item without the rights to it was seen live.
+  /// not a UUID. Any other refusal by Intradesk (HTTP `400` to `499`) is a
+  /// plain [SmartschoolIntradeskWriteRefusedError], the class that
+  /// [SmartschoolIntradeskItemNotFoundError] extends; another answer than
+  /// `2xx`, a [SmartschoolIntradeskSaveUnconfirmedError]. The answer for an
+  /// item without the rights to it (`capabilities.canManage` false) was not
+  /// seen live (#139).
   Future<void> trashFolder(String folderId) =>
-      _trash('trashFolder', 'folders', 'folder', folderId, 'folderId');
+      _trash('trashFolder', IntradeskItemKind.folder, folderId, 'folderId');
 
   /// Moves the weblink [weblinkId] to Intradesk's trash (#128), with
   /// `POST /intradesk/api/v1/{platformId}/weblinks/{weblinkId}/trash`; see
   /// [trashFolder].
+  ///
+  /// A [SmartschoolIntradeskItemNotFoundError] (with
+  /// [IntradeskItemKind.weblink]) when Intradesk has no weblink with
+  /// [weblinkId]: a made-up ID, or the ID of a folder or a file (#133).
   Future<void> trashWeblink(String weblinkId) =>
-      _trash('trashWeblink', 'weblinks', 'weblink', weblinkId, 'weblinkId');
+      _trash('trashWeblink', IntradeskItemKind.weblink, weblinkId, 'weblinkId');
 
   /// Moves the file [fileId] to Intradesk's trash (#128), with
   /// `POST /intradesk/api/v1/{platformId}/files/{fileId}/trash`; see
   /// [trashFolder].
+  ///
+  /// A [SmartschoolIntradeskItemNotFoundError] (with
+  /// [IntradeskItemKind.file]) when Intradesk has no file with [fileId]: a
+  /// made-up ID, or the ID of a folder or a weblink (#133).
   Future<void> trashFile(String fileId) =>
-      _trash('trashFile', 'files', 'file', fileId, 'fileId');
+      _trash('trashFile', IntradeskItemKind.file, fileId, 'fileId');
 
   /// Whether Smartschool allows [name] as the name of a folder, a weblink or
   /// a file: none of `/ : * ? " \ < > |`, and no dot at its start or end, as
@@ -686,6 +1090,103 @@ class IntradeskService {
         'its start or end',
       );
     }
+  }
+
+  /// Reads the folder [parentFolderId] that [operation] adds [addition] to
+  /// (#138), and throws a [SmartschoolIntradeskAddRefusedError] unless
+  /// Intradesk's web client offers that addition there (see
+  /// [IntradeskAddRefusalReason]); nothing is sent then.
+  ///
+  /// A folder is read with [getFolder] (its parents and the listing of the
+  /// folder above it: two requests), the root with [getRootCapabilities]
+  /// (the Intradesk page: one request). A folder that the read does not find
+  /// is a [SmartschoolIntradeskFolderNotFoundError] (status `404` for an ID
+  /// that is not a folder, `200` for a folder in the trash or one the user
+  /// does not see), with a message that names [operation] and says that
+  /// nothing was sent. Any other failure of the read is thrown as the read
+  /// throws it: nothing was sent either.
+  Future<void> _checkParentAllows(
+    String operation,
+    _Addition addition, {
+    required String parentFolderId,
+  }) async {
+    final IntradeskFolder? parent;
+    final IntradeskFolderCapabilities capabilities;
+    if (parentFolderId.isEmpty) {
+      parent = null;
+      capabilities = await getRootCapabilities();
+    } else {
+      try {
+        parent = await getFolder(parentFolderId);
+      } on SmartschoolIntradeskFolderNotFoundError catch (e, stackTrace) {
+        Error.throwWithStackTrace(
+          SmartschoolIntradeskFolderNotFoundError(
+            parentFolderId,
+            statusCode: e.statusCode,
+            message:
+                '$operation: the folder to add to was not found. '
+                '${e.message} Nothing was sent.',
+          ),
+          stackTrace,
+        );
+      }
+      capabilities = parent.capabilities;
+    }
+
+    final where = parent == null
+        ? 'the root'
+        : 'folder $parentFolderId ("${parent.name}")';
+    final (IntradeskAddRefusalReason, String)? refusal;
+    if (parent == null) {
+      refusal = switch (addition) {
+        _Addition.confidentialFolder
+            when !capabilities.canAddConfidentialFolder =>
+          (
+            IntradeskAddRefusalReason.cannotAddConfidentialFolder,
+            'the platform allows the user no confidential folder at the root '
+                '(its canAddConfidentialFolder is false), and Intradesk\'s web '
+                'client offers none there',
+          ),
+        _Addition.confidentialFolder => null,
+        _ when !capabilities.canAdd => (
+          IntradeskAddRefusalReason.cannotAdd,
+          'the user may not add to the root (the platform\'s canAdd is '
+              'false), and Intradesk\'s web client offers no folder there',
+        ),
+        _ => null,
+      };
+    } else if (!capabilities.canAdd) {
+      refusal = (
+        IntradeskAddRefusalReason.cannotAdd,
+        'the user may not add to $where (its canAdd is false), and '
+            'Intradesk\'s web client offers no folder, weblink or file there',
+      );
+    } else {
+      refusal = switch (addition) {
+        _Addition.confidentialFolder when !parent.confidential => (
+          IntradeskAddRefusalReason.ordinaryParent,
+          '$where is an ordinary folder, which holds no confidential folder: '
+              'Intradesk refuses one there (HTTP 400), and its web client '
+              'offers none',
+        ),
+        _Addition.folder when parent.confidential => (
+          IntradeskAddRefusalReason.confidentialParent,
+          '$where is a confidential folder, where Intradesk\'s web client '
+              'offers a confidential folder only, not an ordinary one (pass '
+              'confidential: true)',
+        ),
+        _ => null,
+      };
+    }
+    if (refusal == null) return;
+    final (reason, why) = refusal;
+    throw SmartschoolIntradeskAddRefusedError(
+      '$operation: $why. Nothing was sent.',
+      reason: reason,
+      parentFolderId: parentFolderId,
+      parent: parent,
+      capabilities: capabilities,
+    );
   }
 
   /// The parent folder [parentFolderId] in a message: the root for `''`.
@@ -805,12 +1306,11 @@ class IntradeskService {
     );
   }
 
-  /// Moves the item [id] of the kind [path] (`folders`, `weblinks`,
-  /// `files`) to Intradesk's trash; see [trashFolder].
+  /// Moves the item [id] of the [kind] to Intradesk's trash; see
+  /// [trashFolder].
   Future<void> _trash(
     String operation,
-    String path,
-    String item,
+    IntradeskItemKind kind,
     String id,
     String argument,
   ) async {
@@ -818,6 +1318,7 @@ class IntradeskService {
       throw ArgumentError.value(id, argument, 'Must be a UUID.');
     }
     final platformId = await _client.platformId;
+    final item = kind.name;
     final change = 'the move of $item $id to the trash';
     const unconfirmed =
         'It may or may not be in the trash: list its folder '
@@ -825,7 +1326,7 @@ class IntradeskService {
         'again is harmless.';
     final response = await _send(
       operation,
-      path: '/intradesk/api/v1/$platformId/$path/$id/trash',
+      path: '/intradesk/api/v1/$platformId/${kind.pathSegment}/$id/trash',
       body: const <String, Object?>{},
       retryAfterLogin: true,
       change: change,
@@ -833,6 +1334,20 @@ class IntradeskService {
     );
     final status = response.statusCode ?? 0;
     if (status >= 200 && status < 300) return;
+    if (status == 404) {
+      final others = [
+        for (final other in IntradeskItemKind.values)
+          if (other != kind) other.name,
+      ].join(' or a ');
+      throw SmartschoolIntradeskItemNotFoundError(
+        '$operation: Intradesk has no $item with ID "$id" (HTTP 404): the ID '
+        'is unknown, or it is the ID of a $others. Nothing was moved to the '
+        'trash.',
+        kind: kind,
+        id: id,
+        violations: parseViolations(response.data ?? ''),
+      );
+    }
     _throwFailure(operation, response, change, unconfirmed);
   }
 
@@ -952,3 +1467,6 @@ class IntradeskService {
     );
   }
 }
+
+/// What a create adds to a folder, for the check of the folder (#138).
+enum _Addition { folder, confidentialFolder, weblink, file }

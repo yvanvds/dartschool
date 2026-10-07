@@ -693,6 +693,94 @@ class MessageSearchGroup {
       'MessageSearchGroup(groupId: $groupId, displayName: "$displayName", ssId: $ssId)';
 }
 
+/// A folder of a message box: the archive of the inbox, or a folder the user
+/// made in Smartschool ("Map toevoegen"), in the inbox, in the sent box or
+/// in another folder (#136).
+///
+/// Returned by [MessagesService.getFolders], as a tree: the folders directly
+/// in a box, each with the folders in it as its [children]. The boxes
+/// themselves are no folders: they are a [BoxType] (box ID `0`).
+/// [flatten] lists the whole tree, each folder with its [path].
+///
+/// A folder is a box ID of its [boxType]. Its messages are listed as those
+/// of the archive are, with [MessagesService.getHeaders],
+/// [MessagesService.getHeaderPages] or [MessagesService.getAllHeaders] and
+/// `boxType: folder.boxType, boxId: folder.id`, and read with
+/// [MessagesService.getMessage] and `boxType: folder.boxType` (its request
+/// names no folder); both tried live on 2026-10-07 with a folder the user
+/// made in the inbox. The other requests for a message in a folder work as
+/// for one in the archive: [MessagesService.markRead] and
+/// [MessagesService.setLabel] take the folder's [boxType] only,
+/// [MessagesService.markUnread] and [MessagesService.moveToTrashFrom] also
+/// its [id] as their `boxId` (tried live in the archive, #94, #64, not in a
+/// folder the user made).
+class MessageFolder {
+  /// The folder's box ID: the `boxId` its messages are listed with. Never
+  /// `0`, which is the box itself.
+  final int id;
+
+  /// The box the folder is in: [BoxType.inbox] for the archive and the
+  /// folders of the inbox, [BoxType.sent] for those of the sent box.
+  final BoxType boxType;
+
+  /// The folder's name, as Smartschool shows it (`Berichten archief` for
+  /// the archive).
+  final String name;
+
+  /// Smartschool's description of the folder: [archiveDescription] for the
+  /// archive, empty for a folder the user made (seen live, 2026-10-07).
+  final String description;
+
+  /// The [id] of the folder this folder is in, or `null` for a folder
+  /// directly in its box.
+  ///
+  /// Smartschool's own `parentID` was `-1` for the folders seen live, also
+  /// for one directly in the inbox (whose box ID is `0`), so this is taken
+  /// from the tree: the folder whose [children] hold this one.
+  final int? parentId;
+
+  /// The names of the folders from the one directly in the box down to this
+  /// one, this folder's [name] last: `[name]` for a folder directly in its
+  /// box. The box's own name is not in it.
+  final List<String> path;
+
+  /// The folders in this folder, in Smartschool's order.
+  final List<MessageFolder> children;
+
+  const MessageFolder({
+    required this.id,
+    required this.boxType,
+    required this.name,
+    required this.path,
+    this.description = '',
+    this.parentId,
+    this.children = const [],
+  });
+
+  /// The [description] Smartschool gives the archive of the inbox.
+  static const archiveDescription = 'msg archive';
+
+  /// Whether this folder is the archive of the inbox (the folder
+  /// [MessagesService.moveToArchive] moves messages to): the folder with
+  /// [archiveDescription] as its [description], as Smartschool tells it
+  /// apart.
+  bool get isArchive => description == archiveDescription;
+
+  /// Every folder of [folders] and of their [children], depth first: each
+  /// folder before the folders in it, in Smartschool's order.
+  ///
+  /// [path] and [parentId] tell where each one is.
+  static List<MessageFolder> flatten(Iterable<MessageFolder> folders) => [
+    for (final folder in folders) ...[folder, ...flatten(folder.children)],
+  ];
+
+  @override
+  String toString() =>
+      'MessageFolder(id: $id, boxType: ${boxType.name}, '
+      'path: ${path.map((name) => '"$name"').join(' / ')}'
+      '${isArchive ? ', archive' : ''}, children: ${children.length})';
+}
+
 // ---------------------------------------------------------------------------
 // XML parsing helpers
 // ---------------------------------------------------------------------------

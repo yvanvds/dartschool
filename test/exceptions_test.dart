@@ -10,7 +10,12 @@ import 'package:flutter_smartschool/src/models/message_models.dart'
 import 'package:flutter_smartschool/src/models/planner_models.dart'
     show PlannedElement, PlannerAssignmentType, PlannerWriteRefusalReason;
 import 'package:flutter_smartschool/src/models/presence_models.dart'
-    show DayPart, PresenceClassRef, PresenceHalfDay, PresenceSaveError;
+    show
+        DayPart,
+        PresenceClassRef,
+        PresenceHalfDay,
+        PresenceSaveError,
+        PresenceUnreadableAnswerKind;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -340,6 +345,97 @@ void main() {
       expect(
         error.toString(),
         'SmartschoolPresenceNoConfirmRightError: no right',
+      );
+    });
+  });
+
+  group('SmartschoolPresenceUnreadableAnswerError (#137)', () {
+    test('is a SmartschoolPresenceError without server errors, not a session '
+        'problem nor another refusal, and keeps the answer', () {
+      const error = SmartschoolPresenceUnreadableAnswerError(
+        'Empty response from /Presence/Main/getConfig (HTTP 502).',
+        path: '/Presence/Main/getConfig',
+        kind: PresenceUnreadableAnswerKind.empty,
+        statusCode: 502,
+      );
+      expect(error, isA<SmartschoolPresenceError>());
+      expect(error, isNot(isA<SmartschoolPresenceChangeRefusedError>()));
+      expect(error, isNot(isA<SmartschoolPresencePupilNotFoundError>()));
+      expect(error, isNot(isA<SmartschoolPresenceNoConfirmRightError>()));
+      expect(error, isNot(isA<SmartschoolAuthenticationError>()));
+      expect(error.errors, isEmpty);
+      expect(error.saveErrors, isEmpty);
+      expect(
+        (error.path, error.statusCode, error.kind),
+        ('/Presence/Main/getConfig', 502, PresenceUnreadableAnswerKind.empty),
+      );
+      expect(error.title, isNull);
+      expect(error.heading, isNull);
+      expect(
+        error.toString(),
+        'SmartschoolPresenceUnreadableAnswerError: Empty response from '
+        '/Presence/Main/getConfig (HTTP 502).',
+      );
+    });
+
+    test('fromPage: the title and heading, read and masked as '
+        'SmartschoolUnexpectedPageError reads them, and nothing else of the '
+        'page in the message', () {
+      final error = SmartschoolPresenceUnreadableAnswerError.fromPage(
+        '<!DOCTYPE html><html><head><title>Fout voor jan.janssens@example.com'
+        '</title><script>var user = "Jan Janssens";</script></head><body>'
+        '<h1>Sessie <span>a1b2c3d4e5f6a7b8c9d0e1f2a3b4</span> verlopen</h1>'
+        '<form><select><option>Peeters, Lotte</option></select></form>'
+        '<p>Leerling Peeters, Lotte</p></body></html>',
+        path: '/Presence/Class/savePupilsPresences',
+        statusCode: 500,
+      );
+
+      expect(error.kind, PresenceUnreadableAnswerKind.html);
+      expect(error.path, '/Presence/Class/savePupilsPresences');
+      expect(error.statusCode, 500);
+      expect(error.title, 'Fout voor [e-mail]');
+      expect(error.heading, 'Sessie [token] verlopen');
+      expect(
+        error.message,
+        'Smartschool answered /Presence/Class/savePupilsPresences with an HTML '
+        'page instead of JSON (HTTP 500, title "Fout voor [e-mail]", heading '
+        '"Sessie [token] verlopen").',
+      );
+      expect(error.toString(), isNot(contains('Janssens')));
+      expect(error.toString(), isNot(contains('Peeters')));
+    });
+
+    test('fromPage: a page without title or heading, of an unknown '
+        'status', () {
+      final error = SmartschoolPresenceUnreadableAnswerError.fromPage(
+        '<div>Fout</div>',
+        path: '/Presence/Class/getClass',
+      );
+
+      expect(error.statusCode, isNull);
+      expect(error.title, isNull);
+      expect(error.heading, isNull);
+      expect(
+        error.message,
+        'Smartschool answered /Presence/Class/getClass with an HTML page '
+        'instead of JSON (status unknown).',
+      );
+    });
+
+    test('fromPage: a long heading is cut off as for '
+        'SmartschoolUnexpectedPageError', () {
+      final long = 'Oeps ' * 40;
+      final error = SmartschoolPresenceUnreadableAnswerError.fromPage(
+        '<html><body><h2>$long</h2></body></html>',
+        path: '/Presence/Main/getConfig',
+        statusCode: 200,
+      );
+
+      expect(
+        error.heading,
+        '${long.substring(0, SmartschoolUnexpectedPageError.maxLabelLength)}'
+        '...',
       );
     });
   });

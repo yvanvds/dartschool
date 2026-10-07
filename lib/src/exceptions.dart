@@ -21,7 +21,12 @@ import 'models/planner_models.dart'
         PlannerAssignmentType,
         PlannerWriteRefusalReason;
 import 'models/presence_models.dart'
-    show DayPart, PresenceClassRef, PresenceHalfDay, PresenceSaveError;
+    show
+        DayPart,
+        PresenceClassRef,
+        PresenceHalfDay,
+        PresenceSaveError,
+        PresenceUnreadableAnswerKind;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1084,13 +1089,18 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// Thrown when a Presence (attendance) operation fails.
 ///
 /// This covers a rejected save (the server returns a non-empty `errors[]`
-/// array, exposed via [saveErrors], typed, and [errors], as text), a request
-/// the Presence module refuses or cannot handle (it answers with an HTML page
-/// instead of JSON, such as its generic `500` error page: the request is
-/// invalid, or the account may lack Presence access), and precondition
-/// failures such as an unknown class, an unresolvable status code, or a pupil
-/// not present in the class. The session was accepted for all of them, so
-/// signing in again does not help.
+/// array, exposed via [saveErrors], typed, and [errors], as text), an answer
+/// that cannot be read (empty, an HTML page instead of JSON, such as
+/// Smartschool's generic `500` error page, or not valid JSON), and
+/// precondition failures such as an unknown class, an unresolvable status
+/// code, or a pupil not present in the class. The session was accepted for
+/// all of them, so signing in again does not help.
+///
+/// An answer that cannot be read is reported with the subtype
+/// [SmartschoolPresenceUnreadableAnswerError] (#137), with the HTTP status
+/// of the answer and what made it unreadable: unlike a refused save or a
+/// failed precondition, it can be gone a moment later (a proxy's `502`, an
+/// answer cut off), so a caller that retries can tell it apart.
 ///
 /// A half-day that `setLate` or `setPresent` refuses to change because it
 /// holds a status their `onlyReplacing` does not allow is reported with the
@@ -1267,6 +1277,134 @@ class SmartschoolPresenceNoConfirmRightError extends SmartschoolPresenceError {
     required this.part,
     required this.classRef,
   });
+}
+
+/// Thrown by `PresenceService` when an answer of the Presence module cannot
+/// be read (#137): it is empty, an HTML page instead of JSON, or not valid
+/// JSON. [kind] says which, [statusCode] gives the HTTP status of the
+/// answer and [path] the endpoint that gave it.
+///
+/// Not a session problem: the client logs in again, and retries once, on
+/// the answers with which Smartschool refuses a session (a `401`, or a
+/// redirect to its login chain), and reports a retry refused again as a
+/// [SmartschoolSessionExpiredError]. Every other status, `429` and the
+/// `5xx` ones included, comes this far as an answer. So this is what a
+/// caller sees of a hiccup between it and the module, such as a proxy's
+/// `502`, `503` or `504`, or an answer cut off, which can be gone a moment
+/// later: unlike a save the module refused (its `errors[]`, in [saveErrors]
+/// of a plain [SmartschoolPresenceError]) and the checks before a save (an
+/// unknown class, code or pupil, and the other subtypes of
+/// [SmartschoolPresenceError]), which give the same answer the next time.
+/// Smartschool's generic error page (HTTP `500`, "Oeps, er ging iets mis")
+/// is also how the module answers a request it cannot handle, such as an
+/// invalid one (seen live, #5), so a retry can get the same page again:
+/// retry a limited number of times.
+///
+/// What a caller may assume depends on the request, its [path]:
+///
+/// - a read (`/Presence/Main/getConfig`, `/Presence/Code/getAllCodes` or
+///   `/Presence/Class/getClass`: `getConfig`, `getAllCodes`,
+///   `getClassPupils`, and the reads with which `setLate` and `setPresent`
+///   start): nothing changed on Smartschool.
+/// - the save (`/Presence/Class/savePupilsPresences`, the last request of
+///   `setLate` and `setPresent`): it is **not known** whether the save
+///   landed. Calling `setLate` or `setPresent` again is safe: the call reads
+///   the class again first and so sends the half-day's record (its
+///   `presenceID`) when the first save stored one, which the module updates
+///   rather than adding a second record for the half-day. With
+///   `onlyReplacing`, that read may find the status the first save stored
+///   (such as "Te laat" for `setLate`): let `onlyReplacing` allow it
+///   (`PresenceService.lateCodeName`, or `lateWithoutReasonAliasName` with
+///   `withoutValidReason`; `presentCodeName` for `setPresent`), or the call
+///   is refused with a [SmartschoolPresenceChangeRefusedError] that names
+///   it.
+///
+/// For an HTML page, it keeps the page's [title] and [heading], read and
+/// masked as [SmartschoolUnexpectedPageError] reads them (#110): Smartschool's
+/// error pages say what went wrong in their heading. Both are in the
+/// [message] too; nothing else of the answer is, nor of an answer that is
+/// not valid JSON, which can name pupils: its [message] has the JSON
+/// parser's reason and where the JSON breaks off.
+///
+/// A [SmartschoolPresenceError], so `catch` clauses for that type keep
+/// catching it; its [errors] and [saveErrors] are empty. Of these answers,
+/// only the HTML `500` of a request the module cannot handle was seen live
+/// (#5); the others are tested offline. (The empty `401` of an expired
+/// session, seen live on a release before #8 as "Empty response", is a
+/// session refusal now: the client logs in again for it.)
+class SmartschoolPresenceUnreadableAnswerError
+    extends SmartschoolPresenceError {
+  /// The Presence endpoint that gave the answer: `/Presence/Main/getConfig`,
+  /// `/Presence/Code/getAllCodes`, `/Presence/Class/getClass`, or
+  /// `/Presence/Class/savePupilsPresences` for the save (whether it landed
+  /// is not known, see above).
+  final String path;
+
+  /// The HTTP status of the answer, such as `502`, or `null` when it is not
+  /// known.
+  final int? statusCode;
+
+  /// What made the answer unreadable: empty, an HTML page, or not valid
+  /// JSON.
+  final PresenceUnreadableAnswerKind kind;
+
+  /// For an HTML page ([PresenceUnreadableAnswerKind.html]): its `<title>`,
+  /// or `null` when it has none, as [SmartschoolUnexpectedPageError.title]
+  /// reads it: without scripts, styles and forms, e-mail addresses and
+  /// token-like strings masked, cut off after
+  /// [SmartschoolUnexpectedPageError.maxLabelLength] characters. `null` for
+  /// the other kinds.
+  final String? title;
+
+  /// For an HTML page ([PresenceUnreadableAnswerKind.html]): its first
+  /// `<h1>`, or else its first `<h2>`, or `null` when it has neither, read
+  /// as [title] is. On Smartschool's own error pages it says what went wrong
+  /// (such as "Oeps, er ging iets mis"). `null` for the other kinds.
+  final String? heading;
+
+  const SmartschoolPresenceUnreadableAnswerError(
+    super.message, {
+    required this.path,
+    required this.kind,
+    this.statusCode,
+    this.title,
+    this.heading,
+  });
+
+  /// The error for [page], the HTML that Smartschool answered the Presence
+  /// endpoint [path] with, with the [statusCode] of that answer.
+  ///
+  /// Reads the [title] and [heading] of [page] and builds a [message] that
+  /// names them, with [path] and [statusCode].
+  factory SmartschoolPresenceUnreadableAnswerError.fromPage(
+    String page, {
+    required String path,
+    int? statusCode,
+  }) {
+    final document = html_parser.parse(page);
+    final title = SmartschoolUnexpectedPageError._label(
+      document.querySelector('title'),
+      SmartschoolUnexpectedPageError.maxLabelLength,
+    );
+    final heading = SmartschoolUnexpectedPageError._label(
+      document.querySelector('h1') ?? document.querySelector('h2'),
+      SmartschoolUnexpectedPageError.maxLabelLength,
+    );
+    final details = [
+      statusCode == null ? 'status unknown' : 'HTTP $statusCode',
+      if (title != null) 'title "$title"',
+      if (heading != null) 'heading "$heading"',
+    ].join(', ');
+    return SmartschoolPresenceUnreadableAnswerError(
+      'Smartschool answered $path with an HTML page instead of JSON '
+      '($details).',
+      path: path,
+      kind: PresenceUnreadableAnswerKind.html,
+      statusCode: statusCode,
+      title: title,
+      heading: heading,
+    );
+  }
 }
 
 /// Thrown by `SkoreService` when Smartschool's Skore module (grading and

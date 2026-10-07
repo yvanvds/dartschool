@@ -517,6 +517,22 @@ class PresenceSaveError {
   }
 }
 
+/// What made an answer of the Presence module unreadable: the `kind` of a
+/// `SmartschoolPresenceUnreadableAnswerError` (#137).
+enum PresenceUnreadableAnswerKind {
+  /// The answer has no body, or white space only.
+  empty,
+
+  /// The answer is an HTML page instead of JSON, or a piece of one (also
+  /// one with a comment before its doctype): such as Smartschool's generic
+  /// error page, or the error page of a proxy in front of it.
+  html,
+
+  /// The answer is neither empty nor HTML, and is not valid JSON: JSON that
+  /// breaks off, or another text, such as a proxy's error in plain text.
+  malformedJson,
+}
+
 /// A pupil as returned by `Presence/Class/getClass`, with the resolved half-day
 /// cells for the requested date range.
 class PresencePupil {

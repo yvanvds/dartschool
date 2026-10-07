@@ -169,9 +169,52 @@ String _messageList(List<(int, String)> headers) {
   );
 }
 
+/// Smartschool's answer to `requestmovelist` (#136, #141): the folder tree,
+/// as the live answer has it, with [archive] as the archive of the inbox
+/// (`postboxDescription` `msg archive`), or none when `null`, beside the
+/// folder "dartschool test" (30650). [archiveType] is the box the archive
+/// is in, and [secondArchive] another folder of the inbox with the
+/// archive's description.
+String _folderTree({
+  int? archive,
+  String archiveType = 'inbox',
+  int? secondArchive,
+}) {
+  String folder(int id, String type, {required bool isArchive}) =>
+      '{"postboxID":"$id","postboxType":"$type","parentID":"-1",'
+      '"postboxName":"${isArchive ? 'Berichten archief' : 'dartschool test'}",'
+      '"postboxDescription":"${isArchive ? 'msg archive' : ''}",'
+      '"children":[]}';
+  final inbox = [
+    if (archive != null && archiveType == 'inbox')
+      folder(archive, 'inbox', isArchive: true),
+    if (secondArchive != null) folder(secondArchive, 'inbox', isArchive: true),
+    folder(30650, 'inbox', isArchive: false),
+  ];
+  final outbox = [
+    if (archive != null && archiveType == 'outbox')
+      folder(archive, 'outbox', isArchive: true),
+  ];
+  final tree =
+      '[{"postboxID":0,"postboxType":"inbox","parentID":-1,'
+      '"postboxName":"Postvak in","postboxDescription":"","children":'
+      '[${inbox.join(',')}]},'
+      '{"postboxID":0,"postboxType":"outbox","parentID":-1,'
+      '"postboxName":"Verzonden","postboxDescription":"","children":'
+      '[${outbox.join(',')}]},'
+      '{"postboxID":0,"postboxType":"trash","parentID":-1,'
+      '"postboxName":"Prullenmand","postboxDescription":"","children":[]}]';
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+      '<server><response><status>ok</status><actions><action>'
+      '<subsystem>triggers</subsystem>'
+      '<command>moveToPostboxFinnishTreeRequest</command>'
+      '<data>${tree.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}</data>'
+      '</action></actions></response></server>';
+}
+
 /// A Smartschool that answers the steps of a send, a move to the trash or
-/// to the archive, a message list and the Messages page, and records what
-/// reaches it.
+/// to the archive, a message list, the folder tree and the Messages page,
+/// and records what reaches it.
 class _Smartschool implements HttpClientAdapter {
   _Smartschool({
     required this.replyForm,
@@ -184,8 +227,13 @@ class _Smartschool implements HttpClientAdapter {
   final String replyForm;
 
   /// The archive folder of the inbox that the Messages page names, or
-  /// `null` for a page that names none.
+  /// `null` for a page that names none; and that the folder tree
+  /// (`requestmovelist`) names, unless [folderTree] is set (#141).
   int? archiveFolder;
+
+  /// The answer to `requestmovelist`, when it is not the tree of
+  /// [archiveFolder] (#141).
+  String? folderTree;
 
   /// The headers, as (ID, subject), that a `message list` of each box lists,
   /// by `<boxType>/<boxID>` (such as `inbox/0`); other boxes list none.
@@ -557,6 +605,12 @@ class _Smartschool implements HttpClientAdapter {
         return _answer(dispatcherPages.removeAt(0));
       case (true, '/', 'dispatcher', _):
         final command = (options.data as Map)['command'] as String;
+        if (command.contains('<action>requestmovelist</action>')) {
+          return _answer(
+            folderTree ?? _folderTree(archive: archiveFolder),
+            contentType: 'text/xml',
+          );
+        }
         final id = RegExp(r'name="msgID"><!\[CDATA\[(\d+)').firstMatch(command);
         if (command.contains('<action>quick delete</action>')) {
           trashed.add(id!.group(1)!);
@@ -857,8 +911,8 @@ void main() {
     test('a move to the archive of the inbox copy of a message the run sent, '
         'listed and checked in the inbox; then a move to the trash of its '
         'sent-box copy, and of its archived copy out of the archive folder '
-        'that the Messages page names, listed and checked there, once each '
-        '(#64)', () async {
+        'that Smartschool names (the folder tree that getArchiveBoxId reads, '
+        '#141), listed and checked there, once each (#64)', () async {
       final server = _Smartschool(
         replyForm: _replyFormFromOwn,
         archiveFolder: 312,
@@ -888,6 +942,8 @@ void main() {
 
       expect(archiveBoxId, 312);
       expect(guard.archiveBoxId, 312);
+      // The guard learned it from the tree: no Messages page was loaded.
+      expect(server.log.where((l) => l.contains('function=main')), isEmpty);
       expect(archived.map((c) => (c.id, c.newValue)), [(4242, 1)]);
       expect(server.archived, [
         [4242],
@@ -900,9 +956,9 @@ void main() {
 
     test('marking the inbox copy of a message the run sent unread and read, '
         'and flagging it, listed and checked in the inbox, and after a move '
-        'to the archive in the archive folder that the Messages page names; '
-        'markUnread names the folder, markRead and setLabel name none '
-        '(#94)', () async {
+        'to the archive in the archive folder that Smartschool names (the '
+        'folder tree, #141); markUnread names the folder, markRead and '
+        'setLabel name none (#94)', () async {
       final server = _Smartschool(
         replyForm: _replyFormFromOwn,
         archiveFolder: 312,
@@ -945,6 +1001,84 @@ void main() {
         ('save msglabel', 4242),
       ]);
       expect(guard.violations, isEmpty);
+    });
+
+    test('the archive folder is learned from the folder tree that '
+        'getArchiveBoxId reads (requestmovelist, #141), without a Messages '
+        'page: a tree that names none, one the guard cannot read and an '
+        'archive in the sent box name none; a tree that names another '
+        'archive, or two, makes the guard trust none', () async {
+      final server = _Smartschool(
+        replyForm: _replyFormFromOwn,
+        archiveFolder: 312,
+        boxes: {
+          'inbox/312': [(4242, _runSubject), (3333, _runSubject)],
+        },
+      );
+      final (messages, guard) = await _guarded(server);
+      // The tree's request as getFolders sends it, through [through] (the
+      // guard of messages by default), answered with [answer].
+      Future<void> tree(String answer, [LiveWireGuard? through]) async {
+        server.folderTree = answer;
+        await _dio(server, through ?? guard).post<String>(
+          '/?module=Messages&file=dispatcher',
+          data: {
+            'command': XmlInterface.buildCommand(
+              'quickactions',
+              'requestmovelist',
+              {},
+            ),
+          },
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        );
+      }
+
+      await tree(_folderTree());
+      await tree(_folderTree(archive: 312, archiveType: 'outbox'));
+      await tree('<html><body>Berichten</body></html>');
+      await tree(
+        '<server><response><status>ok</status><actions><action>'
+        '<subsystem>triggers</subsystem>'
+        '<command>moveToPostboxFinnishTreeRequest</command>'
+        '<data>[{</data></action></actions></response></server>',
+      );
+      expect(guard.archiveBoxId, isNull);
+
+      server.folderTree = null; // The tree of archiveFolder, 312.
+      expect(await messages.getArchiveBoxId(), 312);
+      expect(guard.archiveBoxId, 312);
+      await messages.getHeaders(boxId: 312);
+      guard
+        ..allowTrashFrom(4242, BoxType.inbox, boxId: 312)
+        ..allowTrashFrom(3333, BoxType.inbox, boxId: 312);
+      await messages.moveToTrashFrom(4242, boxType: BoxType.inbox, boxId: 312);
+
+      // A tree that names another archive folder: the guard trusts neither,
+      // and refuses a move it let out until then.
+      await tree(_folderTree(archive: 400));
+      expect(guard.archiveBoxId, isNull);
+      await expectLater(
+        messages.moveToTrashFrom(3333, boxType: BoxType.inbox, boxId: 312),
+        throwsA(anything),
+      );
+
+      // A tree that names two archive folders of the inbox, on another
+      // guard: a tree that names one of them afterwards does not make it
+      // trust that one.
+      final (_, fresh) = await _guarded(server);
+      await tree(_folderTree(archive: 312, secondArchive: 400), fresh);
+      await tree(_folderTree(archive: 312), fresh);
+      expect(fresh.archiveBoxId, isNull);
+      expect(fresh.violations, isEmpty);
+
+      expect(server.log.where((l) => l.contains('function=main')), isEmpty);
+      expect(server.moved, ['inbox/312 4242']);
+      expect(_violations(guard), [
+        contains(
+          'it moves message 3333 out of a folder of the inbox that is not the '
+          'archive folder of the inbox',
+        ),
+      ]);
     });
 
     test('reading: message lists, messages, attachments', () async {
@@ -2278,8 +2412,9 @@ void main() {
     test('a move to the trash out of the archive folder of a copy that '
         "Smartschool did not list there with the run's subject, or that the "
         'run did not check there; a second move of a copy, out of any folder; '
-        'and a move out of another folder, or out of the archive while no '
-        'Messages page names it (#64)', () async {
+        'and a move out of another folder, or out of the archive while '
+        'neither the folder tree nor a Messages page names it (#64, '
+        '#141)', () async {
       final server = _Smartschool(
         replyForm: _replyFormFromOwn,
         archiveFolder: 312,
@@ -2313,7 +2448,7 @@ void main() {
         reason: '$id, ${box.value}/$boxId',
       );
 
-      await refused(4242, BoxType.inbox, 312); // No Messages page yet.
+      await refused(4242, BoxType.inbox, 312); // Not named yet.
       expect(await messages.getArchiveBoxId(), 312);
       await refused(5555, BoxType.inbox, 312); // Another subject.
       await refused(6666, BoxType.inbox, 312); // Listed in the inbox only.
@@ -2372,8 +2507,9 @@ void main() {
     test('marking read or unread, or flagging, ID 0, a message that '
         "Smartschool did not list in the inbox or its archive folder with the "
         "run's subject, one the run did not check, a copy in another box or "
-        'in another folder, or in the archive folder while no Messages page '
-        'names it, and a copy the run moved to the trash (#94)', () async {
+        'in another folder, or in the archive folder while neither the '
+        'folder tree nor a Messages page names it, and a copy the run moved '
+        'to the trash (#94, #141)', () async {
       final server = _Smartschool(
         replyForm: _replyFormFromOwn,
         archiveFolder: 312,
@@ -2405,7 +2541,8 @@ void main() {
       Future<void> refused(Future<Object?> change, String reason) =>
           expectLater(change, throwsA(anything), reason: reason);
 
-      // No Messages page named the archive folder yet.
+      // Neither the folder tree nor a Messages page named the archive
+      // folder yet.
       await refused(messages.markUnread(7777, boxId: 312), 'archive unknown');
       await refused(messages.markRead(7777), 'archive unknown: inbox only');
       expect(await messages.getArchiveBoxId(), 312);

@@ -66,7 +66,9 @@ export '../models/presence_models.dart';
 ///   [SmartschoolPresenceError]: an answer of the module could not be read
 ///   (#137). Its `kind` says whether it was empty, an HTML page instead of
 ///   JSON (such as Smartschool's generic `500` error page, or a proxy's
-///   `502`), or not valid JSON, its `statusCode` the HTTP status and its
+///   `502`), not valid JSON, or valid JSON with an HTTP status outside
+///   `200`–`299` ([PresenceUnreadableAnswerKind.errorStatus], #143: never
+///   read as Presence data), its `statusCode` the HTTP status and its
 ///   `path` the endpoint. Unlike the others, it can be gone a moment later.
 ///   For a read (`getConfig`, `getAllCodes`, `getClassPupils`, and the reads
 ///   of `setLate` / `setPresent`), nothing changed on Smartschool. For the
@@ -135,7 +137,8 @@ class PresenceService {
   ///
   /// Cached after the first call; pass [forceRefresh] to re-fetch. An
   /// answer it cannot read is a [SmartschoolPresenceUnreadableAnswerError]
-  /// (#137).
+  /// (#137), also a JSON answer with an HTTP status outside `200`–`299`
+  /// (#143); nothing is cached from it.
   Future<PresenceConfig> getConfig({bool forceRefresh = false}) async {
     if (_config != null && !forceRefresh) return _config!;
     final response = await _client.postFormResponse(_getConfigPath, const {});
@@ -163,7 +166,9 @@ class PresenceService {
   /// `codeID` 70, "Aanwezig", of the school's structure).
   ///
   /// Cached per structure; pass [forceRefresh] to re-fetch. An answer it
-  /// cannot read is a [SmartschoolPresenceUnreadableAnswerError] (#137).
+  /// cannot read is a [SmartschoolPresenceUnreadableAnswerError] (#137),
+  /// also a JSON answer with an HTTP status outside `200`–`299` (#143);
+  /// nothing is cached from it.
   Future<List<PresenceCode>> getAllCodes(
     int structId, {
     bool forceRefresh = false,
@@ -208,7 +213,8 @@ class PresenceService {
   /// status without the codes of a structure (see [statusNameOf]).
   ///
   /// An answer it cannot read is a
-  /// [SmartschoolPresenceUnreadableAnswerError] (#137).
+  /// [SmartschoolPresenceUnreadableAnswerError] (#137), also a JSON answer
+  /// with an HTTP status outside `200`–`299` (#143), never an empty class.
   Future<PresenceClassPupils> getClassPupils({
     required int classGroupId,
     required DateTime date,
@@ -272,8 +278,9 @@ class PresenceService {
   /// had none, and the `codeId` / `aliasId` and `motivation` it stores),
   /// with [PresenceSavedHalfDay.before], the half-day as read right before
   /// the save. Nothing more is read for it. `null` when the answer holds no
-  /// record of the half-day: the save itself was confirmed (no `errors`), so
-  /// read the class to see what it holds.
+  /// record of the half-day: the save itself was confirmed (no `errors`, and
+  /// an HTTP status in `200`–`299`, #143), so read the class to see what it
+  /// holds.
   ///
   /// The account needs [PresenceClassRef.userCanConfirm] for the class (not
   /// [PresenceClassRef.userCanRecord], #121). For a class `getConfig` lists
@@ -289,12 +296,14 @@ class PresenceService {
   /// right before the save not listing the pupil on that day is its subtype
   /// [SmartschoolPresencePupilNotFoundError], with the module's reason when
   /// it listed no pupils (#116); nothing was sent. An answer that cannot be
-  /// read (empty, an HTML page, not valid JSON) is its subtype
+  /// read (empty, an HTML page, not valid JSON, or JSON with an HTTP status
+  /// outside `200`–`299`, #143) is its subtype
   /// [SmartschoolPresenceUnreadableAnswerError] (#137): from a read before
   /// the save, nothing was sent; from the save itself (its `path` is
   /// `/Presence/Class/savePupilsPresences`), whether it landed is not known,
   /// and calling again is safe, with an `onlyReplacing` that allows the
-  /// status this call sets.
+  /// status this call sets. A save answered with the module's `errors[]` is
+  /// refused whatever the status of that answer (#143).
   Future<PresenceSavedHalfDay?> setLate({
     required int userId,
     required int classGroupId,
@@ -478,15 +487,24 @@ class PresenceService {
     final response = await _client.postFormResponse(_savePath, {
       'pupils': payload,
     });
-    final answer = _decode(response, _savePath);
-    final saveErrors = parseSaveErrorDetails(answer);
+    final answer = _decodeBody(response, _savePath);
+    final status = response.statusCode;
+    final errorStatus = _isErrorStatus(status);
+    // With an error status, only the module's own errors refuse the save
+    // (#143); an answer without them confirms nothing (_checkStatus below).
+    final saveErrors = !errorStatus || _listsErrors(answer)
+        ? parseSaveErrorDetails(answer)
+        : const <PresenceSaveError>[];
     if (saveErrors.isNotEmpty) {
       throw SmartschoolPresenceError(
-        'Saving the presence for userID $userId failed.',
+        errorStatus
+            ? 'Saving the presence for userID $userId failed (HTTP $status).'
+            : 'Saving the presence for userID $userId failed.',
         errors: [for (final error in saveErrors) error.message],
         saveErrors: saveErrors,
       );
     }
+    _checkStatus(response, _savePath);
     final stored = parseSavedHalfDay(
       answer,
       userId: userId,
@@ -917,7 +935,65 @@ class PresenceService {
     return '$y-$m-$d';
   }
 
-  /// Decodes the JSON body of [response] to a request for [path].
+  /// Decodes the JSON body of [response] to a read of [path], and refuses
+  /// an answer with an error status.
+  ///
+  /// The body is read first ([_decodeBody]): an answer that is empty, an
+  /// HTML page or not valid JSON is a
+  /// [SmartschoolPresenceUnreadableAnswerError] of that kind, whatever its
+  /// status (#137). A body that is valid JSON with an HTTP status outside
+  /// `200`–`299` is one of kind [PresenceUnreadableAnswerKind.errorStatus]
+  /// ([_checkStatus], #143): it is not the module's answer, so it is never
+  /// read as a config, codes or a class, and nothing is cached from it.
+  ///
+  /// The save reads its answer with [_decodeBody] and [_checkStatus] itself,
+  /// in between looking for the module's `errors[]`, which refuse a save
+  /// whatever the status.
+  dynamic _decode(Response<String> response, String path) {
+    final decoded = _decodeBody(response, path);
+    _checkStatus(response, path);
+    return decoded;
+  }
+
+  /// Whether [status] is an HTTP status outside `200`–`299` (#143). An
+  /// unknown status (`null`) is not: the body decides, as before.
+  static bool _isErrorStatus(int? status) =>
+      status != null && (status < 200 || status > 299);
+
+  /// Whether [answer] lists errors as the Presence module does: a non-empty
+  /// `errors` array. Of an answer with an error status, only those refuse a
+  /// save (#143).
+  static bool _listsErrors(Object? answer) {
+    if (answer is! Map) return false;
+    final errors = answer['errors'];
+    return errors is List && errors.isNotEmpty;
+  }
+
+  /// Throws a [SmartschoolPresenceUnreadableAnswerError] of kind
+  /// [PresenceUnreadableAnswerKind.errorStatus] when [response], whose body
+  /// is valid JSON, came with an HTTP status outside `200`–`299` (#143).
+  ///
+  /// Such an answer is an error, from Smartschool or from a proxy in front
+  /// of it (such as a `500`, `502` or `503` with `{"message": ...}`), not
+  /// the module's answer to [path]. For a read, nothing changed on
+  /// Smartschool; for the save, it is **not known** whether it landed, and
+  /// calling `setLate` / `setPresent` again is safe, as for the other kinds.
+  /// The message names [path] and the status, nothing of the body, which can
+  /// name pupils.
+  void _checkStatus(Response<String> response, String path) {
+    final status = response.statusCode;
+    if (!_isErrorStatus(status)) return;
+    throw SmartschoolPresenceUnreadableAnswerError(
+      'Error status from $path (HTTP $status): its JSON body is not read as '
+      'an answer of the Presence module.',
+      path: path,
+      kind: PresenceUnreadableAnswerKind.errorStatus,
+      statusCode: status,
+    );
+  }
+
+  /// Decodes the JSON body of [response] to a request for [path], whatever
+  /// its HTTP status ([_checkStatus] looks at that).
   ///
   /// An answer that cannot be read is a
   /// [SmartschoolPresenceUnreadableAnswerError] (#137), with the HTTP status
@@ -937,8 +1013,10 @@ class PresenceService {
   ///   breaks off, not the answer, which can name pupils.
   ///
   /// The client's requests take every status as an answer (`validateStatus`
-  /// accepts all), so a `429` or `5xx` gets here as well. The session was
-  /// accepted, so signing in again does not help. What a caller may assume:
+  /// accepts all), so a `429` or `5xx` gets here as well; one whose body is
+  /// valid JSON is decoded here, and refused by [_checkStatus] (#143). The
+  /// session was accepted, so signing in again does not help. What a caller
+  /// may assume:
   /// for [_getConfigPath], [_getAllCodesPath] and [_getClassPath], nothing
   /// changed on Smartschool; for [_savePath], it is **not known** whether the
   /// save landed. Calling `setLate` / `setPresent` again is safe: the call
@@ -959,7 +1037,7 @@ class PresenceService {
   /// `/account-verification`, the client logs in again and retries it once,
   /// and a retry that Smartschool refuses again fails with a
   /// [SmartschoolSessionExpiredError].
-  dynamic _decode(Response<String> response, String path) {
+  dynamic _decodeBody(Response<String> response, String path) {
     final body = response.data ?? '';
     final status = response.statusCode;
     final http = status == null ? 'status unknown' : 'HTTP $status';

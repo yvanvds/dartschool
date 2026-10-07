@@ -776,7 +776,9 @@ class SmartschoolClient {
 
   /// Returns the platform ID for the authenticated user.
   ///
-  /// Lazily fetched and cached after the first call. Throws a
+  /// Lazily fetched and cached after the first call: once known, it sends
+  /// nothing, so it does not tell whether Smartschool still accepts the
+  /// session (use [ensureAuthenticated] for that). Throws a
   /// [SmartschoolClientDisposedError] on a disposed client, also when it is
   /// cached (see [dispose]).
   Future<int> get platformId async {
@@ -785,7 +787,26 @@ class SmartschoolClient {
     return _platformId!;
   }
 
-  /// Forces a lightweight authenticated request and throws if session is invalid.
+  /// Sends a light authenticated request on every call, and throws when
+  /// Smartschool does not accept the session for it, also after logging in
+  /// again.
+  ///
+  /// The request is a GET of the user's course list
+  /// (`/course-list/api/v1/courses`), the one [platformId] is read from; the
+  /// platform ID it gives is cached for [platformId]. It goes out on every
+  /// call, also when an earlier call (or [platformId]) found the session
+  /// valid: the session may have expired on the server since, or been dropped
+  /// with [clearCookies] (#140). Like any request of the client, it logs in
+  /// when Smartschool refuses the session, and is then retried once; and it
+  /// logs in before it is sent when Smartschool refused the session for an
+  /// earlier request and no login completed since (#134). So when it returns
+  /// normally, Smartschool accepted the client's session for it, and the
+  /// requests after it go out in that session.
+  ///
+  /// When Smartschool refuses the session also after the client logged in
+  /// again, or the client does not log in (after three logins in a row that
+  /// did not get the session accepted, see [resetLoginAttempts]), it throws a
+  /// [SmartschoolSessionExpiredError].
   ///
   /// A login failure is thrown as the matching [SmartschoolAuthenticationError]
   /// subclass (e.g. [SmartschoolInvalidCredentialsError]), as every request
@@ -802,7 +823,8 @@ class SmartschoolClient {
   Future<void> ensureAuthenticated() async {
     _checkNotDisposed();
     try {
-      await platformId;
+      // Not [platformId], which sends nothing once the ID is cached (#140).
+      _platformId = await _fetchPlatformId();
     } on DioException catch (e) {
       throw SmartschoolAuthenticationError(
         'Unable to validate Smartschool session: ${e.message ?? e.toString()}',

@@ -1089,12 +1089,13 @@ class SmartschoolPagingRestartedError extends SmartschoolException {
 /// Thrown when a Presence (attendance) operation fails.
 ///
 /// This covers a rejected save (the server returns a non-empty `errors[]`
-/// array, exposed via [saveErrors], typed, and [errors], as text), an answer
-/// that cannot be read (empty, an HTML page instead of JSON, such as
-/// Smartschool's generic `500` error page, or not valid JSON), and
-/// precondition failures such as an unknown class, an unresolvable status
-/// code, or a pupil not present in the class. The session was accepted for
-/// all of them, so signing in again does not help.
+/// array, exposed via [saveErrors], typed, and [errors], as text; whatever
+/// the HTTP status of that answer, #143), an answer that cannot be read
+/// (empty, an HTML page instead of JSON, such as Smartschool's generic `500`
+/// error page, not valid JSON, or JSON with an HTTP status outside
+/// `200`–`299`), and precondition failures such as an unknown class, an
+/// unresolvable status code, or a pupil not present in the class. The
+/// session was accepted for all of them, so signing in again does not help.
 ///
 /// An answer that cannot be read is reported with the subtype
 /// [SmartschoolPresenceUnreadableAnswerError] (#137), with the HTTP status
@@ -1281,8 +1282,21 @@ class SmartschoolPresenceNoConfirmRightError extends SmartschoolPresenceError {
 
 /// Thrown by `PresenceService` when an answer of the Presence module cannot
 /// be read (#137): it is empty, an HTML page instead of JSON, or not valid
-/// JSON. [kind] says which, [statusCode] gives the HTTP status of the
-/// answer and [path] the endpoint that gave it.
+/// JSON; or it is valid JSON with an HTTP status outside `200`–`299`, an
+/// error answer whose body is not read as Presence data (#143). [kind] says
+/// which, [statusCode] gives the HTTP status of the answer and [path] the
+/// endpoint that gave it.
+///
+/// Which answer gives which [kind]: the body decides first, whatever the
+/// status. No body, or white space only:
+/// [PresenceUnreadableAnswerKind.empty]; an HTML page or a piece of one:
+/// [PresenceUnreadableAnswerKind.html]; other text that is not valid JSON:
+/// [PresenceUnreadableAnswerKind.malformedJson]. Valid JSON with a status
+/// outside `200`–`299`: [PresenceUnreadableAnswerKind.errorStatus] (#143),
+/// except for the save when the answer holds the module's own non-empty
+/// `errors[]`, which is a refused save (a plain [SmartschoolPresenceError]
+/// with [saveErrors], as for a `200`). Valid JSON with a `2xx` status is
+/// read as the module's answer, as before.
 ///
 /// Not a session problem: the client logs in again, and retries once, on
 /// the answers with which Smartschool refuses a session (a `401`, or a
@@ -1324,14 +1338,20 @@ class SmartschoolPresenceNoConfirmRightError extends SmartschoolPresenceError {
 /// error pages say what went wrong in their heading. Both are in the
 /// [message] too; nothing else of the answer is, nor of an answer that is
 /// not valid JSON, which can name pupils: its [message] has the JSON
-/// parser's reason and where the JSON breaks off.
+/// parser's reason and where the JSON breaks off. Nor of a JSON answer with
+/// an error status ([PresenceUnreadableAnswerKind.errorStatus]): its
+/// [message] names the [path] and the status only.
 ///
 /// A [SmartschoolPresenceError], so `catch` clauses for that type keep
 /// catching it; its [errors] and [saveErrors] are empty. Of these answers,
 /// only the HTML `500` of a request the module cannot handle was seen live
 /// (#5); the others are tested offline. (The empty `401` of an expired
 /// session, seen live on a release before #8 as "Empty response", is a
-/// session refusal now: the client logs in again for it.)
+/// session refusal now: the client logs in again for it.) Before #143, a
+/// JSON answer with an error status was read as the module's answer: a
+/// `500` with `{"message": ...}` gave `getConfig` a config without classes
+/// (and cached it), `getClassPupils` an empty class, and the save a
+/// confirmed `null`.
 class SmartschoolPresenceUnreadableAnswerError
     extends SmartschoolPresenceError {
   /// The Presence endpoint that gave the answer: `/Presence/Main/getConfig`,
@@ -1344,8 +1364,8 @@ class SmartschoolPresenceUnreadableAnswerError
   /// known.
   final int? statusCode;
 
-  /// What made the answer unreadable: empty, an HTML page, or not valid
-  /// JSON.
+  /// What made the answer unreadable: empty, an HTML page, not valid JSON,
+  /// or valid JSON with an HTTP status outside `200`–`299` (#143).
   final PresenceUnreadableAnswerKind kind;
 
   /// For an HTML page ([PresenceUnreadableAnswerKind.html]): its `<title>`,

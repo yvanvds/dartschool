@@ -6,7 +6,11 @@
 // a placeholder such as the class -2 ("Uit Planner") kept apart (#117); and
 // the names of the statuses of a grouping class, which has no structure:
 // the name the module gives with each half-day, and the codes of the
-// structure of each pupil's official class (#126).
+// structure of each pupil's official class (#126). And the HTTP status of
+// every answer of the module to those reads: a `200`, which the service
+// reads as the module's answer, while a JSON answer with a status outside
+// `200`–`299` is an error it never reads as data (#143; tested offline in
+// presence_unreadable_answer_test.dart, not provoked here).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -55,9 +59,13 @@ const _getClass = '/Presence/Class/getClass';
 const _unknownClassId = 99999;
 
 /// Records every request the library tries to send (`METHOD path`), before
-/// LiveWireGuard decides whether it goes out.
+/// LiveWireGuard decides whether it goes out, and the HTTP status of every
+/// answer of the Presence module (#143).
 class _Attempts extends Interceptor {
   final List<String> requests = [];
+
+  /// The answers of the Presence module, as `METHOD path` and HTTP status.
+  final List<(String, int?)> presenceAnswers = [];
 
   /// The requests tried since [from] to the Presence module that are not one
   /// of its three reads.
@@ -74,6 +82,18 @@ class _Attempts extends Interceptor {
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
     requests.add('${options.method.toUpperCase()} ${options.uri.path}');
     handler.next(options);
+  }
+
+  @override
+  void onResponse(Response response, ResponseInterceptorHandler handler) {
+    final options = response.requestOptions;
+    if (options.uri.path.startsWith('/Presence/')) {
+      presenceAnswers.add((
+        '${options.method.toUpperCase()} ${options.uri.path}',
+        response.statusCode,
+      ));
+    }
+    handler.next(response);
   }
 }
 
@@ -401,6 +421,31 @@ void main() {
           expect(byOfficialClass, halfDays);
         }
         expect(attempts.presenceWritesSince(mark), isEmpty);
+      });
+
+      test('the module answered every read of the run with a 200, which '
+          'the service reads as its answer (#143)', () {
+        // The service refuses a JSON answer with a status outside 200-299
+        // as an error (SmartschoolPresenceUnreadableAnswerError, kind
+        // errorStatus): the module's own answers to its reads are not, a
+        // class it does not know and a day it lists no pupils for included.
+        expect(attempts.presenceAnswers, isNotEmpty);
+        expect(
+          attempts.presenceAnswers,
+          everyElement(
+            isA<(String, int?)>()
+                .having(
+                  (a) => a.$1,
+                  'request',
+                  anyOf(
+                    'POST $_getConfig',
+                    'POST $_getAllCodes',
+                    'POST $_getClass',
+                  ),
+                )
+                .having((a) => a.$2, 'statusCode', 200),
+          ),
+        );
       });
 
       test('the run tried no Presence request but its reads', () {

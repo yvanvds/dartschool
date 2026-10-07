@@ -24,6 +24,22 @@
 // next request to an endpoint with an unreadable answer, and for the save,
 // carry the save out first (the answer was lost on its way back) or not
 // (the answer came from in front of the module). Its pupils are made up.
+//
+// Issue #143: an answer whose body *is* valid JSON was read as Presence
+// data whatever its HTTP status. A `500`, `502` or `503` with a JSON body
+// (`{"message":"Internal Server Error"}`, from Smartschool or a proxy) gave
+// getConfig a config without classes, which it cached, so every later
+// setLate failed with "Class groupID ... is not among the classes"; it gave
+// getClassPupils an empty class, so setLate threw PupilNotFound; and it gave
+// the save no `errors`, so setLate returned `null`, a confirmed save. Now
+// such an answer is a SmartschoolPresenceUnreadableAnswerError of the new
+// kind `errorStatus`, with its status, and nothing is cached from it; the
+// kinds of the answers above (#137) stay as they were, whatever their
+// status. A save answered with the module's own non-empty `errors[]` stays a
+// refused save (a plain SmartschoolPresenceError), whatever its status. Seen
+// live (read-only, 2026-10-07): the module answered getConfig, getAllCodes
+// and getClass (also of a class it does not know) with `200`; a JSON body
+// with another status was not seen from it, and was not provoked.
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -238,6 +254,80 @@ final _cases = <_Case>[
   ),
 ];
 
+/// Answers whose body is valid JSON, with an HTTP status outside `200`–`299`
+/// (#143): an error answer, from Smartschool or a proxy, never Presence data.
+/// Not seen from the module live; the shapes are those of common error
+/// bodies, and of the module's own envelope.
+final _errorStatusCases = <_Case>[
+  (
+    // Before the fix: getConfig a config without classes, getClassPupils an
+    // empty class, the save a confirmed `null`; getAllCodes "Unexpected
+    // getAllCodes response", a plain SmartschoolPresenceError.
+    label: 'a JSON 500 ({"message": "Internal Server Error"})',
+    answer: () => _json('{"message":"Internal Server Error"}', status: 500),
+    status: 500,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+  (
+    label: "a proxy's JSON 502",
+    answer: () => _json('{"error":"Bad Gateway","status":502}', status: 502),
+    status: 502,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+  (
+    // The module's own envelope, without errors: no refusal, no data.
+    label: 'a JSON 503 with an envelope without errors',
+    answer: () => _json('{"hasErrors":false,"errors":[]}', status: 503),
+    status: 503,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+  (
+    label: 'a JSON 500 flagged hasErrors, without errors',
+    answer: () => _json('{"hasErrors":true}', status: 500),
+    status: 500,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+  (
+    // Before the fix: getAllCodes cached it as "no codes".
+    label: 'an empty JSON list, 500',
+    answer: () => _json('[]', status: 500),
+    status: 500,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+  (
+    label: 'a JSON 429',
+    answer: () => _json('{"message":"Too Many Requests"}', status: 429),
+    status: 429,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+  (
+    // A body in the module's shapes, which names a pupil: not in the
+    // message, and not read.
+    label: 'a JSON 404 that names a pupil',
+    answer: () => _json(
+      '{"groupID":298,"pupils":[{"movementID":5001,"userID":1001,'
+      '"name":"Peeters, Lotte","presence":[]}],"saveIsAllowed":true}',
+      status: 404,
+    ),
+    status: 404,
+    kind: PresenceUnreadableAnswerKind.errorStatus,
+    title: null,
+    heading: null,
+  ),
+];
+
 /// A half-day of the fake: its record and what it holds.
 class _Cell {
   _Cell(this.presenceId, {this.codeId});
@@ -269,6 +359,10 @@ class _Smartschool implements HttpClientAdapter {
 
   /// Whether the module refuses every save with an `errors[]`.
   bool refuseSaves = false;
+
+  /// The HTTP status of the module's own answer to a save, which it carries
+  /// out (or refuses, with [refuseSaves]) whatever the status (#143).
+  int saveStatus = 200;
 
   /// The account's `userCanConfirm` for class 1A (#121).
   bool userCanConfirm = true;
@@ -313,7 +407,10 @@ class _Smartschool implements HttpClientAdapter {
       case _getClass:
         return _json(jsonEncode(_classAnswer()));
       case _save:
-        return _json(jsonEncode(_carryOut(form['pupils']!)));
+        return _json(
+          jsonEncode(_carryOut(form['pupils']!)),
+          status: saveStatus,
+        );
     }
     return _json('{}', status: 404);
   }
@@ -801,6 +898,292 @@ void main() {
 
       server.refuseSaves = true;
       expect(await drain(() => setLate(presence, userId: _peeters)), 'give up');
+    });
+
+    test('a JSON error status is tried again too (#143): to the save, '
+        'and to a read', () async {
+      // Before the fix: 'registered' for the save (a confirmed `null`), and
+      // 'give up' for getConfig (the class not among those of an empty
+      // config).
+      final (presence, server) = await serve();
+      server.unreadable[_save] = [
+        () => _json('{"message":"Bad Gateway"}', status: 502),
+      ];
+
+      expect(await drain(() => setLate(presence)), 'try again later');
+      expect(server.saves, 1);
+
+      final (fresh, other) = await serve();
+      other.unreadable[_getConfig] = [
+        () => _json('{"message":"Internal Server Error"}', status: 500),
+      ];
+      expect(await drain(() => setLate(fresh)), 'try again later');
+      expect(await drain(() => setLate(fresh)), 'registered');
+    });
+  });
+
+  group('a JSON answer with an error status to a read is a '
+      'SmartschoolPresenceUnreadableAnswerError of kind errorStatus, sent '
+      'once (#143)', () {
+    for (final (name, path, read) in reads) {
+      for (final c in _errorStatusCases) {
+        test('$name: ${c.label}', () async {
+          final (presence, server) = await serve();
+          server.unreadable[path] = [c.answer];
+
+          await expectLater(read(presence), throwsA(_unreadable(path, c)));
+          expect(server.log, ['POST $path'], reason: 'no login, no retry');
+        });
+      }
+    }
+
+    test('a 2xx other than 200 is still read as the answer', () async {
+      final (presence, server) = await serve();
+      server.unreadable[_getConfig] = [
+        () => _json(_configJson(userCanConfirm: true), status: 203),
+      ];
+
+      final config = await presence.getConfig();
+
+      expect(config.classForGroup(_classId)?.userCanConfirm, isTrue);
+    });
+
+    test('the kinds of #137 keep their order; errorStatus comes last', () {
+      expect(PresenceUnreadableAnswerKind.values, [
+        PresenceUnreadableAnswerKind.empty,
+        PresenceUnreadableAnswerKind.html,
+        PresenceUnreadableAnswerKind.malformedJson,
+        PresenceUnreadableAnswerKind.errorStatus,
+      ]);
+    });
+  });
+
+  group('nothing is cached from a JSON answer with an error status '
+      '(#143)', () {
+    test('getConfig: the next call asks again, and gets the classes', () async {
+      // Before the fix: a config without classes, cached, so the next call
+      // sent nothing and had no classes either.
+      final (presence, server) = await serve();
+      server.unreadable[_getConfig] = [
+        () => _json('{"message":"Internal Server Error"}', status: 500),
+      ];
+
+      await expectLater(
+        presence.getConfig(),
+        throwsA(
+          isA<SmartschoolPresenceUnreadableAnswerError>().having(
+            (e) => e.kind,
+            'kind',
+            PresenceUnreadableAnswerKind.errorStatus,
+          ),
+        ),
+      );
+      final config = await presence.getConfig();
+
+      expect(config.classForGroup(_classId)?.userCanConfirm, isTrue);
+      expect(config.schoolyearRefDate, _schoolyear);
+      expect(server.log, ['POST $_getConfig', 'POST $_getConfig']);
+    });
+
+    test('getAllCodes: the next call asks again, and gets the codes', () async {
+      // Before the fix: `[]` cached as "no codes" for the structure.
+      final (presence, server) = await serve();
+      server.unreadable[_getAllCodes] = [() => _json('[]', status: 503)];
+
+      await expectLater(
+        presence.getAllCodes(_structId),
+        throwsA(
+          isA<SmartschoolPresenceUnreadableAnswerError>()
+              .having((e) => e.statusCode, 'statusCode', 503)
+              .having(
+                (e) => e.kind,
+                'kind',
+                PresenceUnreadableAnswerKind.errorStatus,
+              ),
+        ),
+      );
+      final codes = await presence.getAllCodes(_structId);
+
+      expect([for (final c in codes) c.name], ['Aanwezig', 'Te laat']);
+      expect(server.log, ['POST $_getAllCodes', 'POST $_getAllCodes']);
+    });
+
+    test('getConfig(forceRefresh: true) keeps the config it had', () async {
+      final (presence, server) = await serve();
+      final before = await presence.getConfig();
+      server.unreadable[_getConfig] = [
+        () => _json('{"message":"Service Unavailable"}', status: 503),
+      ];
+
+      await expectLater(
+        presence.getConfig(forceRefresh: true),
+        throwsA(isA<SmartschoolPresenceUnreadableAnswerError>()),
+      );
+
+      expect(await presence.getConfig(), same(before));
+      expect(server.log, ['POST $_getConfig', 'POST $_getConfig']);
+    });
+  });
+
+  group('setLate: a JSON answer with an error status to a read before the '
+      'save is a SmartschoolPresenceUnreadableAnswerError, not a refusal, '
+      'and nothing is saved (#143)', () {
+    for (final path in [_getConfig, _getAllCodes, _getClass]) {
+      test(path, () async {
+        // Before the fix: getConfig "Class groupID 298 is not among the
+        // classes" (a plain SmartschoolPresenceError), getAllCodes
+        // "Unexpected getAllCodes response", getClass PupilNotFound.
+        final (presence, server) = await serve();
+        server.unreadable[path] = [
+          () => _json('{"message":"Internal Server Error"}', status: 500),
+        ];
+
+        await expectLater(
+          setLate(presence),
+          throwsA(
+            allOf(
+              isNot(isA<SmartschoolPresencePupilNotFoundError>()),
+              isA<SmartschoolPresenceUnreadableAnswerError>()
+                  .having((e) => e.path, 'path', path)
+                  .having((e) => e.statusCode, 'statusCode', 500)
+                  .having(
+                    (e) => e.kind,
+                    'kind',
+                    PresenceUnreadableAnswerKind.errorStatus,
+                  )
+                  .having(
+                    (e) => e.message,
+                    'message',
+                    isNot(contains('not among the classes')),
+                  ),
+            ),
+          ),
+        );
+        expect(server.saves, 0);
+        expect(server.cells[(_janssens, 'am')], isNull);
+
+        // Nothing was cached from it: the next call saves.
+        final saved = await setLate(presence);
+
+        expect(saved?.presenceId, 95001);
+        expect(saved?.codeId, _teLaat);
+        expect(server.saves, 1);
+      });
+    }
+  });
+
+  group('setLate: a JSON answer with an error status to the save does not '
+      'confirm it (#143)', () {
+    for (final c in _errorStatusCases) {
+      test(c.label, () async {
+        // Before the fix: a confirmed save (`null`, or a plain
+        // SmartschoolPresenceError for the `hasErrors` one).
+        final (presence, server) = await serve();
+        server.unreadable[_save] = [c.answer];
+
+        await expectLater(setLate(presence), throwsA(_unreadable(_save, c)));
+        expect(server.saves, 1, reason: 'never sent again by the library');
+        expect(server.cells[(_janssens, 'am')], isNull);
+      });
+    }
+
+    test('the module stored it and answered 500 with the record: not '
+        'confirmed; setLate again updates that record', () async {
+      // Before the fix: the record returned as stored, from a 500.
+      final (presence, server) = await serve();
+      server.saveStatus = 500;
+
+      await expectLater(
+        setLate(presence),
+        throwsA(
+          isA<SmartschoolPresenceUnreadableAnswerError>()
+              .having((e) => e.path, 'path', _save)
+              .having((e) => e.statusCode, 'statusCode', 500)
+              .having(
+                (e) => e.kind,
+                'kind',
+                PresenceUnreadableAnswerKind.errorStatus,
+              )
+              .having((e) => e.saveErrors, 'saveErrors', isEmpty),
+        ),
+      );
+      expect(server.cells[(_janssens, 'am')]?.codeId, _teLaat);
+
+      server.saveStatus = 200;
+      final saved = await setLate(presence);
+
+      expect(saved?.presenceId, 95001);
+      expect(saved?.before?.presenceId, 95001, reason: 'read again first');
+      expect(
+        [for (final s in server.saved) s['presenceID']],
+        [null, 95001],
+        reason: 'a new record, then that record updated',
+      );
+      expect(server.nextPresenceId, 95002, reason: 'one record only');
+    });
+
+    test('a 2xx other than 200 with the record still confirms it', () async {
+      final (presence, server) = await serve();
+      server.saveStatus = 201;
+
+      final saved = await setLate(presence);
+
+      expect(saved?.presenceId, 95001);
+      expect(saved?.codeId, _teLaat);
+    });
+  });
+
+  group("a save answered with the module's errors[] is refused, whatever "
+      'its status (#143)', () {
+    for (final status in [400, 500, 503]) {
+      test('HTTP $status', () async {
+        final (presence, server) = await serve();
+        server
+          ..refuseSaves = true
+          ..saveStatus = status;
+
+        await expectLater(
+          setLate(presence),
+          throwsA(
+            allOf(
+              _notUnreadable<SmartschoolPresenceError>(),
+              isA<SmartschoolPresenceError>()
+                  .having(
+                    (e) => e.saveErrors.single.message,
+                    'saveErrors',
+                    'De afwezigheid kon niet worden opgeslagen.',
+                  )
+                  .having(
+                    (e) => e.saveErrors.single.userId,
+                    'saveErrors.userId',
+                    _janssens,
+                  )
+                  .having(
+                    (e) => e.message,
+                    'message',
+                    allOf(contains('HTTP $status'), isNot(contains('Emma'))),
+                  ),
+            ),
+          ),
+        );
+        expect(server.saves, 1);
+      });
+    }
+
+    test('with a 200, the message is as before', () async {
+      final (presence, server) = await serve();
+      server.refuseSaves = true;
+
+      await expectLater(
+        setLate(presence),
+        throwsA(
+          isA<SmartschoolPresenceError>().having(
+            (e) => e.message,
+            'message',
+            'Saving the presence for userID $_janssens failed.',
+          ),
+        ),
+      );
     });
   });
 }

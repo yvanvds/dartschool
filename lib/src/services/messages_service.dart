@@ -471,8 +471,8 @@ class MessagesService {
   ///
   /// The archive is not a separate [BoxType]; it is the inbox with a non-zero
   /// box ID.  If [boxId] is omitted, this method first resolves the archive
-  /// folder ID from the Messages module HTML and caches it. If resolution
-  /// fails, it falls back to `208`.
+  /// folder ID as [getArchiveBoxId] does, from the account's folders, and
+  /// caches it. If resolution fails, it falls back to `208`.
   ///
   /// This is a convenience wrapper around [getHeaders] with
   /// `boxType = BoxType.inbox` and the given [boxId].
@@ -635,13 +635,20 @@ class MessagesService {
 
   /// Returns the archive folder box ID for the current account.
   ///
-  /// The value is discovered from the Messages module HTML and cached for this
-  /// service instance. If discovery fails, this returns the legacy fallback
-  /// value `208`.
+  /// The value is the [MessageFolder.id] of the archive among the folders of
+  /// [getFolders] (#141): the one folder of the inbox whose
+  /// [MessageFolder.isArchive] is `true`. That is one request, of the folder
+  /// tree (about 2 KB). When that request fails, or the tree holds no such
+  /// folder or more than one, it is read from Smartschool's Messages page
+  /// instead (about 95 KB, [parseArchiveBoxIdFromMessagesHtml]), as before
+  /// #141; when that fails too, or the page names none, this returns the
+  /// legacy fallback value `208`. Seen live (2026-10-07, #136), the tree and
+  /// the page name the same folder.
   ///
-  /// [getFolders] lists the archive too, as the folder whose
-  /// [MessageFolder.isArchive] is `true`, among the other folders of the
-  /// account; seen live (2026-10-07, #136), both name the same folder.
+  /// The value is cached for this service instance, also the fallback: once
+  /// a call returned, the next ones (and those of [getArchiveHeaders],
+  /// [getArchiveHeaderPages] and [getAllArchiveHeaders] without a `boxId`)
+  /// send nothing for it.
   Future<int> getArchiveBoxId() => _resolveArchiveBoxId();
 
   /// Returns the folders of the account's message boxes (#136): the archive
@@ -684,7 +691,8 @@ class MessagesService {
   /// shows `children` as a nested list at every level).
   ///
   /// The folders are read again at every call: the user can add, rename or
-  /// remove one in the web client at any time.
+  /// remove one in the web client at any time. [getArchiveBoxId] reads the
+  /// archive from this tree, once per service (#141).
   ///
   /// Throws a [SmartschoolParsingError] when the answer holds no folder tree
   /// or one it cannot read (see [parseFolders]), and fails as every command
@@ -720,26 +728,56 @@ class MessagesService {
   /// answer to `requestmovelist` ([getFolders]), as Smartschool spells it.
   static const _folderTreeCommand = 'moveToPostboxFinnishTreeRequest';
 
-  /// Resolves and caches the archive folder box ID for the current account.
+  /// The archive folder's box ID when neither the folder tree nor the
+  /// Messages page names it ([getArchiveBoxId]).
+  static const _fallbackArchiveBoxId = 208;
+
+  /// Resolves and caches the archive folder box ID for the current account,
+  /// as [getArchiveBoxId] says: from the folder tree, else from the Messages
+  /// page, else [_fallbackArchiveBoxId].
   Future<int> _resolveArchiveBoxId() async {
     final cached = _archiveBoxIdCache;
-    if (cached != null && cached > 0) return cached;
+    if (cached != null) return cached;
+    final resolved =
+        await _archiveBoxIdFromFolders() ??
+        await _archiveBoxIdFromMessagesPage() ??
+        _fallbackArchiveBoxId;
+    return _archiveBoxIdCache = resolved;
+  }
 
+  /// The box ID of the archive among the folders of [getFolders] (#141): the
+  /// one folder of the inbox with [MessageFolder.isArchive]. `null` when the
+  /// request fails, or the tree holds no such folder or more than one, so
+  /// that [_resolveArchiveBoxId] tries the Messages page.
+  Future<int?> _archiveBoxIdFromFolders() async {
+    final List<MessageFolder> folders;
+    try {
+      folders = await getFolders();
+    } catch (_) {
+      // The Messages page may still name it, as before #141.
+      return null;
+    }
+    final archives = [
+      for (final folder in MessageFolder.flatten(folders))
+        if (folder.isArchive && folder.boxType == BoxType.inbox) folder.id,
+    ];
+    return archives.length == 1 ? archives.single : null;
+  }
+
+  /// The box ID of the archive as Smartschool's Messages page names it
+  /// ([parseArchiveBoxIdFromMessagesHtml]), or `null` when the page cannot
+  /// be loaded or names none.
+  Future<int?> _archiveBoxIdFromMessagesPage() async {
     try {
       final html = await _client.getRaw(
         '/?module=Messages&file=index&function=main',
       );
       final parsed = parseArchiveBoxIdFromMessagesHtml(html);
-      if (parsed != null && parsed > 0) {
-        _archiveBoxIdCache = parsed;
-        return parsed;
-      }
+      return parsed != null && parsed > 0 ? parsed : null;
     } catch (_) {
-      // Keep legacy fallback for resilience.
+      // Keep the legacy fallback for resilience.
+      return null;
     }
-
-    _archiveBoxIdCache = 208;
-    return 208;
   }
 
   /// Fetches the full content of message [msgId] from [boxType].
@@ -2308,6 +2346,9 @@ class MessagesService {
   /// Extracts the archive folder box ID from the Messages module HTML.
   ///
   /// Returns `null` when no archive folder element is found.
+  ///
+  /// [getArchiveBoxId] reads the page only when the folder tree of
+  /// [getFolders] does not name the archive (#141).
   static int? parseArchiveBoxIdFromMessagesHtml(String htmlBody) {
     final doc = html_parser.parse(htmlBody);
 

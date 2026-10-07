@@ -8,7 +8,11 @@ import 'models/intradesk_models.dart'
         IntradeskFolderCapabilities,
         IntradeskItemKind;
 import 'models/lesson_content_models.dart'
-    show LessonContentItem, LessonContentType;
+    show
+        LessonContentAttachment,
+        LessonContentItem,
+        LessonContentType,
+        LessonContentVisibility;
 import 'models/message_models.dart' show BoxType;
 import 'models/planner_models.dart'
     show
@@ -1781,6 +1785,13 @@ class SmartschoolLessonContentWriteRefusedError
 /// [SmartschoolAuthenticationError]): Smartschool refused it before handling
 /// it, so nothing was changed.
 ///
+/// `addAttachments` throws the subtype
+/// [SmartschoolLessonContentVisibilityNotSetError] when the module took the
+/// files and only setting the visibility of one of them failed (#135): the
+/// files were added then, and the error carries their attachments. From
+/// `addAttachments`, this error itself (not of that subtype) means that the
+/// take is unconfirmed: the files may or may not have been added.
+///
 /// Deliberately not a [SmartschoolLessonContentError], so a `catch` meant
 /// for the failures where nothing was changed does not catch it.
 class SmartschoolLessonContentSaveUnconfirmedError
@@ -1792,9 +1803,10 @@ class SmartschoolLessonContentSaveUnconfirmedError
 
   /// The failure when no usable answer came in, such as a
   /// [SmartschoolConnectionError], or of the step after the write (the read
-  /// of a new lesfiche's detail, the visibility of an added attachment);
-  /// `null` when the module answered with something that does not confirm
-  /// the write.
+  /// of a new lesfiche's detail, or, in a
+  /// [SmartschoolLessonContentVisibilityNotSetError], the visibility of an
+  /// added attachment); `null` when the module answered with something that
+  /// does not confirm the write.
   final Object? cause;
 
   /// The ID of the lesfiche the write was for: the lesfiche that was edited,
@@ -1814,6 +1826,86 @@ class SmartschoolLessonContentSaveUnconfirmedError
   String toString() => statusCode == null
       ? '$runtimeType: $message'
       : '$runtimeType($statusCode): $message';
+}
+
+/// The [SmartschoolLessonContentSaveUnconfirmedError] of
+/// `LessonContentService.addAttachments` when **the files were added**, and
+/// only setting the visibility of one of them failed (#135).
+///
+/// `addAttachments` has the module take the uploaded files (`POST
+/// {type}/{id}/attachments`), which gives every new attachment the
+/// visibility [LessonContentVisibility.always] (seen live), and then sets the
+/// visibility asked for of each attachment that asks for another one, one at
+/// a time, with `changeAttachmentVisibility`. This error means that the take
+/// went through, with exactly the files uploaded (their attachments are in
+/// [addedAttachments]), and that the change of the visibility of
+/// [attachment] to [visibility] failed. The call stopped there: the
+/// attachments after it whose visibility it would have changed still have
+/// the module's `always` too. [visibilitiesNotSet] holds all of them.
+///
+/// [cause] is the failure of that change: a [SmartschoolLessonContentError]
+/// (the module refused it, such as a
+/// [SmartschoolLessonContentWriteRefusedError]: the visibility was not set),
+/// a [SmartschoolLessonContentSaveUnconfirmedError] (sent, but not confirmed:
+/// it may or may not have been set), or a [SmartschoolAuthenticationError]
+/// (the session was refused, also after logging in again: not set).
+///
+/// **Do not add the files again**: that adds them a second time (the module
+/// keeps two attachments of the same name, seen live). Set the visibilities
+/// instead; a visibility change sets a value, so sending one that went
+/// through again is harmless:
+///
+/// ```dart
+/// try {
+///   await lessonContent.addAttachments(fiche, files);
+/// } on SmartschoolLessonContentVisibilityNotSetError catch (e) {
+///   // The files are on the lesfiche: e.addedAttachments.
+///   for (final MapEntry(key: id, value: visibility)
+///       in e.visibilitiesNotSet.entries) {
+///     await lessonContent.changeAttachmentVisibility(fiche, id, visibility);
+///   }
+/// }
+/// ```
+///
+/// Its [statusCode] is `null` and its [lessonContentId] the ID of the
+/// lesfiche. From `addAttachments`, a
+/// [SmartschoolLessonContentSaveUnconfirmedError] that is not of this type
+/// means that the take itself is unconfirmed: the files may or may not have
+/// been added, and the error carries no attachments.
+class SmartschoolLessonContentVisibilityNotSetError
+    extends SmartschoolLessonContentSaveUnconfirmedError {
+  /// The attachments the module made of the files, one per file, in the
+  /// order of the call's `attachments`, each with the visibility it has as
+  /// far as the call knows: for those before [attachment], the one asked for
+  /// (as the module answered its change); for [attachment] and those after
+  /// it, the one the module gave them ([LessonContentVisibility.always], seen
+  /// live).
+  final List<LessonContentAttachment> addedAttachments;
+
+  /// The attachment whose visibility could not be set, as the module answered
+  /// the take: one of [addedAttachments].
+  final LessonContentAttachment attachment;
+
+  /// The visibility asked for [attachment].
+  final LessonContentVisibility visibility;
+
+  /// The visibilities asked for that the call did not set, by attachment ID
+  /// ([LessonContentAttachment.id]), in the order of the call's
+  /// `attachments`: [visibility] for [attachment] first, then, for each
+  /// attachment after it that asks for another visibility than the module
+  /// gave it, the one asked for (the call did not try those). Each can be set
+  /// with `LessonContentService.changeAttachmentVisibility`.
+  final Map<String, LessonContentVisibility> visibilitiesNotSet;
+
+  const SmartschoolLessonContentVisibilityNotSetError(
+    super.message, {
+    required Object super.cause,
+    required String super.lessonContentId,
+    required this.addedAttachments,
+    required this.attachment,
+    required this.visibility,
+    required this.visibilitiesNotSet,
+  });
 }
 
 /// Thrown by `SkoreService.addTeacher` and `replaceTeacher` when the save

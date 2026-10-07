@@ -415,6 +415,32 @@ Matcher _unconfirmed(
       .having((e) => e.lessonContentId, 'lessonContentId', lessonContentId),
 );
 
+/// The files of `addAttachments` were added, and only setting a visibility
+/// failed (#135): the attachments made [added] (as `(id, fileName,
+/// visibility)`, in the order of the call), the one whose visibility failed,
+/// the visibility asked for it, and the visibilities not set, in order.
+Matcher _visibilityNotSet({
+  required List<(String, String, LessonContentVisibility)> added,
+  required String attachmentId,
+  required LessonContentVisibility visibility,
+  required Map<String, LessonContentVisibility> notSet,
+}) => isA<SmartschoolLessonContentVisibilityNotSetError>()
+    .having(
+      (e) => [
+        for (final a in e.addedAttachments) (a.id, a.fileName, a.visibility),
+      ],
+      'addedAttachments',
+      added,
+    )
+    .having((e) => e.attachment.id, 'attachment.id', attachmentId)
+    .having((e) => e.visibility, 'visibility', visibility)
+    .having((e) => e.visibilitiesNotSet, 'visibilitiesNotSet', notSet)
+    .having(
+      (e) => e.visibilitiesNotSet.keys.toList(),
+      'the order of visibilitiesNotSet',
+      notSet.keys.toList(),
+    );
+
 /// A session refused for a write that is not retried.
 final _notRetried = isA<SmartschoolSessionExpiredError>().having(
   (e) => e.message,
@@ -1651,15 +1677,20 @@ void main() {
       );
     });
 
-    test('addAttachments: a visibility that cannot be set is unconfirmed, '
-        'saying the files were added', () async {
+    test('addAttachments: a visibility that cannot be set is a '
+        'SmartschoolLessonContentVisibilityNotSetError, saying the files were '
+        'added, with their attachments (#135)', () async {
       final (_, lessonContent) = await serve({
         _getLesson: [_json(_detailJson(attachments: []))],
         _uploadDirectory: [_json('{"uploadDir":"dir7"}')],
         _upload: [_json('true')],
         'POST $_lesson/attachments': [
           _json(
-            _detailJson(attachments: [_attachmentJson(id: _newAttachmentId)]),
+            _detailJson(
+              attachments: [
+                _attachmentJson(id: _newAttachmentId, option: 'always'),
+              ],
+            ),
           ),
         ],
         'POST $_lesson/attachments/$_newAttachmentId/change-visibility': [
@@ -1675,14 +1706,310 @@ void main() {
           ),
         ]),
         throwsA(
-          _unconfirmed(
-            allOf(contains('went through'), contains('Do not add the files')),
-            cause: isA<SmartschoolLessonContentSaveUnconfirmedError>(),
-            lessonContentId: _lessonId,
+          allOf(
+            _unconfirmed(
+              allOf(
+                contains('went through'),
+                contains('Do not add the files'),
+                isNot(contains('Not tried')),
+              ),
+              statusCode: isNull,
+              cause: isA<SmartschoolLessonContentSaveUnconfirmedError>().having(
+                (e) => e.statusCode,
+                'statusCode',
+                500,
+              ),
+              lessonContentId: _lessonId,
+            ),
+            _visibilityNotSet(
+              added: [
+                (
+                  _newAttachmentId,
+                  'lussen.txt',
+                  LessonContentVisibility.always,
+                ),
+              ],
+              attachmentId: _newAttachmentId,
+              visibility: LessonContentVisibility.atEnd,
+              notSet: {_newAttachmentId: LessonContentVisibility.atEnd},
+            ),
           ),
         ),
       );
     });
+
+    test('addAttachments of several files: the visibilities are set one at '
+        'a time; when one fails, the error has every attachment made, each '
+        'with the visibility it has, and the visibilities not set, that one '
+        'and those after it, which were not tried (#135)', () async {
+      // The module answers the take with the new attachments by file name
+      // (seen live): a.txt (never), b.txt (at-start, its change fails),
+      // c.txt (2 days after the end, not tried), d.txt (always: nothing to
+      // set).
+      const a = 'f0000000-0000-4000-8000-000000000041';
+      const b = 'f0000000-0000-4000-8000-000000000042';
+      const c = 'f0000000-0000-4000-8000-000000000043';
+      const d = 'f0000000-0000-4000-8000-000000000044';
+      final existing = _attachmentJson(option: 'at-start');
+      List<Map<String, Object?>> taken({String aOption = 'always'}) => [
+        _attachmentJson(id: a, fileName: 'a.txt', option: aOption),
+        _attachmentJson(id: b, fileName: 'b.txt', option: 'always'),
+        _attachmentJson(id: c, fileName: 'c.txt', option: 'always'),
+        _attachmentJson(id: d, fileName: 'd.txt', option: 'always'),
+        existing,
+      ];
+      final (server, lessonContent) = await serve({
+        _getLesson: [
+          _json(_detailJson(attachments: [existing])),
+        ],
+        _uploadDirectory: [_json('{"uploadDir":"dir7"}')],
+        _upload: [_json('true')],
+        'POST $_lesson/attachments': [_json(_detailJson(attachments: taken()))],
+        'POST $_lesson/attachments/$a/change-visibility': [
+          _json(_detailJson(attachments: taken(aOption: 'never'))),
+        ],
+        'POST $_lesson/attachments/$b/change-visibility': [_serverError],
+      });
+
+      await expectLater(
+        lessonContent.addAttachments(_lessonItem, [
+          NewLessonContentAttachment(
+            file('d.txt'),
+            visibility: LessonContentVisibility.always,
+          ),
+          NewLessonContentAttachment(
+            file('a.txt'),
+            visibility: LessonContentVisibility.never,
+          ),
+          NewLessonContentAttachment(
+            file('b.txt'),
+            visibility: LessonContentVisibility.atStart,
+          ),
+          NewLessonContentAttachment(
+            file('c.txt'),
+            visibility: LessonContentVisibility.afterEnd(2),
+          ),
+        ]),
+        throwsA(
+          allOf(
+            _unconfirmed(
+              allOf(
+                contains('setting the visibility of attachment "b.txt" ($b)'),
+                contains('Not tried after it: attachment "c.txt" ($c)'),
+                contains('Do not add the files again'),
+              ),
+              statusCode: isNull,
+              cause: isA<SmartschoolLessonContentSaveUnconfirmedError>(),
+              lessonContentId: _lessonId,
+            ),
+            _visibilityNotSet(
+              // In the order of the call's attachments.
+              added: [
+                (d, 'd.txt', LessonContentVisibility.always),
+                (a, 'a.txt', LessonContentVisibility.never),
+                (b, 'b.txt', LessonContentVisibility.always),
+                (c, 'c.txt', LessonContentVisibility.always),
+              ],
+              attachmentId: b,
+              visibility: LessonContentVisibility.atStart,
+              notSet: {
+                b: LessonContentVisibility.atStart,
+                c: LessonContentVisibility.afterEnd(2),
+              },
+            ),
+          ),
+        ),
+      );
+      expect(server.writes, [
+        _upload,
+        _upload,
+        _upload,
+        _upload,
+        'POST $_lesson/attachments',
+        'POST $_lesson/attachments/$a/change-visibility',
+        'POST $_lesson/attachments/$b/change-visibility',
+      ]);
+    });
+
+    test(
+      'addAttachments: whatever the change of the visibility fails with '
+      '(refused, its session refused), the error says the files were '
+      'added; a take that is unconfirmed (no answer, an answer that is not '
+      'a lesfiche, other new attachments) is not that error (#135)',
+      () async {
+        const changeVisibility =
+            'POST $_lesson/attachments/$_newAttachmentId/change-visibility';
+        Map<String, List<_Answer>> answers({
+          List<_Answer>? take,
+          List<_Answer> change = const [],
+        }) => {
+          _getLesson: [_json(_detailJson(attachments: []))],
+          _uploadDirectory: [_json('{"uploadDir":"dir7"}')],
+          _upload: [_json('true')],
+          'POST $_lesson/attachments':
+              take ??
+              [
+                _json(
+                  _detailJson(
+                    attachments: [
+                      _attachmentJson(id: _newAttachmentId, option: 'always'),
+                    ],
+                  ),
+                ),
+              ],
+          if (change.isNotEmpty) changeVisibility: change,
+        };
+        Future<void> add(LessonContentService lessonContent) =>
+            lessonContent.addAttachments(_lessonItem, [
+              NewLessonContentAttachment(
+                file('lussen.txt'),
+                visibility: LessonContentVisibility.never,
+              ),
+            ]);
+        final filesAdded = _visibilityNotSet(
+          added: [
+            (_newAttachmentId, 'lussen.txt', LessonContentVisibility.always),
+          ],
+          attachmentId: _newAttachmentId,
+          visibility: LessonContentVisibility.never,
+          notSet: {_newAttachmentId: LessonContentVisibility.never},
+        );
+        final takeUnconfirmed = isNot(
+          isA<SmartschoolLessonContentVisibilityNotSetError>(),
+        );
+
+        // The change refused with a 400: its cause is a
+        // SmartschoolLessonContentError, as for a take answered with something
+        // that is not a lesfiche (below).
+        var (_, lessonContent) = await serve(answers(change: [_badRequest]));
+        await expectLater(
+          add(lessonContent),
+          throwsA(
+            allOf(
+              filesAdded,
+              _unconfirmed(
+                anything,
+                cause: isA<SmartschoolLessonContentWriteRefusedError>(),
+                lessonContentId: _lessonId,
+              ),
+            ),
+          ),
+        );
+
+        // Its session refused, also after logging in again.
+        (_, lessonContent) = await serve(answers(change: [_unauthorized]));
+        await expectLater(
+          add(lessonContent),
+          throwsA(
+            allOf(
+              filesAdded,
+              _unconfirmed(
+                anything,
+                cause: isA<SmartschoolSessionExpiredError>(),
+                lessonContentId: _lessonId,
+              ),
+            ),
+          ),
+        );
+
+        // The take's connection dropping: no answer, so the files may or may
+        // not have been added.
+        (_, lessonContent) = await serve(
+          answers(take: const []),
+          failures: {'POST $_lesson/attachments': _dropped},
+        );
+        await expectLater(
+          add(lessonContent),
+          throwsA(
+            allOf(
+              takeUnconfirmed,
+              _unconfirmed(
+                allOf(
+                  contains('no answer came in'),
+                  contains('may or may not have been added'),
+                ),
+                statusCode: isNull,
+                cause: isA<SmartschoolConnectionError>(),
+                lessonContentId: _lessonId,
+              ),
+            ),
+          ),
+        );
+
+        // The take answered with something that is not a lesfiche.
+        (_, lessonContent) = await serve(
+          answers(
+            take: [
+              _json({'id': _lessonId}),
+            ],
+          ),
+        );
+        await expectLater(
+          add(lessonContent),
+          throwsA(
+            allOf(
+              takeUnconfirmed,
+              _unconfirmed(
+                contains('may or may not have been added'),
+                statusCode: 200,
+                cause: isA<SmartschoolLessonContentError>(),
+                lessonContentId: _lessonId,
+              ),
+            ),
+          ),
+        );
+
+        // A 500 for the take, and new attachments other than the files.
+        (_, lessonContent) = await serve(
+          answers(
+            take: [
+              _serverError,
+              _json(
+                _detailJson(
+                  attachments: [
+                    _attachmentJson(
+                      id: _newAttachmentId,
+                      fileName: 'ander.txt',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+        await expectLater(
+          add(lessonContent),
+          throwsA(
+            allOf(
+              takeUnconfirmed,
+              _unconfirmed(
+                contains('may or may not have been added'),
+                statusCode: 500,
+                cause: isNull,
+                lessonContentId: _lessonId,
+              ),
+            ),
+          ),
+        );
+        await expectLater(
+          add(lessonContent),
+          throwsA(
+            allOf(
+              takeUnconfirmed,
+              _unconfirmed(
+                allOf(
+                  contains('the new attachments "ander.txt"'),
+                  contains('may or may not have been added'),
+                ),
+                statusCode: 200,
+                cause: isNull,
+                lessonContentId: _lessonId,
+              ),
+            ),
+          ),
+        );
+      },
+    );
 
     test('addAttachments refuses no files before any request', () async {
       final (server, lessonContent) = await serve({});

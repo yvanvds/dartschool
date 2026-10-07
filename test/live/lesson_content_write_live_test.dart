@@ -3,7 +3,10 @@
 // attachment in one create, read back, changed (name, icon, info, courses,
 // visibility, weblinks, attachments), its attachment downloaded back, an
 // assignment lesfiche made, and both moved to the module's trash again,
-// against the live Lesfiches module of credentials.yml.
+// against the live Lesfiches module of credentials.yml. For #135, three
+// files added with the change of the second one's visibility dropped before
+// it went out: the error holds the attachments the module made, which the
+// test reads back, sets the visibilities of, and removes again.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -59,6 +62,43 @@ class _Attempts extends Interceptor {
   }
 }
 
+/// Drops the connection of one change of the visibility of an attachment,
+/// before it goes out, while armed (#135): after letting [letOut] of them
+/// out. Smartschool never sees the dropped one.
+class _DropVisibilityChange extends Interceptor {
+  /// How many changes of a visibility go out before the one it drops; `null`
+  /// when it drops none.
+  int? letOut;
+
+  /// The paths of the changes it dropped.
+  final List<String> dropped = [];
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    final left = letOut;
+    if (left != null &&
+        options.method.toUpperCase() == 'POST' &&
+        options.uri.path.endsWith('/change-visibility')) {
+      if (left > 0) {
+        letOut = left - 1;
+      } else {
+        letOut = null;
+        dropped.add(options.uri.path);
+        handler.reject(
+          DioException.connectionError(
+            requestOptions: options,
+            reason: 'dropped by the live test before it went out (#135)',
+            error: const SocketException('Connection reset by peer'),
+          ),
+          true,
+        );
+        return;
+      }
+    }
+    handler.next(options);
+  }
+}
+
 /// An ID that names no lesfiche.
 const _noSuchId = '00000000-0000-4000-8000-000000000000';
 
@@ -77,6 +117,7 @@ void main() {
       late LiveRun run;
       late LessonContentService lessonContent;
       late _Attempts attempts;
+      late _DropVisibilityChange drop;
 
       /// Two of the school's courses, for the lesfiche's courses.
       late List<PlannerCourse> courses;
@@ -107,6 +148,9 @@ void main() {
         // request the guard refuses.
         final interceptors = run.client.dio.interceptors;
         interceptors.insert(interceptors.indexOf(run.guard), attempts);
+        // After it, so that it records a change this one drops (#135).
+        drop = _DropVisibilityChange();
+        interceptors.insert(interceptors.indexOf(run.guard), drop);
         lessonContent = LessonContentService(run.client);
         courses = (await lessonContent.getCourses())
             .where((course) => course.name.isNotEmpty)
@@ -354,6 +398,118 @@ void main() {
         expect(read.attachments.map((a) => a.id), [
           fiche.attachments.single.id,
         ]);
+      });
+
+      test('addAttachments: when a visibility cannot be set after the module '
+          'took the files, a SmartschoolLessonContentVisibilityNotSetError '
+          'holds the attachments the module made, as getDetail shows them, '
+          'and the visibilities to set (#135)', () async {
+        final fiche = madeLesson();
+        final a = await run.attachment('zichtbaarheid-a');
+        final b = await run.attachment('zichtbaarheid-b');
+        final c = await run.attachment('zichtbaarheid-c');
+        String nameOf(File file) => file.uri.pathSegments.last;
+        final mark = attempts.requests.length;
+
+        // The change of a's visibility goes out; that of b is dropped before
+        // it goes out, so c's is not tried.
+        drop.letOut = 1;
+        Object? thrown;
+        try {
+          await lessonContent.addAttachments(fiche, [
+            NewLessonContentAttachment(
+              a.path,
+              visibility: LessonContentVisibility.never,
+            ),
+            NewLessonContentAttachment(
+              b.path,
+              visibility: LessonContentVisibility.atStart,
+            ),
+            NewLessonContentAttachment(
+              c.path,
+              visibility: LessonContentVisibility.afterEnd(2),
+            ),
+          ]);
+          fail('addAttachments returned although a visibility was not set');
+        } on SmartschoolLessonContentSaveUnconfirmedError catch (e) {
+          thrown = e;
+        } finally {
+          drop.letOut = null;
+        }
+        expect(drop.dropped, hasLength(1));
+
+        expect(thrown, isA<SmartschoolLessonContentVisibilityNotSetError>());
+        final error = thrown as SmartschoolLessonContentVisibilityNotSetError;
+        expect(error.lessonContentId, fiche.id);
+        expect(error.statusCode, isNull);
+        expect(
+          error.cause,
+          isA<SmartschoolLessonContentSaveUnconfirmedError>().having(
+            (e) => e.cause,
+            'cause',
+            isA<SmartschoolConnectionError>(),
+          ),
+        );
+        expect(error.addedAttachments.map((x) => (x.fileName, x.visibility)), [
+          (nameOf(a), LessonContentVisibility.never),
+          // The module gives every new attachment "always".
+          (nameOf(b), LessonContentVisibility.always),
+          (nameOf(c), LessonContentVisibility.always),
+        ]);
+        final [addedA, addedB, addedC] = error.addedAttachments;
+        expect(error.attachment.id, addedB.id);
+        expect(error.visibility, LessonContentVisibility.atStart);
+        expect(error.visibilitiesNotSet, {
+          addedB.id: LessonContentVisibility.atStart,
+          addedC.id: LessonContentVisibility.afterEnd(2),
+        });
+        expect(error.visibilitiesNotSet.keys, [addedB.id, addedC.id]);
+        expect(error.message, contains('Do not add the files again'));
+
+        // The take went out once, and the changes of a and b were tried.
+        final writes = attempts.writesSince(mark);
+        final lesson = '/lesson-content/api/v1/lessons/${fiche.id}';
+        expect(writes, [
+          'POST $lesson/attachments',
+          'POST $lesson/attachments/${addedA.id}/change-visibility',
+          'POST $lesson/attachments/${addedB.id}/change-visibility',
+        ]);
+
+        // The lesfiche holds the files, as the error says.
+        var read = await lessonContent.getDetail(fiche, withCourseNames: false);
+        Map<String, (String, LessonContentVisibility)> attachmentsOf(
+          LessonContentDetail detail,
+        ) => {
+          for (final x in detail.attachments)
+            if (x.id != fiche.attachments.single.id)
+              x.id: (x.fileName, x.visibility),
+        };
+        expect(attachmentsOf(read), {
+          for (final x in error.addedAttachments)
+            x.id: (x.fileName, x.visibility),
+        });
+
+        // Setting the visibilities it names, without reading the lesfiche
+        // or adding the files again, finishes what addAttachments started.
+        for (final MapEntry(key: id, value: visibility)
+            in error.visibilitiesNotSet.entries) {
+          await lessonContent.changeAttachmentVisibility(fiche, id, visibility);
+        }
+        read = await lessonContent.getDetail(fiche, withCourseNames: false);
+        expect(attachmentsOf(read), {
+          addedA.id: (nameOf(a), LessonContentVisibility.never),
+          addedB.id: (nameOf(b), LessonContentVisibility.atStart),
+          addedC.id: (nameOf(c), LessonContentVisibility.afterEnd(2)),
+        });
+
+        for (final x in error.addedAttachments) {
+          await lessonContent.removeAttachment(fiche, x.id);
+        }
+        read = await lessonContent.getDetail(fiche, withCourseNames: false);
+        expect(read.attachments.map((x) => x.id), [
+          fiche.attachments.single.id,
+        ]);
+        expect(run.guard.violations, isEmpty);
       });
 
       test('checks before sending: an empty name, an address the web client '

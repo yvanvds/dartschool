@@ -1,6 +1,10 @@
 import 'package:flutter_smartschool/src/exceptions.dart';
 import 'package:flutter_smartschool/src/models/lesson_content_models.dart'
-    show LessonContentItem, LessonContentType;
+    show
+        LessonContentAttachment,
+        LessonContentItem,
+        LessonContentType,
+        LessonContentVisibility;
 import 'package:flutter_smartschool/src/models/message_models.dart'
     show BoxType;
 import 'package:flutter_smartschool/src/models/planner_models.dart'
@@ -805,6 +809,62 @@ void main() {
         ).toString(),
         'SmartschoolLessonContentSaveUnconfirmedError(500): unconfirmed',
       );
+    });
+
+    test('SmartschoolLessonContentVisibilityNotSetError is a '
+        'SmartschoolLessonContentSaveUnconfirmedError, not a '
+        'SmartschoolLessonContentError, and keeps the attachments made, the '
+        'one whose visibility failed and the visibilities not set (#135)', () {
+      const lesson = 'b0000000-0000-4000-8000-000000000001';
+      const set = LessonContentAttachment(
+        id: 'f0000000-0000-4000-8000-000000000001',
+        fileName: 'a.txt',
+        visibility: LessonContentVisibility.never,
+      );
+      const failed = LessonContentAttachment(
+        id: 'f0000000-0000-4000-8000-000000000002',
+        fileName: 'b.txt',
+      );
+      const cause = SmartschoolLessonContentWriteRefusedError(
+        'refused',
+        statusCode: 400,
+      );
+      const error = SmartschoolLessonContentVisibilityNotSetError(
+        'the files were added',
+        cause: cause,
+        lessonContentId: lesson,
+        addedAttachments: [set, failed],
+        attachment: failed,
+        visibility: LessonContentVisibility.atEnd,
+        visibilitiesNotSet: {
+          'f0000000-0000-4000-8000-000000000002': LessonContentVisibility.atEnd,
+        },
+      );
+      expect(error, isA<SmartschoolLessonContentSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolLessonContentError>()));
+      expect(error.statusCode, isNull);
+      expect(error.cause, same(cause));
+      expect(error.lessonContentId, lesson);
+      expect(error.addedAttachments, [same(set), same(failed)]);
+      expect(error.attachment, same(failed));
+      expect(error.attachment.visibility, LessonContentVisibility.always);
+      expect(error.visibility, LessonContentVisibility.atEnd);
+      expect(error.visibilitiesNotSet, {
+        failed.id: LessonContentVisibility.atEnd,
+      });
+      expect(
+        error.toString(),
+        'SmartschoolLessonContentVisibilityNotSetError: the files were added',
+      );
+
+      // A catch of the type it extends catches it.
+      Object? caught;
+      try {
+        throw error;
+      } on SmartschoolLessonContentSaveUnconfirmedError catch (e) {
+        caught = e;
+      }
+      expect(caught, same(error));
     });
   });
 

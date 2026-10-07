@@ -919,8 +919,15 @@ class LiveWireGuard extends Interceptor {
     final xml = XmlDocument.parse(command);
     final subsystem = _text(xml, 'subsystem');
     final action = _text(xml, 'action');
+    // The folder tree of the web client's "move messages" dialog
+    // (MessagesService.getFolders, #136): it only reads. The dialog's moves
+    // are `postboxes` commands, refused below.
+    if (subsystem == 'quickactions' && action == 'requestmovelist') {
+      return null;
+    }
     if (subsystem != 'postboxes') {
-      return 'the live suite sends no "$subsystem" command';
+      return 'the live suite sends no "$subsystem" command'
+          '${subsystem == 'quickactions' ? ' but requestmovelist' : ''}';
     }
     if (_readActions.contains(action)) return null;
     if (action == 'quickmove messages') return _moveRefusal(xml);

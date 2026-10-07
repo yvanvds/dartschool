@@ -215,7 +215,10 @@ class MessagesService {
   /// [boxId] identifies the sub-mailbox within [boxType].  Pass `0` (the
   /// default) for the primary inbox/outbox/etc.  Pass a non-zero value to
   /// reach a named folder — for example the archive folder at ID `208`
-  /// (see [getArchiveHeaders] for the convenience wrapper).
+  /// (see [getArchiveHeaders] for the convenience wrapper). [getFolders]
+  /// lists the folders of the account, the archive and those the user made:
+  /// list one with its [MessageFolder.boxType] as [boxType] and its
+  /// [MessageFolder.id] as [boxId] (#136).
   ///
   /// Pass [alreadySeenIds] to enable poll mode — only messages whose IDs are
   /// **not** in that list will be returned.
@@ -318,6 +321,15 @@ class MessagesService {
   /// every header a paging gets is new to it, so nothing shows the gap and
   /// no error is thrown. Do not page a box in two places at once. Paging
   /// different boxes at the same time is fine.
+  ///
+  /// A folder ([getFolders]) is a box of its own here, with its own paging
+  /// position: seen live (2026-10-07, #136), a `message list` of a folder the
+  /// user made in the inbox, sent between the second and the third page of
+  /// the archive, did not restart the archive's paging (its next
+  /// `continue_messages` answered with the third page). So listing one
+  /// folder does not make the paging of another fail. The box itself (box ID
+  /// `0`) and a folder of it were not tried (the inbox fit in one page); the
+  /// library takes every box ID of a [BoxType] as a box of its own.
   ///
   /// [boxId], [sortBy] and [sortOrder] are those of [getHeaders]; for the
   /// archive, use [getArchiveHeaderPages].
@@ -434,6 +446,10 @@ class MessagesService {
   /// elsewhere: by another client or app, or in the web client. Two pagings
   /// of the same box in different clients can skip each other's pages
   /// without an error; see [getHeaderPages].
+  ///
+  /// For a folder of [getFolders], pass its [MessageFolder.boxType] and its
+  /// [MessageFolder.id] as [boxId]: each folder is a box of its own, with
+  /// its own paging position (#136, see [getHeaderPages]).
   Future<List<ShortMessage>> getAllHeaders({
     BoxType boxType = BoxType.inbox,
     int boxId = 0,
@@ -622,7 +638,87 @@ class MessagesService {
   /// The value is discovered from the Messages module HTML and cached for this
   /// service instance. If discovery fails, this returns the legacy fallback
   /// value `208`.
+  ///
+  /// [getFolders] lists the archive too, as the folder whose
+  /// [MessageFolder.isArchive] is `true`, among the other folders of the
+  /// account; seen live (2026-10-07, #136), both name the same folder.
   Future<int> getArchiveBoxId() => _resolveArchiveBoxId();
+
+  /// Returns the folders of the account's message boxes (#136): the archive
+  /// of the inbox, and the folders the user made in Smartschool ("Map
+  /// toevoegen") in the inbox and in the sent box, also those in another
+  /// folder.
+  ///
+  /// The list holds the folders directly in a box, those of the inbox first,
+  /// in Smartschool's order; each holds the folders in it as its
+  /// [MessageFolder.children]. [MessageFolder.flatten] lists them all, each
+  /// with its [MessageFolder.path]. The boxes themselves are not in it: they
+  /// are a [BoxType], with box ID `0`. A box without folders (such as the
+  /// sent box of the live account) has none in the list.
+  ///
+  /// List the messages of a folder as those of a box, with its
+  /// [MessageFolder.boxType] and its [MessageFolder.id] as the `boxId` of
+  /// [getHeaders], [getHeaderPages] or [getAllHeaders]; see [MessageFolder]
+  /// for the other requests.
+  ///
+  /// ```dart
+  /// for (final folder in MessageFolder.flatten(await messages.getFolders())) {
+  ///   final headers = await messages.getAllHeaders(
+  ///     boxType: folder.boxType,
+  ///     boxId: folder.id,
+  ///   );
+  ///   print('${folder.path.join(' / ')}: ${headers.length} messages');
+  /// }
+  /// ```
+  ///
+  /// It sends what Smartschool's web client sends for the folder tree of its
+  /// "move messages" dialog: `quickactions` / `requestmovelist` to the XML
+  /// dispatcher, without params. That only reads. Smartschool answers with a
+  /// `moveToPostboxFinnishTreeRequest` action whose data is the tree as
+  /// JSON: the boxes a message can be moved to (inbox, sent box and trash,
+  /// not the drafts or the scheduled box), each with its folders as
+  /// `children` (see [parseFolders]). Tried live on 2026-10-07, with the
+  /// archive and a folder made in the inbox. Not seen live, but what the web
+  /// client's code expects: folders of the sent box (its tree menu offers to
+  /// add one there and in every folder) and folders in a folder (its dialog
+  /// shows `children` as a nested list at every level).
+  ///
+  /// The folders are read again at every call: the user can add, rename or
+  /// remove one in the web client at any time.
+  ///
+  /// Throws a [SmartschoolParsingError] when the answer holds no folder tree
+  /// or one it cannot read (see [parseFolders]), and fails as every command
+  /// does otherwise: a [SmartschoolUnexpectedPageError] for an HTML page or
+  /// a piece of one, a [SmartschoolParsingError] for another answer that is
+  /// not XML.
+  Future<List<MessageFolder>> getFolders() async {
+    final actions = await _client.postXml(
+      url: _messagesXmlUrl,
+      subsystem: 'quickactions',
+      action: 'requestmovelist',
+      params: const {},
+      xpath: './/actions/action',
+    );
+    for (final action in actions) {
+      if (action['command'] != _folderTreeCommand) continue;
+      final data = action['data'];
+      if (data is! String) {
+        throw const SmartschoolParsingError(
+          'Smartschool answered "requestmovelist" with a '
+          '$_folderTreeCommand action without the folder tree as its data.',
+        );
+      }
+      return parseFolders(data);
+    }
+    throw const SmartschoolParsingError(
+      'Smartschool answered "requestmovelist" without the folder tree: no '
+      '$_folderTreeCommand action.',
+    );
+  }
+
+  /// The command of the action that holds the folder tree in Smartschool's
+  /// answer to `requestmovelist` ([getFolders]), as Smartschool spells it.
+  static const _folderTreeCommand = 'moveToPostboxFinnishTreeRequest';
 
   /// Resolves and caches the archive folder box ID for the current account.
   Future<int> _resolveArchiveBoxId() async {
@@ -2230,6 +2326,142 @@ class MessagesService {
       if (linkBoxId != null && linkBoxId > 0) return linkBoxId;
     }
 
+    return null;
+  }
+
+  /// Reads the folder tree of [json], the data of Smartschool's answer to
+  /// `requestmovelist`, into the folders that [getFolders] returns (#136).
+  ///
+  /// The tree is a JSON list of the boxes a message can be moved to, each an
+  /// object with its `postboxType` (`inbox`, `outbox` for the sent box,
+  /// `trash`), `postboxID` `0` (a number), `postboxName` (`Postvak in`) and
+  /// its folders as `children`. A folder is an object of the same shape: its
+  /// `postboxID` (a string of digits, such as `"208"`), `postboxType`,
+  /// `postboxName`, `postboxDescription` (`msg archive` for the archive,
+  /// empty for a folder the user made) and `children`. Each folder's
+  /// `parentID` was `"-1"` live (2026-10-07), not the ID of the box it is in
+  /// (`0`), so it says nothing of the nesting and is not read:
+  /// [MessageFolder.parentId] comes from the `children` a folder is in.
+  ///
+  /// Returns the folders of the boxes, not the boxes themselves, with
+  /// unmodifiable lists. A box or folder whose `postboxType` is no
+  /// [BoxType] is left out, with the folders in it: the library cannot list
+  /// it. A folder without a `postboxType` is of the box it is in.
+  ///
+  /// Throws a [SmartschoolParsingError] for [json] that is not such a tree:
+  /// not JSON, not a list of objects, `children` that are not a list of
+  /// objects, or a folder without a `postboxID` above `0` or without a
+  /// `postboxName`. It names what is wrong, not what the tree holds.
+  static List<MessageFolder> parseFolders(String json) {
+    final Object? tree;
+    try {
+      tree = jsonDecode(json);
+    } on FormatException catch (e) {
+      throw SmartschoolParsingError(
+        'The folder tree of "requestmovelist" is not JSON: ${e.message}',
+      );
+    }
+    if (tree is! List) {
+      throw const SmartschoolParsingError(
+        'The folder tree of "requestmovelist" is not a list of boxes.',
+      );
+    }
+    final folders = <MessageFolder>[];
+    for (final box in tree) {
+      if (box is! Map) {
+        throw const SmartschoolParsingError(
+          'The folder tree of "requestmovelist" holds a box that is not an '
+          'object.',
+        );
+      }
+      final boxType = _folderBoxType(box['postboxType']);
+      if (boxType == null) continue;
+      folders.addAll(
+        _parseFolderList(
+          box['children'],
+          boxType: boxType,
+          parentId: null,
+          parentPath: const [],
+        ),
+      );
+    }
+    return List.unmodifiable(folders);
+  }
+
+  /// The folders of [children], the `children` of a box or folder of
+  /// [boxType] (whose ID is [parentId], `null` for a box, and whose path is
+  /// [parentPath]) in the tree of [parseFolders].
+  static List<MessageFolder> _parseFolderList(
+    Object? children, {
+    required BoxType boxType,
+    required int? parentId,
+    required List<String> parentPath,
+  }) {
+    if (children == null) return const [];
+    if (children is! List) {
+      throw const SmartschoolParsingError(
+        'The folder tree of "requestmovelist" holds "children" that are not '
+        'a list.',
+      );
+    }
+    final folders = <MessageFolder>[];
+    for (final entry in children) {
+      if (entry is! Map) {
+        throw const SmartschoolParsingError(
+          'The folder tree of "requestmovelist" holds a folder that is not an '
+          'object.',
+        );
+      }
+      final type = entry.containsKey('postboxType')
+          ? _folderBoxType(entry['postboxType'])
+          : boxType;
+      if (type == null) continue;
+      final id = switch (entry['postboxID']) {
+        final int id => id,
+        final String id => int.tryParse(id.trim()),
+        _ => null,
+      };
+      if (id == null || id <= 0) {
+        throw const SmartschoolParsingError(
+          'The folder tree of "requestmovelist" holds a folder without a '
+          'postboxID above 0.',
+        );
+      }
+      final name = entry['postboxName'];
+      if (name is! String) {
+        throw SmartschoolParsingError(
+          'The folder tree of "requestmovelist" holds a folder without a '
+          'postboxName (postboxID $id).',
+        );
+      }
+      final description = entry['postboxDescription'];
+      final path = List<String>.unmodifiable([...parentPath, name]);
+      folders.add(
+        MessageFolder(
+          id: id,
+          boxType: type,
+          name: name,
+          description: description is String ? description : '',
+          parentId: parentId,
+          path: path,
+          children: _parseFolderList(
+            entry['children'],
+            boxType: type,
+            parentId: id,
+            parentPath: path,
+          ),
+        ),
+      );
+    }
+    return List.unmodifiable(folders);
+  }
+
+  /// The [BoxType] whose wire value is [value], a `postboxType` of the
+  /// folder tree, or `null` for another value.
+  static BoxType? _folderBoxType(Object? value) {
+    for (final type in BoxType.values) {
+      if (type.value == value) return type;
+    }
     return null;
   }
 

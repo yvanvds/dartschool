@@ -998,6 +998,24 @@ void main() {
       expect(guard.violations, isEmpty);
     });
 
+    test('the read of the folder tree (quickactions / requestmovelist, '
+        'MessagesService.getFolders, #136)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn)
+        ..dispatcherPages.add(
+          File(
+            'test/fixtures/smartschool/requests/post/quickactions/'
+            'requestmovelist.xml',
+          ).readAsStringSync(),
+        );
+      final (messages, guard) = await _guarded(server);
+
+      final folders = await messages.getFolders();
+
+      expect(folders.map((f) => f.id), [208, 30650]);
+      expect(server.log, ['POST /?module=Messages&file=dispatcher']);
+      expect(guard.violations, isEmpty);
+    });
+
     test('the Presence reads: the config, the pupils of a class on a day '
         '(#104), and the codes of a school structure (#105)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
@@ -1938,6 +1956,38 @@ void main() {
       expect(server.log, isNot(contains('POST /Upload/Upload/Index')));
       expect(server.submits, isEmpty);
       expect(_violations(guard), [contains('did not make')]);
+    });
+
+    test('another quickactions command than the read of the folder tree, '
+        'and a requestmovelist of another subsystem (#136)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
+      Future<void> send(String subsystem, String action) => expectLater(
+        dio.post<String>(
+          '/?module=Messages&file=dispatcher',
+          data: {
+            'command': XmlInterface.buildCommand(subsystem, action, const {}),
+          },
+          options: Options(contentType: Headers.formUrlEncodedContentType),
+        ),
+        throwsA(isA<DioException>()),
+      );
+
+      await send('quickactions', 'requestmovelists');
+      await send('quickactions', 'move messages');
+      await send('postboxes', 'requestmovelist');
+
+      expect(server.log, isEmpty);
+      expect(_violations(guard), [
+        contains(
+          'the live suite sends no "quickactions" command but requestmovelist',
+        ),
+        contains(
+          'the live suite sends no "quickactions" command but requestmovelist',
+        ),
+        contains('the live suite sends no "requestmovelist" command'),
+      ]);
     });
 
     test('a quick delete (moveToTrash), of any ID: of 0, and of a message '

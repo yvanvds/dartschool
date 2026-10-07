@@ -11,7 +11,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 ## Features
 
 - Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
-- Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, replies linked to the original message, archive, trash, labels, reply-all recipient resolution.
+- Full messaging workflow (`MessagesService`): list (also the user's own folders), read, attachments, recipient search, send, replies linked to the original message, archive, trash, labels, reply-all recipient resolution.
 - **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
 - Intradesk support (`IntradeskService`): root/folder listing and file download; a folder read by its ID alone, with the folders above it; add a folder, a weblink or uploaded files to a folder and move them to Intradesk's trash again, with checks before each write and creates that are never retried.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
@@ -231,6 +231,7 @@ final messages = MessagesService(client);
 | `getAllHeaders({boxType, boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | Collects `getHeaderPages`: every header of the box, or the first `limit`. Each page is a request. On one client, the `getAllHeaders` and `getAllArchiveHeaders` calls of a box run one at a time. Fails with `SmartschoolPagingRestartedError` rather than return part of the box when the paging is restarted. |
 | `getAllArchiveHeaders({boxId, sortBy, sortOrder, limit})` | `Future<List<ShortMessage>>` | `getAllHeaders` for the archive folder. |
 | `getArchiveBoxId()` | `Future<int>` | Returns the archive folder's numeric box ID (cached; falls back to `208`). |
+| `getFolders()` | `Future<List<MessageFolder>>` | The account's own message folders (#136): the archive and the folders the user made ("Map toevoegen") in the inbox and the sent box, also those in another folder, as a tree (`children`); `MessageFolder.flatten` lists them all, each with its `path`. The boxes themselves are not in it (they are a `BoxType`). List a folder's messages with `getHeaders` / `getHeaderPages` / `getAllHeaders(boxType: folder.boxType, boxId: folder.id)`. Read again at every call. See *Folders* below. |
 | `getMessage(msgId, {boxType, includeAllRecipients})` | `Future<FullMessage?>` | Fetches the full HTML body, receiver lists, and metadata for a message. Pass `includeAllRecipients: true` to receive every recipient name in `receivers`/`ccReceivers`/`bccReceivers`; the default truncates the list and exposes the hidden count via `totalNrOther*` fields instead. For a message in the sent box, `toRecipients`/`ccRecipients`/`bccRecipients` also say whether each recipient has read it. Returns `null` when `boxType` holds no message `msgId` (an unknown ID, or one in another box). It names no folder: it finds a message in the archive with `BoxType.inbox`. It returns `null` for a message moved to the trash, in the box it left, and the message with `BoxType.trash` (seen live, #96). |
 | `getReplyRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns the recipient of a plain reply, the sender of the message, with their numeric user ID by parsing Smartschool's reply compose page (`composeType=1`), as `(to, cc, bcc)`: the sender in `to`, `cc` and `bcc` empty. Pass the lists to `sendReply` to send the reply; the To list of `getReplyAllRecipients` holds the sender too, but among the other recipients, unmarked. For a message in the sent box, or one you sent to yourself, the sender is you. |
 | `getReplyAllRecipients(msgId, {boxType})` | `Future<(List<MessageSearchUser>, List<MessageSearchUser>, List<MessageSearchUser>)>` | Returns all To, CC and BCC recipients with their numeric user IDs by parsing the reply-all compose page, as `(to, cc, bcc)`. Pass the lists to `sendReply(…, all: true)` to send the reply to all. The page of a received message is not expected to name BCC recipients. |
@@ -278,6 +279,23 @@ for (final attachment in attachments) {
 	print('${attachment.name}: ${bytes.length} bytes');
 }
 ```
+
+#### Folders
+
+`getFolders()` lists the folders of the account's boxes (#136), as the folder tree of Smartschool's "move messages" dialog has them (`quickactions` / `requestmovelist`, which only reads): the archive of the inbox (`isArchive`) and the folders the user made in the inbox and the sent box, each with the folders in it as its `children`. A folder is a box ID of its box: list it with its `boxType` and its `id` as the `boxId`, as the archive is listed. Each folder keeps a paging position of its own: seen live, listing a folder of the inbox between two pages of the archive did not restart the archive's paging.
+
+```dart
+for (final folder in MessageFolder.flatten(await messages.getFolders())) {
+	final headers = await messages.getAllHeaders(
+		boxType: folder.boxType,
+		boxId: folder.id,
+	);
+	print('${folder.boxType.name}: ${folder.path.join(' / ')} '
+		'(${headers.length} messages${folder.isArchive ? ', archive' : ''})');
+}
+```
+
+`getMessage(id, boxType: folder.boxType)` reads a message in a folder (its request names no folder), and so do `markRead` and `setLabel`; `markUnread` and `moveToTrashFrom` also take the folder's `id` as their `boxId`. Tried live: the tree, a folder of the inbox listed and a message read in it; folders of the sent box and folders in a folder were not seen live (the web client's code offers both).
 
 ### Mutating
 
@@ -489,6 +507,7 @@ See [example/message_change_stream_example.dart](example/message_change_stream_e
 | `parseHiddenFields(htmlBody)` | Extracts all `<input type="hidden">` name→value pairs from an HTML page. |
 | `parseComposeCurrentUserIds(htmlBody)` | Extracts `(userId, ssId, userLt)` from the `window.tinymceInitConfig` block. |
 | `parseArchiveBoxIdFromMessagesHtml(htmlBody)` | Extracts the archive folder box ID from the Messages module HTML. |
+| `parseFolders(json)` | Reads the folder tree of a `requestmovelist` answer (its JSON data) into the `MessageFolder`s of `getFolders` (#136). Throws a `SmartschoolParsingError` for a tree it cannot read. |
 | `parseReplyAllRecipients(htmlBody)` | Extracts To, CC and BCC recipients with numeric IDs from a reply-all or reply compose page (parses `div.receiverSpan` elements; their `typeatt` is the field: `0`/`1` To, `2`/`4` CC, `3`/`5` BCC, the second of each for co-accounts). Returns `(toList, ccList, bccList)`. |
 | `parseSentMessageRecipients(htmlBody, {message})` | Like `parseReplyAllRecipients` but for the sent-folder compose page: additionally extracts the authenticated user's ID and removes them from the result, unless the sent `message` (a `FullMessage`) names them among its recipients (in the field that names them). Returns `(toList, ccList, bccList)`. |
 
@@ -1306,6 +1325,9 @@ Use `attachment.download(client)` to fetch raw bytes for a specific attachment, 
 
 ### `SmartschoolDownload`
 Returned by `SmartschoolClient.downloadStream`, `IntradeskService.downloadFileStream` and `MessageAttachment.downloadStream` as soon as the headers of the answer are in. Fields: `contentLength` (`int?`), `fileName` (`String?`), `contentType` (`String?`), `headers`, `stream` (`Stream<List<int>>`, the content as it comes in, to be read once), and `cancel()`. See *Downloads* under `SmartschoolClient`.
+
+### `MessageFolder`
+Returned by `getFolders` (#136): a folder of a message box, the archive or one the user made. Fields: `id` (its box ID, the `boxId` to list it with), `boxType`, `name`, `description` (`msg archive` for the archive), `isArchive`, `parentId` (`null` directly in the box), `path` (the folder names from the one directly in the box down to this one) and `children`. `MessageFolder.flatten(folders)` lists a tree depth first, each folder before the ones in it.
 
 ### `MessageSearchUser` / `MessageSearchGroup`
 Used as recipients in `SendMessageParams`. Returned by `searchRecipientsForCompose`; users also by `getCurrentUserAsRecipient`, `getReplyRecipients`, `getReplyAllRecipients` and `getSentMessageRecipients`. Key fields: `userId`/`groupId`, `ssId`, `userLt` (users only), `displayName`.

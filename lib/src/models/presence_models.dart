@@ -519,6 +519,11 @@ class PresenceSaveError {
 
 /// What made an answer of the Presence module unreadable: the `kind` of a
 /// `SmartschoolPresenceUnreadableAnswerError` (#137).
+///
+/// The body is looked at first: an empty answer is [empty], an HTML page
+/// [html] and another text that is not valid JSON [malformedJson], whatever
+/// its HTTP status. Only a body that is valid JSON is told apart by its
+/// status, as [errorStatus] (#143).
 enum PresenceUnreadableAnswerKind {
   /// The answer has no body, or white space only.
   empty,
@@ -531,6 +536,21 @@ enum PresenceUnreadableAnswerKind {
   /// The answer is neither empty nor HTML, and is not valid JSON: JSON that
   /// breaks off, or another text, such as a proxy's error in plain text.
   malformedJson,
+
+  /// The answer is valid JSON, but came with an HTTP status outside
+  /// `200`–`299` (#143): an error answer, such as a `500`, `502` or `503`
+  /// with a JSON body (`{"message":"Internal Server Error"}`), from
+  /// Smartschool or from a proxy in front of it. Its body is not read as
+  /// Presence data: a read's is not taken as a config, codes or a class,
+  /// and a save's does not confirm the save.
+  ///
+  /// The Presence module answered every read seen live with `200`, a
+  /// refusal too (an unknown class, a day it lists no pupils for), and a
+  /// request it cannot handle with its HTML error page ([html]); a JSON body
+  /// with another status was not seen from it. A save answered with another
+  /// status and the module's `errors[]` is not of this kind: it is reported
+  /// as a refused save, with its `saveErrors`, as for a `200`.
+  errorStatus,
 }
 
 /// A pupil as returned by `Presence/Class/getClass`, with the resolved half-day

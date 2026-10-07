@@ -144,7 +144,9 @@ typedef _Courses = ({
 ///   lesfiche when the module answered with one.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
-///   once (for a create, without that retry). Nothing was changed.
+///   once (for a create, without that retry). Nothing was changed. Calling
+///   the method again is enough: the client logs in before its next request
+///   (#134).
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached for a

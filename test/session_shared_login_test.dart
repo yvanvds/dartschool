@@ -554,9 +554,9 @@ void main() {
     });
   });
 
-  group('a request sent with retryAfterLogin: false does not wait for a login '
-      'that runs (#25)', () {
-    final sends = <String, (String, Future<Object?> Function())>{
+  group('a request sent with retryAfterLogin: false is not retried after a '
+      'login that runs (#25), and waits for it before it is sent (#134)', () {
+    final sends = <String, (String, Future<Response<String>> Function())>{
       'a multipart POST answered 302 to /login': (
         'POST /send',
         () => client.postMultipartResponse(
@@ -574,7 +574,34 @@ void main() {
     };
 
     for (final MapEntry(key: kind, value: (request, send)) in sends.entries) {
-      test('$kind fails at once, and is not retried', () async {
+      test('$kind that went out before the login and is refused while it '
+          'runs fails at once, and is not retried', () async {
+        await serve(_Smartschool());
+        final answer = Completer<void>();
+        server.holdFirst[request] = answer.future;
+        final release = Completer<void>();
+        server.holdFirst[_password] = release.future;
+
+        // The request goes out in the expired session; its answer comes in
+        // once another request found the session refused and logs in.
+        final sent = send();
+        await server.received(request);
+        final a = client.getRaw('/a');
+        await server.received(_password);
+        answer.complete();
+
+        // The login is still held: the request did not wait for it.
+        await expectLater(sent, throwsA(_notRetried));
+        expect(server.count(_twoFactorCode), 0);
+
+        release.complete();
+        expect(await a, 'page /a');
+        expect(server.count(_password), 1);
+        expect(server.count(request), 1);
+      });
+
+      test('$kind that is to go out while the login runs waits for it, and '
+          'goes out once in its session', () async {
         await serve(_Smartschool());
         final release = Completer<void>();
         server.holdFirst[_password] = release.future;
@@ -582,14 +609,20 @@ void main() {
         final a = client.getRaw('/a');
         await server.received(_password);
 
-        // The login is still held: the request did not wait for it.
-        await expectLater(send(), throwsA(_notRetried));
-        expect(server.count(_twoFactorCode), 0);
+        // Before #134: it went out in the refused session at once, and failed
+        // without a login, as above.
+        final sent = send();
+        await pumpEventQueue();
+        expect(server.count(request), 0, reason: 'it waits for the login');
 
         release.complete();
+        final response = await sent;
+        expect(response.statusCode, 200);
+        expect(response.data, 'ok /send');
         expect(await a, 'page /a');
         expect(server.count(_password), 1);
         expect(server.count(request), 1);
+        expect(server.sessionCookies[server.log.indexOf(request)], 'session-1');
       });
     }
   });

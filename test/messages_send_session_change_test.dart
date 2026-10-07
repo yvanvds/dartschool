@@ -733,12 +733,13 @@ void main() {
 
       expect(ids(result), found);
       expect(server.searches, ['session-2: usc-of-session-2 Piet']);
-      // The refused search, the refused form (which logs in, then is
-      // retried), and the search on the new form.
+      // The refused search, and the search on the new form, which loads
+      // after the client logged in: it knows Smartschool refused the session
+      // (#134). Before #134, the new form went out in the refused session
+      // first, and was refused, which logged in, and then retried.
       expect(server.log.where((r) => r.contains('?file=')), [
         _form,
         _search,
-        _form,
         _form,
         _search,
       ]);
@@ -791,11 +792,9 @@ void main() {
         'out in another session than its form\'s', () async {
       server.afterHandling[_form] = (_) async {
         server.expire(_firstSession);
-        // The next form request is refused, and logs in; its retry loads
-        // the new form in session-2, which Smartschool then ends too.
-        server.afterHandling[_form] = (_) async {
-          server.afterHandling[_form] = (_) async => server.expire('session-2');
-        };
+        // The refused search makes the next request log in first (#134): the
+        // next form loads in session-2, which Smartschool then ends too.
+        server.afterHandling[_form] = (_) async => server.expire('session-2');
       };
 
       await expectLater(
@@ -809,7 +808,7 @@ void main() {
         ),
       );
       // Both searches were refused, each in the session of its form; the
-      // client logged in once, for the refused form.
+      // client logged in once, before the new form.
       expect(server.searches, isEmpty);
       expect(server.count(_search), 2);
       expect(server.count(_password), 1);
@@ -917,13 +916,13 @@ void main() {
         'session-2: usc-of-session-2 Jan',
         'session-2: usc-of-session-2 An',
       ]);
-      // The refused search for Jan, the refused form (which logs in, then is
-      // retried), and the searches for Jan and An on the new form.
+      // The refused search for Jan, and the searches for Jan and An on the
+      // new form, which loads after the client logged in: it knows
+      // Smartschool refused the session (#134).
       expect(server.log.where((r) => r.contains('?file=')), [
         _form,
         _search,
         _search,
-        _form,
         _form,
         _search,
         _search,
@@ -962,10 +961,10 @@ void main() {
         'out in another session than its form\'s', () async {
       server.afterHandling[_search] = (_) async {
         server.expire(_firstSession);
-        // The search on the new form, in session-2, is refused too.
-        server.afterHandling[_form] = (_) async {
-          server.afterHandling[_form] = (_) async => server.expire('session-2');
-        };
+        // The search on the new form, in session-2, is refused too: the
+        // refused search makes the next request log in first (#134), so the
+        // next form loads in session-2.
+        server.afterHandling[_form] = (_) async => server.expire('session-2');
       };
 
       await expectLater(
@@ -980,13 +979,12 @@ void main() {
       );
       // Piet was found; both searches for Jan were refused, each in the
       // session of its form, and An was not searched. The client logged in
-      // once, for the refused form.
+      // once, before the new form.
       expect(server.searches, ['session-0: usc-of-session-0 Piet']);
       expect(server.log.where((r) => r.contains('?file=')), [
         _form,
         _search,
         _search,
-        _form,
         _form,
         _search,
       ]);

@@ -232,9 +232,13 @@ class SmartschoolAccountVerificationRejectedError
 /// Also thrown, without logging in again and without a retry, for a request
 /// that must not be retried in a new session because it carries state of the
 /// session that was refused (`retryAfterLogin: false` on the request methods
-/// of `SmartschoolClient`). `MessagesService.sendMessage` sends every step
-/// after loading the compose form that way (#25): the message was not sent,
-/// and calling `sendMessage` again logs in and starts from a new compose form.
+/// of `SmartschoolClient`), or must not be sent twice, such as a create. The
+/// client remembers that Smartschool refused the session: its next request
+/// logs in before it is sent (#134), so calling the method again sends the
+/// request once, in a new session, also when that request is its first.
+/// `MessagesService.sendMessage` sends every step after loading the compose
+/// form that way (#25): the message was not sent, and calling `sendMessage`
+/// again logs in and starts from a new compose form.
 ///
 /// Also thrown, without sending the request, for a request that must go out
 /// in the session of an earlier answer (`sameSessionAs` on the POST methods

@@ -2627,8 +2627,11 @@ void main() {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (_, guard) = await _guarded(server);
       final dio = _dio(server, guard);
+      expect(guard.loggedIn, isFalse);
 
       await dio.post<String>('/login', data: 'login form');
+      // A test that logs in on purpose asks this first (#134).
+      expect(guard.loggedIn, isTrue);
       await dio.post<String>('/2fa/api/v1/google-authenticator', data: '{}');
       await expectLater(
         dio.post<String>('/login', data: 'login form'),

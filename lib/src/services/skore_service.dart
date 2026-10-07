@@ -83,7 +83,9 @@ export '../models/skore_models.dart';
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered an RPC without a session. Sign in again and
 ///   retry. The save of [addTeacher] and [replaceTeacher] is never retried:
-///   when the session is refused for it, it fails at once.
+///   when the session is refused for it, it fails at once, and the client
+///   logs in before its next request (#134), so calling the method again is
+///   enough.
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached. From a

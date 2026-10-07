@@ -215,6 +215,12 @@ class LiveWireGuard extends Interceptor {
   /// How many lesfiche creates it let out (#129).
   int lessonContentCreates = 0;
 
+  /// Whether a step of a login (the password, the 2FA code, the account
+  /// verification answer) came through the guard in this run (#134). The
+  /// run logs in at most once, so a test that makes the client log in on
+  /// purpose needs a run that has not.
+  bool get loggedIn => _loginSteps.isNotEmpty;
+
   /// The own account: the only recipient a message may have.
   MessageSearchUser? get own => _own;
   MessageSearchUser? _own;

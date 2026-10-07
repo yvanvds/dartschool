@@ -132,7 +132,8 @@ export '../models/intradesk_models.dart';
 ///   an answer that is not the item made, or no answer). List the folder
 ///   before trying again.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
-///   session for the write. Nothing was made.
+///   session for the write. Nothing was made. Calling the method again is
+///   enough: the client logs in before its next request (#134).
 /// - [SmartschoolConnectionError]: Smartschool could not be reached for a
 ///   request before the write (such as an upload step). When the write
 ///   itself fails so, it may have gone out: a

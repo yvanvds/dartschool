@@ -540,7 +540,11 @@ void main() {
           reason: '#$i',
         );
       }
-      expect(server.log, List.filled(4, 'GET /index'));
+      // Only the first request went out: Smartschool refused the session for
+      // it, so each later one logs in before it is sent (#134), and that
+      // login fails before it sends anything. Before #134, each went out and
+      // was refused first.
+      expect(server.log, ['GET /index']);
     });
 
     // An mfa that is empty once trimmed is no key, at the check before the

@@ -215,7 +215,8 @@ export '../models/planner_models.dart';
 ///   session, also after the client logged in again and retried the request
 ///   once; for the fill of a slot, the clear of a lesson, and the create and
 ///   trash of an assignment, which are not retried, at once. The request was
-///   not carried out: sign in again and retry.
+///   not carried out: call the method again, the client logs in before its
+///   next request (#134).
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
 ///   request failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.

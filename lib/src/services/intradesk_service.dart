@@ -100,6 +100,9 @@ export '../models/intradesk_models.dart';
 /// - [SmartschoolIntradeskWriteRefusedError]: Intradesk refused the write
 ///   with an HTTP status from `400` to `499`, with its reasons in
 ///   `violations` when it gave any. Nothing was made.
+/// - [SmartschoolIntradeskItemNotFoundError], one of those: Intradesk has no
+///   item of that kind with the ID of a move to the trash (`404`: a made-up
+///   ID, or the ID of an item of another kind, #133). Nothing was moved.
 /// - [SmartschoolIntradeskFolderNotFoundError]: Smartschool knows no folder
 ///   with the parent folder ID of a create. Nothing was made.
 /// - [SmartschoolAttachmentUploadError]: [uploadFiles] got no upload
@@ -763,28 +766,47 @@ class IntradeskService {
   /// for good (`DELETE`).
   ///
   /// Intradesk answers the trash of a folder that is in the trash already
-  /// with `204` as well (seen live, for a weblink), so the move is retried
-  /// once after logging in again, like a read.
+  /// with `204` as well (seen live, 2026-10-07, for a folder, a weblink and a
+  /// file), so the move is retried once after logging in again, like a read.
+  ///
+  /// Intradesk answers `404` when it has no folder with [folderId] (#133,
+  /// seen live 2026-10-07): a made-up ID, or the ID of a file or a weblink
+  /// (also one in the trash). It moves nothing then, also not the file or
+  /// weblink with that ID. That is a [SmartschoolIntradeskItemNotFoundError]
+  /// (with [IntradeskItemKind.folder]), so a caller can tell "there is no
+  /// such folder" apart from a move that went through (`204`, also for a
+  /// folder in the trash already) and from a move that may or may not have
+  /// gone through.
   ///
   /// Throws an [ArgumentError], without sending anything, when [folderId] is
-  /// not a UUID. A refusal by Intradesk (HTTP `400` to `499`) is a
-  /// [SmartschoolIntradeskWriteRefusedError]; another answer than `2xx`, a
-  /// [SmartschoolIntradeskSaveUnconfirmedError]. Neither the answer for an
-  /// unknown ID nor that for an item without the rights to it was seen live.
+  /// not a UUID. Any other refusal by Intradesk (HTTP `400` to `499`) is a
+  /// plain [SmartschoolIntradeskWriteRefusedError], the class that
+  /// [SmartschoolIntradeskItemNotFoundError] extends; another answer than
+  /// `2xx`, a [SmartschoolIntradeskSaveUnconfirmedError]. The answer for an
+  /// item without the rights to it (`capabilities.canManage` false) was not
+  /// seen live (#139).
   Future<void> trashFolder(String folderId) =>
-      _trash('trashFolder', 'folders', 'folder', folderId, 'folderId');
+      _trash('trashFolder', IntradeskItemKind.folder, folderId, 'folderId');
 
   /// Moves the weblink [weblinkId] to Intradesk's trash (#128), with
   /// `POST /intradesk/api/v1/{platformId}/weblinks/{weblinkId}/trash`; see
   /// [trashFolder].
+  ///
+  /// A [SmartschoolIntradeskItemNotFoundError] (with
+  /// [IntradeskItemKind.weblink]) when Intradesk has no weblink with
+  /// [weblinkId]: a made-up ID, or the ID of a folder or a file (#133).
   Future<void> trashWeblink(String weblinkId) =>
-      _trash('trashWeblink', 'weblinks', 'weblink', weblinkId, 'weblinkId');
+      _trash('trashWeblink', IntradeskItemKind.weblink, weblinkId, 'weblinkId');
 
   /// Moves the file [fileId] to Intradesk's trash (#128), with
   /// `POST /intradesk/api/v1/{platformId}/files/{fileId}/trash`; see
   /// [trashFolder].
+  ///
+  /// A [SmartschoolIntradeskItemNotFoundError] (with
+  /// [IntradeskItemKind.file]) when Intradesk has no file with [fileId]: a
+  /// made-up ID, or the ID of a folder or a weblink (#133).
   Future<void> trashFile(String fileId) =>
-      _trash('trashFile', 'files', 'file', fileId, 'fileId');
+      _trash('trashFile', IntradeskItemKind.file, fileId, 'fileId');
 
   /// Whether Smartschool allows [name] as the name of a folder, a weblink or
   /// a file: none of `/ : * ? " \ < > |`, and no dot at its start or end, as
@@ -989,12 +1011,11 @@ class IntradeskService {
     );
   }
 
-  /// Moves the item [id] of the kind [path] (`folders`, `weblinks`,
-  /// `files`) to Intradesk's trash; see [trashFolder].
+  /// Moves the item [id] of the [kind] to Intradesk's trash; see
+  /// [trashFolder].
   Future<void> _trash(
     String operation,
-    String path,
-    String item,
+    IntradeskItemKind kind,
     String id,
     String argument,
   ) async {
@@ -1002,6 +1023,7 @@ class IntradeskService {
       throw ArgumentError.value(id, argument, 'Must be a UUID.');
     }
     final platformId = await _client.platformId;
+    final item = kind.name;
     final change = 'the move of $item $id to the trash';
     const unconfirmed =
         'It may or may not be in the trash: list its folder '
@@ -1009,7 +1031,7 @@ class IntradeskService {
         'again is harmless.';
     final response = await _send(
       operation,
-      path: '/intradesk/api/v1/$platformId/$path/$id/trash',
+      path: '/intradesk/api/v1/$platformId/${kind.pathSegment}/$id/trash',
       body: const <String, Object?>{},
       retryAfterLogin: true,
       change: change,
@@ -1017,6 +1039,20 @@ class IntradeskService {
     );
     final status = response.statusCode ?? 0;
     if (status >= 200 && status < 300) return;
+    if (status == 404) {
+      final others = [
+        for (final other in IntradeskItemKind.values)
+          if (other != kind) other.name,
+      ].join(' or a ');
+      throw SmartschoolIntradeskItemNotFoundError(
+        '$operation: Intradesk has no $item with ID "$id" (HTTP 404): the ID '
+        'is unknown, or it is the ID of a $others. Nothing was moved to the '
+        'trash.',
+        kind: kind,
+        id: id,
+        violations: parseViolations(response.data ?? ''),
+      );
+    }
     _throwFailure(operation, response, change, unconfirmed);
   }
 

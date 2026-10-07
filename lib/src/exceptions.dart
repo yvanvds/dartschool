@@ -1,6 +1,7 @@
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
+import 'models/intradesk_models.dart' show IntradeskItemKind;
 import 'models/lesson_content_models.dart'
     show LessonContentItem, LessonContentType;
 import 'models/message_models.dart' show BoxType;
@@ -617,6 +618,12 @@ class SmartschoolJsonError extends SmartschoolDownloadError {
 ///   parents as those of a top-level folder, `[]`, and the root listing does
 ///   not hold it), or a folder that the user does not see. The [message]
 ///   says so.
+///
+/// `IntradeskService.trashFolder` does not throw it: a move to the trash of
+/// an ID Intradesk has no folder for is a
+/// [SmartschoolIntradeskItemNotFoundError] (#133), a
+/// [SmartschoolIntradeskWriteRefusedError] as before, not a
+/// [SmartschoolDownloadError].
 class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
   /// The ID that was asked for.
   final String folderId;
@@ -659,6 +666,10 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
 /// HTTP `400` without violations). The files stay in the upload directory,
 /// which is not used again.
 ///
+/// The moves to the trash throw its subclass
+/// [SmartschoolIntradeskItemNotFoundError] for Intradesk's `404`: it has no
+/// item of that kind with that ID (#133).
+///
 /// The session was accepted: signing in again does not help. A session that
 /// Smartschool does not accept for the write is a
 /// [SmartschoolSessionExpiredError] instead (nothing was made either: the
@@ -683,6 +694,49 @@ class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
 
   @override
   String toString() => '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `IntradeskService.trashFolder`, `trashWeblink` and `trashFile`
+/// when Intradesk has no item of that [kind] with that [id] (#133): it
+/// answered the move to the trash with `404`. **Nothing was moved to the
+/// trash.**
+///
+/// Seen live (2026-10-07), each answered with
+/// `404 {"status":404,"title":"Not Found","detail":"","type":""}` and with
+/// nothing moved:
+/// - a made-up ID, sent as a folder, a weblink and a file;
+/// - the ID of an item of another kind: a file or a weblink sent as a folder
+///   (`folders/{fileId}/trash`), a folder or a file as a weblink, a folder
+///   or a weblink as a file. The item stayed where it was;
+/// - the ID of an item of another kind that is in the trash already.
+///
+/// So a caller can tell "there is no such item" from a move that went
+/// through: Intradesk answers the move of an item that is in the trash
+/// already, of its own kind, with `204`, as the first move. An item deleted
+/// for good was not tried (the library never deletes for good), nor an item
+/// the user may not manage (`capabilities.canManage` false, #139), which may
+/// be answered otherwise.
+///
+/// A [SmartschoolIntradeskWriteRefusedError] with [statusCode] `404` (and
+/// Intradesk's [violations], none seen), as a move to the trash answered
+/// `404` was before #133, so a `catch` of that type still catches it. Not a
+/// [SmartschoolIntradeskFolderNotFoundError], also for a folder: that one is
+/// a [SmartschoolDownloadError], the error of a read.
+class SmartschoolIntradeskItemNotFoundError
+    extends SmartschoolIntradeskWriteRefusedError {
+  /// The kind of item the move to the trash asked for: the one Intradesk has
+  /// no item of with [id].
+  final IntradeskItemKind kind;
+
+  /// The ID that was asked for.
+  final String id;
+
+  const SmartschoolIntradeskItemNotFoundError(
+    super.message, {
+    required this.kind,
+    required this.id,
+    super.violations,
+  }) : super(statusCode: 404);
 }
 
 /// Thrown by the writes of `IntradeskService` (#128) when the write went out

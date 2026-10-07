@@ -21,6 +21,12 @@
 // - `POST .../{kind}/{id}/trash` with `{}` answers `204`, also for an item
 //   in the trash already.
 //
+// And on 2026-10-07 (#133): a move to the trash of a made-up ID, and of the
+// ID of an item of another kind (a file's ID as a folder, a folder's as a
+// file, ...), answers `404` with a bare
+// `{"status":404,"title":"Not Found","detail":"","type":""}`
+// (`application/problem+json`), and moves nothing.
+//
 // The live test of the same writes is test/live/intradesk_write_live_test.dart.
 import 'dart:convert';
 import 'dart:io';
@@ -1113,7 +1119,84 @@ void main() {
       },
     );
 
-    test('a 4xx answer is refused, another one unconfirmed', () async {
+    test(
+      'a 404 (Intradesk has no item of that kind with that ID: a made-up ID, '
+      'or the ID of another kind) is a SmartschoolIntradeskItemNotFoundError '
+      'with the kind and the ID, sent once, and a refusal (#133)',
+      () async {
+        // As Intradesk answered all of them live (2026-10-07).
+        final notFound = _problem(404, 'Not Found');
+        final (server, intradesk) = await serve({
+          'POST $_api/folders/$_newFile/trash': [notFound],
+          'POST $_api/weblinks/$_newFolder/trash': [notFound],
+          'POST $_api/files/$_newWeblink/trash': [notFound],
+        });
+
+        Matcher notFoundAs(IntradeskItemKind kind, String id, String others) =>
+            allOf(
+              isNot(isA<SmartschoolIntradeskSaveUnconfirmedError>()),
+              isNot(isA<SmartschoolDownloadError>()),
+              isA<SmartschoolIntradeskWriteRefusedError>()
+                  .having((e) => e.statusCode, 'statusCode', 404)
+                  .having((e) => e.violations, 'violations', isEmpty),
+              isA<SmartschoolIntradeskItemNotFoundError>()
+                  .having((e) => e.kind, 'kind', kind)
+                  .having((e) => e.id, 'id', id)
+                  .having(
+                    (e) => e.message,
+                    'message',
+                    allOf(
+                      contains('no ${kind.name} with ID "$id" (HTTP 404)'),
+                      contains('the ID of a $others'),
+                      contains('Nothing was moved to the trash'),
+                    ),
+                  ),
+            );
+
+        await expectLater(
+          intradesk.trashFolder(_newFile),
+          throwsA(
+            notFoundAs(IntradeskItemKind.folder, _newFile, 'weblink or a file'),
+          ),
+        );
+        await expectLater(
+          intradesk.trashWeblink(_newFolder),
+          throwsA(
+            notFoundAs(
+              IntradeskItemKind.weblink,
+              _newFolder,
+              'folder or a file',
+            ),
+          ),
+        );
+        await expectLater(
+          intradesk.trashFile(_newWeblink),
+          throwsA(
+            notFoundAs(
+              IntradeskItemKind.file,
+              _newWeblink,
+              'folder or a weblink',
+            ),
+          ),
+        );
+        // Each sent once: a 404 is not retried, and nothing else is asked.
+        expect(server.writes, [
+          'POST $_api/folders/$_newFile/trash',
+          'POST $_api/weblinks/$_newFolder/trash',
+          'POST $_api/files/$_newWeblink/trash',
+        ]);
+      },
+    );
+
+    test('IntradeskItemKind names the paths of the kinds', () {
+      expect(IntradeskItemKind.values.map((k) => k.pathSegment), [
+        'folders',
+        'weblinks',
+        'files',
+      ]);
+    });
+
+    test('another 4xx answer is refused, another one unconfirmed', () async {
       final (_, intradesk) = await serve({
         'POST $_api/files/$_newFile/trash': [
           _problem(403, 'Forbidden'),
@@ -1123,7 +1206,12 @@ void main() {
 
       await expectLater(
         intradesk.trashFile(_newFile),
-        throwsA(_refused(status: 403, violations: isEmpty)),
+        throwsA(
+          allOf(
+            _refused(status: 403, violations: isEmpty),
+            isNot(isA<SmartschoolIntradeskItemNotFoundError>()),
+          ),
+        ),
       );
       await expectLater(
         intradesk.trashFile(_newFile),

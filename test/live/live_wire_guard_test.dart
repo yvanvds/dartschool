@@ -225,6 +225,11 @@ class _Smartschool implements HttpClientAdapter {
   /// How many Intradesk items and upload directories it made (#128).
   int _made = 0;
 
+  /// The kind (`folders`, `weblinks`, `files`) of each Intradesk item it
+  /// made, by ID: it answers a move to the trash of another ID, or of one as
+  /// another kind, with `404`, as Intradesk does (#133).
+  final Map<String, String> _intradeskKinds = {};
+
   /// Each Intradesk POST and upload that reached it, as `POST <path>`.
   List<String> get intradeskWrites => [
     for (final line in log)
@@ -235,7 +240,8 @@ class _Smartschool implements HttpClientAdapter {
 
   /// Answers an Intradesk request or a request for an upload directory
   /// (#128): the listings of [_intradeskFolders], a new directory, and the
-  /// creates and moves to the trash as Smartschool answers them.
+  /// creates and moves to the trash as Smartschool answers them (a move to
+  /// the trash of an ID it has no such item for with `404`, #133).
   ResponseBody _intradeskAnswer(RequestOptions options) {
     final path = options.uri.path;
     const listing = '$_intradesk/directory-listing/forTreeOnlyFolders';
@@ -263,6 +269,7 @@ class _Smartschool implements HttpClientAdapter {
     final id =
         'bbbb${(++_made).toString().padLeft(4, '0')}-0000-4000-8000-000000000000';
     if (path == '$_intradesk/folders/') {
+      _intradeskKinds[id] = 'folders';
       return _answer(
         _intradeskItem(id, '${body['name']}', parent, ',"color":"yellow"'),
         contentType: 'application/json',
@@ -270,6 +277,7 @@ class _Smartschool implements HttpClientAdapter {
       );
     }
     if (path == '$_intradesk/weblinks/') {
+      _intradeskKinds[id] = 'weblinks';
       return _answer(
         _intradeskItem(
           id,
@@ -282,6 +290,7 @@ class _Smartschool implements HttpClientAdapter {
       );
     }
     if (path == '$_intradesk/files/upload') {
+      _intradeskKinds[id] = 'files';
       return _answer(
         '{"files":{"$id":${_intradeskItem(id, '$liveFilePrefix$_tag.txt', parent)}},'
         '"exceptions":[]}',
@@ -289,7 +298,19 @@ class _Smartschool implements HttpClientAdapter {
         status: 201,
       );
     }
-    if (path.endsWith('/trash')) return _answer('', status: 204);
+    final trash = RegExp(
+      '^$_intradesk/(folders|weblinks|files)/([^/]+)/trash\$',
+    ).firstMatch(path);
+    if (trash != null) {
+      if (_intradeskKinds[trash.group(2)] == trash.group(1)) {
+        return _answer('', status: 204);
+      }
+      return _answer(
+        '{"status":404,"title":"Not Found","detail":"","type":""}',
+        contentType: 'application/problem+json',
+        status: 404,
+      );
+    }
     return _answer('{}', contentType: 'application/json');
   }
 
@@ -1037,6 +1058,61 @@ void main() {
       expect(guard.intradeskCreates, 3);
       expect(guard.violations, isEmpty);
     });
+
+    test('a move to the trash of a made-up ID that the guard handed out, once '
+        'per kind, and of an item the run made as another kind, once, when '
+        'the run allowed it (#133); the 404 of Intradesk for them leaves the '
+        'items the run may move to the trash', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (intradesk, guard) = await _intradeskRun(server);
+      Future<void> notFound(Future<void> trash) => expectLater(
+        trash,
+        throwsA(isA<SmartschoolIntradeskItemNotFoundError>()),
+      );
+
+      final madeUp = guard.newMadeUpIntradeskId();
+      final folder = await intradesk.createFolder(
+        parentFolderId: _tests,
+        name: _intradeskName('map'),
+      );
+      final link = await intradesk.createWeblink(
+        parentFolderId: folder.id,
+        name: _intradeskName('link'),
+        url: 'https://example.com/dartschool',
+      );
+      await notFound(intradesk.trashFolder(madeUp));
+      await notFound(intradesk.trashWeblink(madeUp));
+      await notFound(intradesk.trashFile(madeUp));
+      guard.allowIntradeskTrashAs(link.id, 'folders');
+      guard.allowIntradeskTrashAs(folder.id.toUpperCase(), 'files');
+      await notFound(intradesk.trashFolder(link.id));
+      await notFound(intradesk.trashFile(folder.id));
+      await intradesk.trashWeblink(link.id);
+      await intradesk.trashFolder(folder.id);
+
+      expect(
+        madeUp,
+        matches(
+          RegExp(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-'
+            r'[0-9a-f]{12}$',
+          ),
+        ),
+      );
+      expect(guard.newMadeUpIntradeskId(), isNot(madeUp));
+      expect(server.intradeskWrites, [
+        'POST $_intradesk/folders/',
+        'POST $_intradesk/weblinks/',
+        'POST $_intradesk/folders/$madeUp/trash',
+        'POST $_intradesk/weblinks/$madeUp/trash',
+        'POST $_intradesk/files/$madeUp/trash',
+        'POST $_intradesk/folders/${link.id}/trash',
+        'POST $_intradesk/files/${folder.id}/trash',
+        'POST $_intradesk/weblinks/${link.id}/trash',
+        'POST $_intradesk/folders/${folder.id}/trash',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
   });
 
   group('refuses before it reaches Smartschool (Intradesk, #128)', () {
@@ -1243,6 +1319,77 @@ void main() {
         ]);
       },
     );
+
+    test('(#133) a second move of a made-up ID as the same kind, a create in '
+        'it, a move as another kind without the run allowing it or a second '
+        'time, one of an item the run did not make, and one as another kind '
+        'of an item it moved to the trash already', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (intradesk, guard) = await _intradeskRun(server);
+      Future<void> refused(Future<Object?> write) => expectLater(
+        write,
+        throwsA(isNot(isA<SmartschoolIntradeskItemNotFoundError>())),
+      );
+      Future<void> notFound(Future<void> trash) => expectLater(
+        trash,
+        throwsA(isA<SmartschoolIntradeskItemNotFoundError>()),
+      );
+
+      final madeUp = guard.newMadeUpIntradeskId();
+      final folder = await intradesk.createFolder(
+        parentFolderId: _tests,
+        name: _intradeskName('map'),
+      );
+      final link = await intradesk.createWeblink(
+        parentFolderId: folder.id,
+        name: _intradeskName('link'),
+        url: 'https://example.com/dartschool',
+      );
+      await notFound(intradesk.trashFolder(madeUp));
+      await refused(intradesk.trashFolder(madeUp));
+      await refused(
+        intradesk.createFolder(
+          parentFolderId: madeUp,
+          name: _intradeskName('in een verzonnen map'),
+        ),
+      );
+      // Not allowed, and allowed for an item the run did not make.
+      await refused(intradesk.trashWeblink(folder.id));
+      guard.allowIntradeskTrashAs(_tests, 'files');
+      await refused(intradesk.trashFile(_tests));
+      // Allowed once: Intradesk answers it with 404, and the allowance is
+      // used up.
+      guard.allowIntradeskTrashAs(link.id, 'files');
+      await notFound(intradesk.trashFile(link.id));
+      await refused(intradesk.trashFile(link.id));
+      // The folder in the trash, then as another kind.
+      await intradesk.trashFolder(folder.id);
+      guard.allowIntradeskTrashAs(folder.id, 'weblinks');
+      await refused(intradesk.trashWeblink(folder.id));
+
+      expect(server.intradeskWrites, [
+        'POST $_intradesk/folders/',
+        'POST $_intradesk/weblinks/',
+        'POST $_intradesk/folders/$madeUp/trash',
+        'POST $_intradesk/files/${link.id}/trash',
+        'POST $_intradesk/folders/${folder.id}/trash',
+      ]);
+      expect(_violations(guard), [
+        contains(
+          'made-up Intradesk ID $madeUp to the trash as one of the folders a '
+          'second time',
+        ),
+        contains('neither the test folder'),
+        contains(
+          'as one of the weblinks, but the run made it as one of the folders',
+        ),
+        contains('which this run did not make'),
+        contains(
+          'as one of the files, but the run made it as one of the weblinks',
+        ),
+        contains('moved to the trash already'),
+      ]);
+    });
   });
 
   group('lets out (Lesfiches, #129)', () {

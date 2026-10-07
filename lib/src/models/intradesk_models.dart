@@ -51,6 +51,30 @@ T? _optionalOf<T>(
 // Models
 // ---------------------------------------------------------------------------
 
+/// The kind of an Intradesk item: a folder, a weblink or a file (#133).
+///
+/// Intradesk keeps each kind under its own path (`folders/{id}`,
+/// `weblinks/{id}`, `files/{id}`), and an ID names an item of one kind only:
+/// it answers a move to the trash of the ID of a file as a folder
+/// (`folders/{fileId}/trash`) with `404`, as for an ID it does not know (seen
+/// live, 2026-10-07). `SmartschoolIntradeskItemNotFoundError.kind` says
+/// which kind was asked for.
+enum IntradeskItemKind {
+  /// A folder (`folders`).
+  folder('folders'),
+
+  /// A weblink (`weblinks`).
+  weblink('weblinks'),
+
+  /// A file (`files`).
+  file('files');
+
+  const IntradeskItemKind(this.pathSegment);
+
+  /// The kind's part of Intradesk's paths: `folders`, `weblinks` or `files`.
+  final String pathSegment;
+}
+
 /// Platform reference embedded in folder and file objects.
 class IntradeskPlatform {
   final int id;

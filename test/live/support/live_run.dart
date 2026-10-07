@@ -402,9 +402,10 @@ class LiveRun {
   ///
   /// It moves it only once, and only while the inbox lists it with the
   /// run's subject, right before the move; it throws a [StateError]
-  /// otherwise. It resolves the archive folder first (`getArchiveBoxId`, which
-  /// loads the Messages page, where the guard reads it too), so that the
-  /// cleanup looks for the message there, also when the move fails.
+  /// otherwise. It resolves the archive folder first (`getArchiveBoxId`,
+  /// which reads the folder tree, or else the Messages page (#141); the guard
+  /// reads it there too), so that the cleanup looks for the message there,
+  /// also when the move fails.
   Future<List<MessageChanged>> archive(int id, String subject) async {
     if (!_archived.add(id)) {
       throw StateError('the run moved message $id to the archive already');

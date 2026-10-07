@@ -763,7 +763,7 @@ class MessageFolder {
   /// Whether this folder is the archive of the inbox (the folder
   /// [MessagesService.moveToArchive] moves messages to): the folder with
   /// [archiveDescription] as its [description], as Smartschool tells it
-  /// apart.
+  /// apart. [MessagesService.getArchiveBoxId] returns its [id] (#141).
   bool get isArchive => description == archiveDescription;
 
   /// Every folder of [folders] and of their [children], depth first: each

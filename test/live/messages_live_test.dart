@@ -275,14 +275,17 @@ void main() {
         final archiveBoxId = await messages.getArchiveBoxId();
         print(
           'archive scenario: message $id, archive folder $archiveBoxId (the '
-          'guard read ${run.guard.archiveBoxId} on the Messages page); '
+          'guard read ${run.guard.archiveBoxId} in the folder tree or on the '
+          'Messages page, #141); '
           'Smartschool answered the move to the archive with '
           '${run.guard.archiveAnswers[id]}',
         );
         expect(
           run.guard.archiveBoxId,
           archiveBoxId,
-          reason: 'the archive folder that the Messages page names',
+          reason:
+              'the archive folder that Smartschool names (the folder tree, '
+              '#141)',
         );
         expect(archived.map((c) => (c.id, c.newValue)), [
           (id, 1),

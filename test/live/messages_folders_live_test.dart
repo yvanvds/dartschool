@@ -14,10 +14,12 @@
 // trashes nothing, makes and removes no folder, and the last test checks
 // that no other command went out (LiveWireGuard, the last interceptor,
 // refuses those too). It reads the folder tree (`quickactions` /
-// `requestmovelist`), the Messages page (getArchiveBoxId), the test folder
-// and the first pages of the archive (`message list`, `continue_messages`),
-// and one message of the test folder (`show message`, which leaves its read
-// state as it is: the test checks that too).
+// `requestmovelist`: getFolders, and getArchiveBoxId since #141), the
+// Messages page (where getArchiveBoxId read the archive before #141, to
+// check that it names the same folder), the test folder and the first pages
+// of the archive (`message list`, `continue_messages`), and one message of
+// the test folder (`show message`, which leaves its read state as it is: the
+// test checks that too).
 //
 // Listing the archive restarts the account's paging of the archive
 // elsewhere (#76): a paging of it in the web client or smartschool-mcp at
@@ -113,7 +115,8 @@ void main() {
       });
 
       test('getFolders lists the test folder directly in the inbox, and the '
-          'archive, the folder getArchiveBoxId names', () async {
+          'archive, the folder getArchiveBoxId names, which it reads in the '
+          'folder tree, not on the Messages page (#141)', () async {
         expect(testFolder.boxType, BoxType.inbox);
         expect(testFolder.name, _testFolder.name);
         expect(testFolder.path, [_testFolder.name]);
@@ -125,7 +128,26 @@ void main() {
         final archive = flat.where((f) => f.isArchive).single;
         expect(archive.boxType, BoxType.inbox);
         expect(archive.parentId, isNull);
-        expect(archive.id, await messages.getArchiveBoxId());
+
+        // getArchiveBoxId reads the folder tree (about 2 KB), not the
+        // Messages page (about 95 KB), and the guard learns the archive there
+        // too, as it must for the moves out of it (#141).
+        final before = attempts.requests.length;
+        expect(await messages.getArchiveBoxId(), archive.id);
+        expect(attempts.requests.sublist(before), [
+          'quickactions/requestmovelist',
+        ]);
+        expect(run.guard.archiveBoxId, archive.id);
+        // The Messages page, which it reads only when the tree names no
+        // archive, names the same folder (seen for #136 too).
+        final page = await run.client.getRaw(
+          '/?module=Messages&file=index&function=main',
+        );
+        expect(
+          MessagesService.parseArchiveBoxIdFromMessagesHtml(page),
+          archive.id,
+        );
+        expect(run.guard.archiveBoxId, archive.id);
 
         // Box IDs are unique within a box, and never 0 (the box itself).
         for (final type in BoxType.values) {
@@ -235,9 +257,11 @@ void main() {
           ),
           isEmpty,
         );
+        // getFolders in setUpAll, and getArchiveBoxId once (#141): it caches
+        // the archive's box ID.
         expect(
           attempts.requests.where((r) => r == 'quickactions/requestmovelist'),
-          hasLength(1),
+          hasLength(2),
         );
         expect(run.guard.violations, isEmpty);
       });

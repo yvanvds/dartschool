@@ -32,9 +32,9 @@
 //   (`message list`), with the run's subject, and that the run checked
 //   there; a second move of a copy, whichever folder it is in; and a move
 //   out of another box than the inbox or the sent box, out of a folder other
-//   than the archive folder that Smartschool's Messages page names (#64), or
-//   to another box than the trash. So the run moves no ID it did not send,
-//   0 included (#61);
+//   than the archive folder that Smartschool's folder tree (`requestmovelist`,
+//   #141) or Messages page names (#64), or to another box than the trash. So
+//   the run moves no ID it did not send, 0 included (#61);
 // - moving a message to the archive (MessagesService.moveToArchive) unless
 //   it is the inbox copy of a message this run sent, listed in the inbox
 //   with the run's subject and checked there, one per request; a second
@@ -266,8 +266,9 @@ class LiveWireGuard extends Interceptor {
   /// (#94): those it sent and checked in the inbox or its archive folder.
   final Set<int> _markable = {};
 
-  /// The archive folders that Smartschool's Messages page named (#64): one,
-  /// unless pages named different ones.
+  /// The archive folders that Smartschool's Messages page (#64) and its
+  /// folder tree (`requestmovelist`, #141) named: one, unless their answers
+  /// named different ones.
   final Set<int> _archiveFolders = {};
 
   /// How often each step of a login went out.
@@ -343,9 +344,12 @@ class LiveWireGuard extends Interceptor {
   /// commands that change nothing that way (#59).
   final List<String> unexpectedAnswers = [];
 
-  /// The archive folder of the inbox, as Smartschool's Messages page names it
-  /// (MessagesService.getArchiveBoxId loads that page), or `null` while no
-  /// page named one, or when pages named different ones: then the guard
+  /// The archive folder of the inbox, as Smartschool names it: its folder
+  /// tree (`quickactions` / `requestmovelist`, MessagesService.getFolders,
+  /// which MessagesService.getArchiveBoxId reads since #141) as the folder of
+  /// the inbox with the archive's description, or its Messages page (which
+  /// getArchiveBoxId loads when the tree names none, #64). `null` while no
+  /// answer named one, or when answers named different ones: then the guard
   /// lets no move out of a folder go out.
   int? get archiveBoxId =>
       _archiveFolders.length == 1 ? _archiveFolders.single : null;
@@ -360,8 +364,8 @@ class LiveWireGuard extends Interceptor {
   ///
   /// The guard lets the move out only for a copy that Smartschool listed
   /// there with the run's subject too, whatever this allows (#61), and only
-  /// out of the box itself or the archive folder that the Messages page
-  /// names.
+  /// out of the box itself or the archive folder that Smartschool names
+  /// ([archiveBoxId]).
   void allowTrashFrom(int msgId, BoxType box, {int boxId = 0}) =>
       _movable.add((msgId, box.value, boxId));
 
@@ -979,7 +983,8 @@ class LiveWireGuard extends Interceptor {
         folder = archive;
       default:
         return 'it moves message $id out of a folder of the $box that is not '
-            'the archive folder of the inbox, as a Messages page named it';
+            'the archive folder of the inbox, as Smartschool named it (its '
+            'folder tree or Messages page)';
     }
     final where = folder == 0
         ? 'the $box'
@@ -1041,7 +1046,8 @@ class LiveWireGuard extends Interceptor {
         folders = [archive];
       default:
         return 'it changes message $id in a folder of the inbox that is not '
-            'the archive folder, as a Messages page named it';
+            'the archive folder, as Smartschool named it (its folder tree or '
+            'Messages page)';
     }
     if (!folders.any((folder) => _listed.contains((id, box, folder)))) {
       final where = switch (folders) {
@@ -1431,6 +1437,8 @@ class LiveWireGuard extends Interceptor {
     if (command is! String) return;
     final xml = XmlDocument.parse(command);
     switch (_text(xml, 'action')) {
+      case 'requestmovelist' when _text(xml, 'subsystem') == 'quickactions':
+        _recordFolderTree(body);
       case 'message list':
         _recordListed(xml, body);
       case 'quickmove messages':
@@ -1443,6 +1451,40 @@ class LiveWireGuard extends Interceptor {
         markAnswers.add((action: action, id: id, answer: body));
     }
   }
+
+  /// Keeps the archive folder that Smartschool's answer [body] to
+  /// `requestmovelist` names (#141): the folder of the inbox with the
+  /// archive's description, read as MessagesService.getFolders reads the
+  /// tree (MessagesService.parseFolders). MessagesService.getArchiveBoxId
+  /// reads the archive there first, so the guard must know it from there
+  /// too, or it refuses the run's moves out of the archive. An answer the
+  /// guard cannot read names none; one that names several archives makes
+  /// the guard trust none ([archiveBoxId]).
+  void _recordFolderTree(String body) {
+    final List<MessageFolder> folders;
+    try {
+      folders = [
+        for (final action in XmlInterface.parseResponse(
+          body,
+          './/actions/action',
+        ))
+          if (action['command'] == _folderTreeCommand &&
+              action['data'] is String)
+            ...MessagesService.parseFolders(action['data'] as String),
+      ];
+    } on Object {
+      return; // The library reports what it cannot read itself.
+    }
+    for (final folder in MessageFolder.flatten(folders)) {
+      if (folder.isArchive && folder.boxType == BoxType.inbox) {
+        _archiveFolders.add(folder.id);
+      }
+    }
+  }
+
+  /// The command of the action that holds the folder tree in Smartschool's
+  /// answer to `requestmovelist`.
+  static const _folderTreeCommand = 'moveToPostboxFinnishTreeRequest';
 
   /// The path that hands out an upload directory (#128).
   static const _uploadDirectoryPath = '/upload/api/v1/get-upload-directory';

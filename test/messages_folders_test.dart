@@ -24,6 +24,13 @@
 // third page of the archive did not restart the archive's paging: the next
 // `continue_messages` of the archive answered with its third page. The fake
 // below keeps a paging position per box ID, as that showed.
+//
+// And for #141: `getArchiveBoxId` found the archive by loading Smartschool's
+// whole Messages page (about 95 KB) for its `.postbox_ico_sub.archive`. It
+// now takes the archive from the folder tree (about 2 KB), the folder of the
+// inbox whose description is `msg archive`, and loads the page only when the
+// tree names none (or more than one) or cannot be read; then `208`. Seen live
+// on 2026-10-07: the tree and the page both named folder 208.
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -93,6 +100,32 @@ const _nestedTree =
     '"postboxName":"Klas 5A","postboxDescription":"","children":[]}]}]},'
     '{"postboxID":0,"postboxType":"trash","parentID":-1,'
     '"postboxName":"Prullenmand","postboxDescription":"","children":[]}]';
+
+/// A tree with the inbox alone, holding the folders [folders] (JSON
+/// objects), as the live one has them.
+String _inboxTree(List<String> folders) =>
+    '[{"postboxID":0,"postboxType":"inbox","parentID":-1,'
+    '"postboxName":"Postvak in","postboxDescription":"","children":['
+    '${folders.join(',')}]},'
+    '{"postboxID":0,"postboxType":"outbox","parentID":-1,'
+    '"postboxName":"Verzonden","postboxDescription":"","children":[]}]';
+
+/// A folder of a tree: the archive (with the archive's description) when
+/// [archive], else a folder the user made.
+String _folder(int id, {bool archive = false, String type = 'inbox'}) =>
+    '{"postboxID":"$id","postboxType":"$type","parentID":"-1",'
+    '"postboxName":"${archive ? 'Berichten archief' : 'Map $id'}",'
+    '"postboxDescription":"${archive ? 'msg archive' : ''}","children":[]}';
+
+/// Smartschool's Messages page, trimmed to the archive's entry in its box
+/// tree, naming [archive] as the archive folder; one that names none when
+/// `null`.
+String _messagesPage(int? archive) => archive == null
+    ? '<html><body><div class="postbox" boxtype="inbox" boxid="0"></div>'
+          '</body></html>'
+    : '<html><body><div class="postboxsub" boxtype="inbox" boxid="$archive">'
+          '<div class="postbox_ico_sub archive" boxtype="inbox" '
+          'boxid="$archive"></div></div></body></html>';
 
 /// A page of a box listing holding a header for each of [ids]: the answer to
 /// a `message list` (`rebuild`) when [first], else to a `continue_messages`
@@ -166,7 +199,8 @@ typedef _Command = ({
 /// [folderTree] (the live answer unless a test sets another), and `message
 /// list` / `continue_messages` from [boxes] (header IDs by `boxType/boxID`),
 /// [pageSize] headers a page, with a paging position per box ID as the live
-/// one keeps it; and `show message` with the message asked for.
+/// one keeps it; and `show message` with the message asked for. Its Messages
+/// page is [messagesPage] (#141).
 class _Smartschool implements HttpClientAdapter {
   _Smartschool({this.boxes = const {}});
 
@@ -177,6 +211,18 @@ class _Smartschool implements HttpClientAdapter {
 
   /// The content type of the answer to `requestmovelist`.
   String folderTreeContentType = 'application/xml';
+
+  /// Whether the connection breaks off for `requestmovelist`, before an
+  /// answer.
+  bool folderTreeFails = false;
+
+  /// The Messages page (`/?module=Messages&file=index&function=main`), where
+  /// `getArchiveBoxId` read the archive before #141: one that names no
+  /// archive unless a test sets another.
+  String messagesPage = _messagesPage(null);
+
+  /// How often the Messages page was loaded.
+  int pageLoads = 0;
 
   /// The headers a page of a box listing holds.
   static const pageSize = 2;
@@ -203,6 +249,14 @@ class _Smartschool implements HttpClientAdapter {
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    if (options.method == 'GET') {
+      expect(
+        '${options.uri.path}?${options.uri.query}',
+        '/?module=Messages&file=index&function=main',
+      );
+      pageLoads++;
+      return _answer(messagesPage, 'text/html; charset=UTF-8');
+    }
     expect(options.method, 'POST');
     expect(
       '${options.uri.path}?${options.uri.query}',
@@ -225,6 +279,9 @@ class _Smartschool implements HttpClientAdapter {
     commands.add(sent);
     if (commands.length > 30) fail('more than 30 commands: paging loops');
     if (sent.subsystem == 'quickactions' && sent.action == 'requestmovelist') {
+      if (folderTreeFails) {
+        throw const SocketException('Connection reset by peer');
+      }
       return _answer(folderTree, folderTreeContentType);
     }
     expect(sent.subsystem, 'postboxes');
@@ -665,6 +722,135 @@ void main() {
         'postboxes/message list inbox/30650',
         'postboxes/continue_messages inbox/208',
       ]);
+    });
+  });
+
+  group('getArchiveBoxId reads the archive in the folder tree (#141)', () {
+    test('the archive of the live answer, with requestmovelist alone: the '
+        'Messages page (about 95 KB) is not loaded, also when it would name '
+        'another folder; and the ID is cached', () async {
+      final (messages, server) = await serve();
+      server.messagesPage = _messagesPage(312);
+
+      expect(await messages.getArchiveBoxId(), 208);
+      expect(await messages.getArchiveBoxId(), 208);
+
+      expect(server.log, ['quickactions/requestmovelist']);
+      expect(server.commands.single.params, isEmpty);
+      expect(server.pageLoads, 0);
+    });
+
+    test('getArchiveHeaders and getAllArchiveHeaders without a boxId list '
+        'the archive the tree names, read once', () async {
+      final (messages, server) = await serve(
+        boxes: {
+          'inbox/312': [1, 2, 3],
+        },
+      );
+      server
+        ..folderTree = _treeAnswer(
+          _inboxTree([_folder(30650), _folder(312, archive: true)]),
+        )
+        ..messagesPage = _messagesPage(208);
+
+      final first = await messages.getArchiveHeaders();
+      final all = await messages.getAllArchiveHeaders();
+
+      expect(first.map((h) => h.id), [1, 2]);
+      expect(all.map((h) => h.id), [1, 2, 3]);
+      expect(server.log, [
+        'quickactions/requestmovelist',
+        'postboxes/message list inbox/312',
+        'postboxes/message list inbox/312',
+        'postboxes/continue_messages inbox/312',
+      ]);
+      expect(server.pageLoads, 0);
+    });
+
+    group('falls back to the Messages page, as before #141, when the '
+        'tree', () {
+      /// Checks that getArchiveBoxId, with the tree [folderTree], takes the
+      /// archive the Messages page names, after one request of the tree,
+      /// and caches it.
+      Future<void> fallsBack({
+        String? folderTree,
+        String contentType = 'application/xml',
+        bool fails = false,
+      }) async {
+        final (messages, server) = await serve();
+        server
+          ..folderTree = folderTree ?? _liveAnswer
+          ..folderTreeContentType = contentType
+          ..folderTreeFails = fails
+          ..messagesPage = _messagesPage(312);
+
+        expect(await messages.getArchiveBoxId(), 312);
+        expect(await messages.getArchiveBoxId(), 312);
+
+        expect(server.log, ['quickactions/requestmovelist']);
+        expect(server.pageLoads, 1);
+      }
+
+      test('names no archive', () async {
+        await fallsBack(folderTree: _treeAnswer(_inboxTree([_folder(30650)])));
+        await fallsBack(folderTree: _treeAnswer('[]'));
+      });
+
+      test('names more than one archive in the inbox', () async {
+        await fallsBack(
+          folderTree: _treeAnswer(
+            _inboxTree([
+              _folder(208, archive: true),
+              _folder(312, archive: true),
+            ]),
+          ),
+        );
+      });
+
+      test('names a folder with the archive\'s description in the sent box '
+          'only: the archive is a folder of the inbox', () async {
+        await fallsBack(
+          folderTree: _treeAnswer(
+            '[{"postboxID":0,"postboxType":"outbox","postboxName":"Verzonden",'
+            '"children":[${_folder(208, archive: true, type: 'outbox')}]}]',
+          ),
+        );
+      });
+
+      test('cannot be read: an HTML page, an answer without the tree, a '
+          'tree that is not JSON or not a tree of folders', () async {
+        await fallsBack(
+          folderTree: '<!DOCTYPE html><html><body>Berichten</body></html>',
+          contentType: 'text/html',
+        );
+        await fallsBack(
+          folderTree:
+              '<server><response><status>ok</status><actions/></response>'
+              '</server>',
+        );
+        await fallsBack(folderTree: _treeAnswer('[{"postboxID":0'));
+        await fallsBack(
+          folderTree: _treeAnswer(
+            '[{"postboxID":0,"postboxType":"inbox","children":[1]}]',
+          ),
+        );
+      });
+
+      test('fails: the connection breaks off', () async {
+        await fallsBack(fails: true);
+      });
+    });
+
+    test('falls back to 208 when neither the tree nor the Messages page '
+        'names the archive, and caches that too', () async {
+      final (messages, server) = await serve();
+      server.folderTree = _treeAnswer(_inboxTree([_folder(30650)]));
+
+      expect(await messages.getArchiveBoxId(), 208);
+      expect(await messages.getArchiveBoxId(), 208);
+
+      expect(server.log, ['quickactions/requestmovelist']);
+      expect(server.pageLoads, 1);
     });
   });
 }

@@ -111,17 +111,35 @@ String _page(List<int> ids, {required bool more, bool first = false}) {
 /// A request to the XML dispatcher: its action and params.
 typedef _Request = ({String action, Map<String, String> params});
 
+/// Smartschool's answer to `quickactions` / `requestmovelist` (#136), as it
+/// came in live, with the archive at box ID [archive] (`208` live).
+String _folderTree(int archive) =>
+    File(
+      'test/fixtures/smartschool/requests/post/quickactions/requestmovelist.xml',
+    ).readAsStringSync().replaceFirst(
+      '&quot;postboxID&quot;:&quot;208&quot;',
+      '&quot;postboxID&quot;:&quot;$archive&quot;',
+    );
+
 /// A Smartschool whose XML dispatcher answers `message list` and
-/// `continue_messages` with [answer], and whose Messages page (for the
-/// archive box ID) is [messagesPage].
+/// `continue_messages` with [answer] and `requestmovelist` with
+/// [folderTree] (where `getArchiveBoxId` finds the archive box ID since
+/// #141), and whose Messages page (where it found the ID before) is
+/// [messagesPage].
 ///
 /// [before], when given, runs before each request to the dispatcher is
 /// answered, so that a test can make something happen in between.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool(this.answer, {this.messagesPage = '', this.before});
+  _Smartschool(
+    this.answer, {
+    this.messagesPage = '',
+    String? folderTree,
+    this.before,
+  }) : folderTree = folderTree ?? _folderTree(208);
 
   final String Function(_Request request) answer;
   final String messagesPage;
+  final String folderTree;
   final Future<void> Function(_Request request)? before;
 
   /// Every request to the XML dispatcher, in order.
@@ -166,7 +184,7 @@ class _Smartschool implements HttpClientAdapter {
     if (requests.length > 20) fail('more than 20 requests: paging loops');
     await before?.call(request);
     return ResponseBody.fromString(
-      answer(request),
+      request.action == 'requestmovelist' ? folderTree : answer(request),
       200,
       headers: {
         Headers.contentTypeHeader: ['application/xml'],
@@ -261,11 +279,13 @@ void main() {
   Future<_Smartschool> serve(
     String Function(_Request request) answer, {
     String messagesPage = '',
+    String? folderTree,
     Future<void> Function(_Request request)? before,
   }) async {
     final server = _Smartschool(
       answer,
       messagesPage: messagesPage,
+      folderTree: folderTree,
       before: before,
     );
     client = await SmartschoolClient.create(
@@ -739,21 +759,21 @@ void main() {
       ]);
     });
 
-    test('getAllArchiveHeaders resolves the archive box ID', () async {
+    test('getAllArchiveHeaders resolves the archive box ID, in the folder '
+        'tree (#141)', () async {
       final server = await serve(
         _pages([
           _page([1, 2], more: true, first: true),
           _page([3], more: false),
         ]),
-        messagesPage:
-            '<div class="postboxsub" boxid="312">'
-            '<div class="postbox_ico_sub archive" boxid="312"></div></div>',
+        folderTree: _folderTree(312),
       );
 
       final headers = await MessagesService(client).getAllArchiveHeaders();
 
       expect(_ids(headers), [1, 2, 3]);
       expect(server.log, [
+        ['requestmovelist', <String, String>{}],
         [
           'message list',
           {..._inboxList, 'boxID': '312'},
@@ -1064,7 +1084,7 @@ void main() {
 
     test('getAllArchiveHeaders and a getAllHeaders of the archive box ID '
         'take turns', () async {
-      // The Messages page names no archive folder: its ID falls back to 208.
+      // The folder tree names the archive 208, as live (#141).
       final server = await serve(_Account({'inbox/208': box}).answer);
       final messages = MessagesService(client);
 
@@ -1076,7 +1096,16 @@ void main() {
       );
 
       expect(results.map(_ids), [box, box]);
-      expect(actions(server), [...wholeBox, ...wholeBox]);
+      // The tree's request is no listing of the box, so it may go out before
+      // or among the pages of the getAllHeaders: only its count is checked.
+      expect(
+        actions(server).where((a) => a == 'requestmovelist'),
+        hasLength(1),
+      );
+      expect(actions(server).where((a) => a != 'requestmovelist'), [
+        ...wholeBox,
+        ...wholeBox,
+      ]);
     });
 
     test('another client of the account is not seen coming: its listing '

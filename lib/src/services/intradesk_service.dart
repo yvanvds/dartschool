@@ -34,22 +34,29 @@ export '../models/intradesk_models.dart';
 ///   print('${link.name}: ${link.url}');
 /// }
 ///
+/// // Read a folder by its ID alone: its own entry, and the folders above
+/// // it (#132)
+/// final folder = await intradesk.getFolder(folderId);
+/// print('${folder.name}, may add: ${folder.capabilities.canAdd}');
+/// final path = await intradesk.getFolderPath(folderId);
+/// print(path.map((f) => f.name).join(' > ')); // 2. SMA > tests
+///
 /// // Download a file
 /// final bytes = await intradesk.downloadFile(sub.files.first.id);
 ///
 /// // Add a folder, a weblink in it and a file (#128). Intradesk renames an
 /// // item whose name is taken, so use what it answers.
-/// final folder = await intradesk.createFolder(
+/// final toetsen = await intradesk.createFolder(
 ///   parentFolderId: sub.folders.first.id,
 ///   name: 'Toetsen',
 /// );
 /// await intradesk.createWeblink(
-///   parentFolderId: folder.id,
+///   parentFolderId: toetsen.id,
 ///   name: 'Oefenplatform',
 ///   url: 'https://example.com/oefenen',
 /// );
 /// final upload = await intradesk.uploadFiles(
-///   parentFolderId: folder.id,
+///   parentFolderId: toetsen.id,
 ///   filePaths: ['toets 1.pdf'],
 /// );
 /// print(upload.files.map((f) => f.name));
@@ -185,6 +192,181 @@ class IntradeskService {
   }
 
   // -------------------------------------------------------------------------
+  // A folder's own entry (#132)
+  // -------------------------------------------------------------------------
+
+  /// The IDs of the folders above the folder [folderId]: the folder at the
+  /// root first, the folder's parent last (#132).
+  ///
+  /// Calls `GET /intradesk/api/v1/{platformId}/folders/{folderId}/parents`,
+  /// which Smartschool answers with a JSON list of folder IDs in that order
+  /// (seen live, 2026-10-07: `["<2. SMA>"]` for "2. SMA" > "tests",
+  /// `["<2. SMA>", "<tests>"]` for a folder in "tests"). The web client asks
+  /// it when it opens a folder by its address, to list the folders above it.
+  ///
+  /// **An empty list does not mean the folder is at the root**: Smartschool
+  /// answers `[]` for a folder at the root, and also for a folder in
+  /// Intradesk's trash (seen live: a folder moved to the trash from "tests"
+  /// answered `["<2. SMA>", "<tests>"]` before, and `[]` after). [getFolder]
+  /// and [getFolderPath] tell them apart: they look the folder up where its
+  /// parents put it.
+  ///
+  /// One request. Throws an [ArgumentError], without sending anything, when
+  /// [folderId] is not a UUID (Smartschool answers such an ID with a bare
+  /// HTTP `500`). Throws a [SmartschoolIntradeskFolderNotFoundError] (with
+  /// [SmartschoolDownloadError.statusCode] `404`) when Smartschool knows no
+  /// folder with [folderId]: an unknown ID, or the ID of a file or a weblink,
+  /// which it answers with `404` (#37). Another status is a
+  /// [SmartschoolDownloadError] with that status, an answer that is not JSON
+  /// a [SmartschoolJsonError], and one that is not a list of IDs a
+  /// [SmartschoolParsingError].
+  Future<List<String>> getFolderParentIds(String folderId) async {
+    _checkFolderId(folderId);
+    final platformId = await _client.platformId;
+    final dynamic data;
+    try {
+      data = await _client.getJson(
+        '/intradesk/api/v1/$platformId/folders/$folderId/parents',
+      );
+    } on SmartschoolDownloadError catch (e) {
+      if (e.statusCode == 404) {
+        throw SmartschoolIntradeskFolderNotFoundError(
+          folderId,
+          statusCode: 404,
+        );
+      }
+      rethrow;
+    }
+    return parseFolderParentIds(data);
+  }
+
+  /// The folder [folderId] as Intradesk lists it: its entry in the listing
+  /// of the folder above it (#132), with its name, colour, `confidential`,
+  /// `inConfidentialFolder`, `parentFolderId`, `hasChildren` and
+  /// `capabilities` ([IntradeskFolderCapabilities.canAdd] says whether the
+  /// user may add to it, as [createFolder], [createWeblink] and [uploadFiles]
+  /// do).
+  ///
+  /// [getFolderListing] answers what is *in* a folder, not the folder
+  /// itself, and Smartschool has no request for one folder (`GET
+  /// .../folders/{folderId}` answers the web client's page, not JSON). So
+  /// this asks for the folder's parents ([getFolderParentIds]) and lists the
+  /// last of them ([getFolderListing]), or the root ([getRootListing]) for a
+  /// folder at the root, as the web client does when it opens a folder by
+  /// its address: two requests. [getFolderPath] reads the folders above it
+  /// too.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [folderId] is
+  /// not a UUID. Throws a [SmartschoolIntradeskFolderNotFoundError] when
+  /// Smartschool knows no folder with [folderId] (status `404`, see
+  /// [getFolderParentIds]), and when the listing where its parents put it
+  /// does not hold it (status `200`): a folder in Intradesk's trash (seen
+  /// live, 2026-10-07: its parents are `[]`, and the root listing does not
+  /// hold it), or a folder the user does not see. A listing that fails
+  /// throws as [getFolderListing] and [getRootListing] do.
+  Future<IntradeskFolder> getFolder(String folderId) async {
+    final parentIds = await getFolderParentIds(folderId);
+    final parentId = parentIds.isEmpty ? '' : parentIds.last;
+    final listing = await _listingOf(parentId);
+    return _listed(listing, folderId, parentId, folderId);
+  }
+
+  /// The folders from the root down to the folder [folderId]: the folder at
+  /// the root first, the folder itself last, each one an entry of the
+  /// listing of the one before it (#132). The path the web client shows
+  /// above a folder; `getFolderPath(id).last` is [getFolder]'s folder, and
+  /// the folders before it are those above it, as [IntradeskFolder]s.
+  ///
+  /// Asks for the folder's parents ([getFolderParentIds]), then lists the
+  /// root and each of the parents in turn, as the web client does when it
+  /// opens a folder by its address: one request more than the folder has
+  /// folders above it, plus the parents (three for "2. SMA" > "tests").
+  ///
+  /// Throws as [getFolder]: an [ArgumentError] for a [folderId] that is not
+  /// a UUID; a [SmartschoolIntradeskFolderNotFoundError] for an ID that is
+  /// not a folder (status `404`), and when a listing does not hold the
+  /// folder that the parents put in it (status `200`; a folder in the trash,
+  /// one the user does not see, or a folder that was moved in between).
+  Future<List<IntradeskFolder>> getFolderPath(String folderId) async {
+    final parentIds = await getFolderParentIds(folderId);
+    final path = <IntradeskFolder>[];
+    var where = '';
+    for (final id in [...parentIds, folderId]) {
+      final listing = await _listingOf(where);
+      final folder = _listed(listing, id, where, folderId);
+      path.add(folder);
+      where = folder.id;
+    }
+    return List.unmodifiable(path);
+  }
+
+  /// Reads Smartschool's answer to `folders/{folderId}/parents` (#132): a
+  /// JSON list of folder IDs, the folder at the root first.
+  ///
+  /// Throws a [SmartschoolParsingError] for anything else: not a list, or an
+  /// entry that is not a non-empty string.
+  ///
+  /// Exposed for testing.
+  static List<String> parseFolderParentIds(Object? data) {
+    if (data is! List) {
+      throw SmartschoolParsingError(
+        'Intradesk answered the parents of a folder with '
+        '${data.runtimeType}, not a list of folder IDs',
+      );
+    }
+    return List.unmodifiable([
+      for (final id in data)
+        if (id is String && id.isNotEmpty)
+          id
+        else
+          throw SmartschoolParsingError(
+            'Intradesk answered the parents of a folder with an entry that '
+            'is not a folder ID: $id',
+          ),
+    ]);
+  }
+
+  /// The listing of the folder [folderId], or of the root for `''`.
+  Future<IntradeskListing> _listingOf(String folderId) =>
+      folderId.isEmpty ? getRootListing() : getFolderListing(folderId);
+
+  /// The folder [id] of [listing], the listing of [where] (`''` for the
+  /// root), where the parents of [asked] put it; a
+  /// [SmartschoolIntradeskFolderNotFoundError] for [asked] when the listing
+  /// does not hold it.
+  static IntradeskFolder _listed(
+    IntradeskListing listing,
+    String id,
+    String where,
+    String asked,
+  ) {
+    final key = id.toLowerCase();
+    for (final folder in listing.folders) {
+      if (folder.id.toLowerCase() == key) return folder;
+    }
+    final which = key == asked.toLowerCase()
+        ? 'folder $asked in ${_where(where)}, where its parents put it'
+        : 'folder $id in ${_where(where)}, where the parents of folder '
+              '$asked put it';
+    throw SmartschoolIntradeskFolderNotFoundError(
+      asked,
+      statusCode: 200,
+      message:
+          'Intradesk does not list $which: the folder is in Intradesk\'s '
+          'trash (Smartschool answers the parents of a folder in the trash '
+          'as those of a folder at the root), the user does not see it, or '
+          'it was moved.',
+    );
+  }
+
+  /// Throws an [ArgumentError] unless [folderId] is a folder UUID.
+  static void _checkFolderId(String folderId) {
+    if (!_uuid.hasMatch(folderId)) {
+      throw ArgumentError.value(folderId, 'folderId', 'is not a folder UUID');
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // File download
   // -------------------------------------------------------------------------
 
@@ -310,7 +492,9 @@ class IntradeskService {
   /// it. That was not tried live (it would have added a folder outside the
   /// test folder); nor was a folder without `canAdd`
   /// ([IntradeskFolderCapabilities.canAdd]): the live account is an
-  /// administrator.
+  /// administrator. The service does not check `canAdd`, nor whether the
+  /// parent is confidential ([IntradeskFolder.confidential]); [getFolder]
+  /// reads both from the parent's own entry (#132).
   ///
   /// The create is sent **once**, never again after logging in again: a
   /// second one would add a second folder (see the class doc).

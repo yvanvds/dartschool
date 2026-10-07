@@ -13,7 +13,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Authenticated Smartschool client with cookie persistence and MFA/account-verification support.
 - Full messaging workflow (`MessagesService`): list, read, attachments, recipient search, send, replies linked to the original message, archive, trash, labels, reply-all recipient resolution.
 - **Event-driven message detection**: notification counter stream with debounced incremental inbox refresh; wires into any notification source (polling bridge or WebSocket).
-- Intradesk support (`IntradeskService`): root/folder listing and file download; add a folder, a weblink or uploaded files to a folder and move them to Intradesk's trash again, with checks before each write and creates that are never retried.
+- Intradesk support (`IntradeskService`): root/folder listing and file download; a folder read by its ID alone, with the folders above it; add a folder, a weblink or uploaded files to a folder and move them to Intradesk's trash again, with checks before each write and creates that are never retried.
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
@@ -514,6 +514,13 @@ for (final link in sub.weblinks) {
   print('${link.name}: ${link.url}');
 }
 
+// Read a folder by its ID alone: its own entry, and the folders above it
+// (#132)
+final folder = await intradesk.getFolder(folderId);
+print('${folder.name}, may add: ${folder.capabilities.canAdd}');
+final path = await intradesk.getFolderPath(folderId);
+print(path.map((f) => f.name).join(' > ')); // 2. SMA > tests
+
 // Download a file
 final bytes = await intradesk.downloadFile(sub.files.first.id);
 await File('output.docx').writeAsBytes(bytes);
@@ -528,18 +535,18 @@ await download.stream.pipe(File('output.docx').openWrite());
 
 // Add a folder, a weblink in it and a file (#128). Intradesk renames an
 // item whose name is taken ("Toetsen (1)"), so use what it answers.
-final folder = await intradesk.createFolder(
+final toetsen = await intradesk.createFolder(
   parentFolderId: sub.folders.first.id,
   name: 'Toetsen',
   color: 'blue',
 );
 await intradesk.createWeblink(
-  parentFolderId: folder.id,
+  parentFolderId: toetsen.id,
   name: 'Oefenplatform',
   url: 'example.com/oefenen', // sent as http://example.com/oefenen
 );
 final upload = await intradesk.uploadFiles(
-  parentFolderId: folder.id,
+  parentFolderId: toetsen.id,
   filePaths: ['toets 1.pdf'],
 );
 print(upload.files.map((f) => f.name)); // [toets 1.pdf]
@@ -554,6 +561,9 @@ await intradesk.trashFile(upload.files.single.id);
 |---|---|---|
 | `getRootListing()` | `Future<IntradeskListing>` | Root-level folders, files, and weblinks. |
 | `getFolderListing(folderId)` | `Future<IntradeskListing>` | Folders, files, and weblinks inside the identified folder. Throws a `SmartschoolIntradeskFolderNotFoundError` when Smartschool knows no folder with that ID (an unknown ID, or the ID of a file or a weblink). |
+| `getFolder(folderId)` | `Future<IntradeskFolder>` | The folder itself, read by its ID alone (#132): its entry in the listing of the folder above it, with its name, `confidential`, `inConfidentialFolder`, `parentFolderId` and `capabilities` (`canAdd`: whether the user may add to it). Two requests: the folder's parents, then the listing of its parent (the root listing for a folder at the root). |
+| `getFolderPath(folderId)` | `Future<List<IntradeskFolder>>` | The folders from the root down to the folder, the folder itself last, each as the listing of the one above it gives it (#132): the path the web client shows. The parents, then a listing per level. |
+| `getFolderParentIds(folderId)` | `Future<List<String>>` | The IDs of the folders above the folder, the folder at the root first and its parent last (`folders/{id}/parents`, one request, #132). `[]` for a folder at the root, **and for a folder in the trash** (seen live), which `getFolder` and `getFolderPath` tell apart. |
 | `downloadFile(fileId, {maxBytes})` | `Future<Uint8List>` | Raw bytes of the identified file. With `maxBytes`, throws a `SmartschoolDownloadTooLargeError` as soon as the file turns out larger (see *Downloads* above). A `SmartschoolDownloadError` with status `404` when there is no such file. |
 | `downloadFileStream(fileId, {maxBytes})` | `Future<SmartschoolDownload>` | The same file as a stream, with its size and name, as soon as the headers are in (see *Downloads* above). |
 | `createFolder({parentFolderId, name, color = 'yellow', confidential = false})` | `Future<IntradeskFolder>` | Adds a folder to the folder `parentFolderId` (`''` for the root) and returns the folder Intradesk made. `color` is one of `IntradeskService.folderColors` (`red`, `brown`, `orange`, `yellow`, `green`, `aqua`, `blue`, `purple`, `pink`, `white`, `black`). With `confidential`, a confidential folder (`folders/as-confidential`), which Intradesk refuses in an ordinary folder. |
@@ -562,6 +572,10 @@ await intradesk.trashFile(upload.files.single.id);
 | `trashFolder(folderId)` / `trashWeblink(weblinkId)` / `trashFile(fileId)` | `Future<void>` | Moves the item to Intradesk's trash (`.../trash`, answered with `204`). Intradesk keeps its trash for 30 days; the service never deletes for good. |
 | `isAllowedName(name)` | `bool` (static) | Whether Smartschool allows the name of a folder, weblink or file: none of `/ : * ? " \ < > \|`, no dot at its start or end (the web client's check). |
 | `normalizeWeblinkUrl(url)` | `String?` (static) | The address as the web client sends it, or `null` when it would refuse it. |
+
+**A folder by its ID (#132).** A folder's own entry otherwise only comes with the listing of the folder above it, and nothing names that folder. Smartschool has no request for one folder (`GET .../folders/{id}` answers the web client's page), so `getFolder` and `getFolderPath` do what the web client does when it opens a folder by its address: ask for the folder's parents and list them. All three were tried live on 2026-10-07.
+- **Errors**: an `ArgumentError`, before anything is sent, for an ID that is not a UUID (Smartschool answers it with a bare `500`). A `SmartschoolIntradeskFolderNotFoundError` with `statusCode` `404` for an ID Smartschool knows no folder for (an unknown ID, or the ID of a file or a weblink). From `getFolder` and `getFolderPath`, the same error with `statusCode` `200` when a listing does not hold the folder where its parents put it: a folder in Intradesk's trash (Smartschool answers its parents with `[]`, as for a folder at the root, and the root listing does not hold it; seen live), one the user does not see, or one moved in between. A listing that fails throws as `getFolderListing` does.
+- The writes do not check `canAdd` or whether the parent is confidential themselves: read them with `getFolder(parentFolderId)` first.
 
 **The writes (#128).** All were tried live on 2026-10-05, in a test folder.
 - **A name that is taken is not refused**: Intradesk adds the item under a new name, `name (1)` (`name (1).ext` for a file). The name of the item a create returns can differ from the one asked for; tell items by their IDs.
@@ -1493,7 +1507,7 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolPresenceChangeRefusedError` | `PresenceService.setLate` / `setPresent` with `onlyReplacing`: the half-day, as read right before the save, holds a status it does not allow (carries `userId`, `part`, `date`, `halfDay`, `heldStatus`, `onlyReplacing`). Nothing was sent. A `SmartschoolPresenceError` (#105) |
 | `SmartschoolPresencePupilNotFoundError` | `PresenceService.setLate` / `setPresent`: the class, as read right before the save, does not list the pupil on that day (carries `userId`, `classGroupId`, `date`, and, when the module listed no pupils, its `saveIsAllowed` and `errorMessage`). Nothing was sent. A `SmartschoolPresenceError` (#116) |
 | `SmartschoolDownloadTooLargeError` | A download given `maxBytes` (`download`, `downloadStream`, `IntradeskService.downloadFile` / `downloadFileStream`, `MessageAttachment.download` / `downloadStream`) turns out larger: Smartschool announces a larger `Content-Length` (before any of it is read), or more than `maxBytes` bytes come in (carries `maxBytes` and the announced `contentLength`). The client stops the transfer. Not a `SmartschoolDownloadError`: Smartschool answered with the file |
-| `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with. Also from `createFolder`, `createWeblink` and `uploadFiles` for such a parent folder: nothing was made (#128) |
+| `SmartschoolIntradeskFolderNotFoundError` | `IntradeskService.getFolderListing` is given an ID that Smartschool knows no folder for: an unknown ID, or the ID of a file or a weblink (carries the `folderId`). A `SmartschoolDownloadError` with status `500`, the status Smartschool answers the listing with. Also from `createFolder`, `createWeblink` and `uploadFiles` for such a parent folder: nothing was made (#128). From `getFolderParentIds`, `getFolder` and `getFolderPath` with status `404` for such an ID, and from `getFolder` and `getFolderPath` with status `200` for a folder that the listing where its parents put it does not hold, such as a folder in the trash (#132) |
 | `SmartschoolIntradeskWriteRefusedError` | An `IntradeskService` write that Intradesk refused with HTTP `400`–`499` (carries the `statusCode` and Intradesk's reasons in `violations`, such as an invalid URL or a confidential folder in an ordinary folder). Nothing was made (#128) |
 | `SmartschoolIntradeskSaveUnconfirmedError` | An `IntradeskService` write went out, but Intradesk's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: list the folder before trying again (a create sent again adds a second item). Not a `SmartschoolIntradeskWriteRefusedError` (#128) |
 | `SmartschoolPagingRestartedError` | `getHeaderPages` / `getArchiveHeaderPages`, and so `getAllHeaders` / `getAllArchiveHeaders`: the box was listed again while it was being paged, so Smartschool restarted the paging halfway. A listing on the same client (`getHeaders`, or a later paging of the box) fails the paging before its next page (#80); one elsewhere shows as Smartschool sending the second page again (#76). The headers so far are correct but not the whole box: list it again. Not a session problem |
@@ -1580,7 +1594,9 @@ What it checks, on messages it sends to the own account: `sendMessage` is confir
 
 `test/live/messages_search_live_test.dart` only reads: `searchRecipientsForCompose` finds the own account by its name, with one search on its compose form (#97), and `searchRecipientsForComposeAll` searches a name that is no one's and then the own name on one compose form, and the second search finds the own account (#107). The guard lets a recipient search out only on a compose form loaded through it, with the empty selection the library sends; a search registers no one on the form.
 
-`test/live/intradesk_write_live_test.dart` writes in Intradesk, in one folder only: `tests` in `2. SMA` at the root, found by name, which must be empty when the run starts (#128). It adds a folder (`createFolder`) and checks it in the listing, adds it a second time and checks that Intradesk renames the new one (`name (1)`), adds a weblink to the new folder with an address without `http://` (`createWeblink`), uploads a file to it (`uploadFiles`) and downloads it back unchanged, and then moves all of it to Intradesk's trash (`trashFile`, `trashWeblink`, `trashFolder`) and checks that the test folder is empty again. Every folder and weblink it makes is named `dartschool test <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes for good. The guard lets an Intradesk write out only in that folder, as Smartschool's own listings name it (read through the guard), and in the folders the run made there; refuses a name without the run's tag, a move to the trash of anything the run did not make, a second take of an upload directory, and every other Intradesk POST (a confidential folder, a rename, a move, a copy, a restore).
+`test/live/intradesk_write_live_test.dart` writes in Intradesk, in one folder only: `tests` in `2. SMA` at the root, found by name, which must be empty when the run starts (#128). It adds a folder (`createFolder`) and checks it in the listing, adds it a second time and checks that Intradesk renames the new one (`name (1)`), adds a weblink to the new folder with an address without `http://` (`createWeblink`), uploads a file to it (`uploadFiles`) and downloads it back unchanged, and then moves all of it to Intradesk's trash (`trashFile`, `trashWeblink`, `trashFolder`) and checks that the test folder is empty again. It reads the new folder by its ID alone (`getFolder`, `getFolderPath`, #132), and again once it is in the trash, where Smartschool answers its parents as those of a folder at the root and `getFolder` throws a `SmartschoolIntradeskFolderNotFoundError`. Every folder and weblink it makes is named `dartschool test <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes for good. The guard lets an Intradesk write out only in that folder, as Smartschool's own listings name it (read through the guard), and in the folders the run made there; refuses a name without the run's tag, a move to the trash of anything the run did not make, a second take of an upload directory, and every other Intradesk POST (a confidential folder, a rename, a move, a copy, a restore).
+
+`test/live/intradesk_folder_live_test.dart` only reads (#132): `getFolderParentIds`, `getFolder` and `getFolderPath` of the test folder, of `2. SMA` at the root and of a folder two levels down, each compared with the listing that holds it, and a made-up ID and the ID of a file, which are no folder (`404`). Names are compared, never shown.
 
 `test/live/lesson_content_write_live_test.dart` writes in the Lesfiches module, in the own library only, which is private to the teacher (#129). It makes a lesson lesfiche with a course, a weblink and an attachment in one create (`createLesson`) and checks it with `getDetail` and `getItems`, downloads the attachment back unchanged (also as a stream), changes its name, icon, info, courses and visibility, adds, changes and removes a weblink and an attachment, checks that an empty name, an address the web client refuses and a course the school does not have send no write, makes an assignment lesfiche of a school assignment type (`createAssignment`), and moves both to the module's trash (`trash`), after which `getItems` no longer lists them. Every lesfiche it makes is named `[dartschool test] <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes a lesfiche for good, never shares or plans one, and sends no label or goal. The guard lets a lesfiche write out only for a lesfiche the run made (as Smartschool answered its create) and did not move to the trash: a create named after the run, without labels, goals or other lists, at most two per run; a rename to a name after the run, the other edits, its weblinks and attachments (the DELETE of one of them is the only DELETE the live suite sends), an upload directory handed out through the guard once; and the move to the trash of what the run made. It refuses everything else in the module (labels, goals, deeplinks, a share, a restore, `delete/bulk`).
 

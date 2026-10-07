@@ -2,7 +2,9 @@
 // an uploaded file, made in the Intradesk folder of the live suite, "tests"
 // in "2. SMA" at the root (found by name), checked in Smartschool's
 // listings, the file downloaded back, and all of it moved to the trash
-// again, against the live Intradesk of credentials.yml.
+// again, against the live Intradesk of credentials.yml. The new folder is
+// also read by its ID alone (getFolder, getFolderPath, #132), before and
+// after its move to the trash.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -185,6 +187,30 @@ void main() {
         expect(twin.color, IntradeskService.defaultFolderColor);
       });
 
+      test('getFolder and getFolderPath read the new folder by its ID alone '
+          '(#132)', () async {
+        final made0 = folder;
+        expect(made0, isNotNull, reason: 'the first test made a folder');
+
+        final parentIds = await intradesk.getFolderParentIds(made0!.id);
+        final read = await intradesk.getFolder(made0.id);
+        final path = await intradesk.getFolderPath(made0.id);
+
+        expect(parentIds, [tests.parentFolderId, tests.id]);
+        expect(read.id, made0.id);
+        expect(read.name, made0.name);
+        expect(read.color, 'green');
+        expect(read.parentFolderId, tests.id);
+        expect(read.confidential, isFalse);
+        expect(read.capabilities.canAdd, isTrue);
+        expect(path.map((f) => f.id), [
+          tests.parentFolderId,
+          tests.id,
+          made0.id,
+        ]);
+        expect(path.last.name, made0.name);
+      });
+
       test('createWeblink adds a weblink to the new folder, with the address '
           'sent as the web client sends it', () async {
         final parent = folder;
@@ -252,6 +278,33 @@ void main() {
         expect(inTests.weblinks, isEmpty);
         expect(inTests.files, isEmpty);
         expect(run.guard.violations, isEmpty);
+      });
+
+      test('a folder in the trash: Smartschool answers its parents as those '
+          'of a folder at the root, and getFolder does not take it for one '
+          '(#132)', () async {
+        final inTrash = folder;
+        expect(inTrash, isNotNull, reason: 'the first test made a folder');
+        expect(
+          trashed,
+          contains(inTrash!.id),
+          reason: 'the test before moved it to the trash',
+        );
+
+        expect(await intradesk.getFolderParentIds(inTrash.id), isEmpty);
+        await expectLater(
+          intradesk.getFolder(inTrash.id),
+          throwsA(
+            isA<SmartschoolIntradeskFolderNotFoundError>()
+                .having((e) => e.folderId, 'folderId', inTrash.id)
+                .having((e) => e.statusCode, 'statusCode', 200)
+                .having((e) => e.message, 'message', contains('trash')),
+          ),
+        );
+        await expectLater(
+          intradesk.getFolderPath(inTrash.id),
+          throwsA(isA<SmartschoolIntradeskFolderNotFoundError>()),
+        );
       });
     },
   );

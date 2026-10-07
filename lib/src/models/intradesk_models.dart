@@ -73,6 +73,8 @@ class IntradeskFolderCapabilities {
   /// or a file, in an ordinary folder; a confidential folder, in a
   /// confidential one (`IntradeskService.createFolder`, `createWeblink`,
   /// `uploadFiles`, #128). The web client offers none of them without it.
+  /// The writes do not check it: read a folder's own with
+  /// `IntradeskService.getFolder` (#132).
   final bool canAdd;
 
   /// Whether the user may add a confidential folder here

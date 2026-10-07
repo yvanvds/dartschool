@@ -605,16 +605,37 @@ class SmartschoolJsonError extends SmartschoolDownloadError {
 /// `500` (seen live, 2026-10-05, for a folder in a made-up parent), and the
 /// service asks for the parents of the parent folder the same way. Nothing
 /// was made then; [folderId] is the parent folder's ID.
+///
+/// The reads of a folder's own entry throw it too (#132):
+/// `IntradeskService.getFolderParentIds`, `getFolder` and `getFolderPath`.
+/// There [statusCode] is the status of the answer that showed it:
+/// - `404`, Smartschool's answer to the parents of an ID that is not a
+///   folder (an unknown ID, or the ID of a file or a weblink);
+/// - `200`, when Smartschool answered the parents, but the listing where they
+///   put the folder (answered with `200`) does not hold it: a folder in
+///   Intradesk's trash (seen live, 2026-10-07: Smartschool answers its
+///   parents as those of a top-level folder, `[]`, and the root listing does
+///   not hold it), or a folder that the user does not see. The [message]
+///   says so.
 class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
   /// The ID that was asked for.
   final String folderId;
 
-  SmartschoolIntradeskFolderNotFoundError(this.folderId)
-    : super(
-        'Intradesk has no folder with ID "$folderId": the ID is unknown, or '
-        'it is the ID of a file or a weblink.',
-        500,
-      );
+  /// [statusCode] is the status of the answer that showed that there is no
+  /// such folder: `500` (the default) for a listing or a create, `404` and
+  /// `200` for the reads of #132 (see the class doc). [message] replaces the
+  /// default message, which says the ID is unknown or names a file or a
+  /// weblink.
+  SmartschoolIntradeskFolderNotFoundError(
+    this.folderId, {
+    int statusCode = 500,
+    String? message,
+  }) : super(
+         message ??
+             'Intradesk has no folder with ID "$folderId": the ID is unknown, '
+                 'or it is the ID of a file or a weblink.',
+         statusCode,
+       );
 }
 
 /// Thrown by the writes of `IntradeskService` (#128) when Intradesk refused

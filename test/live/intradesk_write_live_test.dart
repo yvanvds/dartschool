@@ -7,7 +7,10 @@
 // after its move to the trash. Before the moves to the trash, it sends a
 // made-up ID and the IDs of its own items as another kind to the trash, and
 // checks that Intradesk has no such item
-// (SmartschoolIntradeskItemNotFoundError) and moved nothing (#133).
+// (SmartschoolIntradeskItemNotFoundError) and moved nothing (#133). The
+// creates read the folder they add to first (#138): a confidential folder
+// in the test folder (an ordinary one) and a weblink in the run's folder
+// once it is in the trash are refused before anything is sent.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -192,6 +195,49 @@ void main() {
         expect(twin.color, IntradeskService.defaultFolderColor);
       });
 
+      test('createFolder of a confidential folder in the test folder, an '
+          'ordinary folder: refused after reading the folder, before anything '
+          'is sent (#138)', () async {
+        // Intradesk answered this create with HTTP 400 on 2026-10-05; since
+        // #138 the service does not send it. LiveWireGuard would refuse it
+        // on the wire too (the live suite makes no confidential folder), as
+        // a violation.
+        await expectLater(
+          intradesk.createFolder(
+            parentFolderId: tests.id,
+            name: name('vertrouwelijk'),
+            confidential: true,
+          ),
+          throwsA(
+            isA<SmartschoolIntradeskAddRefusedError>()
+                .having(
+                  (e) => e.reason,
+                  'reason',
+                  IntradeskAddRefusalReason.ordinaryParent,
+                )
+                .having((e) => e.statusCode, 'statusCode', isNull)
+                .having((e) => e.parentFolderId, 'parentFolderId', tests.id)
+                .having((e) => e.parent?.id, 'parent.id', tests.id)
+                .having(
+                  (e) => e.parent?.confidential,
+                  'parent.confidential',
+                  isFalse,
+                )
+                .having(
+                  (e) => e.capabilities.canAdd,
+                  'capabilities.canAdd',
+                  isTrue,
+                ),
+          ),
+        );
+        expect(run.guard.violations, isEmpty);
+        final listed = await intradesk.getFolderListing(tests.id);
+        expect(
+          listed.folders.where((f) => f.name.contains('vertrouwelijk')),
+          isEmpty,
+        );
+      });
+
       test('getFolder and getFolderPath read the new folder by its ID alone '
           '(#132)', () async {
         final made0 = folder;
@@ -364,6 +410,38 @@ void main() {
           intradesk.getFolderPath(inTrash.id),
           throwsA(isA<SmartschoolIntradeskFolderNotFoundError>()),
         );
+      });
+
+      test('a create in the folder in the trash: the read of the parent does '
+          'not find it, and nothing is sent (#138)', () async {
+        final inTrash = folder;
+        expect(inTrash, isNotNull, reason: 'the first test made a folder');
+        expect(trashed, contains(inTrash!.id));
+
+        // LiveWireGuard would refuse it on the wire too (no write in a
+        // folder of the run that is in the trash), as a violation.
+        await expectLater(
+          intradesk.createWeblink(
+            parentFolderId: inTrash.id,
+            name: name('link in de prullenbak'),
+            url: 'https://example.com/dartschool',
+          ),
+          throwsA(
+            isA<SmartschoolIntradeskFolderNotFoundError>()
+                .having((e) => e.folderId, 'folderId', inTrash.id)
+                .having((e) => e.statusCode, 'statusCode', 200)
+                .having(
+                  (e) => e.message,
+                  'message',
+                  allOf(
+                    startsWith('createWeblink:'),
+                    contains('trash'),
+                    endsWith('Nothing was sent.'),
+                  ),
+                ),
+          ),
+        );
+        expect(run.guard.violations, isEmpty);
       });
     },
   );

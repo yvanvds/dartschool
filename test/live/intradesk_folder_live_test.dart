@@ -1,7 +1,8 @@
 // The live reads of a folder's own entry by its ID alone (#132):
 // IntradeskService.getFolderParentIds, getFolder and getFolderPath, compared
-// with the listings that hold the folders, against the live Intradesk of
-// credentials.yml.
+// with the listings that hold the folders, and of the root's capabilities
+// (getRootCapabilities, the Intradesk page, #138), against the live
+// Intradesk of credentials.yml.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -11,7 +12,8 @@
 // It only reads (GETs): the root listing, the listing of "2. SMA" (the
 // folder that holds the live suite's test folder, "tests"), and of one
 // folder in it with subfolders, and the parents of those folders, of a
-// made-up ID and of a file. The last test checks that the library did not
+// made-up ID and of a file; and the Intradesk page (`GET /intradesk`) for
+// the root's capabilities. The last test checks that the library did not
 // even try an Intradesk request that is not a GET. What it does with a
 // folder in the trash needs a
 // folder moved there, so intradesk_write_live_test.dart tries that, with a
@@ -197,6 +199,22 @@ void main() {
         await expectLater(
           intradesk.getFolderParentIds(file.id),
           notFound(file.id),
+        );
+      });
+
+      test('getRootCapabilities reads the root\'s capabilities from the '
+          'Intradesk page (#138)', () async {
+        final capabilities = await intradesk.getRootCapabilities();
+
+        // As the page's configuration had them for the live account (an
+        // administrator) on 2026-10-07: it may add at the root, and the
+        // platform allows no confidential folder there.
+        expect(capabilities.canAdd, isTrue);
+        expect(capabilities.canManage, isTrue);
+        expect(capabilities.canAddConfidentialFolder, isFalse);
+        expect(
+          attempts.requests.where((r) => r == 'GET /intradesk'),
+          hasLength(1),
         );
       });
 

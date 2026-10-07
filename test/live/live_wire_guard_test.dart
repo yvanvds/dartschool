@@ -106,6 +106,13 @@ const _intradeskFolders = {
   _otherRoot: [(_otherTests, 'tests')],
 };
 
+/// The fields of a folder of a listing that the creates read before they
+/// send anything (#138): an ordinary folder the account may add to.
+const _intradeskFolderFields =
+    ',"color":"yellow","confidential":false,"inConfidentialFolder":false,'
+    '"capabilities":{"canManage":true,"canAdd":true,"canSeeHistory":true,'
+    '"canSeeViewHistory":true}';
+
 /// An Intradesk item as Smartschool answers it (#128), with [extra] keys.
 String _intradeskItem(
   String id,
@@ -238,13 +245,33 @@ class _Smartschool implements HttpClientAdapter {
         line,
   ];
 
+  /// The folders it made, by ID, as (parent, name) (#138): its listings and
+  /// the parents hold them until they are moved to the trash.
+  final Map<String, (String, String)> _intradeskMadeFolders = {};
+
+  /// The IDs of the Intradesk items it moved to the trash.
+  final Set<String> _intradeskTrashed = {};
+
+  /// The parent of the Intradesk folder [id] (`''` at the root), or `null`
+  /// for an ID it has no folder for.
+  String? _intradeskParentOf(String id) {
+    for (final MapEntry(key: listed, value: folders)
+        in _intradeskFolders.entries) {
+      if (folders.any((f) => f.$1 == id)) return listed;
+    }
+    return _intradeskMadeFolders[id]?.$1;
+  }
+
   /// Answers an Intradesk request or a request for an upload directory
-  /// (#128): the listings of [_intradeskFolders], a new directory, and the
-  /// creates and moves to the trash as Smartschool answers them (a move to
-  /// the trash of an ID it has no such item for with `404`, #133).
+  /// (#128): the listings of [_intradeskFolders] and of the folders it made,
+  /// the parents of a folder (`[]` for one in the trash, as Smartschool,
+  /// #132), a new directory, and the creates and moves to the trash as
+  /// Smartschool answers them (a move to the trash of an ID it has no such
+  /// item for with `404`, #133).
   ResponseBody _intradeskAnswer(RequestOptions options) {
     final path = options.uri.path;
     const listing = '$_intradesk/directory-listing/forTreeOnlyFolders';
+    const notFound = '{"status":404,"title":"Not Found","detail":"","type":""}';
     if (options.method == 'GET') {
       if (path == '/upload/api/v1/get-upload-directory') {
         return _answer(
@@ -252,14 +279,41 @@ class _Smartschool implements HttpClientAdapter {
           contentType: 'application/json',
         );
       }
+      final parents = RegExp(
+        '^$_intradesk/folders/([^/]+)/parents\$',
+      ).firstMatch(path);
+      if (parents != null) {
+        final id = parents.group(1)!;
+        if (_intradeskTrashed.contains(id)) {
+          return _answer('[]', contentType: 'application/json');
+        }
+        final chain = <String>[];
+        for (var at = _intradeskParentOf(id); at != null && at.isNotEmpty;) {
+          chain.insert(0, at);
+          at = _intradeskParentOf(at);
+        }
+        if (_intradeskParentOf(id) == null) {
+          return _answer(
+            notFound,
+            contentType: 'application/problem+json',
+            status: 404,
+          );
+        }
+        return _answer(jsonEncode(chain), contentType: 'application/json');
+      }
       final listed = path == listing
           ? ''
           : path.startsWith('$listing/')
           ? path.substring(listing.length + 1)
           : null;
-      final folders = _intradeskFolders[listed] ?? const [];
+      final folders = [
+        ...?_intradeskFolders[listed],
+        for (final MapEntry(key: id, value: (parent, name))
+            in _intradeskMadeFolders.entries)
+          if (parent == listed && !_intradeskTrashed.contains(id)) (id, name),
+      ];
       return _answer(
-        '{"folders":[${[for (final (id, name) in folders) _intradeskItem(id, name, listed ?? '', ',"color":"yellow"')].join(',')}],'
+        '{"folders":[${[for (final (id, name) in folders) _intradeskItem(id, name, listed ?? '', _intradeskFolderFields)].join(',')}],'
         '"files":[],"weblinks":[]}',
         contentType: 'application/json',
       );
@@ -270,6 +324,7 @@ class _Smartschool implements HttpClientAdapter {
         'bbbb${(++_made).toString().padLeft(4, '0')}-0000-4000-8000-000000000000';
     if (path == '$_intradesk/folders/') {
       _intradeskKinds[id] = 'folders';
+      _intradeskMadeFolders[id] = (parent, '${body['name']}');
       return _answer(
         _intradeskItem(id, '${body['name']}', parent, ',"color":"yellow"'),
         contentType: 'application/json',
@@ -303,10 +358,11 @@ class _Smartschool implements HttpClientAdapter {
     ).firstMatch(path);
     if (trash != null) {
       if (_intradeskKinds[trash.group(2)] == trash.group(1)) {
+        _intradeskTrashed.add(trash.group(2)!);
         return _answer('', status: 204);
       }
       return _answer(
-        '{"status":404,"title":"Not Found","detail":"","type":""}',
+        notFound,
         contentType: 'application/problem+json',
         status: 404,
       );
@@ -611,6 +667,27 @@ Dio _dio(_Smartschool server, LiveWireGuard guard) {
   addTearDown(dio.close);
   return dio;
 }
+
+/// The create of a folder named [name] in [parent], sent bare through
+/// [guard] as `IntradeskService.createFolder` sends it, without its read of
+/// the parent: since #138 the service reads the parent first and refuses a
+/// parent it does not find (a made-up ID, a folder in the trash) itself,
+/// and that read lists folders through the guard. The guard must refuse
+/// such a create on the wire as well.
+Future<Response<String>> _bareFolderCreate(
+  _Smartschool server,
+  LiveWireGuard guard, {
+  required String parent,
+  required String name,
+}) => _dio(server, guard).post<String>(
+  '$_intradesk/folders/',
+  data: {
+    'name': name,
+    'color': 'yellow',
+    'parentFolderId': parent,
+    'platform': {'id': 49},
+  },
+);
 
 SendMessageParams _params({
   List<MessageSearchUser> to = const [_own],
@@ -1128,8 +1205,10 @@ void main() {
       // Not listed through the guard yet, though the run allows it.
       guard.allowIntradeskFolder(_tests);
       await refused(
-        intradesk.createFolder(
-          parentFolderId: _tests,
+        _bareFolderCreate(
+          server,
+          guard,
+          parent: _tests,
           name: _intradeskName('a'),
         ),
       );
@@ -1145,7 +1224,7 @@ void main() {
         ),
       );
       await refused(
-        intradesk.createFolder(parentFolderId: '', name: _intradeskName('c')),
+        _bareFolderCreate(server, guard, parent: '', name: _intradeskName('c')),
       );
       await refused(
         intradesk.createFolder(
@@ -1281,8 +1360,10 @@ void main() {
         await refused(intradesk.trashFolder(folder.id));
         // A folder the run trashed is no longer one it may write in.
         await refused(
-          intradesk.createFolder(
-            parentFolderId: folder.id,
+          _bareFolderCreate(
+            server,
+            guard,
+            parent: folder.id,
             name: _intradeskName('in de prullenbak'),
           ),
         );
@@ -1348,8 +1429,10 @@ void main() {
       await notFound(intradesk.trashFolder(madeUp));
       await refused(intradesk.trashFolder(madeUp));
       await refused(
-        intradesk.createFolder(
-          parentFolderId: madeUp,
+        _bareFolderCreate(
+          server,
+          guard,
+          parent: madeUp,
           name: _intradeskName('in een verzonnen map'),
         ),
       );

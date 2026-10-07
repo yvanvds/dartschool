@@ -1,7 +1,12 @@
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 
-import 'models/intradesk_models.dart' show IntradeskItemKind;
+import 'models/intradesk_models.dart'
+    show
+        IntradeskAddRefusalReason,
+        IntradeskFolder,
+        IntradeskFolderCapabilities,
+        IntradeskItemKind;
 import 'models/lesson_content_models.dart'
     show LessonContentItem, LessonContentType;
 import 'models/message_models.dart' show BoxType;
@@ -602,10 +607,14 @@ class SmartschoolJsonError extends SmartschoolDownloadError {
 ///
 /// The creates of `IntradeskService` throw it too (#128), for a parent
 /// folder Smartschool knows no folder for: `createFolder`, `createWeblink`
-/// and `uploadFiles`. Smartschool answers such a create with the same bare
-/// `500` (seen live, 2026-10-05, for a folder in a made-up parent), and the
-/// service asks for the parents of the parent folder the same way. Nothing
-/// was made then; [folderId] is the parent folder's ID.
+/// and `uploadFiles`. Since #138 they read the parent first
+/// (`IntradeskService.getFolder`), so they throw it from that read, with its
+/// [statusCode] (`404` or `200`, below), before anything of the write is
+/// sent; also for a parent in Intradesk's trash. A parent that is gone after
+/// that read: Smartschool answers the create with the same bare `500` (seen
+/// live, 2026-10-05, for a folder in a made-up parent), and the service asks
+/// for the parents of the parent folder the same way. Nothing was made then;
+/// [folderId] is the parent folder's ID.
 ///
 /// The reads of a folder's own entry throw it too (#132):
 /// `IntradeskService.getFolderParentIds`, `getFolder` and `getFolderPath`.
@@ -659,7 +668,9 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
 ///   an address that Intradesk refuses after all);
 /// - `createFolder(confidential: true)` in an ordinary folder: "In een gewone
 ///   map kan je enkel gewone mappen toevoegen. Vertrouwelijke mappen kan je
-///   hier niet toevoegen."
+///   hier niet toevoegen." (Since #138 the service does not send that: it
+///   reads the parent first and throws a
+///   [SmartschoolIntradeskAddRefusedError] instead.)
 ///
 /// `uploadFiles` throws it when Intradesk refuses to take the files of the
 /// upload directory, such as a directory that holds no files (seen live:
@@ -670,6 +681,14 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
 /// [SmartschoolIntradeskItemNotFoundError] for Intradesk's `404`: it has no
 /// item of that kind with that ID (#133).
 ///
+/// The creates throw its subclass [SmartschoolIntradeskAddRefusedError]
+/// when the service refused the write itself, after reading the parent
+/// folder and **before sending it** (#138): the user may not add to it
+/// (`canAdd`), or it is of the wrong kind (a confidential folder in an
+/// ordinary one, which Intradesk answered with the `400` above before, or an
+/// ordinary folder in a confidential one). There is no answer of Intradesk
+/// then, so its [statusCode] is `null`.
+///
 /// The session was accepted: signing in again does not help. A session that
 /// Smartschool does not accept for the write is a
 /// [SmartschoolSessionExpiredError] instead (nothing was made either: the
@@ -679,8 +698,10 @@ class SmartschoolIntradeskFolderNotFoundError extends SmartschoolDownloadError {
 /// failures, a bare HTTP `500`, is a
 /// [SmartschoolIntradeskSaveUnconfirmedError].
 class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
-  /// The HTTP status of Intradesk's answer (`400` to `499`).
-  final int statusCode;
+  /// The HTTP status of Intradesk's answer (`400` to `499`); `null` when the
+  /// service refused the write itself, before sending it
+  /// ([SmartschoolIntradeskAddRefusedError], #138).
+  final int? statusCode;
 
   /// Intradesk's reasons, in its own words, in its order; empty when it
   /// gave none (a bare `{"status":400,"title":"Bad Request"}`).
@@ -737,6 +758,68 @@ class SmartschoolIntradeskItemNotFoundError
     required this.id,
     super.violations,
   }) : super(statusCode: 404);
+}
+
+/// Thrown by `IntradeskService.createFolder`, `createWeblink` and
+/// `uploadFiles` when the folder they add to does not allow what they add,
+/// as Intradesk's web client tells it (#138). **Nothing was sent**: the
+/// service read the folder first and refused the write before any request
+/// of it (also before an upload step).
+///
+/// Which rule refused is the [reason] (an app can switch on it), with the
+/// folder as the service read it: [parent] (its entry, from
+/// `IntradeskService.getFolder`; `null` at the root) and the [capabilities]
+/// the rule looked at (the folder's, or at the root the platform's, from
+/// `IntradeskService.getRootCapabilities`). The [message] says the same for
+/// a log and ends with "Nothing was sent.".
+/// - [IntradeskAddRefusalReason.cannotAdd]: the user may not add to the
+///   folder (`canAdd` false);
+/// - [IntradeskAddRefusalReason.cannotAddConfidentialFolder]: a
+///   confidential folder at the root, which the platform does not allow;
+/// - [IntradeskAddRefusalReason.ordinaryParent]: a confidential folder in an
+///   ordinary folder, which Intradesk refused with HTTP `400` before #138
+///   (seen live, 2026-10-05);
+/// - [IntradeskAddRefusalReason.confidentialParent]: an ordinary folder in a
+///   confidential folder.
+///
+/// These are the web client's rules, which offers nothing else: Intradesk's
+/// own answer was seen live only for [IntradeskAddRefusalReason.ordinaryParent]
+/// (the live account is an administrator, with `canAdd` on every folder it
+/// sees, none of them confidential).
+///
+/// A [SmartschoolIntradeskWriteRefusedError] (as the `400` for a
+/// confidential folder in an ordinary one was before), so a `catch` of that
+/// type still catches it, with [statusCode] `null`: Intradesk did not
+/// answer, nothing was sent to it. Not thrown for a parent that the read
+/// does not find: that is a [SmartschoolIntradeskFolderNotFoundError], also
+/// before anything was sent.
+class SmartschoolIntradeskAddRefusedError
+    extends SmartschoolIntradeskWriteRefusedError {
+  /// Which rule refused the write.
+  final IntradeskAddRefusalReason reason;
+
+  /// The ID of the folder the write added to, as the caller gave it: `''`
+  /// for the root.
+  final String parentFolderId;
+
+  /// The folder the write added to, as the service read it
+  /// (`IntradeskService.getFolder`); `null` at the root, which has no entry.
+  final IntradeskFolder? parent;
+
+  /// The capabilities the rule looked at: those of [parent], or at the root
+  /// the platform's (`IntradeskService.getRootCapabilities`).
+  final IntradeskFolderCapabilities capabilities;
+
+  const SmartschoolIntradeskAddRefusedError(
+    super.message, {
+    required this.reason,
+    required this.parentFolderId,
+    required this.capabilities,
+    this.parent,
+  }) : super(statusCode: null);
+
+  @override
+  String toString() => '$runtimeType(${reason.name}): $message';
 }
 
 /// Thrown by the writes of `IntradeskService` (#128) when the write went out

@@ -27,6 +27,15 @@
 // `{"status":404,"title":"Not Found","detail":"","type":""}`
 // (`application/problem+json`), and moves nothing.
 //
+// Since #138 the creates read the folder they add to first, and add only
+// what Intradesk's web client offers there (its "Toevoegen" button and
+// right-click menu, read in its bundle on 2026-10-07): the fake answers that
+// read for the test folder by default, as Smartschool answered it live
+// (`GET .../folders/{id}/parents`, then the listing of the folder above),
+// and the root's with the Intradesk page (`GET /intradesk`), whose
+// configuration carries the platform's capabilities in a `JSON.parse('...')`
+// script, escaped as the live page escapes it (trimmed capture, 2026-10-07).
+//
 // The live test of the same writes is test/live/intradesk_write_live_test.dart.
 import 'dart:convert';
 import 'dart:io';
@@ -65,6 +74,18 @@ const _takeFiles = 'POST $_api/files/upload';
 /// The folder the writes go into ("tests").
 const _parent = 'aaaa1111-1111-4111-b111-111111111111';
 
+/// The folder above it, at the root ("2. SMA").
+const _top = 'aaaa0000-0000-4000-b000-000000000000';
+
+/// The read of [_parent] before a create (#138): its parents, then the
+/// listing of the folder above it.
+const _parentsOfParent = 'GET $_api/folders/$_parent/parents';
+const _listingOfTop = 'GET $_api/directory-listing/forTreeOnlyFolders/$_top';
+const _readParent = [_parentsOfParent, _listingOfTop];
+
+/// The read of the root's capabilities before a create there (#138).
+const _intradeskPage = 'GET /intradesk';
+
 /// The folder, weblink and file Intradesk makes.
 const _newFolder = 'ffff1111-1111-4111-b111-111111111111';
 const _newWeblink = 'ffff2222-2222-4222-b222-222222222222';
@@ -78,19 +99,106 @@ const _dates =
     '"dateChanged":"2026-10-05T20:09:03+02:00"';
 
 /// Intradesk's answer to the create of a folder (trimmed capture): the
-/// folder, without `hasChildren`.
+/// folder, without `hasChildren`. A folder of a listing has the same fields,
+/// with `hasChildren`.
 String _folder({
   String name = 'dartschool test map',
   String color = 'green',
   String parent = _parent,
   String id = _newFolder,
+  bool confidential = false,
+  bool canAdd = true,
 }) =>
     '{"id":"$id",$_platform,"name":"$name","color":"$color",'
-    '"state":"active","visible":true,"confidential":false,'
+    '"state":"active","visible":true,"confidential":$confidential,'
     '"officeTemplateFolder":false,"parentFolderId":"$parent",$_dates,'
-    '"isFavourite":false,"inConfidentialFolder":false,"capabilities":'
-    '{"canManage":true,"canAdd":true,"canSeeHistory":true,'
-    '"canSeeViewHistory":true}}';
+    '"isFavourite":false,"inConfidentialFolder":false,'
+    '"capabilities":{"canManage":$canAdd,"canAdd":$canAdd,'
+    '"canSeeHistory":true,"canSeeViewHistory":true}}';
+
+/// The listing of [_top] (trimmed capture): the test folder, which the user
+/// may add to ([canAdd]) and which is ordinary unless [confidential].
+String _topListing({bool canAdd = true, bool confidential = false}) =>
+    '{"folders":[${_folder(id: _parent, name: 'tests', parent: _top, color: 'yellow', canAdd: canAdd, confidential: confidential)}],'
+    '"files":[],"weblinks":[]}';
+
+/// [json] as the Smartschool pages hand it to their scripts in
+/// `JSON.parse('...')`: a JavaScript string with every character but
+/// letters, digits, `,`, `.` and `_` as `\uXXXX`, a `\` as `\\` and a `/` as
+/// `\/` (as the live Intradesk page has it, 2026-10-07).
+String _jsLiteral(String json) => json.runes.map((rune) {
+  final char = String.fromCharCode(rune);
+  if (RegExp(r'[A-Za-z0-9,._]').hasMatch(char)) return char;
+  if (char == r'\') return r'\\';
+  if (char == '/') return r'\/';
+  return '\\u${rune.toRadixString(16).toUpperCase().padLeft(4, '0')}';
+}).join();
+
+/// The Intradesk page (`GET /intradesk`, trimmed capture, 2026-10-07): the
+/// configurations it hands its scripts, the platform's capabilities in the
+/// one of the Intradesk module, with a translation that holds the escapes
+/// of `\` and `"` (`De karakters / : * ? " \ < > |`).
+String _intradeskPageWith({
+  bool canAdd = true,
+  bool canAddConfidentialFolder = false,
+}) {
+  String script(String json) =>
+      '<script type="text/javascript" nonce="abc">\$.extend(true, SMSC, '
+      "JSON.parse('${_jsLiteral(json)}'));</script>";
+  final module = jsonEncode({
+    'intradesk': {
+      'module_title': 'Intradesk',
+      'lng_filename_not_allowed':
+          r'De karakters / : * ? " \ < > | zijn niet toegestaan.',
+    },
+    'vars': {
+      'config': {
+        'allowOtherPlatforms': true,
+        'ownPlatform': {
+          'id': 49,
+          'name': 'Testschool',
+          'capabilities': {
+            'canManage': canAdd,
+            'canAlterConfidentialState': false,
+            'canAdd': canAdd,
+            'canAddConfidentialFolder': canAddConfidentialFolder,
+          },
+        },
+        'communities': [
+          {
+            'id': 3723,
+            'name': 'Scholengemeenschap',
+            'platforms': [
+              {
+                'id': 50,
+                'name': 'Andere school',
+                'capabilities': {
+                  'canManage': false,
+                  'canAlterConfidentialState': false,
+                  'canAdd': false,
+                  'canAddConfidentialFolder': false,
+                },
+              },
+            ],
+          },
+        ],
+        'daysRevisionsSaved': 30,
+        'daysTrashSaved': 30,
+        'userIsAdmin': true,
+      },
+    },
+  }).replaceAll('/', r'\/');
+  return '<!DOCTYPE html><html><head><title>Testschool - Smartschool</title>'
+      '</head><body><div id="smscMain"></div>'
+      '<script type="text/javascript" nonce="abc">var SMSC = SMSC || {};'
+      '</script>'
+      '${script('{"vars":{"showNotifyAlerts":true}}')}'
+      "<script type=\"text/javascript\" nonce=\"abc\">\$.extend(true, SMSC, "
+      "JSON.parse('null'));</script>"
+      '${script(module)}'
+      '${script('{"wopiConfig":{"allowCreate":true}}')}'
+      '</body></html>';
+}
 
 /// Intradesk's answer to the create of a weblink (trimmed capture).
 String _weblink({
@@ -211,13 +319,20 @@ class _Smartschool implements HttpClientAdapter {
   List<String> get log => [for (final r in requests) r.label];
 
   /// The requests that are not part of the login and not the platform ID.
-  List<String> get writes => [
+  List<String> get calls => [
     for (final label in log)
       if (label != 'GET /course-list/api/v1/courses' &&
           !label.endsWith('/login') &&
           !label.contains('/2fa') &&
           label != 'GET /')
         label,
+  ];
+
+  /// The [calls] but the reads of the test folder and of the root before a
+  /// create (#138): the steps of the write.
+  List<String> get writes => [
+    for (final label in calls)
+      if (!_readParent.contains(label) && label != _intradeskPage) label,
   ];
 
   /// The JSON bodies of the requests with [label].
@@ -369,7 +484,17 @@ void main() {
       cacheDir: tempCacheDir(),
     );
     addTearDown(client.dispose);
-    final server = _Smartschool(answers, failures);
+    // The read of the test folder and of the root before a create (#138),
+    // as Smartschool answers them for an administrator, unless the test
+    // answers them itself.
+    final server = _Smartschool({
+      _parentsOfParent: [_json('["$_top"]')],
+      _listingOfTop: [_json(_topListing())],
+      _intradeskPage: [
+        (status: 200, body: _intradeskPageWith(), contentType: 'text/html'),
+      ],
+      ...answers,
+    }, failures);
     client.dio.httpClientAdapter = server;
     return (server, IntradeskService(client));
   }
@@ -391,7 +516,9 @@ void main() {
         color: 'green',
       );
 
-      expect(server.writes, [_createFolder]);
+      // The test folder is read first (#138): its parents, then the listing
+      // of the folder above it, which holds its entry.
+      expect(server.calls, [..._readParent, _createFolder]);
       expect(server.bodiesOf(_createFolder), [
         {
           'name': 'dartschool test map',
@@ -441,7 +568,8 @@ void main() {
       expect(folder.name, 'dartschool test map (1)');
     });
 
-    test('at the root, sends "" as the parent', () async {
+    test('at the root, reads the root\'s capabilities (the Intradesk page, '
+        '#138) and sends "" as the parent', () async {
       final (server, intradesk) = await serve({
         _createFolder: [_json(_folder(parent: ''), status: 201)],
       });
@@ -451,6 +579,7 @@ void main() {
         name: 'Nieuwe map',
       );
 
+      expect(server.calls, [_intradeskPage, _createFolder]);
       expect(
         (server.bodiesOf(_createFolder).single! as Map)['parentFolderId'],
         '',
@@ -458,12 +587,44 @@ void main() {
       expect(folder.parentFolderId, '');
     });
 
-    test('a confidential folder goes to folders/as-confidential; Intradesk '
-        'refuses it in an ordinary folder with its reason', () async {
+    test('a confidential folder in a confidential folder goes to '
+        'folders/as-confidential (#128, #138)', () async {
+      final (server, intradesk) = await serve({
+        _listingOfTop: [_json(_topListing(confidential: true))],
+        _createConfidential: [
+          _json(_folder(name: 'dartschool vertrouwelijk'), status: 201),
+        ],
+      });
+
+      final folder = await intradesk.createFolder(
+        parentFolderId: _parent,
+        name: 'dartschool vertrouwelijk',
+        confidential: true,
+      );
+
+      expect(server.calls, [..._readParent, _createConfidential]);
+      expect(server.bodiesOf(_createConfidential), [
+        {
+          'name': 'dartschool vertrouwelijk',
+          'color': 'yellow',
+          'parentFolderId': _parent,
+          'platform': {'id': 49},
+        },
+      ]);
+      expect(folder.name, 'dartschool vertrouwelijk');
+    });
+
+    test('a 4xx from folders/as-confidential is refused with Intradesk\'s '
+        'reason', () async {
+      // Intradesk's reason for a confidential folder in an ordinary one
+      // (seen live, 2026-10-05), which the service no longer sends (#138);
+      // here the read said the parent was confidential, as when it changed
+      // between the read and the create.
       const reason =
           'In een gewone map kan je enkel gewone mappen toevoegen. '
           'Vertrouwelijke mappen kan je hier niet toevoegen.';
       final (server, intradesk) = await serve({
+        _listingOfTop: [_json(_topListing(confidential: true))],
         _createConfidential: [
           _problem(400, 'Bad Request', [reason]),
         ],
@@ -478,6 +639,7 @@ void main() {
         throwsA(
           allOf(
             _refused(status: 400, violations: [reason]),
+            isNot(isA<SmartschoolIntradeskAddRefusedError>()),
             isA<SmartschoolIntradeskWriteRefusedError>().having(
               (e) => e.message,
               'message',
@@ -519,12 +681,12 @@ void main() {
       expect(server.log, isEmpty);
     });
 
-    test('a parent Smartschool knows no folder for: the bare 500 is told '
-        'apart with the parents of the parent (#37), as a '
-        'SmartschoolIntradeskFolderNotFoundError', () async {
+    test('a parent Smartschool knows no folder for: the read of the parent '
+        '(#138) finds none (its parents answer 404), a '
+        'SmartschoolIntradeskFolderNotFoundError before the create is '
+        'sent', () async {
       const unknown = '00000000-0000-4000-8000-000000000000';
       final (server, intradesk) = await serve({
-        _createFolder: [_bareServerError],
         'GET $_api/folders/$unknown/parents': [_problem(404, 'Not Found')],
       });
 
@@ -534,24 +696,51 @@ void main() {
           name: 'dartschool onbekende ouder',
         ),
         throwsA(
-          isA<SmartschoolIntradeskFolderNotFoundError>().having(
-            (e) => e.folderId,
-            'folderId',
-            unknown,
-          ),
+          isA<SmartschoolIntradeskFolderNotFoundError>()
+              .having((e) => e.folderId, 'folderId', unknown)
+              .having((e) => e.statusCode, 'statusCode', 404)
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  startsWith(
+                    'createFolder: the folder to add to was not '
+                    'found.',
+                  ),
+                  endsWith('Nothing was sent.'),
+                ),
+              ),
         ),
       );
-      expect(server.writes, [
-        _createFolder,
-        'GET $_api/folders/$unknown/parents',
-      ]);
+      expect(server.calls, ['GET $_api/folders/$unknown/parents']);
+    });
+
+    test('a parent gone after its read: the bare 500 is told apart with the '
+        'parents of the parent (#37), as a '
+        'SmartschoolIntradeskFolderNotFoundError', () async {
+      final (server, intradesk) = await serve({
+        _parentsOfParent: [_json('["$_top"]'), _problem(404, 'Not Found')],
+        _createFolder: [_bareServerError],
+      });
+
+      await expectLater(
+        intradesk.createFolder(
+          parentFolderId: _parent,
+          name: 'dartschool weggehaalde ouder',
+        ),
+        throwsA(
+          isA<SmartschoolIntradeskFolderNotFoundError>()
+              .having((e) => e.folderId, 'folderId', _parent)
+              .having((e) => e.statusCode, 'statusCode', 500),
+        ),
+      );
+      expect(server.calls, [..._readParent, _createFolder, _parentsOfParent]);
     });
 
     test('a bare 500 for a parent that is a folder is not taken for nothing '
         'made: unconfirmed', () async {
       final (server, intradesk) = await serve({
         _createFolder: [_bareServerError],
-        'GET $_api/folders/$_parent/parents': [_json('[]')],
       });
 
       await expectLater(
@@ -564,10 +753,7 @@ void main() {
           ),
         ),
       );
-      expect(server.writes, [
-        _createFolder,
-        'GET $_api/folders/$_parent/parents',
-      ]);
+      expect(server.calls, [..._readParent, _createFolder, _parentsOfParent]);
     });
 
     test('an answer that is not the folder made is unconfirmed', () async {
@@ -644,7 +830,7 @@ void main() {
         url: 'https://example.com/dartschool',
       );
 
-      expect(server.writes, [_createWeblink]);
+      expect(server.calls, [..._readParent, _createWeblink]);
       expect(server.bodiesOf(_createWeblink), [
         {
           'name': 'dartschool test link',
@@ -751,10 +937,10 @@ void main() {
       expect(server.log, isEmpty);
     });
 
-    test('a parent Smartschool knows no folder for', () async {
+    test('a parent Smartschool knows no folder for: found out by the read '
+        'of the parent (#138), before the create is sent', () async {
       const unknown = '00000000-0000-4000-8000-000000000000';
-      final (_, intradesk) = await serve({
-        _createWeblink: [_bareServerError],
+      final (server, intradesk) = await serve({
         'GET $_api/folders/$unknown/parents': [_problem(404, 'Not Found')],
       });
 
@@ -764,8 +950,13 @@ void main() {
           name: 'dartschool link',
           url: 'https://example.com',
         ),
-        throwsA(isA<SmartschoolIntradeskFolderNotFoundError>()),
+        throwsA(
+          isA<SmartschoolIntradeskFolderNotFoundError>()
+              .having((e) => e.folderId, 'folderId', unknown)
+              .having((e) => e.statusCode, 'statusCode', 404),
+        ),
       );
+      expect(server.calls, ['GET $_api/folders/$unknown/parents']);
     });
 
     test('a session refused for the create is not retried', () async {
@@ -816,7 +1007,14 @@ void main() {
         filePaths: [first, second],
       );
 
-      expect(server.writes, [_uploadDirectory, _upload, _upload, _takeFiles]);
+      // The test folder is read before the upload steps (#138).
+      expect(server.calls, [
+        ..._readParent,
+        _uploadDirectory,
+        _upload,
+        _upload,
+        _takeFiles,
+      ]);
       expect(server.uploads, [
         ('a1004143bdd73ab44414d20918b3dd', 'dartschool-test.txt'),
         ('a1004143bdd73ab44414d20918b3dd', 'toets #1.pdf'),
@@ -1071,6 +1269,433 @@ void main() {
         );
       }
       expect(server.log, isEmpty);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The check of the parent folder (#138)
+  // ---------------------------------------------------------------------------
+
+  group('the creates check the folder they add to first (#138)', () {
+    /// The service refused the write itself, after reading the parent:
+    /// nothing was sent.
+    Matcher addRefused(
+      IntradeskAddRefusalReason reason, {
+      String parentFolderId = _parent,
+      Object? parent = anything,
+      Object? message = anything,
+    }) => allOf(
+      isNot(isA<SmartschoolIntradeskSaveUnconfirmedError>()),
+      // A refusal of the write, as Intradesk's 400 for a confidential
+      // folder in an ordinary one was before: existing catches catch it.
+      isA<SmartschoolIntradeskWriteRefusedError>()
+          .having((e) => e.statusCode, 'statusCode', isNull)
+          .having((e) => e.violations, 'violations', isEmpty),
+      isA<SmartschoolIntradeskAddRefusedError>()
+          .having((e) => e.reason, 'reason', reason)
+          .having((e) => e.parentFolderId, 'parentFolderId', parentFolderId)
+          .having((e) => e.parent, 'parent', parent)
+          .having((e) => e.message, 'message', message)
+          .having((e) => e.message, 'message', endsWith('Nothing was sent.'))
+          .having((e) => '$e', 'toString', contains('(${reason.name})')),
+    );
+
+    final isTheTestFolder = isA<IntradeskFolder>()
+        .having((f) => f.id, 'id', _parent)
+        .having((f) => f.name, 'name', 'tests');
+
+    test('a folder the user may not add to (canAdd false): no folder, '
+        'weblink or file, refused before anything of the write is sent '
+        '(also no upload step)', () async {
+      final (server, intradesk) = await serve({
+        _listingOfTop: [_json(_topListing(canAdd: false))],
+      });
+      final path = file('dartschool-test.txt');
+
+      for (final (what, write) in [
+        (
+          'folder',
+          () =>
+              intradesk.createFolder(parentFolderId: _parent, name: 'Toetsen'),
+        ),
+        (
+          'confidential folder',
+          () => intradesk.createFolder(
+            parentFolderId: _parent,
+            name: 'Toetsen',
+            confidential: true,
+          ),
+        ),
+        (
+          'weblink',
+          () => intradesk.createWeblink(
+            parentFolderId: _parent,
+            name: 'Oefenplatform',
+            url: 'https://example.com',
+          ),
+        ),
+        (
+          'file',
+          () =>
+              intradesk.uploadFiles(parentFolderId: _parent, filePaths: [path]),
+        ),
+      ]) {
+        await expectLater(
+          write(),
+          throwsA(
+            allOf(
+              addRefused(
+                IntradeskAddRefusalReason.cannotAdd,
+                parent: isTheTestFolder,
+                message: allOf(
+                  contains('may not add to folder $_parent ("tests")'),
+                  contains('canAdd is false'),
+                ),
+              ),
+              isA<SmartschoolIntradeskAddRefusedError>().having(
+                (e) => e.capabilities.canAdd,
+                'capabilities.canAdd',
+                isFalse,
+              ),
+            ),
+          ),
+          reason: what,
+        );
+      }
+      // Only the reads of the parent, one per write.
+      expect(server.calls, [for (var i = 0; i < 4; i++) ..._readParent]);
+    });
+
+    test('a confidential folder in an ordinary folder, which Intradesk '
+        'refuses with HTTP 400 (seen live), is not sent', () async {
+      final (server, intradesk) = await serve({});
+
+      await expectLater(
+        intradesk.createFolder(
+          parentFolderId: _parent,
+          name: 'dartschool vertrouwelijk',
+          confidential: true,
+        ),
+        throwsA(
+          addRefused(
+            IntradeskAddRefusalReason.ordinaryParent,
+            parent: isTheTestFolder.having(
+              (f) => f.confidential,
+              'confidential',
+              isFalse,
+            ),
+            message: allOf(
+              startsWith(
+                'createFolder: folder $_parent ("tests") is an '
+                'ordinary folder',
+              ),
+              contains('HTTP 400'),
+            ),
+          ),
+        ),
+      );
+      expect(server.calls, _readParent);
+    });
+
+    test('an ordinary folder in a confidential folder is not sent; a '
+        'weblink and a file are (the web client offers them there)', () async {
+      final (server, intradesk) = await serve({
+        _listingOfTop: [_json(_topListing(confidential: true))],
+        _createWeblink: [_json(_weblink(), status: 201)],
+        _uploadDirectory: [_json('{"uploadDir":"dir1"}')],
+        _upload: [_json('true')],
+        _takeFiles: [
+          _json(_uploaded([(_newFile, _file())]), status: 201),
+        ],
+      });
+
+      await expectLater(
+        intradesk.createFolder(parentFolderId: _parent, name: 'Toetsen'),
+        throwsA(
+          addRefused(
+            IntradeskAddRefusalReason.confidentialParent,
+            parent: isTheTestFolder.having(
+              (f) => f.confidential,
+              'confidential',
+              isTrue,
+            ),
+            message: allOf(
+              contains('is a confidential folder'),
+              contains('confidential: true'),
+            ),
+          ),
+        ),
+      );
+      expect(server.calls, _readParent);
+
+      await intradesk.createWeblink(
+        parentFolderId: _parent,
+        name: 'dartschool test link',
+        url: 'https://example.com/dartschool',
+      );
+      await intradesk.uploadFiles(
+        parentFolderId: _parent,
+        filePaths: [file('dartschool-test.txt')],
+      );
+      expect(server.writes, [
+        _createWeblink,
+        _uploadDirectory,
+        _upload,
+        _takeFiles,
+      ]);
+    });
+
+    test('at the root, a folder needs the platform\'s canAdd and a '
+        'confidential folder its canAddConfidentialFolder, from the '
+        'Intradesk page', () async {
+      final (server, intradesk) = await serve({
+        _intradeskPage: [
+          (
+            status: 200,
+            body: _intradeskPageWith(canAdd: false),
+            contentType: 'text/html',
+          ),
+        ],
+      });
+
+      await expectLater(
+        intradesk.createFolder(parentFolderId: '', name: 'Nieuwe map'),
+        throwsA(
+          allOf(
+            addRefused(
+              IntradeskAddRefusalReason.cannotAdd,
+              parentFolderId: '',
+              parent: isNull,
+              message: contains('may not add to the root'),
+            ),
+            isA<SmartschoolIntradeskAddRefusedError>().having(
+              (e) => e.capabilities.canAdd,
+              'capabilities.canAdd',
+              isFalse,
+            ),
+          ),
+        ),
+      );
+      await expectLater(
+        intradesk.createFolder(
+          parentFolderId: '',
+          name: 'Nieuwe map',
+          confidential: true,
+        ),
+        throwsA(
+          addRefused(
+            IntradeskAddRefusalReason.cannotAddConfidentialFolder,
+            parentFolderId: '',
+            parent: isNull,
+            message: contains('canAddConfidentialFolder is false'),
+          ),
+        ),
+      );
+      expect(server.calls, [_intradeskPage, _intradeskPage]);
+    });
+
+    test('at the root, a confidential folder goes out with the platform\'s '
+        'canAddConfidentialFolder (the web client\'s right-click menu offers '
+        'it on that alone), an ordinary one with its canAdd', () async {
+      final (server, intradesk) = await serve({
+        _intradeskPage: [
+          (
+            status: 200,
+            body: _intradeskPageWith(
+              canAdd: false,
+              canAddConfidentialFolder: true,
+            ),
+            contentType: 'text/html',
+          ),
+          (status: 200, body: _intradeskPageWith(), contentType: 'text/html'),
+        ],
+        _createConfidential: [_json(_folder(parent: ''), status: 201)],
+        _createFolder: [_json(_folder(parent: ''), status: 201)],
+      });
+
+      await intradesk.createFolder(
+        parentFolderId: '',
+        name: 'Vertrouwelijk',
+        confidential: true,
+      );
+      await intradesk.createFolder(parentFolderId: '', name: 'Nieuwe map');
+
+      expect(server.calls, [
+        _intradeskPage,
+        _createConfidential,
+        _intradeskPage,
+        _createFolder,
+      ]);
+    });
+
+    test(
+      'a parent in Intradesk\'s trash (its parents answer [], and the root '
+      'listing does not hold it, as seen live): a '
+      'SmartschoolIntradeskFolderNotFoundError (200), nothing sent',
+      () async {
+        final (server, intradesk) = await serve({
+          _parentsOfParent: [_json('[]')],
+          'GET $_api/directory-listing/forTreeOnlyFolders': [
+            _json('{"folders":[],"files":[],"weblinks":[]}'),
+          ],
+        });
+
+        for (final write in [
+          () =>
+              intradesk.createFolder(parentFolderId: _parent, name: 'Toetsen'),
+          () => intradesk.createWeblink(
+            parentFolderId: _parent,
+            name: 'Oefenplatform',
+            url: 'https://example.com',
+          ),
+          () => intradesk.uploadFiles(
+            parentFolderId: _parent,
+            filePaths: [file('dartschool-test.txt')],
+          ),
+        ]) {
+          await expectLater(
+            write(),
+            throwsA(
+              isA<SmartschoolIntradeskFolderNotFoundError>()
+                  .having((e) => e.folderId, 'folderId', _parent)
+                  .having((e) => e.statusCode, 'statusCode', 200)
+                  .having(
+                    (e) => e.message,
+                    'message',
+                    allOf(contains('trash'), endsWith('Nothing was sent.')),
+                  ),
+            ),
+          );
+        }
+        // Only the reads of the parent, one per write.
+        expect(server.calls, [
+          for (var i = 0; i < 3; i++) ...[
+            _parentsOfParent,
+            'GET $_api/directory-listing/forTreeOnlyFolders',
+          ],
+        ]);
+      },
+    );
+
+    test('a read of the parent that fails is thrown as the read throws it, '
+        'and nothing of the write is sent', () async {
+      final (server, intradesk) = await serve({
+        _listingOfTop: [_bareServerError],
+        'GET $_api/folders/$_top/parents': [_json('[]')],
+        _intradeskPage: [
+          (
+            status: 503,
+            body: '<html>Onderhoud</html>',
+            contentType: 'text/html',
+          ),
+          (
+            status: 200,
+            body: '<html>Smartschool</html>',
+            contentType: 'text/html',
+          ),
+        ],
+      });
+
+      await expectLater(
+        intradesk.createWeblink(
+          parentFolderId: _parent,
+          name: 'Oefenplatform',
+          url: 'https://example.com',
+        ),
+        throwsA(
+          allOf(
+            isA<SmartschoolDownloadError>().having(
+              (e) => e.statusCode,
+              'statusCode',
+              500,
+            ),
+            isNot(isA<SmartschoolIntradeskFolderNotFoundError>()),
+          ),
+        ),
+      );
+      await expectLater(
+        intradesk.createFolder(parentFolderId: '', name: 'Nieuwe map'),
+        throwsA(
+          isA<SmartschoolDownloadError>().having(
+            (e) => e.statusCode,
+            'statusCode',
+            503,
+          ),
+        ),
+      );
+      await expectLater(
+        intradesk.createFolder(parentFolderId: '', name: 'Nieuwe map'),
+        throwsA(isA<SmartschoolParsingError>()),
+      );
+      expect(
+        server.calls.where(
+          (c) => c.startsWith('POST') || c == _uploadDirectory,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('getRootCapabilities reads the platform\'s capabilities from the '
+        'Intradesk page, in one request', () async {
+      final (server, intradesk) = await serve({
+        _intradeskPage: [
+          (
+            status: 200,
+            body: _intradeskPageWith(canAddConfidentialFolder: true),
+            contentType: 'text/html',
+          ),
+        ],
+      });
+
+      final capabilities = await intradesk.getRootCapabilities();
+
+      expect(capabilities.canAdd, isTrue);
+      expect(capabilities.canManage, isTrue);
+      expect(capabilities.canAddConfidentialFolder, isTrue);
+      expect(server.calls, [_intradeskPage]);
+    });
+
+    test(
+      'parseRootCapabilities takes ownPlatform.capabilities, not those of '
+      'another platform of the community, and undoes the page\'s escapes',
+      () {
+        final none = IntradeskService.parseRootCapabilities(
+          _intradeskPageWith(canAdd: false),
+        );
+        expect(none.canAdd, isFalse);
+        expect(none.canManage, isFalse);
+        expect(none.canAddConfidentialFolder, isFalse);
+        // The configuration holds a translation with the JSON escapes of a
+        // `/`, a `"` and a `\`, escaped once more for the JavaScript string,
+        // as on the live page (2026-10-07). It was read above, so they were
+        // undone.
+        final page = _intradeskPageWith(canAdd: false);
+        expect(page, contains(r'\\\/'));
+        expect(
+          page,
+          contains(
+            r'\\\'
+            'u0022',
+          ),
+        );
+        expect(page, contains(r'\\\\'));
+      },
+    );
+
+    test('parseRootCapabilities refuses a page without them', () {
+      for (final html in [
+        '',
+        '<html><body>Smartschool</body></html>',
+        "<script>\$.extend(true, SMSC, JSON.parse('null'));</script>",
+        "<script>\$.extend(true, SMSC, JSON.parse('${_jsLiteral('{"vars":{"config":{"ownPlatform":{"id":49}}}}')}'));</script>",
+        "<script>\$.extend(true, SMSC, JSON.parse('{\"vars\": broken'));</script>",
+      ]) {
+        expect(
+          () => IntradeskService.parseRootCapabilities(html),
+          throwsA(isA<SmartschoolParsingError>()),
+          reason: html,
+        );
+      }
     });
   });
 

@@ -1,4 +1,4 @@
-## Unreleased
+## 0.3.8 - 2026-10-08
 
 ### Added
 - Skore: a teacher's own gradebooks can be read as that teacher, with the new `SkoreGradebookService` (#148): the gradebooks of the current or an earlier school year, and the periods and pupils of one gradebook, with whether the teacher may change it. It is the teacher's side of Skore (`/SkoreGradebook`, "Puntenboek"), which any teacher reaches with their own login; `SkoreService` is the admin side and needs Skore's admin rights. It is the first step towards entering grades through the library; reading evaluations and grades, and the writes, follow in later issues. It only reads.

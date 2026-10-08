@@ -66,16 +66,53 @@ const _runSubject = '[dartschool test] $_tag send';
 
 const _skoreOwners = '/modules/Skore/backend/models/owners.php';
 const _skoreGradebooks = '/modules/Skore/modules/rapportbeheer/rpc/data.php';
+const _skoreGradebook = '/modules/Skore/backend/gradebook/rpc.php';
 
-/// The `result` of Skore's answers to its reads (#91), by RPC method, with a
-/// made-up teacher; any other method is answered as a save that went
-/// through.
+/// Skore's REST API (#149): the feedback of a pupil, and its writes.
+const _skoreFeedbackApi = '/skore/api/v1/gradebook/feedback';
+
+/// The `result` of Skore's answers to its reads (#91, #148, #149, #150,
+/// #151), by RPC method, with a made-up teacher and pupil; any other method is answered
+/// as a save that went through.
 const _skoreResults = {
   'getTeachers': '[{"userID":"1001","name":"Janssens, Jan"}]',
   'getCourses':
       '[{"id":"34826","icon":"IconLib:laptop","name":"Digitale vaardigheden",'
       '"class":"5WW1","readers":[],"writers":[]}]',
+  'getNavigation':
+      '{"navigation":[{"raw":"3gr D-D/A","children":[{"raw":"6DO","crum":'
+      '{"ids":["176","472"]},"data":[],"children":[{"raw":"6EWI","crum":'
+      '{"ids":["176","472","2440"]},"data":[{"coursename":"Informatica",'
+      '"data":{"ownerID":"32508","userID":"777","classID":"2440",'
+      '"groupID":"472","modelID":"176","courseID":"2264"},"part":[]}]}]}]}],'
+      '"workyears":[["24","2026-2027"]],"currentWorkyear":"24"}',
+  'init':
+      '{"periods":[{"id":"1704","name":"DW1","open":1,'
+      '"timestamp":"2026-12-18T20:00:00+0100"}],"activePeriodE":0,'
+      '"ownerMap":[{"ownerID":"32508","classID":"2440",'
+      '"coursename":"Informatica"}],"left_0":{"stream":[{"c":0,'
+      '"r":"pupil_1201_2440","v":"<span>1.  Aerts, An</span>"}]}}',
+  'getGradebookContext':
+      '{"writable":1,"coordinator":0,"classId":2440,"owners":[32508]}',
+  'getEvaluations':
+      '{"head":[{"refID":"500001","evaluationID":"500001","colID":"A",'
+      '"title":"Toets","short":null,"date":"2026-09-30","max":20,'
+      '"componentID":2,"component":"DW","evaltype":1,"courseID":"2264",'
+      '"coursename":"Informatica","periodID":1704,"ownerID":"32508",'
+      '"isPlannerEval":0,"public":"0","publicdatetime":""}],'
+      '"details":{"stream":[{"c":"500001","r":"pupil_1201_2440",'
+      r'"v":"<div class=\"gbc\" raw=\"15\">15</div><span '
+      r'class=\"gbc_message_place gbc_message\"></span>",'
+      '"p":[1,0,"500001","32508",500001]}]}}',
+  'getNewEvalDialogBox': '[["2264","Informatica"]]',
+  'getPosComponents': '[[0,"geen"],["2","DW"]]',
 };
+
+/// The start page, where the client reads the own user (777, #148).
+const _startPage =
+    r"""<html><body><script>$.extend(true, SMSC, JSON.parse('{"vars":"""
+    r"""{"authenticatedUser":{"id":"49_777_0","name":{"startingWithFirstName":"""
+    r""""Me","startingWithLastName":"Me"}}}}'));</script></body></html>""";
 
 /// The planner's lookup of a calendar by ID (#127), the one planner POST the
 /// live suite sends.
@@ -569,10 +606,19 @@ class _Smartschool implements HttpClientAdapter {
           '{"result":${_skoreResults[method] ?? '{"state":1}'},"session":1}',
           contentType: 'application/json',
         );
+      case (_, final path, _, _) when path.startsWith('/skore/'):
+        skoreCalls.add('${options.method} $path');
+        return _answer(
+          '[{"id":"f-1","student":{"id":"49_1201_0"},"teacher":'
+          '{"id":"49_777_0"},"text":"Goed","attachments":[]}]',
+          contentType: 'application/json',
+        );
       case (true, _plannerLookup, _, _):
         return _answer(_plannerLookupAnswer, contentType: 'application/json');
       case (false, '/course-list/api/v1/courses', _, _):
         return _answer('[{"platformId":49}]', contentType: 'application/json');
+      case (false, '/', null, null) when query.isEmpty:
+        return _answer(_startPage);
       case (_, final path, _, _)
           when path.startsWith('/intradesk/') ||
               path == '/upload/api/v1/get-upload-directory':
@@ -1190,6 +1236,124 @@ void main() {
         '$_skoreGradebooks getCourses',
       ]);
       expect(guard.violations, isEmpty);
+    });
+
+    test("the Skore reads of the teacher's own gradebook (#148)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+
+      final books = await gradebooks.getGradebooks();
+      final sheet = await gradebooks.getGradebook(books.single);
+
+      expect(books.single.gradebookId, 32508);
+      expect(sheet.pupils.single.name, 'Aerts, An');
+      expect(sheet.writable, isTrue);
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getGradebookContext',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test("the reads of a gradebook's evaluations, grades and feedback "
+        '(#149)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+
+      final evaluation = (await gradebooks.getEvaluations(book, 1704)).single;
+      final results = await gradebooks.getResults(book, evaluation);
+      final feedback = await gradebooks.getFeedback(book, evaluation, 1201);
+
+      expect(evaluation.publication.state, SkorePublicationState.notPublished);
+      expect(results.grades.single.grade, '15');
+      expect(results.grades.single.hasFeedback, isTrue);
+      expect(feedback.single.text, 'Goed');
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getEvaluations',
+        '$_skoreGradebook getEvaluations',
+        'GET $_skoreFeedbackApi/49_500001/student/49_1201_0/class/49_2440/'
+            'teacher/49_777_0/context/176_472_2440',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the reads of createEvaluation, never its save (#150)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+
+      final components = await gradebooks.getComponents(book, 1704);
+      // Every check of the service passes: only the guard stops the save.
+      await expectLater(
+        gradebooks.createEvaluation(
+          book,
+          1704,
+          title: 'dartschool test',
+          date: DateTime(2026, 10, 8),
+          max: 20,
+        ),
+        throwsA(isA<SmartschoolSkoreEvaluationCreateUnconfirmedError>()),
+      );
+
+      expect(components.map((c) => c.name), ['geen', 'DW']);
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getPosComponents',
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getGradebookContext',
+        '$_skoreGradebook getNewEvalDialogBox',
+        '$_skoreGradebook getPosComponents',
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST $_skoreGradebook was not sent'),
+          contains('no saveEvaluation'),
+        ),
+      ]);
+    });
+
+    test('the reads of saveGrade, never its save (#151)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+      final evaluation = (await gradebooks.getEvaluations(book, 1704)).single;
+
+      // Every check of the service passes: only the guard stops the save.
+      await expectLater(
+        gradebooks.saveGrade(book, evaluation, 1201, '16'),
+        throwsA(
+          isA<SmartschoolSkoreGradeSaveUnconfirmedError>().having(
+            (e) => e.unconfirmed.keys,
+            'unconfirmed',
+            [1201],
+          ),
+        ),
+      );
+
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getEvaluations',
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getGradebookContext',
+        '$_skoreGradebook getEvaluations',
+        // saveGrade: refused by the guard
+        '$_skoreGradebook getEvaluations',
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST $_skoreGradebook was not sent'),
+          contains('no saveEvaluation or saveGrade'),
+        ),
+      ]);
     });
 
     test('the planner\'s lookup of a calendar by ID (#127)', () async {
@@ -2688,8 +2852,8 @@ void main() {
       ]);
     });
 
-    test('a save in Skore, and any other Skore POST but its two reads '
-        '(#91)', () async {
+    test('a save in Skore, and any other Skore POST but its reads, its REST '
+        'API included (#91, #148-#152)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);
       final dio = _dio(server, guard);
@@ -2711,7 +2875,20 @@ void main() {
         (_skoreOwners, 'getMyGroups'),
         (_skoreGradebooks, 'deleteTeacher'),
         (_skoreGradebooks, 'getTeachers'),
-        ('/modules/Skore/backend/gradebook/rpc.php', 'gradebooksToAccess'),
+        (_skoreGradebook, 'gradebooksToAccess'),
+        // The gradebook's writes, its publishing above all (#148), and its
+        // reads on the other services.
+        (_skoreGradebook, 'setPublicProp'),
+        (_skoreGradebook, 'saveEvalProperties'),
+        (_skoreGradebook, 'saveEvaluation'),
+        (_skoreGradebook, 'deleteEvaluation'),
+        (_skoreGradebook, 'destroyEvaluations'),
+        (_skoreGradebook, 'saveGrade'),
+        (_skoreGradebook, 'saveGradeColumn'),
+        (_skoreGradebook, 'saveGradeInfo'),
+        (_skoreGradebooks, 'getNavigation'),
+        (_skoreOwners, 'init'),
+        (_skoreOwners, 'getEvaluations'),
       ];
       for (final (path, method) in others) {
         await expectLater(
@@ -2724,6 +2901,20 @@ void main() {
         );
       }
 
+      // The writes of Skore's REST API: the create, change and copy of a
+      // feedback (#149, #152).
+      final rest = [
+        _skoreFeedbackApi,
+        '$_skoreFeedbackApi/f-1',
+        '$_skoreFeedbackApi/f-1/copy',
+      ];
+      for (final path in rest) {
+        await expectLater(
+          dio.post<String>(path, data: {'text': 'x'}),
+          throwsA(isA<DioException>()),
+        );
+      }
+
       expect(server.skoreCalls, [
         '$_skoreGradebooks getCourses',
         '$_skoreOwners getTeachers',
@@ -2732,6 +2923,7 @@ void main() {
         for (final path in [
           _skoreGradebooks,
           for (final (path, _) in others) path,
+          ...rest,
         ])
           allOf(
             contains('POST $path was not sent'),

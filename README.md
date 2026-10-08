@@ -17,6 +17,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
+- Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback; create an evaluation in a period, never published, and save pupils' grades and feedback in it.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
 - Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
 
@@ -875,6 +876,104 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ---
 
+## `SkoreGradebookService`
+
+Reads Skore's gradebook **as the logged-in teacher** (#148, #149): what a teacher sees at `/SkoreGradebook` ("Puntenboek"). Any teacher can use it with their own login; it needs none of the admin rights of `SkoreService`. It reads, creates evaluations (#150), saves grades (#151) and feedback (#152), and never publishes.
+
+```dart
+final gradebooks = SkoreGradebookService(client);
+
+final books = await gradebooks.getGradebooks(); // List<SkoreGradebook>, current school year
+for (final book in books) {
+  print('${book.gradebookId}  ${book.className}  ${book.courseName}');
+}
+
+final sheet = await gradebooks.getGradebook(books.first); // SkoreGradebookSheet
+for (final period in sheet.periods) {
+  print('${period.name}: ${period.isOpen ? 'open' : 'closed'} until ${period.closesAt}');
+}
+for (final pupil in sheet.pupils) {
+  print('${pupil.number}. ${pupil.name}'); // "1. Janssens, Jan"
+}
+print(sheet.writable ? 'may change it' : 'read-only');
+
+// An earlier school year: its ID from the school years Skore offers.
+final year = await gradebooks.getGradebookYear(); // SkoreGradebookYear
+final earlier = await gradebooks.getGradebooks(workyearId: year.workyears[1].id);
+
+// The evaluations of a period, with their publication, grades and feedback.
+final evaluations = await gradebooks.getEvaluations(books.first, sheet.activePeriod!.id);
+for (final evaluation in evaluations) {
+  print('${evaluation.title}: ${evaluation.publication.state.name} ${evaluation.publication.at}');
+  for (final grade in evaluation.results.grades) {
+    print('${grade.pupilId}: ${grade.grade ?? '-'}'); // "15.5": Skore's value, with a point
+    if (grade.hasFeedback) {
+      final feedback = await gradebooks.getFeedback(books.first, evaluation, grade.pupilId);
+      print(feedback.map((f) => f.text).join(' / '));
+    }
+  }
+}
+
+// A new evaluation, never published: teachers publish it in Smartschool (#150).
+final created = await gradebooks.createEvaluation(books.first, sheet.activePeriod!.id,
+    title: 'Toets 1', date: DateTime(2026, 10, 8), max: 20); // SkoreEvaluation
+
+// Grades in it (#151): "15,5" is sent as "15.5", null clears; read again to check.
+final cell = await gradebooks.saveGrade(books.first, created, sheet.pupils.first.id, '15,5'); // SkoreGrade
+
+// Feedback (#152): creates yours, or changes it; a colleague's is left alone.
+final note = await gradebooks.saveFeedback(books.first, created, sheet.pupils.first.id, 'Goed gewerkt.'); // SkoreFeedback
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `getGradebooks({workyearId})` | `Future<List<SkoreGradebook>>` | The teacher's own gradebooks of the school year (Skore's current one without `workyearId`), one per class and course, in the order of Skore's left panel. Empty for a teacher without gradebooks. |
+| `getGradebookYear({workyearId})` | `Future<SkoreGradebookYear>` | The same gradebooks, with the school year they are of (`workyear`) and the school years Skore offers (`workyears`). |
+| `getGradebook(gradebook)` | `Future<SkoreGradebookSheet>` | A gradebook with its periods, the period Skore opens it on (`activePeriod`), the pupils of its class and whether Skore lets the user change it (`writable`). |
+| `getEvaluations(gradebook, periodId)` | `Future<List<SkoreEvaluation>>` | The gradebook's evaluations in the period, in Skore's order, each with its `publication` and the `results` (grades) of the class's pupils. One request. |
+| `getResults(gradebook, evaluation)` | `Future<SkoreEvaluationResults>` | The grades of an evaluation as Skore has them now (`getEvaluations` again). |
+| `getFeedback(gradebook, evaluation, pupilId)` | `Future<List<SkoreFeedback>>` | A pupil's feedback on an evaluation, each apart, from every teacher, in the order written. Empty for none. |
+| `getComponents(gradebook, periodId)` | `Future<List<SkoreEvaluationComponent>>` | The components a new evaluation in the period can count for (`0` `geen`, `2` `DW`, ...). |
+| `createEvaluation(gradebook, periodId, {title, shortName, date, max, componentId})` | `Future<SkoreEvaluation>` | Creates an evaluation in the period, **unpublished**, and returns it as read again. |
+| `saveGrade(gradebook, evaluation, pupilId, grade, {allowPublished})` | `Future<SkoreGrade>` | Saves (or, with `null`, clears) a pupil's grade, and returns the cell as read again. |
+| `saveGrades(gradebook, evaluation, grades, {allowPublished})` | `Future<Map<int, SkoreGrade>>` | The same for several pupils (`{pupilId: grade}`), one save each, one read afterwards. |
+| `saveFeedback(gradebook, evaluation, pupilId, text, {allowPublished})` | `Future<SkoreFeedback>` | Creates your feedback for the pupil, or changes it, and returns it as read again. |
+
+- **One big read.** `getGradebooks` sends Skore's `getNavigation` once; its answer holds the colleagues of every gradebook and is big (some 270 KB for 22 gradebooks, 1.7 MB for 50). Read it once, not per gradebook. A group of classes in Skore's tree repeats gradebooks of its classes: each gradebook is listed once.
+- **IDs.** `gradebookId` is Skore's `ownerID`, the same ID as the assignment that holds the gradebook (`SkoreAssignment.id` of the admin side). `pathIds` (`[modelId, groupId, classId]`) is how Skore's gradebook calls name the class. A pupil ID is the pupil's Smartschool user ID; `rowKey` is Skore's key of the pupil's row (`pupil_<id>_<classId>`).
+- **School years.** A school year is Skore's ID (`SkoreWorkyear`: `24` is `2026-2027`). The calls about a gradebook go out for its `workyearId`. A `workyearId` that is not positive is refused before anything is sent, one Skore does not offer after its answer (Skore answers it with no gradebooks), both with an `ArgumentError`.
+- **Course names.** `SkoreGradebook.courseName` is the name as the left panel shows it, with the grade Skore adds (`Informaticawetenschappen (2 uur) (6e j DO)`); `SkoreGradebookSheet.courseName` is the name without it (`Informaticawetenschappen (2 uur)`).
+- **Periods.** `isOpen` says whether Skore takes grades in the period; `closesAt` is when it closes (UTC). Skore adds periods during the school year.
+- **Pupils.** The pupils of the gradebook's class, in class order: `number` (`null` when Skore shows none, as for an earlier school year), `name` (`Last, First`), `displayName` (`First Last`), `isActive` (`false` for a row Skore greys out).
+- **Writable.** `writable` is Skore's answer for the user's rights in the gradebook (`getGradebookContext`), not about a period: Skore also answers it for a closed period of an earlier year. Without periods, Skore is not asked and it is `false`.
+- **Evaluations.** Know an evaluation by its `id` (Skore's `refID`): its `column` (`A`, `B`) changes when one is added. Skore sends the rows of the other classes of the group along; only the gradebook's own evaluations and pupils are kept.
+- **Publication.** `publication.state` is `notPublished` (Skore's `public` `"0"`), `scheduled` (`"1"` with a `publicdatetime` still to come) or `published`, by the service's clock (`SkoreGradebookService(client, clock: ...)`) at the time of the read; `stateAt(time)` for another time. `at` is Skore's `publicdatetime`, a Belgian time without offset, in UTC; the raw values are kept (`rawPublic`, `rawPublicDateTime`).
+- **Grades.** `grade` is the value Skore stores, as a string (`"15.5"`, with a point; Skore shows `15,5`), `null` for none; `value` parses it. `hasFeedback` is the cell's marker; `getFeedback` reads the texts from Skore's REST API (`/skore/api/v1/gradebook/feedback/...`), each apart, which the cell's tooltip joins into one.
+- **Never publishes.** Skore's gradebook RPC service also deletes, moves, publishes and shares evaluations. The service calls only the methods in `SkoreGradebookService.rpcMethods` (the reads, `saveEvaluation` and `saveGrade`), and refuses any other before it is sent.
+- **Creating an evaluation.** `createEvaluation` always sends `public` 0 and `publicdatetime` `""`: teachers publish in Smartschool themselves. It first refuses, with a `SmartschoolSkoreChangeRefusedError` and nothing saved, a blank title, a `max` that is not positive, a gradebook that is not your own of the current school year, a closed period or one Skore shows read-only, a date outside the school year, and a course or component Skore does not offer. The save is sent once, never retried; if the answer, or reading the period again, does not confirm it, a `SmartschoolSkoreEvaluationCreateUnconfirmedError` (read the period again before trying again). If it comes back public anyway, a `SmartschoolSkoreEvaluationPublicError` names it, and the library changes nothing.
+- **Saving grades.** `saveGrade` / `saveGrades` refuse first, with a `SmartschoolSkoreChangeRefusedError` and nothing saved: a grade that is not a number of 0 or more, or above `max` (Skore answers it with HTTP 500); an evaluation that is **published or scheduled, unless `allowPublished: true`** (pupils see it, and get a notification), from the planner, or not in points; a pupil without a cell of the gradebook's class; and what `createEvaluation` refuses for the gradebook and period. All pupils are checked before the first save. A failed save does not stop the others; afterwards the period is read once, and a `SmartschoolSkoreGradeSaveUnconfirmedError` tells per pupil what is `confirmed`. Saving a grade again is harmless.
+- **Saving feedback.** `saveFeedback` reads the pupil's feedback first: without feedback of yours it creates it (`POST /skore/api/v1/gradebook/feedback`, sent once: a second create adds a second feedback), with one it changes that (`POST .../feedback/{id}`). Other teachers' feedback is never changed. It refuses what `saveGrade` refuses for the gradebook, period, evaluation (published or scheduled unless `allowPublished: true`) and pupil, a blank text, your feedback when Skore does not let you change it, and more than one of yours. A `4xx` answer is a `SmartschoolSkoreError`; an answer, or a read afterwards, that does not confirm the text a `SmartschoolSkoreFeedbackSaveUnconfirmedError`.
+
+The example lists the gradebooks and prints the periods and pupils of one of them, and the evaluations of its active period with their publication, grades and feedback (read-only):
+
+```bash
+dart run example/skore_gradebook_example.dart [GRADEBOOK_ID] [--workyear=ID]
+# Creates an evaluation after asking (y/N); changes the live Skore:
+dart run example/skore_create_evaluation_example.dart GRADEBOOK_ID PERIOD_ID TITLE YYYY-MM-DD MAX [--short=NAME] [--component=ID]
+# Saves a pupil's grades in an unpublished evaluation after asking (y/N; "-" clears):
+dart run example/skore_save_grade_example.dart GRADEBOOK_ID PERIOD_ID EVALUATION_ID PUPIL_ID GRADE [GRADE ...]
+```
+
+### Errors
+
+- `SmartschoolSkoreError` — Skore answered with something the service cannot use: another HTTP status than `200` (also a redirect), an HTML page instead of data, invalid JSON, an RPC answer without a `result`, data in an unknown shape, or an answer about another gradebook or school year. Never an empty list instead. The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log. What Skore answers an account without a gradebook of its own (a pupil, say) was not captured.
+- `ArgumentError` — a `workyearId` that is not positive, or not one Skore offers; a `periodId` or `pupilId` that is not positive, or an evaluation of another gradebook (nothing sent).
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered without a session. Sign in again and retry.
+
+---
+
 ## `PlannerService`
 
 Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name, the lookup of a calendar by its ID and the workload calls, POSTs that only read.
@@ -1480,6 +1579,27 @@ Returned by `SkoreService.getGradebookShares()` (and, as a `SkoreGradebookShareC
 ### `SkoreGradebookShareChange`
 Returned by `SkoreService.shareGradebook()` and `unshareGradebook()`. The gradebook after the call, a `SkoreGradebookShares` (as read again after a save, or as read before it when nothing was saved), with `teacherId` (the teacher whose access the call changed), `before` (the `SkoreGradebookShares` as the call read it before the change), `saved` (`true` when it sent the save and Skore confirmed it, `false` when the teacher already had that access, or none for an unshare), and the getters `accessBefore` and `accessAfter` (the teacher's `SkoreShareAccess?` in `before` and after the call).
 
+### `SkoreGradebookYear` / `SkoreWorkyear`
+Returned by `SkoreGradebookService.getGradebookYear()`. The teacher's own `gradebooks` of a school year (`workyear`, a `SkoreWorkyear`: Skore's `id` and its `name`, `2026-2027`), with the `workyears` Skore offers.
+
+### `SkoreGradebook`
+Returned by `SkoreGradebookService.getGradebooks()`. A gradebook of the logged-in teacher: `gradebookId` (Skore's `ownerID`, the assignment ID), `teacherId`, `modelId` / `modelName`, `groupId` / `groupName`, `classId` / `className`, `courseId` / `courseName` (with the grade Skore adds), `teacherNames` (the teachers of the course, `Last First`), `workyearId`, and the getter `pathIds` (`[modelId, groupId, classId]`).
+
+### `SkoreGradebookSheet`
+Returned by `SkoreGradebookService.getGradebook()`. The `gradebook`, its `courseName` (without the grade), its `periods`, the `activePeriod` Skore opens it on (`null` without periods), the `pupils` of its class, and `writable` / `isCoordinator` from Skore's `getGradebookContext`.
+
+### `SkoreGradebookPeriod` / `SkoreGradebookPupil`
+A period of a gradebook: `id`, `name` (`DW1`), `fullName`, `isOpen`, `closesAt` (UTC, or `null`), `info` (Skore's HTML description) and `categoryMode` (`1`: evaluations). A pupil of a gradebook: `id` (the Smartschool user ID), `classId`, `number` (the class number, or `null`), `name` (`Last, First`), `displayName` (`First Last`), `isActive`, and the getter `rowKey` (`pupil_<id>_<classId>`).
+
+### `SkoreEvaluation` / `SkorePublication`
+Returned by `SkoreGradebookService.getEvaluations()`. An evaluation: `id` (Skore's `refID`), `evaluationId`, `gradebookId`, `periodId`, `column` (not stable), `title`, `shortName` (or `null`), `date` (the day), `max`, `componentId` / `componentName` (`DW`; `0` / `""` for none), `type` (`SkoreEvaluationType.points`, `.scale`, `.unknown`) and `typeCode`, `courseId` / `courseName`, `isPlannerEvaluation`, `publication` and `results`. A `SkorePublication`: `state` (`SkorePublicationState`), `at` (UTC, or `null`), `isPublic` (published or scheduled), `rawPublic`, `rawPublicDateTime`, and `stateAt(time)`.
+
+### `SkoreEvaluationResults` / `SkoreGrade`
+The grades of an evaluation: `evaluationId`, `grades` (one per pupil of the class), `classAverage` and `groupAverage` (Skore's strings, or `null`), and `gradeOf(pupilId)`. A grade: `pupilId`, `classId`, `grade` (Skore's value, or `null`), `value` (as a number), `hasFeedback`, `categoryType` and `cellEvaluationId` (the cell's `p`), and the getter `rowKey`.
+
+### `SkoreFeedback`
+Returned by `SkoreGradebookService.getFeedback()` and `saveFeedback()`. `id` (a UUID), `text`, `pupilId`, `teacherId` / `teacherName`, `createdAt` / `changedAt` (UTC), `attachments` (`SkoreFeedbackAttachment`: `id`, `name`, `size`, and Skore's `json`) and `canEdit`.
+
 ### `PlannerCalendar`
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.
 
@@ -1551,11 +1671,13 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolSendUnconfirmedError` | `sendMessage` or `sendReply` submitted the message, but Smartschool's answer does not confirm that it was sent, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been sent: check the sent box (for a delayed send, the scheduled box) before sending it again. Not a `SmartschoolComposeError` |
 | `SmartschoolMoveUncheckedError` | `MessagesService.moveToTrashFrom` sent the move and Smartschool answered it, but the check after it failed (carries the `msgId`, `boxType` and `boxId` of the move, and the check's error as its `cause`: a `SmartschoolSessionExpiredError`, `SmartschoolUnexpectedPageError`, `SmartschoolParsingError`, `SmartschoolConnectionError` or another login failure). The move may have been made: check with `getMessage(msgId, boxType: boxType)` before moving it again (#115). Not a `SmartschoolAuthenticationError`, so code that repeats a call on `SmartschoolSessionExpiredError` does not repeat the move |
 | `SmartschoolAttachmentUploadError` | Smartschool's upload step fails: for an attachment of `sendMessage` / `sendReply` (nothing was sent), or for `IntradeskService.uploadFiles` (no upload directory, or a file Smartschool did not take; nothing was added). Carries the `fileName`, the `statusCode` and, for a refusal in Smartschool's own words (such as the `400` for a name with a character it does not allow), its `serverMessage` (#128) |
-| `SmartschoolSkoreError` | Skore answers with something `SkoreService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
+| `SmartschoolSkoreError` | Skore answers with something `SkoreService` or `SkoreGradebookService` cannot use (an HTML page, invalid JSON, an RPC answer without a `result`, an unknown shape), or a check of `addTeacher` / `replaceTeacher` / `shareGradebook` / `unshareGradebook` refuses the change before the save: nothing was saved. Not a session problem |
 | `SmartschoolSkoreMyGroupsError` | `SkoreService.replaceTeacher`: the current teacher works with "Mijn lesgroepen" for the course (carries `classId`, `courseId`, `teacherId`, `teacherName`). Nothing was saved. A `SmartschoolSkoreError` |
 | `SmartschoolSkoreSaveUnconfirmedError` | `SkoreService.addTeacher` or `replaceTeacher` sent the save, but Skore's answer does not confirm it, or no answer came in (carries the `cause`). It may or may not have been saved: read the class again (`getCourses`) before trying again. Also from `shareGradebook` / `unshareGradebook`, when Skore's answer or the read afterwards does not confirm the save: read the gradebooks again (`getGradebookShares`). Not a `SmartschoolSkoreError`. Always one of its two subtypes, with what the call read before the save (#120) |
 | `SmartschoolSkoreAssignmentSaveUnconfirmedError` | The `SmartschoolSkoreSaveUnconfirmedError` of `addTeacher` / `replaceTeacher`: carries the `course` as read before the save, the assignment it was `replaced` (`null` for an add), and the `teacher` it was saving (#120) |
 | `SmartschoolSkoreShareSaveUnconfirmedError` | The `SmartschoolSkoreSaveUnconfirmedError` of `shareGradebook` / `unshareGradebook`: carries the gradebook as read `before` the change and the `teacherId`, with their `accessBefore` (#120) |
+| `SmartschoolSkoreGradeSaveUnconfirmedError` | The `SmartschoolSkoreSaveUnconfirmedError` of `SkoreGradebookService.saveGrade` / `saveGrades`: carries the `grades` sent, and per pupil the `confirmed` cells and why the others are `unconfirmed` (#151). Saving again is harmless |
+| `SmartschoolSkoreFeedbackSaveUnconfirmedError` | The `SmartschoolSkoreSaveUnconfirmedError` of `SkoreGradebookService.saveFeedback`: carries the `evaluationId`, `pupilId`, `text`, `isUpdate` and `feedbackId` (#152). Read the feedback again; `saveFeedback` again does not add a second |
 | `SmartschoolPlannerError` | The planner answers `PlannerService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. Not a session problem |
 | `SmartschoolPlannedElementNotFoundError` | `PlannerService.getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`; carries `elementType`, `platformId`, `elementId`); also a planner write, for the element it reads again first (nothing was sent). A `SmartschoolPlannerError` |
 | `SmartschoolPlannerWriteRefusedError` | `PlannerService.planLesson` / `planLessonContent` / `renameElement` / `changePublicInfo` / `changePrivateInfo` / `clearLesson`: a check before the write refused it (the element is not organised by the authenticated user, a capability is not set, the lesfiche is not a lesson lesfiche of the user, ...). Nothing was sent. A `SmartschoolPlannerError` |

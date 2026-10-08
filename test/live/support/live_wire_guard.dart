@@ -51,12 +51,21 @@
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no
 //   presence, so a save of presences (`savePupilsPresences`: setLate,
 //   setPresent) never goes out;
-// - any POST to the Skore module but its two RPC reads `getTeachers` of
+// - any POST to the Skore module but its RPC reads: `getTeachers` of
 //   `owners.php` and `getCourses` of `rapportbeheer/rpc/data.php`
-//   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91):
-//   the live suite changes nothing in Skore, which drives the school's
-//   grading and has no test instance, and both services also hold methods
-//   that write, delete or lock (saveOwner, saveShared, deleteTeacher, ...);
+//   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91),
+//   and `getNavigation`, `init`, `getGradebookContext`, `getEvaluations`,
+//   `getNewEvalDialogBox` and `getPosComponents` of `gradebook/rpc.php`
+//   (SkoreGradebookService, the teacher's own gradebooks, #148, #149, and
+//   the reads of createEvaluation, #150, and of saveGrade and saveGrades,
+//   #151, whose saves `saveEvaluation` and `saveGrade` never go out); and
+//   any POST to Skore's REST API (`/skore/`,
+//   whose GET of a pupil's feedback SkoreGradebookService.getFeedback sends,
+//   #149, and whose POSTs write feedback, as saveFeedback does, #152): the
+//   live suite changes nothing in Skore, which drives the school's grading
+//   and has no test instance, and these services also hold methods that
+//   write, delete, lock or publish (saveOwner, saveShared, deleteTeacher,
+//   saveEvaluation, saveGrade, deleteEvaluation, setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
 //   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
 //   only reads: the live suite changes nothing in the planner, whose POSTs
@@ -516,7 +525,7 @@ class LiveWireGuard extends Interceptor {
     if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
     if (path == _archivePath) return _archiveRefusal(options.data);
     if (path.startsWith('/Presence/')) return _presenceRefusal(path);
-    if (path.startsWith('/modules/Skore/')) {
+    if (path.startsWith('/modules/Skore/') || path.startsWith('/skore/')) {
       return _skoreRefusal(path, options.data);
     }
     if (path.startsWith('/planner/')) return _plannerRefusal(path);
@@ -571,21 +580,37 @@ class LiveWireGuard extends Interceptor {
         'but the reads getConfig, getAllCodes and getClass (#104, #105)';
   }
 
-  /// The Skore RPC POSTs that only read, by path: the one method of each
-  /// service the live suite calls (#91).
+  /// The Skore RPC POSTs that only read, by path: the methods of each
+  /// service the live suite calls (#91, #148, #149, #150, #151). Skore's
+  /// REST API (`/skore/`) has none: its reads are GETs. Not `saveEvaluation`
+  /// nor `saveGrade`: the live suite tries createEvaluation and saveGrade
+  /// only where their checks refuse them.
   static const _skoreReads = {
-    '/modules/Skore/backend/models/owners.php': 'getTeachers',
-    '/modules/Skore/modules/rapportbeheer/rpc/data.php': 'getCourses',
+    '/modules/Skore/backend/models/owners.php': {'getTeachers'},
+    '/modules/Skore/modules/rapportbeheer/rpc/data.php': {'getCourses'},
+    '/modules/Skore/backend/gradebook/rpc.php': {
+      'getNavigation',
+      'init',
+      'getGradebookContext',
+      'getEvaluations',
+      'getNewEvalDialogBox',
+      'getPosComponents',
+    },
   };
 
   /// Why the Skore POST to [path] with [data] may not go out, or `null`:
   /// only the reads go out, never a save.
   String? _skoreRefusal(String path, Object? data) {
     final method = data is Map ? data['rpc_method'] : null;
-    if (method != null && _skoreReads[path] == method) return null;
+    if (method != null && (_skoreReads[path]?.contains(method) ?? false)) {
+      return null;
+    }
     return 'the live suite changes nothing in Skore: it sends no Skore POST '
-        'but the reads getTeachers (owners.php) and getCourses '
-        '(rapportbeheer/rpc/data.php) (#91)';
+        'but the reads getTeachers (owners.php), getCourses '
+        '(rapportbeheer/rpc/data.php) (#91), and getNavigation, init, '
+        'getGradebookContext, getEvaluations, getNewEvalDialogBox and '
+        'getPosComponents (gradebook/rpc.php, #148-#151); no saveEvaluation '
+        'or saveGrade, and none to its REST API (/skore/)';
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

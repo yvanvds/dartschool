@@ -208,6 +208,38 @@ void main() {
       );
     });
 
+    test('postJsonResponse POSTs the data as JSON, with the headers given '
+        'besides its own, and none without them (#152)', () async {
+      final server = _Smartschool(
+        answer: '{"id":"f-1"}',
+        answerType: 'application/json',
+      );
+      final client = await _clientOf(server);
+
+      final response = await client.postJsonResponse(
+        '/skore/api/v1/gradebook/feedback',
+        data: {'text': 'Goed gewerkt', 'attachments': <Object?>[]},
+        headers: const {kXRequestedWith: 'XMLHttpRequest'},
+      );
+      await client.postJsonResponse('/api/v1/endpoint', data: {'a': 1});
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"id":"f-1"}');
+      final [withHeader, without] = server.requests;
+      expect(withHeader.method, 'POST');
+      expect(withHeader.path, '/skore/api/v1/gradebook/feedback');
+      expect(withHeader.contentType, Headers.jsonContentType);
+      expect(withHeader.body, '{"text":"Goed gewerkt","attachments":[]}');
+      expect(withHeader.options.headers[kXRequestedWith], 'XMLHttpRequest');
+      expect(
+        withHeader.options.headers['User-Agent'],
+        'unofficial Smartschool API interface',
+      );
+      expect(without.contentType, Headers.jsonContentType);
+      expect(without.body, '{"a":1}');
+      expect(without.options.headers.containsKey(kXRequestedWith), isFalse);
+    });
+
     test('postFormEncodedRaw POSTs the body form-urlencoded as given and '
         'returns the answer', () async {
       final server = _Smartschool(answer: 'ok');

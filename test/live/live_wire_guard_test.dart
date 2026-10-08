@@ -71,8 +71,8 @@ const _skoreGradebook = '/modules/Skore/backend/gradebook/rpc.php';
 /// Skore's REST API (#149): the feedback of a pupil, and its writes.
 const _skoreFeedbackApi = '/skore/api/v1/gradebook/feedback';
 
-/// The `result` of Skore's answers to its reads (#91, #148, #149, #150), by
-/// RPC method, with a made-up teacher and pupil; any other method is answered
+/// The `result` of Skore's answers to its reads (#91, #148, #149, #150,
+/// #151), by RPC method, with a made-up teacher and pupil; any other method is answered
 /// as a save that went through.
 const _skoreResults = {
   'getTeachers': '[{"userID":"1001","name":"Janssens, Jan"}]',
@@ -1315,6 +1315,43 @@ void main() {
         allOf(
           contains('POST $_skoreGradebook was not sent'),
           contains('no saveEvaluation'),
+        ),
+      ]);
+    });
+
+    test('the reads of saveGrade, never its save (#151)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+      final evaluation = (await gradebooks.getEvaluations(book, 1704)).single;
+
+      // Every check of the service passes: only the guard stops the save.
+      await expectLater(
+        gradebooks.saveGrade(book, evaluation, 1201, '16'),
+        throwsA(
+          isA<SmartschoolSkoreGradeSaveUnconfirmedError>().having(
+            (e) => e.unconfirmed.keys,
+            'unconfirmed',
+            [1201],
+          ),
+        ),
+      );
+
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getEvaluations',
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getGradebookContext',
+        '$_skoreGradebook getEvaluations',
+        // saveGrade: refused by the guard
+        '$_skoreGradebook getEvaluations',
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST $_skoreGradebook was not sent'),
+          contains('no saveEvaluation or saveGrade'),
         ),
       ]);
     });
@@ -2816,7 +2853,7 @@ void main() {
     });
 
     test('a save in Skore, and any other Skore POST but its reads, its REST '
-        'API included (#91, #148, #149, #150)', () async {
+        'API included (#91, #148, #149, #150, #151)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);
       final dio = _dio(server, guard);

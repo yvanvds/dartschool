@@ -21,6 +21,7 @@ import 'package:flutter_smartschool/src/models/skore_gradebook_models.dart'
         SkoreEvaluation,
         SkoreEvaluationResults,
         SkoreEvaluationType,
+        SkoreGrade,
         SkorePublication,
         SkorePublicationState;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
@@ -671,6 +672,53 @@ void main() {
       expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
       expect(error.evaluation, same(evaluation));
       expect(error.toString(), 'SmartschoolSkoreEvaluationPublicError: public');
+    });
+
+    test('SmartschoolSkoreGradeSaveUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and tells per pupil what is confirmed (#151)', () {
+      const cause = SmartschoolConnectionError('dropped');
+      const confirmed = SkoreGrade(
+        pupilId: 1201,
+        classId: 2440,
+        grade: '15',
+        hasFeedback: false,
+        categoryType: 0,
+        cellEvaluationId: 500003,
+      );
+      const error = SmartschoolSkoreGradeSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+        gradebookId: 32508,
+        periodId: 1704,
+        evaluationId: 500003,
+        grades: {1201: '15', 1202: ''},
+        confirmed: {1201: confirmed},
+        unconfirmed: {1202: 'no usable answer came in'},
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, same(cause));
+      expect(error.gradebookId, 32508);
+      expect(error.periodId, 1704);
+      expect(error.evaluationId, 500003);
+      expect(error.grades, {1201: '15', 1202: ''});
+      expect(error.confirmed[1201], same(confirmed));
+      expect(error.unconfirmed, {1202: 'no usable answer came in'});
+      expect(
+        error.toString(),
+        'SmartschoolSkoreGradeSaveUnconfirmedError: unconfirmed',
+      );
+      const none = SmartschoolSkoreGradeSaveUnconfirmedError(
+        'unconfirmed',
+        gradebookId: 32508,
+        periodId: 1704,
+        evaluationId: 500003,
+        grades: {1202: '9'},
+        unconfirmed: {1202: 'reading the period again shows no grade'},
+      );
+      expect(none.confirmed, isEmpty);
+      expect(none.cause, isNull);
     });
   });
 

@@ -259,7 +259,8 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('the methods of the gradebook RPC service', () {
-    test('are the reads and the save of a new evaluation, nothing else', () {
+    test('are the reads, the save of a new evaluation and the save of a '
+        'grade, nothing else', () {
       expect(SkoreGradebookService.rpcMethods, {
         'getNavigation',
         'init',
@@ -268,6 +269,7 @@ void main() {
         'getNewEvalDialogBox', // #150
         'getPosComponents', // #150
         'saveEvaluation', // #150, always unpublished
+        'saveGrade', // #151, the grade of one pupil
       });
       for (final method in SkoreGradebookService.rpcMethods) {
         SkoreGradebookService.checkRpcMethod(method); // does not throw
@@ -289,7 +291,9 @@ void main() {
         'getHiddenEvaluations',
         'getAllComponents', // not needed: getPosComponents names them
         'getMyUsedTypesAndSystemTypes',
-        'saveGrade',
+        'saveGradeColumn', // one grade on several rows (#151)
+        'saveType', // symbols instead of a grade (#151)
+        'getEvaluationIDByOwnerID',
         'saveGradeInfo',
         'usersThatCanAccess',
         'gradebooksToAccess',
@@ -297,6 +301,7 @@ void main() {
         '',
         'GETNAVIGATION',
         'SaveEvaluation',
+        'SaveGrade',
       ];
       for (final method in others) {
         expect(

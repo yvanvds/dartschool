@@ -57,14 +57,15 @@
 //   and `getNavigation`, `init`, `getGradebookContext`, `getEvaluations`,
 //   `getNewEvalDialogBox` and `getPosComponents` of `gradebook/rpc.php`
 //   (SkoreGradebookService, the teacher's own gradebooks, #148, #149, and
-//   the reads of createEvaluation, #150, whose save `saveEvaluation` never
-//   goes out); and any POST to Skore's REST API (`/skore/`,
+//   the reads of createEvaluation, #150, and of saveGrade and saveGrades,
+//   #151, whose saves `saveEvaluation` and `saveGrade` never go out); and
+//   any POST to Skore's REST API (`/skore/`,
 //   whose GET of a pupil's feedback SkoreGradebookService.getFeedback sends,
 //   #149, and whose POSTs write feedback): the live suite changes nothing in
 //   Skore, which drives the school's grading and has no test instance, and
 //   these services also hold methods that write, delete, lock or publish
-//   (saveOwner, saveShared, deleteTeacher, saveEvaluation, deleteEvaluation,
-//   setPublicProp, ...);
+//   (saveOwner, saveShared, deleteTeacher, saveEvaluation, saveGrade,
+//   deleteEvaluation, setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
 //   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
 //   only reads: the live suite changes nothing in the planner, whose POSTs
@@ -580,9 +581,10 @@ class LiveWireGuard extends Interceptor {
   }
 
   /// The Skore RPC POSTs that only read, by path: the methods of each
-  /// service the live suite calls (#91, #148, #149, #150). Skore's REST API
-  /// (`/skore/`) has none: its reads are GETs. Not `saveEvaluation`: the
-  /// live suite tries createEvaluation only where its checks refuse it.
+  /// service the live suite calls (#91, #148, #149, #150, #151). Skore's
+  /// REST API (`/skore/`) has none: its reads are GETs. Not `saveEvaluation`
+  /// nor `saveGrade`: the live suite tries createEvaluation and saveGrade
+  /// only where their checks refuse them.
   static const _skoreReads = {
     '/modules/Skore/backend/models/owners.php': {'getTeachers'},
     '/modules/Skore/modules/rapportbeheer/rpc/data.php': {'getCourses'},
@@ -607,8 +609,8 @@ class LiveWireGuard extends Interceptor {
         'but the reads getTeachers (owners.php), getCourses '
         '(rapportbeheer/rpc/data.php) (#91), and getNavigation, init, '
         'getGradebookContext, getEvaluations, getNewEvalDialogBox and '
-        'getPosComponents (gradebook/rpc.php, #148-#150); no saveEvaluation, '
-        'and none to its REST API (/skore/)';
+        'getPosComponents (gradebook/rpc.php, #148-#151); no saveEvaluation '
+        'or saveGrade, and none to its REST API (/skore/)';
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

@@ -16,7 +16,8 @@ export '../models/skore_gradebook_models.dart';
 /// change it ([getGradebook]), and the evaluations of a period with whether
 /// and when they are published and the pupils' grades ([getEvaluations],
 /// [getResults]) and feedback ([getFeedback], #149). And creates an
-/// evaluation in a period, never published ([createEvaluation], #150).
+/// evaluation in a period, never published ([createEvaluation], #150), and
+/// saves the pupils' grades in it ([saveGrade], [saveGrades], #151).
 ///
 /// This is what a teacher sees at `/SkoreGradebook` ("Puntenboek"), and it
 /// works for any teacher with their own login: it needs none of the admin
@@ -48,12 +49,14 @@ export '../models/skore_gradebook_models.dart';
 /// }
 /// ```
 ///
-/// The only change it makes in Skore is [createEvaluation], which checks the
-/// gradebook, the period and the values first, sends the save once, and
-/// reads the period again to check it. **It never publishes**: a new
-/// evaluation goes out unpublished, and teachers publish it in Smartschool
-/// themselves. Nothing in the service publishes, deletes or moves an
-/// evaluation.
+/// The only changes it makes in Skore are [createEvaluation] and the grades
+/// of [saveGrade] and [saveGrades], which check the gradebook, the period,
+/// the evaluation and the values first, and read the period again to check
+/// the save. **It never publishes**: a new evaluation goes out unpublished,
+/// and teachers publish it in Smartschool themselves; grades go into an
+/// evaluation that is published or scheduled only when the caller asks for
+/// it (`allowPublished`). Nothing in the service publishes, deletes or moves
+/// an evaluation.
 ///
 /// ### The endpoint
 /// Every call is an RPC call to Skore's gradebook service
@@ -85,14 +88,18 @@ export '../models/skore_gradebook_models.dart';
 ///   Its message may quote the answer, which can hold names: keep it in a
 ///   log. What Skore answers an account without a gradebook of its own (a
 ///   pupil, say) was not captured.
-///   From [createEvaluation], it always means that nothing was saved.
+///   From [createEvaluation], [saveGrade] and [saveGrades], it always means
+///   that nothing was saved.
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
-///   check of [createEvaluation] refused the evaluation before the save.
-///   Nothing was saved; its message says why.
+///   check of [createEvaluation], [saveGrade] or [saveGrades] refused the
+///   change before the save. Nothing was saved; its message says why.
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
 ///   evaluation may or may not have been created: read the period again.
+/// - [SmartschoolSkoreGradeSaveUnconfirmedError] (the same): [saveGrade] or
+///   [saveGrades] sent the grades, but could not confirm all of them; it
+///   says which ones are confirmed. Saving a grade again is harmless.
 /// - [SmartschoolSkoreEvaluationPublicError] (neither): [createEvaluation]
 ///   created the evaluation, but Skore shows it as public. It was created;
 ///   check its publication in Smartschool.
@@ -107,7 +114,8 @@ export '../models/skore_gradebook_models.dart';
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered without a session. Sign in again and retry.
 ///   For the save of [createEvaluation], at once, without logging in again:
-///   the save is never sent twice, and was not handled.
+///   the save is never sent twice, and was not handled. For [saveGrade] and
+///   [saveGrades], only for the first save: nothing was saved.
 /// - Another [SmartschoolAuthenticationError]: logging in again failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
 class SkoreGradebookService {
@@ -139,9 +147,10 @@ class SkoreGradebookService {
   /// The same service also holds methods that delete, move, publish or share
   /// (`deleteEvaluation`, `destroyEvaluations`, `moveEvaluation`,
   /// `setPublicProp`, `saveEvalProperties`, `usersThatCanAccess`,
-  /// `importWizardResults`, ...): none of them is here. The one write is
+  /// `importWizardResults`, ...): none of them is here. The writes are
   /// `saveEvaluation`, which [createEvaluation] always sends with `public` 0
-  /// and `publicdatetime` `""`. The library never publishes an evaluation.
+  /// and `publicdatetime` `""`, and `saveGrade`, the grade of one pupil
+  /// ([saveGrade], [saveGrades]). The library never publishes an evaluation.
   static const Set<String> rpcMethods = {
     'getNavigation',
     'init',
@@ -151,6 +160,8 @@ class SkoreGradebookService {
     'getNewEvalDialogBox',
     'getPosComponents',
     'saveEvaluation',
+    // #151: the grade of one pupil in an evaluation.
+    'saveGrade',
   };
 
   /// Throws an [ArgumentError] when [method] is not one of [rpcMethods]:
@@ -723,6 +734,320 @@ class SkoreGradebookService {
     return created;
   }
 
+  /// Saves the grade of pupil [pupilId] in [evaluation] (from
+  /// [getEvaluations]) of [gradebook], or clears it, and returns the pupil's
+  /// cell as Skore lists it right after the save (#151).
+  ///
+  /// [grade]: a number of 0 or more, up to the evaluation's
+  /// [SkoreEvaluation.max] (`"15"`, `"15.5"`, or `"15,5"` as a teacher types
+  /// it); `null` or blank clears the grade. An evaluation that is published
+  /// or scheduled is refused unless [allowPublished] is `true`.
+  ///
+  /// [saveGrades] for one pupil: the same checks, the same save and the same
+  /// errors; see there.
+  Future<SkoreGrade> saveGrade(
+    SkoreGradebook gradebook,
+    SkoreEvaluation evaluation,
+    int pupilId,
+    String? grade, {
+    bool allowPublished = false,
+  }) async => (await _saveGrades('saveGrade', gradebook, evaluation, {
+    pupilId: grade,
+  }, allowPublished: allowPublished))[pupilId]!;
+
+  /// Saves the grades of pupils in [evaluation] (from [getEvaluations]) of
+  /// [gradebook], or clears them, and returns each pupil's cell as Skore
+  /// lists it right after the saves, by pupil ID, in the order of [grades]
+  /// (#151).
+  ///
+  /// [grades] maps a pupil's ID ([SkoreGrade.pupilId], the pupil's
+  /// Smartschool user ID) to the grade: a number of 0 or more, up to the
+  /// evaluation's [SkoreEvaluation.max], with a decimal point or comma
+  /// (`"15"`, `"15.5"`, `"15,5"`, as a teacher types it), or `null` or blank
+  /// to clear it. It is sent as a plain decimal with a point, without
+  /// leading or trailing zeros (`"15,50"` as `"15.5"`). For empty [grades],
+  /// nothing is read or sent.
+  ///
+  /// **Published evaluations.** A grade in a published evaluation is
+  /// visible to its pupils at once, and the school sends them a
+  /// notification; in a scheduled one, from its publication on. So an
+  /// evaluation that is published or scheduled ([SkorePublication.isPublic],
+  /// as Skore lists it right before the save) is refused unless
+  /// [allowPublished] is `true`.
+  ///
+  /// Before the first save, it reads Skore again and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
+  /// - a pupil ID that is not positive, or a grade that is not a number of
+  ///   0 or more (before anything is sent);
+  /// - a gradebook or period [createEvaluation] refuses too: not one of the
+  ///   user's own gradebooks of Skore's current school year, a period that
+  ///   is closed, or one Skore shows read-only;
+  /// - an evaluation of another gradebook, or one Skore no longer lists in
+  ///   its period;
+  /// - an evaluation from the planner ([SkoreEvaluation.isPlannerEvaluation]:
+  ///   Skore's web client leaves those to the planner), one that is not in
+  ///   points ([SkoreEvaluationType.points]), or one without a highest
+  ///   grade;
+  /// - a published or scheduled evaluation, without [allowPublished];
+  /// - a pupil without a cell in the evaluation's rows of the gradebook's
+  ///   class (a pupil of another class, say), or whose cell has no
+  ///   evaluation ID;
+  /// - a grade above the highest grade: Skore answers that with HTTP 500 and
+  ///   does not save it (seen live).
+  ///
+  /// All pupils are checked first: one refused pupil saves none.
+  ///
+  /// Then it sends Skore's `saveGrade` for each pupil in turn, as the web
+  /// client sends it for a cell (verified live), and Skore must answer each
+  /// with `savedState` 1. A failed save does not stop the others. Saving the
+  /// same grade twice gives the same state, so a save is sent again after a
+  /// new login when Smartschool refuses the session for it. When Smartschool
+  /// refuses it even then, or logging in again fails, for the first save
+  /// this throws that [SmartschoolSessionExpiredError] (or other
+  /// [SmartschoolAuthenticationError]): nothing was saved. For a later save,
+  /// the pupils after it are not sent.
+  ///
+  /// Afterwards it reads the period again ([getEvaluations]), once: each
+  /// pupil's grade must be the one sent (the same number, or none for a
+  /// cleared one). When a save failed, or that read fails or shows another
+  /// grade, this throws a [SmartschoolSkoreGradeSaveUnconfirmedError] that
+  /// tells, per pupil, which grades are confirmed and why the others are
+  /// not. Saving a grade again is harmless.
+  ///
+  /// The checks and the saves are separate requests: do not change the same
+  /// evaluation from two places at once.
+  Future<Map<int, SkoreGrade>> saveGrades(
+    SkoreGradebook gradebook,
+    SkoreEvaluation evaluation,
+    Map<int, String?> grades, {
+    bool allowPublished = false,
+  }) => _saveGrades(
+    'saveGrades',
+    gradebook,
+    evaluation,
+    grades,
+    allowPublished: allowPublished,
+  );
+
+  Future<Map<int, SkoreGrade>> _saveGrades(
+    String operation,
+    SkoreGradebook gradebook,
+    SkoreEvaluation evaluation,
+    Map<int, String?> grades, {
+    required bool allowPublished,
+  }) async {
+    if (grades.isEmpty) return const {};
+    // Before anything is sent: the pupils' IDs and the grades.
+    final values = <int, _GradeValue>{};
+    final wrong = <String>[];
+    for (final MapEntry(key: pupilId, value: grade) in grades.entries) {
+      final value = _gradeValue(grade);
+      if (pupilId <= 0) {
+        wrong.add('$pupilId is not a pupil ID');
+      } else if (value == null) {
+        wrong.add(
+          'the grade ${jsonEncode(grade)} of pupil $pupilId is not a number '
+          'of 0 or more (such as 15, 15.5 or 15,5), nor empty to clear it',
+        );
+      } else {
+        values[pupilId] = value;
+      }
+    }
+    if (wrong.isNotEmpty) _refuse(operation, wrong.join('; '));
+
+    final checked = await _checkEvaluationWrite(
+      operation,
+      gradebook,
+      evaluation,
+      allowPublished: allowPublished,
+    );
+    final target = checked.target;
+    final book = target.gradebook;
+    final current = checked.evaluation;
+    final where = checked.where;
+    if (current.type != SkoreEvaluationType.points) {
+      _refuse(
+        operation,
+        '$where is not in points (evaltype ${current.typeCode}): the library '
+        'saves grades in points only',
+      );
+    }
+    final max = current.max;
+    if (max == null) {
+      _refuse(operation, '$where has no highest grade to check grades against');
+    }
+    final cells = <int, SkoreGrade>{};
+    for (final MapEntry(key: pupilId, value: value) in values.entries) {
+      final cell = current.results.gradeOf(pupilId);
+      final number = value.number;
+      if (cell == null) {
+        wrong.add(
+          'pupil $pupilId has no cell in its rows of class ${book.classId}',
+        );
+      } else if (cell.cellEvaluationId <= 0) {
+        wrong.add('the cell of pupil $pupilId has no evaluation ID');
+      } else if (number != null && number > max) {
+        wrong.add(
+          'the grade ${value.text} of pupil $pupilId is above the highest '
+          'grade, $max',
+        );
+      } else {
+        cells[pupilId] = cell;
+      }
+    }
+    if (wrong.isNotEmpty) _refuse(operation, 'in $where, ${wrong.join('; ')}');
+
+    // One save per pupil, in turn; a failed one does not stop the others.
+    final entries = values.entries.toList();
+    final failures = <int, String>{};
+    Exception? cause;
+    var handled = false; // whether Skore may have handled a save
+    for (var i = 0; i < entries.length; i++) {
+      final MapEntry(key: pupilId, value: value) = entries[i];
+      final cell = cells[pupilId]!;
+      try {
+        final result = await _rpc(
+          'saveGrade',
+          [
+            '${current.id}', // col: the evaluation's column, its refID
+            cell.rowKey, // row: pupil_<pupilId>_<classId>
+            value.text,
+            target.userId,
+            0, // projectID: an evaluation, not a project
+            0, // catID
+            0, // courseID
+            '${cell.categoryType}', // catType: p[1] of the cell
+            _pathIds(book),
+            '${cell.cellEvaluationId}', // evaluationID: p[2] of the cell
+            '${book.gradebookId}', // ownerID: p[3] of the cell
+          ],
+          userId: target.userId,
+          workyearId: book.workyearId,
+        );
+        handled = true;
+        // {"savedState":1,"postEvalData":null,"grade":"15.5","stream":[...]}
+        // (seen live). -1 is the web client's "wrong component" alert.
+        final state = result is Map ? result['savedState'] : null;
+        if (SkoreRpc.tryId(state) != 1) {
+          failures[pupilId] =
+              'Skore answered ${SkoreRpc.jsonPreview(result)} instead of '
+              'savedState 1';
+        }
+      } on SmartschoolAuthenticationError catch (e) {
+        // Smartschool refused the session, also after a new login, logging
+        // in again failed, or Skore answered without a session: Skore did
+        // not handle this save, and would not handle the next ones.
+        if (!handled) rethrow;
+        cause ??= e;
+        failures[pupilId] = 'Smartschool did not accept the session ($e)';
+        for (final MapEntry(key: later) in entries.skip(i + 1)) {
+          failures[later] =
+              'not sent, as Smartschool did not accept the session for an '
+              'earlier save';
+        }
+        break;
+      } on Exception catch (e) {
+        // Another HTTP status (Skore answers a bad value with a 500), an
+        // answer that is not JSON, a connection that dropped.
+        handled = true;
+        cause ??= e;
+        failures[pupilId] = 'no usable answer came in ($e)';
+      }
+    }
+
+    // The check: the period read again, once.
+    SkoreEvaluation? after;
+    Exception? readFailure;
+    try {
+      after = (await getEvaluations(
+        book,
+        current.periodId,
+      )).where((e) => e.id == current.id).firstOrNull;
+    } on Exception catch (e) {
+      readFailure = e;
+    }
+    final confirmed = <int, SkoreGrade>{};
+    final unconfirmed = <int, String>{};
+    for (final MapEntry(key: pupilId, value: value) in entries) {
+      final cell = after?.results.gradeOf(pupilId);
+      final shows = readFailure != null
+          ? 'reading the period again to check it failed ($readFailure)'
+          : after == null
+          ? 'reading the period again does not list the evaluation'
+          : cell == null
+          ? 'reading the period again shows no cell for the pupil'
+          : 'reading the period again shows '
+                '${cell.grade == null ? 'no grade' : '"${cell.grade}"'}';
+      final failure = failures[pupilId];
+      if (failure != null) {
+        unconfirmed[pupilId] = '$failure; $shows';
+      } else if (cell != null && _sameGrade(cell.grade, value)) {
+        confirmed[pupilId] = cell;
+      } else {
+        unconfirmed[pupilId] = shows;
+      }
+    }
+    if (unconfirmed.isEmpty) return confirmed;
+
+    final count = entries.length;
+    final sent = count == 1 ? 'the grade' : 'the grades of $count pupils';
+    final which = confirmed.isNotEmpty
+        ? '${unconfirmed.length} of them'
+        : count == 1
+        ? 'it'
+        : 'any of them';
+    final reasons = [
+      for (final MapEntry(key: pupilId, value: why) in unconfirmed.entries)
+        'pupil $pupilId (${_sentText(values[pupilId]!)}): $why',
+    ];
+    throw SmartschoolSkoreGradeSaveUnconfirmedError(
+      '$operation: $sent in $where went out, but Skore does not confirm '
+      '$which: ${reasons.join('; ')}. '
+      '${confirmed.isEmpty ? '' : 'The others are confirmed. '}'
+      'Saving a grade again is harmless: read the grades again (getResults) '
+      'and save the ones that differ.',
+      cause: cause ?? readFailure,
+      gradebookId: book.gradebookId,
+      periodId: current.periodId,
+      evaluationId: current.id,
+      grades: {for (final MapEntry(:key, :value) in entries) key: value.text},
+      confirmed: confirmed,
+      unconfirmed: unconfirmed,
+    );
+  }
+
+  static final _decimalGrade = RegExp(r'^(\d+)(?:[.,](\d+))?$');
+  static final _leadingZeros = RegExp(r'^0+(?=\d)');
+  static final _trailingZeros = RegExp(r'0+$');
+
+  /// [grade] as `saveGrade` sends it, with its number: a plain decimal with
+  /// a point, without leading or trailing zeros (`"015,50"` is `"15.5"`);
+  /// `""` without a number for `null` or blank, which clears the grade.
+  /// `null` when it is neither a number of 0 or more nor blank.
+  static _GradeValue? _gradeValue(String? grade) {
+    final text = grade?.trim() ?? '';
+    if (text.isEmpty) return (text: '', number: null);
+    final match = _decimalGrade.firstMatch(text);
+    if (match == null) return null;
+    final whole = match.group(1)!.replaceFirst(_leadingZeros, '');
+    final fraction = (match.group(2) ?? '').replaceFirst(_trailingZeros, '');
+    final plain = fraction.isEmpty ? whole : '$whole.$fraction';
+    return (text: plain, number: num.parse(plain));
+  }
+
+  /// Whether [raw], a grade Skore lists ([SkoreGrade.grade]), is the grade
+  /// [sent]: none for a cleared one, else the same number (`"15"` for
+  /// `15`).
+  static bool _sameGrade(String? raw, _GradeValue sent) {
+    final number = sent.number;
+    if (number == null) return raw == null;
+    return raw != null && (raw == sent.text || num.tryParse(raw) == number);
+  }
+
+  /// [sent] for a message: `"15.5"`, or `cleared`.
+  static String _sentText(_GradeValue sent) =>
+      sent.number == null ? 'cleared' : '"${sent.text}"';
+
   /// Reads [gradebook] and its period [periodId] again, and refuses a write
   /// in them with a [SmartschoolSkoreChangeRefusedError] that names
   /// [operation] unless:
@@ -815,6 +1140,97 @@ class SkoreGradebookService {
       gradebook: book,
       sheet: checked,
       period: period,
+    );
+  }
+
+  /// Reads Skore again, and refuses a write into [evaluation] of
+  /// [gradebook] with a [SmartschoolSkoreChangeRefusedError] that names
+  /// [operation] unless:
+  /// - [evaluation] is one of [gradebook] (checked before anything is
+  ///   sent);
+  /// - [_checkWritable] lets a write in its period;
+  /// - Skore still lists it in that period ([getEvaluations]);
+  /// - it does not come from the planner (`isPlannerEval` 1: Skore's web
+  ///   client leaves those to the planner);
+  /// - it is not published or scheduled, unless [allowPublished]
+  ///   ([_checkPublication]).
+  ///
+  /// The checks every write into an evaluation makes first: the grades of
+  /// #151, and the feedback of #152. Returns what they read: the target of
+  /// [_checkWritable], the evaluation as Skore lists it now (with its
+  /// cells), which the write then uses, and how messages name it.
+  Future<({_WriteTarget target, SkoreEvaluation evaluation, String where})>
+  _checkEvaluationWrite(
+    String operation,
+    SkoreGradebook gradebook,
+    SkoreEvaluation evaluation, {
+    required bool allowPublished,
+  }) async {
+    if (evaluation.gradebookId != gradebook.gradebookId) {
+      _refuse(
+        operation,
+        'evaluation ${evaluation.id} is one of gradebook '
+        '${evaluation.gradebookId}, not of gradebook ${gradebook.gradebookId}',
+      );
+    }
+    final periodId = evaluation.periodId;
+    final target = await _checkWritable(operation, gradebook, periodId);
+    final book = target.gradebook;
+    final inPeriod =
+        'period ${target.period.name} ($periodId) of gradebook '
+        '${book.gradebookId}';
+    final current = (await getEvaluations(
+      book,
+      periodId,
+    )).where((e) => e.id == evaluation.id).firstOrNull;
+    if (current == null) {
+      _refuse(
+        operation,
+        'Skore no longer lists evaluation ${evaluation.id} in $inPeriod',
+      );
+    }
+    final where = 'evaluation ${current.id} ("${current.title}") in $inPeriod';
+    if (current.isPlannerEvaluation) {
+      _refuse(
+        operation,
+        '$where comes from the planner (isPlannerEval 1): Skore\'s web client '
+        'leaves it to the planner',
+      );
+    }
+    _checkPublication(
+      operation,
+      current,
+      where,
+      allowPublished: allowPublished,
+    );
+    return (target: target, evaluation: current, where: where);
+  }
+
+  /// Refuses a write into [evaluation], as Skore lists it right before the
+  /// write ([where] names it), with a [SmartschoolSkoreChangeRefusedError]
+  /// when its pupils see it or will: Skore's `public` `"1"`, published or
+  /// scheduled ([SkorePublication.isPublic], whatever the time), unless
+  /// [allowPublished].
+  ///
+  /// The rule of every write into an evaluation (`allowPublished`, `false`
+  /// by default): the grades of #151 and the feedback of #152. What is
+  /// written into a published evaluation is visible to its pupils at once,
+  /// and the school sends them a notification.
+  static void _checkPublication(
+    String operation,
+    SkoreEvaluation evaluation,
+    String where, {
+    required bool allowPublished,
+  }) {
+    final publication = evaluation.publication;
+    if (!publication.isPublic || allowPublished) return;
+    final scheduled = publication.state == SkorePublicationState.scheduled;
+    _refuse(
+      operation,
+      '$where is ${scheduled ? 'scheduled to be published' : 'published'} '
+      '(public "1", publicdatetime "${publication.rawPublicDateTime}"): its '
+      'pupils see what is written in it ${scheduled ? 'from then on' : 'at once'}. '
+      'Pass allowPublished: true to write in it anyway',
     );
   }
 
@@ -2104,3 +2520,8 @@ class _WriteTarget {
     required this.period,
   });
 }
+
+/// A grade as `SkoreGradebookService.saveGrades` sends it (#151): [text] is
+/// what goes out (`"15.5"`, `""` to clear), [number] its value (`null` to
+/// clear).
+typedef _GradeValue = ({String text, num? number});

@@ -1,8 +1,9 @@
-/// Models for the Skore gradebook of a teacher (#148, #149): what
+/// Models for the Skore gradebook of a teacher (#148, #149, #150): what
 /// `SkoreGradebookService` reads as the logged-in teacher at `/SkoreGradebook`
 /// ("Puntenboek"): the teacher's own gradebooks of a school year, the
 /// periods and pupils of one gradebook, and the evaluations of a period with
-/// their publication, grades and feedback.
+/// their publication, grades and feedback, and the components a new
+/// evaluation can count for.
 ///
 /// This is the teacher's side of Skore, which any teacher reaches with their
 /// own login. The admin side (report models, assignments, sharing) is
@@ -468,6 +469,28 @@ class SkoreEvaluation {
       '${date.toIso8601String().substring(0, 10)}, max: $max, component: '
       '$componentName, type: ${type.name}, publication: $publication, '
       'grades: ${results.grades.length})';
+}
+
+/// A component an evaluation in a period can count for, as the "new
+/// evaluation" dialog of Skore's gradebook lists them
+/// (`SkoreGradebookService.getComponents`, #150): `geen` (none, [id] `0`)
+/// and, for instance, `DW` (2, "Dagelijks werk").
+class SkoreEvaluationComponent {
+  /// The component's ID (Skore's `componentID`, e.g. `2`), `0` for none
+  /// ("geen"): what [SkoreEvaluation.componentId] holds.
+  final int id;
+
+  /// Its short name (e.g. `"DW"`, or `"geen"` for none), what
+  /// [SkoreEvaluation.componentName] holds.
+  final String name;
+
+  const SkoreEvaluationComponent({required this.id, required this.name});
+
+  /// Whether this is "geen": the evaluation counts for no component.
+  bool get isNone => id == 0;
+
+  @override
+  String toString() => 'SkoreEvaluationComponent(id: $id, name: $name)';
 }
 
 /// The grades of one evaluation for the pupils of the gradebook's class,

@@ -259,12 +259,15 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('the methods of the gradebook RPC service', () {
-    test('are the reads, nothing else', () {
+    test('are the reads and the save of a new evaluation, nothing else', () {
       expect(SkoreGradebookService.rpcMethods, {
         'getNavigation',
         'init',
         'getGradebookContext',
         'getEvaluations', // #149
+        'getNewEvalDialogBox', // #150
+        'getPosComponents', // #150
+        'saveEvaluation', // #150, always unpublished
       });
       for (final method in SkoreGradebookService.rpcMethods) {
         SkoreGradebookService.checkRpcMethod(method); // does not throw
@@ -273,15 +276,19 @@ void main() {
 
     test('any other is refused, the publishing and deleting ones too', () {
       const others = [
+        // Publishing: the column header's toggle, and the properties dialog
+        // (which carries public/publicdatetime too). Never sent (#150).
         'setPublicProp',
         'saveEvalProperties',
-        'saveEvaluation',
         'deleteEvaluation',
         'destroyEvaluations',
         'moveEvaluation',
         'copyEvaluation',
         'unhideEvaluations',
         'importWizardResults',
+        'getHiddenEvaluations',
+        'getAllComponents', // not needed: getPosComponents names them
+        'getMyUsedTypesAndSystemTypes',
         'saveGrade',
         'saveGradeInfo',
         'usersThatCanAccess',
@@ -289,6 +296,7 @@ void main() {
         'getGradeInfo',
         '',
         'GETNAVIGATION',
+        'SaveEvaluation',
       ];
       for (final method in others) {
         expect(

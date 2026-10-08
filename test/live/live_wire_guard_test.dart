@@ -71,9 +71,9 @@ const _skoreGradebook = '/modules/Skore/backend/gradebook/rpc.php';
 /// Skore's REST API (#149): the feedback of a pupil, and its writes.
 const _skoreFeedbackApi = '/skore/api/v1/gradebook/feedback';
 
-/// The `result` of Skore's answers to its reads (#91, #148, #149), by RPC
-/// method, with a made-up teacher and pupil; any other method is answered as
-/// a save that went through.
+/// The `result` of Skore's answers to its reads (#91, #148, #149, #150), by
+/// RPC method, with a made-up teacher and pupil; any other method is answered
+/// as a save that went through.
 const _skoreResults = {
   'getTeachers': '[{"userID":"1001","name":"Janssens, Jan"}]',
   'getCourses':
@@ -104,6 +104,8 @@ const _skoreResults = {
       r'"v":"<div class=\"gbc\" raw=\"15\">15</div><span '
       r'class=\"gbc_message_place gbc_message\"></span>",'
       '"p":[1,0,"500001","32508",500001]}]}}',
+  'getNewEvalDialogBox': '[["2264","Informatica"]]',
+  'getPosComponents': '[[0,"geen"],["2","DW"]]',
 };
 
 /// The start page, where the client reads the own user (777, #148).
@@ -1278,6 +1280,43 @@ void main() {
             'teacher/49_777_0/context/176_472_2440',
       ]);
       expect(guard.violations, isEmpty);
+    });
+
+    test('the reads of createEvaluation, never its save (#150)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+
+      final components = await gradebooks.getComponents(book, 1704);
+      // Every check of the service passes: only the guard stops the save.
+      await expectLater(
+        gradebooks.createEvaluation(
+          book,
+          1704,
+          title: 'dartschool test',
+          date: DateTime(2026, 10, 8),
+          max: 20,
+        ),
+        throwsA(isA<SmartschoolSkoreEvaluationCreateUnconfirmedError>()),
+      );
+
+      expect(components.map((c) => c.name), ['geen', 'DW']);
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getPosComponents',
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getGradebookContext',
+        '$_skoreGradebook getNewEvalDialogBox',
+        '$_skoreGradebook getPosComponents',
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST $_skoreGradebook was not sent'),
+          contains('no saveEvaluation'),
+        ),
+      ]);
     });
 
     test('the planner\'s lookup of a calendar by ID (#127)', () async {
@@ -2777,7 +2816,7 @@ void main() {
     });
 
     test('a save in Skore, and any other Skore POST but its reads, its REST '
-        'API included (#91, #148, #149)', () async {
+        'API included (#91, #148, #149, #150)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);
       final dio = _dio(server, guard);

@@ -15,7 +15,8 @@ export '../models/skore_gradebook_models.dart';
 /// the periods and pupils of one gradebook, with whether the teacher may
 /// change it ([getGradebook]), and the evaluations of a period with whether
 /// and when they are published and the pupils' grades ([getEvaluations],
-/// [getResults]) and feedback ([getFeedback], #149).
+/// [getResults]) and feedback ([getFeedback], #149). And creates an
+/// evaluation in a period, never published ([createEvaluation], #150).
 ///
 /// This is what a teacher sees at `/SkoreGradebook` ("Puntenboek"), and it
 /// works for any teacher with their own login: it needs none of the admin
@@ -47,7 +48,12 @@ export '../models/skore_gradebook_models.dart';
 /// }
 /// ```
 ///
-/// It only reads, and changes nothing in Skore.
+/// The only change it makes in Skore is [createEvaluation], which checks the
+/// gradebook, the period and the values first, sends the save once, and
+/// reads the period again to check it. **It never publishes**: a new
+/// evaluation goes out unpublished, and teachers publish it in Smartschool
+/// themselves. Nothing in the service publishes, deletes or moves an
+/// evaluation.
 ///
 /// ### The endpoint
 /// Every call is an RPC call to Skore's gradebook service
@@ -79,6 +85,17 @@ export '../models/skore_gradebook_models.dart';
 ///   Its message may quote the answer, which can hold names: keep it in a
 ///   log. What Skore answers an account without a gradebook of its own (a
 ///   pupil, say) was not captured.
+///   From [createEvaluation], it always means that nothing was saved.
+/// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
+///   check of [createEvaluation] refused the evaluation before the save.
+///   Nothing was saved; its message says why.
+/// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
+///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
+///   [createEvaluation] sent the save, but could not confirm it. The
+///   evaluation may or may not have been created: read the period again.
+/// - [SmartschoolSkoreEvaluationPublicError] (neither): [createEvaluation]
+///   created the evaluation, but Skore shows it as public. It was created;
+///   check its publication in Smartschool.
 /// - [ArgumentError]: a school year ID that is not positive (before
 ///   anything is sent), or one Skore does not offer (Skore answers it with
 ///   no gradebooks; seen live); a period or pupil ID that is not positive,
@@ -89,6 +106,8 @@ export '../models/skore_gradebook_models.dart';
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered without a session. Sign in again and retry.
+///   For the save of [createEvaluation], at once, without logging in again:
+///   the save is never sent twice, and was not handled.
 /// - Another [SmartschoolAuthenticationError]: logging in again failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
 class SkoreGradebookService {
@@ -120,13 +139,18 @@ class SkoreGradebookService {
   /// The same service also holds methods that delete, move, publish or share
   /// (`deleteEvaluation`, `destroyEvaluations`, `moveEvaluation`,
   /// `setPublicProp`, `saveEvalProperties`, `usersThatCanAccess`,
-  /// `importWizardResults`, ...): none of them is here. The library never
-  /// publishes an evaluation.
+  /// `importWizardResults`, ...): none of them is here. The one write is
+  /// `saveEvaluation`, which [createEvaluation] always sends with `public` 0
+  /// and `publicdatetime` `""`. The library never publishes an evaluation.
   static const Set<String> rpcMethods = {
     'getNavigation',
     'init',
     'getGradebookContext',
     'getEvaluations',
+    // #150: the reads of the "new evaluation" dialog, and its save.
+    'getNewEvalDialogBox',
+    'getPosComponents',
+    'saveEvaluation',
   };
 
   /// Throws an [ArgumentError] when [method] is not one of [rpcMethods]:
@@ -200,30 +224,62 @@ class SkoreGradebookService {
   /// gradebook or class is refused with a [SmartschoolSkoreError].
   Future<SkoreGradebookSheet> getGradebook(SkoreGradebook gradebook) async {
     final userId = (await _client.getCurrentUser()).id;
-    final workyearId = gradebook.workyearId;
-    final pathIds = [for (final id in gradebook.pathIds) '$id'];
-    final courses = ['${gradebook.courseId}'];
-    final owners = ['${gradebook.gradebookId}'];
-
-    final sheet = _parseInit(
-      gradebook,
-      await _rpc(
-        'init',
-        [courses, owners, userId, pathIds, 0, 0],
-        userId: userId,
-        workyearId: workyearId,
-      ),
-    );
+    final sheet = await _readInit(gradebook, userId);
     final active = sheet.activePeriod;
     if (active == null) return sheet;
-    final context = await _rpc(
-      'getGradebookContext',
-      [pathIds, courses, owners, userId, active.id, 0, workyearId],
-      userId: userId,
-      workyearId: workyearId,
+    return _withContext(
+      sheet,
+      await _readContext(gradebook, active.id, userId),
     );
-    return _withContext(sheet, context);
   }
+
+  /// [gradebook] as Skore's `init(courses, owners, userID, pathIds, 0, 0)`
+  /// gives it, for its school year; not yet [SkoreGradebookSheet.writable].
+  Future<SkoreGradebookSheet> _readInit(
+    SkoreGradebook gradebook,
+    int userId,
+  ) async => _parseInit(
+    gradebook,
+    await _rpc(
+      'init',
+      [
+        ['${gradebook.courseId}'],
+        ['${gradebook.gradebookId}'],
+        userId,
+        _pathIds(gradebook),
+        0,
+        0,
+      ],
+      userId: userId,
+      workyearId: gradebook.workyearId,
+    ),
+  );
+
+  /// The `result` of Skore's `getGradebookContext(pathIds, courses, owners,
+  /// userID, periodId, 0, wy)` for period [periodId] of [gradebook].
+  Future<dynamic> _readContext(
+    SkoreGradebook gradebook,
+    int periodId,
+    int userId,
+  ) => _rpc(
+    'getGradebookContext',
+    [
+      _pathIds(gradebook),
+      ['${gradebook.courseId}'],
+      ['${gradebook.gradebookId}'],
+      userId,
+      periodId,
+      0,
+      gradebook.workyearId,
+    ],
+    userId: userId,
+    workyearId: gradebook.workyearId,
+  );
+
+  /// [gradebook]'s `pathIds` as Skore's web client sends them: strings.
+  static List<String> _pathIds(SkoreGradebook gradebook) => [
+    for (final id in gradebook.pathIds) '$id',
+  ];
 
   /// Returns the evaluations of [gradebook] in its period [periodId] (a
   /// [SkoreGradebookPeriod.id] of [getGradebook]), in Skore's order, each
@@ -265,7 +321,7 @@ class SkoreGradebookService {
         ['${gradebook.courseId}'],
         '${gradebook.groupId}',
         '${gradebook.classId}',
-        [for (final id in gradebook.pathIds) '$id'],
+        _pathIds(gradebook),
       ],
       userId: userId,
       workyearId: gradebook.workyearId,
@@ -394,6 +450,537 @@ class SkoreGradebookService {
 
   static final _sessionUserId = RegExp(r'^(\d+)_(\d+)_\d+$');
 
+  /// Returns the components an evaluation in period [periodId] of
+  /// [gradebook] can count for, as the "new evaluation" dialog of Skore's
+  /// gradebook offers them (#150), in Skore's order: `geen` (none, ID `0`)
+  /// and the period's components (seen live for 6EWI's DW1: `geen` and
+  /// `DW`). [createEvaluation] takes one of their IDs.
+  ///
+  /// One request, for the gradebook's school year: Skore's
+  /// `getPosComponents(0, periodID, groupID, courseID, pathIds)`, as the
+  /// dialog sends it. A [periodId] that is not positive is refused with an
+  /// [ArgumentError] before anything is sent.
+  Future<List<SkoreEvaluationComponent>> getComponents(
+    SkoreGradebook gradebook,
+    int periodId,
+  ) async {
+    if (periodId <= 0) {
+      throw ArgumentError.value(
+        periodId,
+        'periodId',
+        'not a period ID; nothing was sent',
+      );
+    }
+    final userId = (await _client.getCurrentUser()).id;
+    return _readComponents(gradebook, periodId, userId);
+  }
+
+  Future<List<SkoreEvaluationComponent>> _readComponents(
+    SkoreGradebook gradebook,
+    int periodId,
+    int userId,
+  ) async => parseComponents(
+    await _rpc(
+      'getPosComponents',
+      [
+        0,
+        periodId,
+        '${gradebook.groupId}',
+        '${gradebook.courseId}',
+        _pathIds(gradebook),
+      ],
+      userId: userId,
+      workyearId: gradebook.workyearId,
+    ),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Writes
+  // ---------------------------------------------------------------------------
+
+  /// What `saveEvaluation` always sends as `public` and `publicdatetime`:
+  /// not published, what Skore's dialog sends when "Publiceren" is not
+  /// ticked. The library never publishes (#150).
+  static const _notPublic = 0;
+  static const _noPublicationTime = '';
+
+  /// Creates an evaluation (a column of grades) in period [periodId] of
+  /// [gradebook], **unpublished**, and returns it as Skore lists it right
+  /// after the save (#150). Teachers check it in Smartschool and publish it
+  /// there themselves: the library never publishes it, and has no parameter
+  /// to.
+  ///
+  /// - [title]: not blank; sent trimmed.
+  /// - [shortName]: optional; none when `null` or blank.
+  /// - [date]: the day of the evaluation (its year, month and day; the time
+  ///   does not count), in the school year: from 1 September to 31 August,
+  ///   as Skore's dialog allows (seen live: 2026-09-01 to 2027-08-31).
+  /// - [max]: the highest grade, a positive whole number.
+  /// - [componentId]: one of [getComponents] (`0` for none). Without it, the
+  ///   one Skore's dialog picks: the second when Skore offers exactly two
+  ///   (`geen` and the period's component), else `geen`.
+  ///
+  /// The evaluation counts in points ("Cijfers"), without cumulation, type
+  /// or import.
+  ///
+  /// Before the save, it reads Skore again and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
+  /// - a blank [title], a [max] that is not positive, or a [periodId] that
+  ///   is not positive (before anything is sent);
+  /// - a gradebook that is not one of the user's own gradebooks of Skore's
+  ///   current school year ([getGradebookYear]): the library writes in the
+  ///   current school year only;
+  /// - a period that is not one of the gradebook's, or is closed
+  ///   ([SkoreGradebookPeriod.isOpen]);
+  /// - a gradebook Skore shows read-only in that period
+  ///   ([SkoreGradebookSheet.writable], asked for that period; or coordinator
+  ///   mode);
+  /// - a [date] outside the school year;
+  /// - a course Skore does not offer for a new evaluation in the period
+  ///   (`getNewEvalDialogBox`), or a [componentId] it does not offer.
+  ///
+  /// A read before the save that fails throws as the reads do (a
+  /// [SmartschoolSkoreError]): nothing was saved either.
+  ///
+  /// The save is Skore's `saveEvaluation`, as the dialog sends it, with
+  /// `public` 0 and `publicdatetime` `""` (verified live). **It is sent
+  /// once**, never again, not even after logging in again: a create is not
+  /// idempotent, so a second one would make a second evaluation. Skore must
+  /// answer it with `state` 1 and the new evaluation's `refID`, and reading
+  /// the period again ([getEvaluations]) must list that evaluation with the
+  /// title, date, highest grade and component asked for. Otherwise this
+  /// throws a [SmartschoolSkoreEvaluationCreateUnconfirmedError] (also for
+  /// an answer with another HTTP status, such as a `500`, or that is not
+  /// JSON): read the period again before trying again. A session Smartschool
+  /// refuses for the save, or an answer without a session, is a
+  /// [SmartschoolSessionExpiredError] at once: Skore did not handle it.
+  ///
+  /// When Skore shows the new evaluation as public anyway (`public` `"1"`:
+  /// published or scheduled), this throws a
+  /// [SmartschoolSkoreEvaluationPublicError] that names it, and changes
+  /// nothing: undoing it would take the publishing calls the library never
+  /// makes. Change it in Smartschool.
+  ///
+  /// The checks and the save are separate requests: do not change the same
+  /// period from two places at once.
+  Future<SkoreEvaluation> createEvaluation(
+    SkoreGradebook gradebook,
+    int periodId, {
+    required String title,
+    String? shortName,
+    required DateTime date,
+    required int max,
+    int? componentId,
+  }) async {
+    const operation = 'createEvaluation';
+    final name = title.trim();
+    final short = shortName?.trim() ?? '';
+    if (name.isEmpty) _refuse(operation, 'the title is blank');
+    if (max <= 0) {
+      _refuse(
+        operation,
+        'the highest grade ($max) is not a positive whole number',
+      );
+    }
+    final day = DateTime(date.year, date.month, date.day);
+
+    final target = await _checkWritable(operation, gradebook, periodId);
+    final book = target.gradebook;
+    final period = target.period;
+    final where =
+        'period ${period.name} ($periodId) of gradebook ${book.gradebookId}';
+    final (first, last) = _schoolYearDays(target.workyear);
+    if (day.isBefore(first) || day.isAfter(last)) {
+      _refuse(
+        operation,
+        'the date ${_dayText(day)} is not in school year '
+        '${target.workyear.name} (${_dayText(first)} to ${_dayText(last)})',
+      );
+    }
+    final course = await _newEvaluationCourse(operation, target, where);
+    final component = _component(
+      operation,
+      await _readComponents(book, periodId, target.userId),
+      componentId,
+      where,
+    );
+
+    final what =
+        '$operation: the save of evaluation "$name" (${_dayText(day)}, max '
+        '$max, component ${component.name}) in $where';
+    SmartschoolSkoreEvaluationCreateUnconfirmedError unconfirmed(
+      String message, {
+      Object? cause,
+      int? evaluationId,
+    }) => SmartschoolSkoreEvaluationCreateUnconfirmedError(
+      '$message ${evaluationId == null ? 'It may or may not have been created' : 'Skore answered that it created it'}'
+      ', unpublished: read the evaluations of the period again '
+      '(getEvaluations) before trying again; createEvaluation again makes a '
+      'second evaluation.',
+      cause: cause,
+      gradebookId: book.gradebookId,
+      periodId: periodId,
+      title: name,
+      evaluationId: evaluationId,
+    );
+
+    final result = await _save(
+      'saveEvaluation',
+      [
+        0, // evaluationID: a new evaluation
+        '${book.gradebookId}', // ownerID
+        target.userId,
+        '${book.courseId}',
+        course.name,
+        name,
+        short,
+        periodId,
+        _dayText(day),
+        '$max',
+        component.name,
+        component.isNone ? 0 : '${component.id}',
+        _notPublic,
+        const <Object?>[], // chain: no cumulation
+        _pathIds(book),
+        null, // contentType
+        null, // contentTypeName
+        _noPublicationTime,
+        null, // importParams
+        1, // evalType: points ("Cijfers")
+      ],
+      gradebook: book,
+      userId: target.userId,
+      retryAfterLogin: false,
+      unconfirmed: (failure) => unconfirmed(
+        '$what was sent, but no usable answer came in ($failure).',
+        cause: failure,
+      ),
+    );
+
+    // {"state":1,"incumul":0,"evaluationID":395764,"refID":395764,
+    // "importData":null} (seen live).
+    final state = result is Map ? SkoreRpc.tryId(result['state']) : null;
+    final id = result is Map ? SkoreRpc.tryId(result['refID']) : null;
+    if (state != 1 || id == null || id <= 0) {
+      throw unconfirmed(
+        '$what was sent, but Skore\'s answer ${SkoreRpc.jsonPreview(result)} '
+        'does not confirm it (state 1 with the refID of the new '
+        'evaluation).',
+      );
+    }
+
+    final SkoreEvaluation? created;
+    try {
+      created = (await getEvaluations(
+        book,
+        periodId,
+      )).where((e) => e.id == id).firstOrNull;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        unconfirmed(
+          '$what was confirmed as evaluation $id, but reading the period '
+          'again to check it failed ($e).',
+          cause: e,
+          evaluationId: id,
+        ),
+        stackTrace,
+      );
+    }
+    if (created == null) {
+      throw unconfirmed(
+        '$what was confirmed as evaluation $id, but reading the period again '
+        'does not list it.',
+        evaluationId: id,
+      );
+    }
+    final publication = created.publication;
+    if (publication.isPublic) {
+      throw SmartschoolSkoreEvaluationPublicError(
+        '$operation: evaluation "${created.title}" ($id) was created in '
+        '$where, but Skore shows it as ${publication.state.name} (public '
+        '"${publication.rawPublic}", publicdatetime '
+        '"${publication.rawPublicDateTime}"), although it was sent '
+        'unpublished. The library does not change a publication: check the '
+        'evaluation in Smartschool and change it there. Do not create it '
+        'again.',
+        evaluation: created,
+      );
+    }
+    final differences = [
+      if (created.title != name) 'the title "${created.title}"',
+      if (!_sameDay(created.date, day)) 'the date ${_dayText(created.date)}',
+      if (created.max != max) 'the highest grade ${created.max}',
+      if (created.componentId != component.id)
+        'component ${created.componentId} (${created.componentName})',
+    ];
+    if (differences.isNotEmpty) {
+      throw unconfirmed(
+        '$what was confirmed as evaluation $id, but reading the period again '
+        'shows it with ${differences.join(', ')}.',
+        evaluationId: id,
+      );
+    }
+    return created;
+  }
+
+  /// Reads [gradebook] and its period [periodId] again, and refuses a write
+  /// in them with a [SmartschoolSkoreChangeRefusedError] that names
+  /// [operation] unless:
+  /// - [periodId] is positive (checked before anything is sent);
+  /// - the gradebook is one of the user's own gradebooks of Skore's current
+  ///   school year (`getNavigation` without `wy`), with the user as its
+  ///   teacher;
+  /// - the period is one of the gradebook's, and open (`init`);
+  /// - Skore lets the user change the gradebook in that period
+  ///   (`getGradebookContext` for the period: `writable` 1, no coordinator
+  ///   mode). `writable` alone is not enough: Skore answers it for a closed
+  ///   period of an earlier school year too (seen live, #148).
+  ///
+  /// The checks every write in a gradebook makes first: [createEvaluation]
+  /// (#150), and the grades and feedback of #151 and #152. Returns what
+  /// they read, the gradebook as Skore lists it now included, which the
+  /// write then uses.
+  Future<_WriteTarget> _checkWritable(
+    String operation,
+    SkoreGradebook gradebook,
+    int periodId,
+  ) async {
+    if (periodId <= 0) _refuse(operation, '$periodId is not a period ID');
+    final gradebookId = gradebook.gradebookId;
+    final userId = (await _client.getCurrentUser()).id;
+    final year = await getGradebookYear();
+    final current = year.workyear;
+    if (gradebook.workyearId != current.id) {
+      _refuse(
+        operation,
+        'gradebook $gradebookId is of school year ${gradebook.workyearId}, '
+        'not of the current one, ${current.name} (${current.id}): the '
+        'library writes in the current school year only',
+      );
+    }
+    final book = year.gradebooks
+        .where((g) => g.gradebookId == gradebookId)
+        .firstOrNull;
+    if (book == null) {
+      _refuse(
+        operation,
+        'gradebook $gradebookId is not one of your own gradebooks of '
+        '${current.name} (Skore lists ${year.gradebooks.length})',
+      );
+    }
+    if (book.teacherId != userId) {
+      _refuse(
+        operation,
+        'gradebook $gradebookId is of teacher ${book.teacherId}, not your own '
+        '(you are $userId)',
+      );
+    }
+    final sheet = await _readInit(book, userId);
+    final period = sheet.periods.where((p) => p.id == periodId).firstOrNull;
+    if (period == null) {
+      _refuse(
+        operation,
+        'period $periodId is not one of gradebook $gradebookId (it has '
+        '${sheet.periods.isEmpty ? 'none' : sheet.periods.map((p) => '${p.name} (${p.id})').join(', ')})',
+      );
+    }
+    if (!period.isOpen) {
+      _refuse(
+        operation,
+        'period ${period.name} ($periodId) of gradebook $gradebookId is '
+        'closed',
+      );
+    }
+    final checked = _withContext(
+      SkoreGradebookSheet(
+        gradebook: book,
+        courseName: sheet.courseName,
+        periods: sheet.periods,
+        activePeriod: period,
+        pupils: sheet.pupils,
+      ),
+      await _readContext(book, periodId, userId),
+    );
+    if (!checked.writable || checked.isCoordinator) {
+      _refuse(
+        operation,
+        'Skore shows gradebook $gradebookId read-only to you in period '
+        '${period.name} ($periodId) '
+        '(${checked.isCoordinator ? 'coordinator mode' : 'writable 0'})',
+      );
+    }
+    return _WriteTarget(
+      userId: userId,
+      workyear: current,
+      gradebook: book,
+      sheet: checked,
+      period: period,
+    );
+  }
+
+  /// Sends the save [method] with [params] in [gradebook], as user
+  /// [userId], and returns the `result` of Skore's answer. With
+  /// [retryAfterLogin] `false`, it goes out once, never again.
+  ///
+  /// A session Smartschool refuses for it, or an answer without a session,
+  /// is rethrown as the [SmartschoolSessionExpiredError] it is: Skore did not
+  /// handle the save. Any other failure, after the save went out (another
+  /// HTTP status than `200`, an answer that is not JSON, a connection that
+  /// dropped), is thrown as [unconfirmed] makes it from that failure.
+  Future<dynamic> _save(
+    String method,
+    List<Object?> params, {
+    required SkoreGradebook gradebook,
+    required int userId,
+    required bool retryAfterLogin,
+    required SmartschoolSkoreSaveUnconfirmedError Function(Exception failure)
+    unconfirmed,
+  }) async {
+    try {
+      return await _rpc(
+        method,
+        params,
+        userId: userId,
+        workyearId: gradebook.workyearId,
+        retryAfterLogin: retryAfterLogin,
+      );
+    } on SmartschoolSessionExpiredError {
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(unconfirmed(e), stackTrace);
+    }
+  }
+
+  /// The course of [target]'s gradebook as Skore's "new evaluation" dialog
+  /// offers it in the period ([where]): Skore's `getNewEvalDialogBox(0,
+  /// owners, groupID, periodID)`, `[["2264", "Informaticawetenschappen (2
+  /// uur)"]]` (seen live), with the name the save sends. Refuses a course it
+  /// does not offer.
+  Future<({int id, String name})> _newEvaluationCourse(
+    String operation,
+    _WriteTarget target,
+    String where,
+  ) async {
+    final book = target.gradebook;
+    final result = await _rpc(
+      'getNewEvalDialogBox',
+      [
+        0,
+        ['${book.gradebookId}'],
+        '${book.groupId}',
+        target.period.id,
+      ],
+      userId: target.userId,
+      workyearId: book.workyearId,
+    );
+    const what = 'the courses of a new evaluation (getNewEvalDialogBox)';
+    if (result is! List) {
+      throw SmartschoolSkoreError(
+        'Skore gave $what as ${SkoreRpc.jsonPreview(result)} instead of a '
+        'list. Nothing was saved.',
+      );
+    }
+    final courses = [
+      for (final entry in result)
+        if (entry is List && entry.length >= 2 && entry[1] is String)
+          (
+            id: SkoreRpc.id(entry[0], 'a course in $what'),
+            name: (entry[1] as String).trim(),
+          )
+        else
+          throw SmartschoolSkoreError(
+            'Skore gave a course in $what as ${SkoreRpc.jsonPreview(entry)} '
+            'instead of [id, name]. Nothing was saved.',
+          ),
+    ];
+    final course = courses.where((c) => c.id == book.courseId).firstOrNull;
+    if (course == null) {
+      _refuse(
+        operation,
+        'Skore does not offer course ${book.courseId} for a new evaluation in '
+        '$where (it offers '
+        '${courses.isEmpty ? 'none' : courses.map((c) => c.id).join(', ')})',
+      );
+    }
+    if (course.name.isEmpty) {
+      throw SmartschoolSkoreError(
+        'Skore gave course ${course.id} in $what no name. Nothing was saved.',
+      );
+    }
+    return course;
+  }
+
+  /// The component of a new evaluation in [where]: the one of [components]
+  /// with ID [componentId], or, without it, the one Skore's dialog picks
+  /// (the second when there are exactly two, else `geen`). Refuses one
+  /// Skore does not offer.
+  static SkoreEvaluationComponent _component(
+    String operation,
+    List<SkoreEvaluationComponent> components,
+    int? componentId,
+    String where,
+  ) {
+    final offered = components.isEmpty
+        ? 'none'
+        : components.map((c) => '${c.id} ${c.name}').join(', ');
+    if (componentId != null) {
+      final chosen = components.where((c) => c.id == componentId).firstOrNull;
+      if (chosen == null) {
+        _refuse(
+          operation,
+          'component $componentId is not one Skore offers for $where (it '
+          'offers $offered)',
+        );
+      }
+      return chosen;
+    }
+    if (components.length == 2) return components[1];
+    final none = components.where((c) => c.isNone).firstOrNull;
+    if (none == null) {
+      _refuse(
+        operation,
+        'Skore offers no "geen" component for $where to pick by default (it '
+        'offers $offered): pass a componentId',
+      );
+    }
+    return none;
+  }
+
+  /// Refuses a write: a [SmartschoolSkoreChangeRefusedError] that names
+  /// [operation] and says [why].
+  static Never _refuse(String operation, String why) =>
+      throw SmartschoolSkoreChangeRefusedError(
+        '$operation: $why. Nothing was saved.',
+      );
+
+  static final _schoolYearName = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
+
+  /// The first and last day of school year [workyear], from its name:
+  /// `"2026-2027"` is 1 September 2026 to 31 August 2027, the days Skore's
+  /// "new evaluation" dialog allows (seen live). A name not in that form is
+  /// a [SmartschoolSkoreError]: the days are not known.
+  static (DateTime, DateTime) _schoolYearDays(SkoreWorkyear workyear) {
+    final match = _schoolYearName.firstMatch(workyear.name.trim());
+    final start = match == null ? null : int.parse(match.group(1)!);
+    if (start == null || int.parse(match!.group(2)!) != start + 1) {
+      throw SmartschoolSkoreError(
+        'Skore names the current school year "${workyear.name}" '
+        '(${workyear.id}), not in the form 2026-2027: its first and last day '
+        'are not known. Nothing was saved.',
+      );
+    }
+    return (DateTime(start, 9, 1), DateTime(start + 1, 8, 31));
+  }
+
+  /// [day] as Skore writes a day: `2026-10-08`.
+  static String _dayText(DateTime day) =>
+      '${day.year.toString().padLeft(4, '0')}-'
+      '${day.month.toString().padLeft(2, '0')}-'
+      '${day.day.toString().padLeft(2, '0')}';
+
+  static bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
   // ---------------------------------------------------------------------------
   // RPC
   // ---------------------------------------------------------------------------
@@ -404,11 +991,17 @@ class SkoreGradebookService {
   ///
   /// Only the methods in [rpcMethods]: any other is refused before anything
   /// is sent.
+  ///
+  /// Pass `retryAfterLogin: false` for a call that must not be sent twice
+  /// (a create): when Smartschool refuses the session for it, it fails at
+  /// once with a [SmartschoolSessionExpiredError], instead of being sent
+  /// again after logging in (see [SmartschoolClient.postFormResponse]).
   Future<dynamic> _rpc(
     String method,
     List<Object?> params, {
     required int userId,
     required int? workyearId,
+    bool retryAfterLogin = true,
   }) async {
     checkRpcMethod(method);
     final response = await _client.postFormResponse(
@@ -422,6 +1015,7 @@ class SkoreGradebookService {
           trailing: {if (workyearId != null) 'wy': '$workyearId'},
         ),
       ),
+      retryAfterLogin: retryAfterLogin,
     );
     return SkoreRpc.result(_body(response, method), method);
   }
@@ -1229,10 +1823,11 @@ class SkoreGradebookService {
   /// `"2026-10-09T08:00:00"`, or `""`/`null` for none), with its state at
   /// [now] (#149).
   ///
-  /// Seen live: `"0"` with `""` for an evaluation that is not published,
-  /// and `"1"` with the time it is published from. `"1"` without a time was
-  /// not seen, and counts as published. A time with an offset is taken as
-  /// it is.
+  /// Seen live: `"0"` with `""` for an evaluation that is not published
+  /// (also for one just saved with `public` 0 and `publicdatetime` `""`, as
+  /// [createEvaluation] saves it, #150), and `"1"` with the time it is
+  /// published from. `"1"` without a time was not seen, and counts as
+  /// published. A time with an offset is taken as it is.
   ///
   /// Anything else is refused with a [SmartschoolSkoreError].
   static SkorePublication parsePublication(
@@ -1273,6 +1868,37 @@ class SkoreGradebookService {
       rawPublic: rawPublic,
       rawPublicDateTime: rawTime,
     );
+  }
+
+  /// Parses the `result` of `getPosComponents(0, periodID, groupID,
+  /// courseID, pathIds)` (#150): `[[0, "geen"], ["2", "DW"]]` (seen live),
+  /// `[id, short name]` per component, `geen` (none) with the ID `0`.
+  ///
+  /// Anything not in this shape is refused with a [SmartschoolSkoreError].
+  static List<SkoreEvaluationComponent> parseComponents(dynamic result) {
+    const what = 'the components of a new evaluation (getPosComponents)';
+    if (result is! List) {
+      throw SmartschoolSkoreError(
+        'Skore gave $what as ${SkoreRpc.jsonPreview(result)} instead of a '
+        'list.',
+      );
+    }
+    return [
+      for (final entry in result)
+        if (entry is List &&
+            entry.length >= 2 &&
+            entry[1] is String &&
+            (SkoreRpc.tryId(entry[0]) ?? -1) >= 0)
+          SkoreEvaluationComponent(
+            id: SkoreRpc.tryId(entry[0])!,
+            name: (entry[1] as String).trim(),
+          )
+        else
+          throw SmartschoolSkoreError(
+            'Skore gave a component in $what as '
+            '${SkoreRpc.jsonPreview(entry)} instead of [id, name].',
+          ),
+    ];
   }
 
   static final _wallClock = RegExp(
@@ -1447,4 +2073,34 @@ class SkoreGradebookService {
     }
     return parsed;
   }
+}
+
+/// What the checks before a write in a period of a gradebook read
+/// (`SkoreGradebookService._checkWritable`, #150), which the write then
+/// sends and checks against.
+class _WriteTarget {
+  /// The logged-in user (Skore's `userID`).
+  final int userId;
+
+  /// Skore's current school year, the gradebook's.
+  final SkoreWorkyear workyear;
+
+  /// The gradebook as Skore lists it now (`getNavigation`).
+  final SkoreGradebook gradebook;
+
+  /// The gradebook's periods and pupils (`init`), `writable` for [period]
+  /// (`getGradebookContext` for it). Its `activePeriod` is [period], not
+  /// the one Skore opens the gradebook on.
+  final SkoreGradebookSheet sheet;
+
+  /// The period of the write: one of the gradebook's, open, and writable.
+  final SkoreGradebookPeriod period;
+
+  const _WriteTarget({
+    required this.userId,
+    required this.workyear,
+    required this.gradebook,
+    required this.sheet,
+    required this.period,
+  });
 }

@@ -16,6 +16,13 @@ import 'package:flutter_smartschool/src/models/presence_models.dart'
         PresenceHalfDay,
         PresenceSaveError,
         PresenceUnreadableAnswerKind;
+import 'package:flutter_smartschool/src/models/skore_gradebook_models.dart'
+    show
+        SkoreEvaluation,
+        SkoreEvaluationResults,
+        SkoreEvaluationType,
+        SkorePublication,
+        SkorePublicationState;
 import 'package:flutter_smartschool/src/models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -591,6 +598,79 @@ void main() {
         teacherId: 1007,
       );
       expect(none.accessBefore, isNull);
+    });
+
+    test('SmartschoolSkoreEvaluationCreateUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and carries the gradebook, the period, the title and the new ID '
+        '(#150)', () {
+      const cause = SmartschoolConnectionError('dropped');
+      const error = SmartschoolSkoreEvaluationCreateUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+        gradebookId: 32508,
+        periodId: 1704,
+        title: 'Toets 1',
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, same(cause));
+      expect(error.gradebookId, 32508);
+      expect(error.periodId, 1704);
+      expect(error.title, 'Toets 1');
+      expect(error.evaluationId, isNull);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreEvaluationCreateUnconfirmedError: unconfirmed',
+      );
+      const answered = SmartschoolSkoreEvaluationCreateUnconfirmedError(
+        'unconfirmed',
+        gradebookId: 32508,
+        periodId: 1704,
+        title: 'Toets 1',
+        evaluationId: 500003,
+      );
+      expect(answered.evaluationId, 500003);
+      expect(answered.cause, isNull);
+    });
+
+    test('SmartschoolSkoreEvaluationPublicError is neither a '
+        'SmartschoolSkoreError nor unconfirmed: the evaluation was created '
+        '(#150)', () {
+      final evaluation = SkoreEvaluation(
+        id: 500003,
+        evaluationId: 500003,
+        gradebookId: 32508,
+        periodId: 1704,
+        column: 'A',
+        title: 'Toets 1',
+        shortName: null,
+        date: DateTime(2026, 10, 8),
+        max: 20,
+        componentId: 2,
+        componentName: 'DW',
+        type: SkoreEvaluationType.points,
+        typeCode: 1,
+        courseId: 2264,
+        courseName: 'Informaticawetenschappen (2 uur)',
+        isPlannerEvaluation: false,
+        publication: const SkorePublication(
+          state: SkorePublicationState.published,
+          at: null,
+          rawPublic: '1',
+          rawPublicDateTime: '',
+        ),
+        results: const SkoreEvaluationResults(evaluationId: 500003),
+      );
+      final error = SmartschoolSkoreEvaluationPublicError(
+        'public',
+        evaluation: evaluation,
+      );
+      expect(error, isA<SmartschoolException>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.evaluation, same(evaluation));
+      expect(error.toString(), 'SmartschoolSkoreEvaluationPublicError: public');
     });
   });
 

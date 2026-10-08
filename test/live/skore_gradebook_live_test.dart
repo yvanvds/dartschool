@@ -3,7 +3,10 @@
 // of the current school year and of an earlier one, and reads the periods,
 // the pupils and the rights of a gradebook; a school year Skore does not
 // offer is refused; and it reads the evaluations of a period with their
-// publication and grades, and the pupils' feedback (#149).
+// publication and grades, and the pupils' feedback (#149), and the components
+// of a period (#150). createEvaluation (#150) is tried only where its checks
+// refuse it, before its save: an earlier school year, a date outside the
+// school year, a component Skore does not offer.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -17,8 +20,9 @@
 //
 // It only reads, and changes nothing in Skore, which drives the school's
 // grading and has no test instance: getNavigation, init,
-// getGradebookContext and getEvaluations of Skore's gradebook RPC service,
-// and the GET of a pupil's feedback of its REST API. The service refuses
+// getGradebookContext, getEvaluations, getNewEvalDialogBox and
+// getPosComponents of Skore's gradebook RPC service, and the GET of a
+// pupil's feedback of its REST API; never saveEvaluation. The service refuses
 // any other method of that service itself (SkoreGradebookService.rpcMethods),
 // and the wire guard (support/live_wire_guard.dart) refuses every Skore POST
 // but those reads (and the two reads of the admin side), its REST API
@@ -390,6 +394,111 @@ void main() {
           );
         }
         expect(run.guard.violations, isEmpty);
+      });
+
+      test('getComponents reads the components of a period (#150)', () async {
+        final (book, _, periodId) = await evaluationSpot();
+        if (periodId == null) {
+          markTestSkipped('gradebook ${book.gradebookId} has no periods');
+          return;
+        }
+
+        final components = await gradebooks.getComponents(book, periodId);
+
+        print(
+          'gradebook ${book.gradebookId}, period $periodId: components '
+          '${[for (final c in components) '${c.id} ${c.name}']}',
+        );
+        expect(components.where((c) => c.isNone), hasLength(1));
+        if (book.gradebookId == _testGradebookId) {
+          expect(
+            [for (final c in components) (c.id, c.name)],
+            [(0, 'geen'), (2, 'DW')],
+          );
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      // createEvaluation is tried only where one of its checks refuses it:
+      // it reads, and never sends its save (the wire guard refuses
+      // saveEvaluation as well, and would list it as a violation). The live
+      // write itself is the developer's, with the example, on their go-ahead.
+      group('createEvaluation refuses before its save (#150):', () {
+        Matcher refused(String reason) =>
+            isA<SmartschoolSkoreChangeRefusedError>().having(
+              (e) => e.message,
+              'message',
+              allOf(contains(reason), endsWith('Nothing was saved.')),
+            );
+
+        test('a gradebook of an earlier school year', () async {
+          final earlier = year.workyears
+              .where((y) => y.id != year.workyear.id)
+              .firstOrNull;
+          final older = earlier == null
+              ? const <SkoreGradebook>[]
+              : await gradebooks.getGradebooks(workyearId: earlier.id);
+          if (older.isEmpty) {
+            markTestSkipped('no gradebooks of an earlier school year');
+            return;
+          }
+          final book =
+              older
+                  .where((g) => g.gradebookId == _earlierGradebookId)
+                  .firstOrNull ??
+              older.first;
+          final period = (await gradebooks.getGradebook(book)).activePeriod;
+
+          await expectLater(
+            gradebooks.createEvaluation(
+              book,
+              period?.id ?? 1,
+              title: 'dartschool test (mag weg)',
+              date: DateTime.now(),
+              max: 20,
+            ),
+            throwsA(refused('writes in the current school year only')),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('a date outside the school year, and a component Skore does not '
+            'offer, in an open period of the own gradebook', () async {
+          final (book, sheet, periodId) = await evaluationSpot();
+          final period = sheet.periods
+              .where((p) => p.id == periodId)
+              .firstOrNull;
+          if (period == null || !period.isOpen || !sheet.writable) {
+            markTestSkipped(
+              'no open period in gradebook ${book.gradebookId} to try it in',
+            );
+            return;
+          }
+          Future<SkoreEvaluation> create({
+            required DateTime date,
+            int? componentId,
+          }) => gradebooks.createEvaluation(
+            book,
+            period.id,
+            title: 'dartschool test (mag weg)',
+            date: date,
+            max: 20,
+            componentId: componentId,
+          );
+
+          // Refused after the gradebook, the period and the rights.
+          await expectLater(
+            create(date: DateTime(2020, 1, 1)),
+            throwsA(refused('is not in school year ${year.workyear.name}')),
+          );
+          // Refused after the reads of the dialog too: the course and the
+          // components, read live.
+          await expectLater(
+            create(date: DateTime.now(), componentId: 999),
+            throwsA(refused('component 999 is not one Skore offers')),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
       });
 
       test('a school year Skore does not offer is refused', () async {

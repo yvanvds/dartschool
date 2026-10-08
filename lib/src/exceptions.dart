@@ -27,6 +27,7 @@ import 'models/presence_models.dart'
         PresenceHalfDay,
         PresenceSaveError,
         PresenceUnreadableAnswerKind;
+import 'models/skore_gradebook_models.dart' show SkoreEvaluation;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1458,10 +1459,12 @@ class SmartschoolPresenceUnreadableAnswerError
 /// the two rights, was not captured.
 ///
 /// From the writes (`SkoreService.addTeacher`, `replaceTeacher`, #71;
-/// `shareGradebook`, `unshareGradebook`, #74), this type and all its subtypes
-/// always mean that **nothing was saved**: a read before the save failed, or
-/// a check refused the change. A save that went out without Skore confirming
-/// it is a [SmartschoolSkoreSaveUnconfirmedError] instead.
+/// `shareGradebook`, `unshareGradebook`, #74;
+/// `SkoreGradebookService.createEvaluation`, #150), this type and all its
+/// subtypes always mean that **nothing was saved**: a read before the save
+/// failed, or a check refused the change. A save that went out without Skore
+/// confirming it is a [SmartschoolSkoreSaveUnconfirmedError] instead; a new
+/// evaluation that came back public a [SmartschoolSkoreEvaluationPublicError].
 class SmartschoolSkoreError extends SmartschoolException {
   const SmartschoolSkoreError(super.message);
 }
@@ -1498,9 +1501,9 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
   String toString() => '$runtimeType(${area.name}): $message';
 }
 
-/// Thrown by the writes of `SkoreService` when a check before the save
-/// refuses the change, after reading Skore again (#83). **Nothing was
-/// saved.**
+/// Thrown by the writes of `SkoreService` and `SkoreGradebookService` when a
+/// check before the save refuses the change, mostly after reading Skore
+/// again (#83). **Nothing was saved.**
 ///
 /// The checks of `addTeacher` and `replaceTeacher` (#71): the course is not
 /// in the class (also for a class ID Skore does not know) or is a group
@@ -1512,7 +1515,12 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// `shareGradebook` and `unshareGradebook` (#74): the teacher is the owner of
 /// the gradebook, the gradebook is not one of the owner's (also for a user ID
 /// Skore does not know), or (to share) the teacher is not one of Skore's
-/// teachers.
+/// teachers. The checks of `SkoreGradebookService.createEvaluation` (#150):
+/// a blank title or a highest grade that is not positive (before anything is
+/// sent); a gradebook that is not one of the user's own of the current
+/// school year; a period that is not one of the gradebook's or is closed; a
+/// gradebook Skore shows read-only in that period; a date outside the school
+/// year; a course or component Skore does not offer for a new evaluation.
 ///
 /// Its message says which check refused and why, with the IDs (and the
 /// course label or teacher name it read), and quotes nothing else of Skore's
@@ -2098,17 +2106,21 @@ class SmartschoolLessonContentVisibilityNotSetError
 /// the complete readers and writers of one gradebook, so sending it again
 /// does not change the outcome.
 ///
-/// The service throws one of its two subtypes, which carry what the call
-/// read before the save (#120), as its result would have:
+/// The services throw one of its subtypes, which carry what the call read
+/// before the save (#120), as its result would have:
 /// - [SmartschoolSkoreAssignmentSaveUnconfirmedError] from `addTeacher` and
 ///   `replaceTeacher`: the course, the assignment it was replacing, and the
 ///   teacher it was saving;
 /// - [SmartschoolSkoreShareSaveUnconfirmedError] from `shareGradebook` and
 ///   `unshareGradebook`: the gradebook as read before the change, and the
-///   teacher whose access it was changing.
+///   teacher whose access it was changing;
+/// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] from
+///   `SkoreGradebookService.createEvaluation` (#150): the gradebook, the
+///   period and the title, and the new evaluation's ID when Skore gave one.
 ///
-/// So a `catch` of this type keeps catching both. Its message names the
-/// change by IDs only (no labels or names); the subtypes carry those.
+/// So a `catch` of this type keeps catching them all. The messages of the
+/// first two name the change by IDs only (no labels or names); the subtypes
+/// carry those.
 ///
 /// Deliberately not a [SmartschoolSkoreError], so a `catch` meant for the
 /// failures where nothing was saved does not catch it.
@@ -2196,4 +2208,72 @@ class SmartschoolSkoreShareSaveUnconfirmedError
   /// gradebook was not shared with them: [before]'s
   /// `SkoreGradebookShares.accessOf`.
   SkoreShareAccess? get accessBefore => before.accessOf(teacherId);
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreGradebookService.createEvaluation` (#150): the save of the new
+/// evaluation (Skore's `saveEvaluation`) went out, but Skore's answer, or
+/// reading the period's evaluations again afterwards, does not confirm it as
+/// asked. Its message says what went wrong.
+///
+/// **It may or may not have been created**: read the period's evaluations
+/// again (`SkoreGradebookService.getEvaluations`) before trying again. A
+/// create is not idempotent, and the service never sends it twice: calling
+/// `createEvaluation` again makes a second evaluation if the first one went
+/// through.
+///
+/// With an [evaluationId], Skore did answer that it created the evaluation
+/// under that ID (its `refID`), and reading the period again then failed
+/// ([cause]), did not list it, or showed it with another title, date,
+/// highest grade or component than asked. It was sent unpublished either way.
+class SmartschoolSkoreEvaluationCreateUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook the evaluation was being created in (its `gradebookId`).
+  final int gradebookId;
+
+  /// The period it was being created in (its `id`).
+  final int periodId;
+
+  /// The title it was being created with (trimmed), to look for.
+  final String title;
+
+  /// The ID Skore's answer gave the new evaluation (its `refID`, the
+  /// `SkoreEvaluation.id` to look for), or `null` when no answer said it was
+  /// created.
+  final int? evaluationId;
+
+  const SmartschoolSkoreEvaluationCreateUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.gradebookId,
+    required this.periodId,
+    required this.title,
+    this.evaluationId,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.createEvaluation` (#150) when Skore
+/// created the evaluation, but reading it again shows it as public (Skore's
+/// `public` `"1"`: published, or scheduled to be), although the service sent
+/// it unpublished (`public` 0, `publicdatetime` `""`), as it always does. A
+/// setting of the school could do that; it was not seen.
+///
+/// **The evaluation was created** ([evaluation], as read again, with its
+/// `publication`), and its pupils may see it, or will. The library never
+/// publishes an evaluation nor changes its publication, so it does not undo
+/// this: check the evaluation in Smartschool and change its publication
+/// there. Do not call `createEvaluation` again: that makes a second one.
+///
+/// Neither a [SmartschoolSkoreError] (which means nothing was saved) nor a
+/// [SmartschoolSkoreSaveUnconfirmedError] (the create is confirmed), so
+/// neither `catch` takes it for one of those. Its message names the
+/// evaluation (its title and ID), the period and the gradebook.
+class SmartschoolSkoreEvaluationPublicError extends SmartschoolException {
+  /// The new evaluation as Skore lists it right after the save, public.
+  final SkoreEvaluation evaluation;
+
+  const SmartschoolSkoreEvaluationPublicError(
+    super.message, {
+    required this.evaluation,
+  });
 }

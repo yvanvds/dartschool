@@ -17,7 +17,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Interactive terminal browser for Intradesk: [example/intradesk_browser.dart](example/intradesk_browser.dart).
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
-- Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback. Read-only.
+- Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback; and create an evaluation in a period, never published.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
 - Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
 
@@ -878,7 +878,7 @@ dart run example/skore_share_gradebook_example.dart OWNER_ID GRADEBOOK_ID TEACHE
 
 ## `SkoreGradebookService`
 
-Reads Skore's gradebook **as the logged-in teacher** (#148, #149): what a teacher sees at `/SkoreGradebook` ("Puntenboek"). Any teacher can use it with their own login; it needs none of the admin rights of `SkoreService`. It only reads, and never publishes.
+Reads Skore's gradebook **as the logged-in teacher** (#148, #149): what a teacher sees at `/SkoreGradebook` ("Puntenboek"). Any teacher can use it with their own login; it needs none of the admin rights of `SkoreService`. It reads, creates evaluations (#150), and never publishes.
 
 ```dart
 final gradebooks = SkoreGradebookService(client);
@@ -913,6 +913,10 @@ for (final evaluation in evaluations) {
     }
   }
 }
+
+// A new evaluation, never published: teachers publish it in Smartschool (#150).
+final created = await gradebooks.createEvaluation(books.first, sheet.activePeriod!.id,
+    title: 'Toets 1', date: DateTime(2026, 10, 8), max: 20); // SkoreEvaluation
 ```
 
 ### Methods
@@ -925,6 +929,8 @@ for (final evaluation in evaluations) {
 | `getEvaluations(gradebook, periodId)` | `Future<List<SkoreEvaluation>>` | The gradebook's evaluations in the period, in Skore's order, each with its `publication` and the `results` (grades) of the class's pupils. One request. |
 | `getResults(gradebook, evaluation)` | `Future<SkoreEvaluationResults>` | The grades of an evaluation as Skore has them now (`getEvaluations` again). |
 | `getFeedback(gradebook, evaluation, pupilId)` | `Future<List<SkoreFeedback>>` | A pupil's feedback on an evaluation, each apart, from every teacher, in the order written. Empty for none. |
+| `getComponents(gradebook, periodId)` | `Future<List<SkoreEvaluationComponent>>` | The components a new evaluation in the period can count for (`0` `geen`, `2` `DW`, ...). |
+| `createEvaluation(gradebook, periodId, {title, shortName, date, max, componentId})` | `Future<SkoreEvaluation>` | Creates an evaluation in the period, **unpublished**, and returns it as read again. |
 
 - **One big read.** `getGradebooks` sends Skore's `getNavigation` once; its answer holds the colleagues of every gradebook and is big (some 270 KB for 22 gradebooks, 1.7 MB for 50). Read it once, not per gradebook. A group of classes in Skore's tree repeats gradebooks of its classes: each gradebook is listed once.
 - **IDs.** `gradebookId` is Skore's `ownerID`, the same ID as the assignment that holds the gradebook (`SkoreAssignment.id` of the admin side). `pathIds` (`[modelId, groupId, classId]`) is how Skore's gradebook calls name the class. A pupil ID is the pupil's Smartschool user ID; `rowKey` is Skore's key of the pupil's row (`pupil_<id>_<classId>`).
@@ -936,12 +942,15 @@ for (final evaluation in evaluations) {
 - **Evaluations.** Know an evaluation by its `id` (Skore's `refID`): its `column` (`A`, `B`) changes when one is added. Skore sends the rows of the other classes of the group along; only the gradebook's own evaluations and pupils are kept.
 - **Publication.** `publication.state` is `notPublished` (Skore's `public` `"0"`), `scheduled` (`"1"` with a `publicdatetime` still to come) or `published`, by the service's clock (`SkoreGradebookService(client, clock: ...)`) at the time of the read; `stateAt(time)` for another time. `at` is Skore's `publicdatetime`, a Belgian time without offset, in UTC; the raw values are kept (`rawPublic`, `rawPublicDateTime`).
 - **Grades.** `grade` is the value Skore stores, as a string (`"15.5"`, with a point; Skore shows `15,5`), `null` for none; `value` parses it. `hasFeedback` is the cell's marker; `getFeedback` reads the texts from Skore's REST API (`/skore/api/v1/gradebook/feedback/...`), each apart, which the cell's tooltip joins into one.
-- **Only reads.** Skore's gradebook RPC service also deletes, moves, publishes and shares evaluations. The service calls only `getNavigation`, `init`, `getGradebookContext` and `getEvaluations` (`SkoreGradebookService.rpcMethods`), and refuses any other method before it is sent.
+- **Never publishes.** Skore's gradebook RPC service also deletes, moves, publishes and shares evaluations. The service calls only the methods in `SkoreGradebookService.rpcMethods` (the reads, and `saveEvaluation`), and refuses any other before it is sent.
+- **Creating an evaluation.** `createEvaluation` always sends `public` 0 and `publicdatetime` `""`: teachers publish in Smartschool themselves. It first refuses, with a `SmartschoolSkoreChangeRefusedError` and nothing saved, a blank title, a `max` that is not positive, a gradebook that is not your own of the current school year, a closed period or one Skore shows read-only, a date outside the school year, and a course or component Skore does not offer. The save is sent once, never retried; if the answer, or reading the period again, does not confirm it, a `SmartschoolSkoreEvaluationCreateUnconfirmedError` (read the period again before trying again). If it comes back public anyway, a `SmartschoolSkoreEvaluationPublicError` names it, and the library changes nothing.
 
 The example lists the gradebooks and prints the periods and pupils of one of them, and the evaluations of its active period with their publication, grades and feedback (read-only):
 
 ```bash
 dart run example/skore_gradebook_example.dart [GRADEBOOK_ID] [--workyear=ID]
+# Creates an evaluation after asking (y/N); changes the live Skore:
+dart run example/skore_create_evaluation_example.dart GRADEBOOK_ID PERIOD_ID TITLE YYYY-MM-DD MAX [--short=NAME] [--component=ID]
 ```
 
 ### Errors

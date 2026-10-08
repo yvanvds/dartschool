@@ -259,11 +259,12 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('the methods of the gradebook RPC service', () {
-    test('are the three reads, nothing else', () {
+    test('are the reads, nothing else', () {
       expect(SkoreGradebookService.rpcMethods, {
         'getNavigation',
         'init',
         'getGradebookContext',
+        'getEvaluations', // #149
       });
       for (final method in SkoreGradebookService.rpcMethods) {
         SkoreGradebookService.checkRpcMethod(method); // does not throw
@@ -285,7 +286,7 @@ void main() {
         'saveGradeInfo',
         'usersThatCanAccess',
         'gradebooksToAccess',
-        'getEvaluations',
+        'getGradeInfo',
         '',
         'GETNAVIGATION',
       ];

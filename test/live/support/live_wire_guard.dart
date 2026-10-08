@@ -54,12 +54,15 @@
 // - any POST to the Skore module but its RPC reads: `getTeachers` of
 //   `owners.php` and `getCourses` of `rapportbeheer/rpc/data.php`
 //   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91),
-//   and `getNavigation`, `init` and `getGradebookContext` of
-//   `gradebook/rpc.php` (SkoreGradebookService, the teacher's own
-//   gradebooks, #148): the live suite changes nothing in Skore, which drives
-//   the school's grading and has no test instance, and these services also
-//   hold methods that write, delete, lock or publish (saveOwner, saveShared,
-//   deleteTeacher, saveEvaluation, deleteEvaluation, setPublicProp, ...);
+//   and `getNavigation`, `init`, `getGradebookContext` and `getEvaluations`
+//   of `gradebook/rpc.php` (SkoreGradebookService, the teacher's own
+//   gradebooks, #148, #149); and any POST to Skore's REST API (`/skore/`,
+//   whose GET of a pupil's feedback SkoreGradebookService.getFeedback sends,
+//   #149, and whose POSTs write feedback): the live suite changes nothing in
+//   Skore, which drives the school's grading and has no test instance, and
+//   these services also hold methods that write, delete, lock or publish
+//   (saveOwner, saveShared, deleteTeacher, saveEvaluation, deleteEvaluation,
+//   setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
 //   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
 //   only reads: the live suite changes nothing in the planner, whose POSTs
@@ -519,7 +522,7 @@ class LiveWireGuard extends Interceptor {
     if (path == '/Upload/Upload/Index') return _uploadRefusal(options.data);
     if (path == _archivePath) return _archiveRefusal(options.data);
     if (path.startsWith('/Presence/')) return _presenceRefusal(path);
-    if (path.startsWith('/modules/Skore/')) {
+    if (path.startsWith('/modules/Skore/') || path.startsWith('/skore/')) {
       return _skoreRefusal(path, options.data);
     }
     if (path.startsWith('/planner/')) return _plannerRefusal(path);
@@ -575,7 +578,8 @@ class LiveWireGuard extends Interceptor {
   }
 
   /// The Skore RPC POSTs that only read, by path: the methods of each
-  /// service the live suite calls (#91, #148).
+  /// service the live suite calls (#91, #148, #149). Skore's REST API
+  /// (`/skore/`) has none: its reads are GETs.
   static const _skoreReads = {
     '/modules/Skore/backend/models/owners.php': {'getTeachers'},
     '/modules/Skore/modules/rapportbeheer/rpc/data.php': {'getCourses'},
@@ -583,6 +587,7 @@ class LiveWireGuard extends Interceptor {
       'getNavigation',
       'init',
       'getGradebookContext',
+      'getEvaluations',
     },
   };
 
@@ -595,8 +600,9 @@ class LiveWireGuard extends Interceptor {
     }
     return 'the live suite changes nothing in Skore: it sends no Skore POST '
         'but the reads getTeachers (owners.php), getCourses '
-        '(rapportbeheer/rpc/data.php) (#91), and getNavigation, init and '
-        'getGradebookContext (gradebook/rpc.php, #148)';
+        '(rapportbeheer/rpc/data.php) (#91), and getNavigation, init, '
+        'getGradebookContext and getEvaluations (gradebook/rpc.php, #148, '
+        '#149); none to its REST API (/skore/)';
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

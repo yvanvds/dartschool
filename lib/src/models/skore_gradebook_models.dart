@@ -1,7 +1,8 @@
-/// Models for the Skore gradebook of a teacher (#148): what
+/// Models for the Skore gradebook of a teacher (#148, #149): what
 /// `SkoreGradebookService` reads as the logged-in teacher at `/SkoreGradebook`
-/// ("Puntenboek"): the teacher's own gradebooks of a school year, and the
-/// periods and pupils of one gradebook.
+/// ("Puntenboek"): the teacher's own gradebooks of a school year, the
+/// periods and pupils of one gradebook, and the evaluations of a period with
+/// their publication, grades and feedback.
 ///
 /// This is the teacher's side of Skore, which any teacher reaches with their
 /// own login. The admin side (report models, assignments, sharing) is
@@ -288,4 +289,344 @@ class SkoreGradebookPupil {
   String toString() =>
       'SkoreGradebookPupil(id: $id, classId: $classId, number: $number, '
       'name: $name, isActive: $isActive)';
+}
+
+/// The type of an evaluation (Skore's `evaltype`).
+enum SkoreEvaluationType {
+  /// Grades as points (`evaltype` 1, "Cijfers"), out of
+  /// [SkoreEvaluation.max].
+  points,
+
+  /// Grades on a scale (`evaltype` 2, "Waarderingen"). Not seen live.
+  scale,
+
+  /// Another `evaltype` (kept in [SkoreEvaluation.typeCode]).
+  unknown,
+}
+
+/// Whether the pupils see an evaluation (#149).
+enum SkorePublicationState {
+  /// Not published (Skore's `public` `"0"`): only the teachers see it.
+  notPublished,
+
+  /// To be published at a time still to come (`public` `"1"` with a
+  /// `publicdatetime` after now): the pupils do not see it yet.
+  scheduled,
+
+  /// Published (`public` `"1"` with a `publicdatetime` at or before now, or
+  /// without one): the pupils see it.
+  published,
+}
+
+/// The publication of an evaluation: Skore's `public` and `publicdatetime`
+/// and the state they give (#149).
+///
+/// The library never publishes an evaluation, nor changes its publication:
+/// teachers do that in Smartschool.
+class SkorePublication {
+  /// The state when the evaluation was read (by the service's clock);
+  /// [stateAt] gives it for another time.
+  final SkorePublicationState state;
+
+  /// When the evaluation is or was published, in UTC, from Skore's
+  /// `publicdatetime`: a time in Belgium without an offset
+  /// (`"2026-10-09T08:00:00"`), read as Belgian time (CET, or CEST in
+  /// summer). `null` when Skore gives none (`""`, as for an evaluation that
+  /// is not published).
+  final DateTime? at;
+
+  /// Skore's `public` as it gave it: `"1"` (published or scheduled) or
+  /// `"0"`.
+  final String rawPublic;
+
+  /// Skore's `publicdatetime` as it gave it (`"2026-10-09T08:00:00"`, or
+  /// `""`).
+  final String rawPublicDateTime;
+
+  const SkorePublication({
+    required this.state,
+    required this.at,
+    required this.rawPublic,
+    required this.rawPublicDateTime,
+  });
+
+  /// Whether Skore's `public` flag is set (`"1"`): the evaluation is
+  /// [SkorePublicationState.published] or
+  /// [SkorePublicationState.scheduled], whatever the time.
+  bool get isPublic => rawPublic == '1';
+
+  /// The state at [now]: [SkorePublicationState.notPublished] unless
+  /// [isPublic]; then [SkorePublicationState.scheduled] while [at] is after
+  /// [now], and [SkorePublicationState.published] from [at] on, or without
+  /// [at].
+  SkorePublicationState stateAt(DateTime now) {
+    if (!isPublic) return SkorePublicationState.notPublished;
+    final at = this.at;
+    if (at != null && at.isAfter(now)) return SkorePublicationState.scheduled;
+    return SkorePublicationState.published;
+  }
+
+  @override
+  String toString() =>
+      'SkorePublication(${state.name}'
+      '${at == null ? '' : ' ${at!.toIso8601String()}'})';
+}
+
+/// An evaluation (a column of grades) in a period of a gradebook, with its
+/// publication and the grades of the gradebook's pupils
+/// (`SkoreGradebookService.getEvaluations`, #149).
+class SkoreEvaluation {
+  /// The evaluation's ID (Skore's `refID`, e.g. `395742`): the one to know
+  /// it by, since its [column] changes.
+  final int id;
+
+  /// Skore's `evaluationID` (the same as [id] in all that was seen).
+  final int evaluationId;
+
+  /// The gradebook it belongs to (Skore's `ownerID`).
+  final int gradebookId;
+
+  /// The period it is in (Skore's `periodID`).
+  final int periodId;
+
+  /// The column Skore shows it in (`"A"`, `"B"`, ...). **Not stable**: seen
+  /// live, a new evaluation took column `"A"` and moved the existing one to
+  /// `"B"`. Use [id].
+  final String column;
+
+  /// The title.
+  final String title;
+
+  /// The short name, or `null` when it has none (Skore gives `null`, also
+  /// for one saved as `""`).
+  final String? shortName;
+
+  /// The day of the evaluation (Skore's `date`, `"2026-09-30"`), at
+  /// midnight in the local time of this machine: only the day counts.
+  final DateTime date;
+
+  /// The highest grade (Skore's `max`, e.g. `100`), or `null` when Skore
+  /// gives none.
+  final num? max;
+
+  /// The ID of the component (Skore's `componentID`, e.g. `2`; `0` for none,
+  /// "geen").
+  final int componentId;
+
+  /// The short name of the component (Skore's `component`, e.g. `"DW"`), or
+  /// `""` for none.
+  final String componentName;
+
+  /// The type: points or a scale.
+  final SkoreEvaluationType type;
+
+  /// Skore's `evaltype` as it gave it (`1` points, `2` a scale).
+  final int typeCode;
+
+  /// The Skore course ID (Skore's `courseID`).
+  final int courseId;
+
+  /// The course name (Skore's `coursename`, without the grade the left
+  /// panel adds).
+  final String courseName;
+
+  /// Whether it comes from the planner (Skore's `isPlannerEval` 1). Skore's
+  /// web client leaves those to the planner.
+  final bool isPlannerEvaluation;
+
+  /// Whether, and from when, the pupils see it.
+  final SkorePublication publication;
+
+  /// The grades of the gradebook's pupils, as Skore gave them with the
+  /// evaluation.
+  final SkoreEvaluationResults results;
+
+  const SkoreEvaluation({
+    required this.id,
+    required this.evaluationId,
+    required this.gradebookId,
+    required this.periodId,
+    required this.column,
+    required this.title,
+    required this.shortName,
+    required this.date,
+    required this.max,
+    required this.componentId,
+    required this.componentName,
+    required this.type,
+    required this.typeCode,
+    required this.courseId,
+    required this.courseName,
+    required this.isPlannerEvaluation,
+    required this.publication,
+    required this.results,
+  });
+
+  @override
+  String toString() =>
+      'SkoreEvaluation(id: $id, column: $column, date: '
+      '${date.toIso8601String().substring(0, 10)}, max: $max, component: '
+      '$componentName, type: ${type.name}, publication: $publication, '
+      'grades: ${results.grades.length})';
+}
+
+/// The grades of one evaluation for the pupils of the gradebook's class,
+/// with the averages Skore shows (#149).
+class SkoreEvaluationResults {
+  /// The evaluation ([SkoreEvaluation.id]).
+  final int evaluationId;
+
+  /// One grade per pupil of the gradebook's class, in Skore's order. Not the
+  /// pupils of the other classes of the group, which Skore sends along.
+  final List<SkoreGrade> grades;
+
+  /// The class average as Skore gives it (`"81.7"`, with a decimal point),
+  /// or `null` when there is none (no grades yet).
+  final String? classAverage;
+
+  /// The average of the group of classes (Skore's `gravg_<groupId>`), or
+  /// `null` when there is none.
+  final String? groupAverage;
+
+  const SkoreEvaluationResults({
+    required this.evaluationId,
+    this.grades = const [],
+    this.classAverage,
+    this.groupAverage,
+  });
+
+  /// The grade of pupil [pupilId], or `null` when Skore gave no row for
+  /// that pupil.
+  SkoreGrade? gradeOf(int pupilId) =>
+      grades.where((g) => g.pupilId == pupilId).firstOrNull;
+
+  @override
+  String toString() =>
+      'SkoreEvaluationResults(evaluationId: $evaluationId, grades: '
+      '${grades.length}, classAverage: $classAverage)';
+}
+
+/// The cell of one pupil in an evaluation: the grade, and whether the pupil
+/// has feedback (#149).
+class SkoreGrade {
+  /// The pupil's Smartschool user ID.
+  final int pupilId;
+
+  /// The Skore class ID of the row (the gradebook's class).
+  final int classId;
+
+  /// The grade as Skore stores it (the cell's `raw`: `"79"`, `"16.7"`, with
+  /// a decimal point, unlike the text Skore shows), or `null` for no grade.
+  /// A string: Skore can hold other values than numbers.
+  final String? grade;
+
+  /// Whether the pupil has feedback on the evaluation (the cell's marker,
+  /// `gbc_message`). `SkoreGradebookService.getFeedback` reads it.
+  final bool hasFeedback;
+
+  /// The category type of the cell (the second of its `p`; `0` for an
+  /// evaluation).
+  final int categoryType;
+
+  /// The evaluation ID of the cell (the third of its `p`): the evaluation's
+  /// for the gradebook's pupils.
+  final int cellEvaluationId;
+
+  const SkoreGrade({
+    required this.pupilId,
+    required this.classId,
+    required this.grade,
+    required this.hasFeedback,
+    required this.categoryType,
+    required this.cellEvaluationId,
+  });
+
+  /// [grade] as a number, or `null` when there is no grade or it is not a
+  /// number.
+  double? get value => grade == null ? null : double.tryParse(grade!);
+
+  /// Skore's key of the pupil's row: `pupil_<pupilId>_<classId>`.
+  String get rowKey => 'pupil_${pupilId}_$classId';
+
+  @override
+  String toString() =>
+      'SkoreGrade(pupilId: $pupilId, grade: $grade, hasFeedback: '
+      '$hasFeedback)';
+}
+
+/// A feedback text of a teacher for a pupil on an evaluation, as the
+/// feedback panel of Skore's gradebook shows it (#149). A pupil can have
+/// several on one evaluation, from one or more teachers.
+class SkoreFeedback {
+  /// The feedback's ID (a UUID).
+  final String id;
+
+  /// The text.
+  final String text;
+
+  /// The pupil's Smartschool user ID (the middle part of `4069_9200_0`).
+  final int pupilId;
+
+  /// The Smartschool user ID of the teacher who wrote it.
+  final int teacherId;
+
+  /// The teacher's name, first name first, or `""` when Skore gives none.
+  final String teacherName;
+
+  /// When it was written, in UTC, or `null` when Skore gives no time.
+  final DateTime? createdAt;
+
+  /// When it was last changed, in UTC, or `null` when Skore gives no time.
+  final DateTime? changedAt;
+
+  /// Its attachments.
+  final List<SkoreFeedbackAttachment> attachments;
+
+  /// Whether Skore lets the user change it (`capabilities.can_edit`).
+  final bool canEdit;
+
+  const SkoreFeedback({
+    required this.id,
+    required this.text,
+    required this.pupilId,
+    required this.teacherId,
+    this.teacherName = '',
+    this.createdAt,
+    this.changedAt,
+    this.attachments = const [],
+    this.canEdit = false,
+  });
+
+  @override
+  String toString() =>
+      'SkoreFeedback(id: $id, pupilId: $pupilId, teacherId: $teacherId, '
+      'changedAt: ${changedAt?.toIso8601String()}, attachments: '
+      '${attachments.length}, canEdit: $canEdit)';
+}
+
+/// An attachment of a [SkoreFeedback]. Not seen live: the fields are those
+/// of the feedback panel's code.
+class SkoreFeedbackAttachment {
+  /// The attachment's ID, or `""` when Skore gives none.
+  final String id;
+
+  /// The file name, or `""`.
+  final String name;
+
+  /// The size in bytes, or `null`.
+  final int? size;
+
+  /// The attachment as Skore gave it, which a change of the feedback sends
+  /// back.
+  final Map<String, dynamic> json;
+
+  const SkoreFeedbackAttachment({
+    required this.id,
+    required this.name,
+    this.size,
+    this.json = const {},
+  });
+
+  @override
+  String toString() => 'SkoreFeedbackAttachment(id: $id, name: $name)';
 }

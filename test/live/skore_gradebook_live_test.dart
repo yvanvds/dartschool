@@ -1,8 +1,9 @@
 // What Skore's gradebook answers the teacher of credentials.yml, read as
-// that teacher (#148): SkoreGradebookService lists the own gradebooks of the
-// current school year and of an earlier one, and reads the periods, the
-// pupils and the rights of a gradebook; and a school year Skore does not
-// offer is refused.
+// that teacher (#148, #149): SkoreGradebookService lists the own gradebooks
+// of the current school year and of an earlier one, and reads the periods,
+// the pupils and the rights of a gradebook; a school year Skore does not
+// offer is refused; and it reads the evaluations of a period with their
+// publication and grades, and the pupils' feedback (#149).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -10,17 +11,20 @@
 // Without a credentials.yml in the package root, it skips. It holds for any
 // teacher with gradebooks; for the developer's account it also checks the
 // live test spot of #148, 6EWI (gradebook 32508, pathIds 176/472/2440,
-// course 2264, period DW1 1704), and skips those checks when the account
-// has no such gradebook.
+// course 2264, period DW1 1704, and, for #149, its evaluation 395742 with
+// grades and feedback, to be published on 2026-10-09 08:00), and skips those
+// checks when the account has no such gradebook.
 //
 // It only reads, and changes nothing in Skore, which drives the school's
-// grading and has no test instance: getNavigation, init and
-// getGradebookContext of Skore's gradebook RPC service. The service refuses
+// grading and has no test instance: getNavigation, init,
+// getGradebookContext and getEvaluations of Skore's gradebook RPC service,
+// and the GET of a pupil's feedback of its REST API. The service refuses
 // any other method of that service itself (SkoreGradebookService.rpcMethods),
 // and the wire guard (support/live_wire_guard.dart) refuses every Skore POST
-// but those reads (and the two reads of the admin side). As every live run,
-// it takes the lock of the session first, logs in at most once, and prints
-// no credential, no cookie and no name: only IDs, counts and period names.
+// but those reads (and the two reads of the admin side), its REST API
+// included. As every live run, it takes the lock of the session first, logs
+// in at most once, and prints no credential, no cookie, no name and no
+// feedback text: only IDs, counts, states, dates and period names.
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -35,6 +39,16 @@ import 'support/live_run.dart';
 
 /// The live test spot of #148: the developer's gradebook of 6EWI.
 const _testGradebookId = 32508;
+
+/// 6EWI's period DW1, and its evaluation with grades and feedback (#149),
+/// which is published from 2026-10-09 08:00 (CEST). Read only: never
+/// written to.
+const _testPeriodId = 1704;
+const _testEvaluationId = 395742;
+
+/// The developer's gradebook of 5BW in 2025-2026, whose evaluations are
+/// published (#149); read only.
+const _earlierGradebookId = 28998;
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -178,8 +192,203 @@ void main() {
           markTestSkipped('no gradebooks in ${earlier.name}');
           return;
         }
-        final book = older.gradebooks.first;
-        expectSheet(book, await gradebooks.getGradebook(book));
+        final book =
+            older.gradebooks
+                .where((g) => g.gradebookId == _earlierGradebookId)
+                .firstOrNull ??
+            older.gradebooks.first;
+        final sheet = await gradebooks.getGradebook(book);
+        expectSheet(book, sheet);
+
+        // Its evaluations (#149), of the first period that has any:
+        // published long ago, as far as they are public.
+        for (final period in sheet.periods) {
+          final evaluations = await gradebooks.getEvaluations(book, period.id);
+          print(
+            'gradebook ${book.gradebookId}, period ${period.name}: '
+            '${[for (final e in evaluations) '${e.id} ${e.publication.state.name} ${e.publication.at?.toIso8601String()}, ${e.results.grades.where((g) => g.grade != null).length}/${e.results.grades.length} grades']}',
+          );
+          for (final evaluation in evaluations) {
+            expect(evaluation.periodId, period.id);
+            expect(
+              evaluation.publication.state,
+              evaluation.publication.isPublic
+                  ? SkorePublicationState.published
+                  : SkorePublicationState.notPublished,
+            );
+            for (final grade in evaluation.results.grades) {
+              expect(grade.classId, book.classId);
+            }
+          }
+          if (evaluations.isNotEmpty) break;
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      /// The live test spot of #149 (6EWI) when the account has it, else
+      /// the first gradebook, with its sheet and the period to read: DW1 for
+      /// 6EWI, the active period for another; `null` without periods.
+      Future<(SkoreGradebook, SkoreGradebookSheet, int?)>
+      evaluationSpot() async {
+        final book =
+            year.gradebooks
+                .where((g) => g.gradebookId == _testGradebookId)
+                .firstOrNull ??
+            year.gradebooks.first;
+        final sheet = await gradebooks.getGradebook(book);
+        final periodId = book.gradebookId == _testGradebookId
+            ? _testPeriodId
+            : sheet.activePeriod?.id;
+        return (book, sheet, periodId);
+      }
+
+      test('getEvaluations reads the evaluations of a period with their '
+          'publication and grades (#149)', () async {
+        final (book, sheet, periodId) = await evaluationSpot();
+        if (periodId == null) {
+          markTestSkipped('gradebook ${book.gradebookId} has no periods');
+          return;
+        }
+
+        final evaluations = await gradebooks.getEvaluations(book, periodId);
+        final readAt = DateTime.now();
+
+        final pupilIds = sheet.pupils.map((p) => p.id).toSet();
+        for (final evaluation in evaluations) {
+          final grades = evaluation.results.grades;
+          final publication = evaluation.publication;
+          print(
+            'evaluation ${evaluation.id} (column ${evaluation.column}, '
+            '${evaluation.date.toIso8601String().substring(0, 10)}, max '
+            '${evaluation.max}, ${evaluation.componentName}, '
+            '${evaluation.type.name}): ${publication.state.name}'
+            '${publication.at == null ? '' : ' ${publication.at!.toIso8601String()}'}'
+            ' (public "${publication.rawPublic}", publicdatetime '
+            '"${publication.rawPublicDateTime}"); ${grades.length} rows, '
+            '${grades.where((g) => g.grade != null).length} grades, '
+            '${grades.where((g) => g.hasFeedback).length} with feedback; '
+            'class average ${evaluation.results.classAverage}',
+          );
+          expect(evaluation.gradebookId, book.gradebookId);
+          expect(evaluation.periodId, periodId);
+          expect(evaluation.title, isNotEmpty);
+          expect(
+            publication.state,
+            publication.stateAt(readAt),
+            reason: 'no publication time between the answer and now',
+          );
+          for (final grade in grades) {
+            expect(grade.classId, book.classId);
+            expect(pupilIds, contains(grade.pupilId));
+            expect(grade.cellEvaluationId, evaluation.evaluationId);
+          }
+          final rows = grades.map((g) => g.pupilId).toList();
+          expect(rows.toSet(), hasLength(rows.length), reason: 'each once');
+        }
+        final ids = evaluations.map((e) => e.id).toList();
+        expect(ids.toSet(), hasLength(ids.length));
+
+        if (book.gradebookId == _testGradebookId) {
+          final spot = evaluations
+              .where((e) => e.id == _testEvaluationId)
+              .single;
+          expect(spot.date, DateTime(2026, 9, 30));
+          expect(spot.max, 100);
+          expect(spot.componentName, 'DW');
+          expect(spot.type, SkoreEvaluationType.points);
+          expect(spot.isPlannerEvaluation, isFalse);
+          // Published from 2026-10-09 08:00 in Belgium: scheduled before
+          // then, published from then on.
+          final publication = spot.publication;
+          expect(publication.isPublic, isTrue);
+          expect(publication.rawPublicDateTime, '2026-10-09T08:00:00');
+          expect(publication.at, DateTime.utc(2026, 10, 9, 6));
+          expect(
+            publication.state,
+            readAt.isBefore(publication.at!)
+                ? SkorePublicationState.scheduled
+                : SkorePublicationState.published,
+          );
+          final grades = spot.results.grades;
+          expect(grades, isNotEmpty);
+          for (final grade in grades.where((g) => g.grade != null)) {
+            expect(grade.value, isNotNull, reason: 'a number with a point');
+          }
+          expect(grades.where((g) => g.hasFeedback), isNotEmpty);
+          expect(double.tryParse(spot.results.classAverage ?? ''), isNotNull);
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test('getResults reads the grades of an evaluation again, the same '
+          '(#149)', () async {
+        final (book, _, periodId) = await evaluationSpot();
+        final evaluation = periodId == null
+            ? null
+            : (await gradebooks.getEvaluations(book, periodId)).firstOrNull;
+        if (evaluation == null) {
+          markTestSkipped('no evaluation in gradebook ${book.gradebookId}');
+          return;
+        }
+
+        final results = await gradebooks.getResults(book, evaluation);
+
+        expect(results.evaluationId, evaluation.id);
+        expect(
+          [for (final g in results.grades) (g.pupilId, g.grade, g.hasFeedback)],
+          [
+            for (final g in evaluation.results.grades)
+              (g.pupilId, g.grade, g.hasFeedback),
+          ],
+        );
+        expect(results.classAverage, evaluation.results.classAverage);
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test("getFeedback reads a pupil's feedback, each apart (#149)", () async {
+        final (book, _, periodId) = await evaluationSpot();
+        if (book.gradebookId != _testGradebookId) {
+          markTestSkipped('no gradebook $_testGradebookId in this account');
+          return;
+        }
+        final spot = (await gradebooks.getEvaluations(
+          book,
+          periodId!,
+        )).where((e) => e.id == _testEvaluationId).single;
+        final grades = spot.results.grades;
+
+        for (final grade in grades.where((g) => g.hasFeedback)) {
+          final feedback = await gradebooks.getFeedback(
+            book,
+            spot,
+            grade.pupilId,
+          );
+          print(
+            'pupil ${grade.pupilId}: ${feedback.length} feedback, by teachers '
+            '${feedback.map((f) => f.teacherId).toList()}, of '
+            '${feedback.map((f) => f.text.length).toList()} characters, '
+            'changed ${feedback.map((f) => f.changedAt?.toIso8601String()).toList()}, '
+            '${feedback.map((f) => f.attachments.length).toList()} '
+            'attachments, can edit ${feedback.map((f) => f.canEdit).toList()}',
+          );
+          expect(feedback, isNotEmpty, reason: 'its cell is marked');
+          for (final item in feedback) {
+            expect(item.id, isNotEmpty);
+            expect(item.pupilId, grade.pupilId);
+            expect(item.teacherId, greaterThan(0));
+            expect(item.text, isNotEmpty);
+            expect(item.createdAt, isNotNull);
+            expect(item.changedAt, isNotNull);
+          }
+        }
+        final without = grades.where((g) => !g.hasFeedback).firstOrNull;
+        if (without != null) {
+          expect(
+            await gradebooks.getFeedback(book, spot, without.pupilId),
+            isEmpty,
+            reason: 'its cell is not marked',
+          );
+        }
         expect(run.guard.violations, isEmpty);
       });
 

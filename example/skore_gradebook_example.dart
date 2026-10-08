@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 
 /// Example: list your own Skore gradebooks, as the logged-in teacher, and
-/// print the periods and pupils of one of them (#148).
+/// print the periods and pupils of one of them (#148), and the evaluations
+/// of its active period with whether they are published, the grades and the
+/// feedback (#149).
 ///
 /// It only reads: nothing in Skore changes. Any teacher can run it with
 /// their own login; no Skore admin rights are needed.
@@ -24,6 +26,10 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///   3. Read one gradebook (`SkoreGradebookService.getGradebook`) and print
 ///      its periods (open or closed, and until when), its pupils and whether
 ///      you may change it.
+///   4. Read the evaluations of its active period
+///      (`SkoreGradebookService.getEvaluations`) and print each with its
+///      publication (not published, scheduled or published, and when), the
+///      grades and the feedback (`SkoreGradebookService.getFeedback`).
 ///
 /// Credentials are read from `credentials.yml` next to the workspace root
 /// (see [PathCredentials]).
@@ -107,6 +113,39 @@ Future<void> main(List<String> args) async {
       final number = pupil.number == null ? ' -' : '${pupil.number}'.padLeft(2);
       final inactive = pupil.isActive ? '' : '  (inactive)';
       print('  $number. ${pupil.name}  [${pupil.id}]$inactive');
+    }
+
+    // ── 4. The evaluations of the active period (#149) ────────────────────
+
+    final period = sheet.activePeriod;
+    if (period == null) return;
+    final evaluations = await gradebooks.getEvaluations(book, period.id);
+    print('\nEvaluations of ${period.name} (${evaluations.length}):');
+    final names = {for (final p in sheet.pupils) p.id: p.name};
+    for (final evaluation in evaluations) {
+      final publication = evaluation.publication;
+      print(
+        '\n  ${evaluation.id}  ${evaluation.title}  '
+        '(${evaluation.date.toIso8601String().substring(0, 10)}, '
+        '/${evaluation.max}, ${evaluation.componentName})  '
+        '${publication.state.name}'
+        '${publication.at == null ? '' : ' ${publication.at!.toLocal()}'}',
+      );
+      for (final grade in evaluation.results.grades) {
+        print(
+          '    ${(names[grade.pupilId] ?? '${grade.pupilId}').padRight(28)} '
+          '${grade.grade ?? '-'}',
+        );
+        if (!grade.hasFeedback) continue;
+        for (final feedback in await gradebooks.getFeedback(
+          book,
+          evaluation,
+          grade.pupilId,
+        )) {
+          print('      feedback (${feedback.teacherName}): ${feedback.text}');
+        }
+      }
+      print('    class average: ${evaluation.results.classAverage ?? '-'}');
     }
   } on SmartschoolSkoreError catch (e) {
     stderr.writeln('Skore error: ${e.message}');

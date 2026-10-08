@@ -6,8 +6,9 @@
 // publication and grades, and the pupils' feedback (#149), and the components
 // of a period (#150). createEvaluation (#150) is tried only where its checks
 // refuse it, before its save: an earlier school year, a date outside the
-// school year, a component Skore does not offer; and so is saveGrade (#151):
-// a published or scheduled evaluation, an earlier school year.
+// school year, a component Skore does not offer; and so are saveGrade
+// (#151) and saveFeedback (#152): a published or scheduled evaluation, an
+// earlier school year (and, for saveFeedback, a blank text).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -23,14 +24,14 @@
 // grading and has no test instance: getNavigation, init,
 // getGradebookContext, getEvaluations, getNewEvalDialogBox and
 // getPosComponents of Skore's gradebook RPC service, and the GET of a
-// pupil's feedback of its REST API; never saveEvaluation or saveGrade. The
-// service refuses any other method of that service itself
-// (SkoreGradebookService.rpcMethods), and the wire guard
-// (support/live_wire_guard.dart) refuses every Skore POST but those reads
-// (and the two reads of the admin side), its REST API included. As every
-// live run, it takes the lock of the session first, logs in at most once,
-// and prints no credential, no cookie, no name and no feedback text: only
-// IDs, counts, states, dates and period names.
+// pupil's feedback of its REST API; never saveEvaluation or saveGrade, nor
+// a POST of a feedback (#152) to that API. The service refuses any other
+// method of that service itself (SkoreGradebookService.rpcMethods), and the
+// wire guard (support/live_wire_guard.dart) refuses every Skore POST but
+// those reads (and the two reads of the admin side), its REST API included.
+// As every live run, it takes the lock of the session first, logs in at
+// most once, and prints no credential, no cookie, no name and no feedback
+// text: only IDs, counts, states, dates and period names.
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -593,6 +594,112 @@ void main() {
                 evaluation,
                 pupil.pupilId,
                 '1',
+                allowPublished: true,
+              ),
+              throwsA(refused('writes in the current school year only')),
+            );
+            expect(run.guard.violations, isEmpty);
+          },
+        );
+      });
+
+      // saveFeedback is tried only where one of its checks refuses it, before
+      // it reads the feedback: it never sends its POST (the wire guard
+      // refuses every POST to Skore's REST API as well, and would list it as
+      // a violation). The live write itself is the developer's, with the
+      // example, on their go-ahead.
+      group('saveFeedback refuses before its save (#152):', () {
+        Matcher refused(String reason) =>
+            isA<SmartschoolSkoreChangeRefusedError>().having(
+              (e) => e.message,
+              'message',
+              allOf(
+                startsWith('saveFeedback: '),
+                contains(reason),
+                endsWith('Nothing was saved.'),
+              ),
+            );
+
+        test('a published or scheduled evaluation, without allowPublished; a '
+            'blank text, before anything is sent', () async {
+          final (book, _, periodId) = await evaluationSpot();
+          final evaluations = periodId == null
+              ? const <SkoreEvaluation>[]
+              : await gradebooks.getEvaluations(book, periodId);
+          final public =
+              evaluations.where((e) => e.id == _testEvaluationId).firstOrNull ??
+              evaluations
+                  .where(
+                    (e) => e.publication.isPublic && !e.isPlannerEvaluation,
+                  )
+                  .firstOrNull;
+          final pupil = public?.results.grades.firstOrNull;
+          if (public == null || pupil == null) {
+            markTestSkipped(
+              'no public evaluation with pupils in gradebook '
+              '${book.gradebookId}',
+            );
+            return;
+          }
+
+          await expectLater(
+            gradebooks.saveFeedback(book, public, pupil.pupilId, 'Test'),
+            throwsA(
+              refused(
+                public.publication.state == SkorePublicationState.scheduled
+                    ? 'is scheduled to be published'
+                    : 'is published',
+              ),
+            ),
+          );
+          await expectLater(
+            gradebooks.saveFeedback(
+              book,
+              public,
+              pupil.pupilId,
+              '   ',
+              allowPublished: true,
+            ),
+            throwsA(refused('the text is blank')),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test(
+          'an evaluation of a gradebook of an earlier school year',
+          () async {
+            final earlier = year.workyears
+                .where((y) => y.id != year.workyear.id)
+                .firstOrNull;
+            final older = earlier == null
+                ? const <SkoreGradebook>[]
+                : await gradebooks.getGradebooks(workyearId: earlier.id);
+            final book =
+                older
+                    .where((g) => g.gradebookId == _earlierGradebookId)
+                    .firstOrNull ??
+                older.firstOrNull;
+            final period = book == null
+                ? null
+                : (await gradebooks.getGradebook(book)).activePeriod;
+            final evaluation = book == null || period == null
+                ? null
+                : (await gradebooks.getEvaluations(
+                    book,
+                    period.id,
+                  )).firstOrNull;
+            final pupil = evaluation?.results.grades.firstOrNull;
+            if (book == null || evaluation == null || pupil == null) {
+              markTestSkipped('no evaluation of an earlier school year');
+              return;
+            }
+
+            await expectLater(
+              gradebooks.saveFeedback(
+                book,
+                evaluation,
+                pupil.pupilId,
+                'Test',
                 allowPublished: true,
               ),
               throwsA(refused('writes in the current school year only')),

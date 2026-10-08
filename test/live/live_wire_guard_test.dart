@@ -2853,7 +2853,7 @@ void main() {
     });
 
     test('a save in Skore, and any other Skore POST but its reads, its REST '
-        'API included (#91, #148, #149, #150, #151)', () async {
+        'API included (#91, #148-#152)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);
       final dio = _dio(server, guard);

@@ -720,6 +720,48 @@ void main() {
       expect(none.confirmed, isEmpty);
       expect(none.cause, isNull);
     });
+
+    test('SmartschoolSkoreFeedbackSaveUnconfirmedError is a '
+        'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
+        'and names the feedback (#152)', () {
+      const cause = SmartschoolConnectionError('dropped');
+      const error = SmartschoolSkoreFeedbackSaveUnconfirmedError(
+        'unconfirmed',
+        cause: cause,
+        gradebookId: 32508,
+        periodId: 1704,
+        evaluationId: 500003,
+        pupilId: 1201,
+        text: 'Goed gewerkt.',
+        isUpdate: true,
+        feedbackId: '00000000-0000-4000-8000-000000000001',
+      );
+      expect(error, isA<SmartschoolSkoreSaveUnconfirmedError>());
+      expect(error, isNot(isA<SmartschoolSkoreError>()));
+      expect(error.cause, same(cause));
+      expect(error.gradebookId, 32508);
+      expect(error.periodId, 1704);
+      expect(error.evaluationId, 500003);
+      expect(error.pupilId, 1201);
+      expect(error.text, 'Goed gewerkt.');
+      expect(error.isUpdate, isTrue);
+      expect(error.feedbackId, '00000000-0000-4000-8000-000000000001');
+      expect(
+        error.toString(),
+        'SmartschoolSkoreFeedbackSaveUnconfirmedError: unconfirmed',
+      );
+      const create = SmartschoolSkoreFeedbackSaveUnconfirmedError(
+        'unconfirmed',
+        gradebookId: 32508,
+        periodId: 1704,
+        evaluationId: 500003,
+        pupilId: 1201,
+        text: 'Goed gewerkt.',
+        isUpdate: false,
+      );
+      expect(create.feedbackId, isNull);
+      expect(create.cause, isNull);
+    });
   });
 
   group('Skore errors a caller tells apart (#83)', () {

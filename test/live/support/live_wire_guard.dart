@@ -61,11 +61,11 @@
 //   #151, whose saves `saveEvaluation` and `saveGrade` never go out); and
 //   any POST to Skore's REST API (`/skore/`,
 //   whose GET of a pupil's feedback SkoreGradebookService.getFeedback sends,
-//   #149, and whose POSTs write feedback): the live suite changes nothing in
-//   Skore, which drives the school's grading and has no test instance, and
-//   these services also hold methods that write, delete, lock or publish
-//   (saveOwner, saveShared, deleteTeacher, saveEvaluation, saveGrade,
-//   deleteEvaluation, setPublicProp, ...);
+//   #149, and whose POSTs write feedback, as saveFeedback does, #152): the
+//   live suite changes nothing in Skore, which drives the school's grading
+//   and has no test instance, and these services also hold methods that
+//   write, delete, lock or publish (saveOwner, saveShared, deleteTeacher,
+//   saveEvaluation, saveGrade, deleteEvaluation, setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
 //   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
 //   only reads: the live suite changes nothing in the planner, whose POSTs

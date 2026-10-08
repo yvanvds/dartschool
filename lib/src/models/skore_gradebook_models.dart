@@ -580,6 +580,8 @@ class SkoreGrade {
 /// A feedback text of a teacher for a pupil on an evaluation, as the
 /// feedback panel of Skore's gradebook shows it (#149). A pupil can have
 /// several on one evaluation, from one or more teachers.
+/// `SkoreGradebookService.saveFeedback` creates or changes the user's own
+/// (#152).
 class SkoreFeedback {
   /// The feedback's ID (a UUID).
   final String id;

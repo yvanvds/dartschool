@@ -1461,11 +1461,13 @@ class SmartschoolPresenceUnreadableAnswerError
 /// From the writes (`SkoreService.addTeacher`, `replaceTeacher`, #71;
 /// `shareGradebook`, `unshareGradebook`, #74;
 /// `SkoreGradebookService.createEvaluation`, #150; `saveGrade`,
-/// `saveGrades`, #151), this type and all its
+/// `saveGrades`, #151; `saveFeedback`, #152), this type and all its
 /// subtypes always mean that **nothing was saved**: a read before the save
-/// failed, or a check refused the change. A save that went out without Skore
-/// confirming it is a [SmartschoolSkoreSaveUnconfirmedError] instead; a new
-/// evaluation that came back public a [SmartschoolSkoreEvaluationPublicError].
+/// failed, or a check refused the change (or, for `saveFeedback`, Skore's
+/// REST API refused it with a `4xx` status). A save that went out without
+/// Skore confirming it is a [SmartschoolSkoreSaveUnconfirmedError] instead; a
+/// new evaluation that came back public a
+/// [SmartschoolSkoreEvaluationPublicError].
 class SmartschoolSkoreError extends SmartschoolException {
   const SmartschoolSkoreError(super.message);
 }
@@ -1529,7 +1531,11 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// from the planner, not in points, or without a highest grade; an
 /// evaluation that is published or scheduled, unless `allowPublished`; a
 /// pupil without a cell in the gradebook's class; a grade above the highest
-/// grade.
+/// grade. The checks of `SkoreGradebookService.saveFeedback` (#152): a pupil
+/// ID that is not positive or a blank text (before anything is sent); the
+/// gradebook, period, evaluation and pupil checks of `saveGrade` (not the
+/// points); the user's own feedback for the pupil that Skore does not let
+/// them change (`can_edit`), or more than one of it.
 ///
 /// Its message says which check refused and why, with the IDs (and the
 /// course label, evaluation title or teacher name it read), and quotes
@@ -2129,7 +2135,10 @@ class SmartschoolLessonContentVisibilityNotSetError
 ///   period and the title, and the new evaluation's ID when Skore gave one;
 /// - [SmartschoolSkoreGradeSaveUnconfirmedError] from
 ///   `SkoreGradebookService.saveGrade` and `saveGrades` (#151): the grades
-///   sent, and per pupil whether reading again confirmed them.
+///   sent, and per pupil whether reading again confirmed them;
+/// - [SmartschoolSkoreFeedbackSaveUnconfirmedError] from
+///   `SkoreGradebookService.saveFeedback` (#152): the evaluation, the pupil,
+///   the text, whether it was a change of the user's feedback, and its ID.
 ///
 /// So a `catch` of this type keeps catching them all. The messages of the
 /// first two name the change by IDs only (no labels or names); the subtypes
@@ -2340,5 +2349,65 @@ class SmartschoolSkoreGradeSaveUnconfirmedError
     required this.grades,
     this.confirmed = const {},
     required this.unconfirmed,
+  });
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreGradebookService.saveFeedback` (#152): the feedback went out to
+/// Skore's REST API (`POST /skore/api/v1/gradebook/feedback`, or
+/// `.../feedback/{id}` for a change), but Skore's answer, or reading the
+/// pupil's feedback again afterwards, does not confirm it. Its message says
+/// what went wrong.
+///
+/// **It may or may not have been saved.** For a change of the user's own
+/// feedback ([isUpdate]), saving it again is harmless: it sends the whole
+/// text again. For a new one, the create was sent once and is never sent
+/// again by the service (a second create adds a second feedback): read the
+/// feedback again (`SkoreGradebookService.getFeedback`). Calling
+/// `saveFeedback` again is safe as well: it reads the feedback first, and
+/// changes the user's one if the create went through.
+///
+/// Thrown when Skore answers with another status than `200` that is not a
+/// refusal (`400` to `499` is a [SmartschoolSkoreError]: nothing was saved),
+/// such as a `500`; with an answer that is not the feedback saved (not JSON,
+/// another pupil, teacher or ID); when no answer came in ([cause] holds the
+/// failure, typically a [SmartschoolConnectionError]); and when reading the
+/// feedback again fails ([cause]), does not list it, or shows another text.
+class SmartschoolSkoreFeedbackSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook of the evaluation (its `gradebookId`).
+  final int gradebookId;
+
+  /// The period of the evaluation (its `id`).
+  final int periodId;
+
+  /// The evaluation (its `SkoreEvaluation.id`, Skore's `refID`).
+  final int evaluationId;
+
+  /// The pupil the feedback is for (their Smartschool user ID).
+  final int pupilId;
+
+  /// The text sent (trimmed).
+  final String text;
+
+  /// Whether the save changed the user's existing feedback (`true`) or
+  /// created a new one (`false`).
+  final bool isUpdate;
+
+  /// The feedback's ID (a UUID): for a change, the feedback changed; for a
+  /// create, the ID Skore's answer gave the new one, or `null` when no
+  /// answer said it was created.
+  final String? feedbackId;
+
+  const SmartschoolSkoreFeedbackSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.gradebookId,
+    required this.periodId,
+    required this.evaluationId,
+    required this.pupilId,
+    required this.text,
+    required this.isUpdate,
+    this.feedbackId,
   });
 }

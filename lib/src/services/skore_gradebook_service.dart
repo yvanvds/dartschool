@@ -16,8 +16,9 @@ export '../models/skore_gradebook_models.dart';
 /// change it ([getGradebook]), and the evaluations of a period with whether
 /// and when they are published and the pupils' grades ([getEvaluations],
 /// [getResults]) and feedback ([getFeedback], #149). And creates an
-/// evaluation in a period, never published ([createEvaluation], #150), and
-/// saves the pupils' grades in it ([saveGrade], [saveGrades], #151).
+/// evaluation in a period, never published ([createEvaluation], #150), saves
+/// the pupils' grades in it ([saveGrade], [saveGrades], #151), and gives a
+/// pupil feedback on it ([saveFeedback], #152).
 ///
 /// This is what a teacher sees at `/SkoreGradebook` ("Puntenboek"), and it
 /// works for any teacher with their own login: it needs none of the admin
@@ -49,14 +50,15 @@ export '../models/skore_gradebook_models.dart';
 /// }
 /// ```
 ///
-/// The only changes it makes in Skore are [createEvaluation] and the grades
-/// of [saveGrade] and [saveGrades], which check the gradebook, the period,
-/// the evaluation and the values first, and read the period again to check
-/// the save. **It never publishes**: a new evaluation goes out unpublished,
-/// and teachers publish it in Smartschool themselves; grades go into an
-/// evaluation that is published or scheduled only when the caller asks for
-/// it (`allowPublished`). Nothing in the service publishes, deletes or moves
-/// an evaluation.
+/// The only changes it makes in Skore are [createEvaluation], the grades
+/// of [saveGrade] and [saveGrades], and the user's own feedback of
+/// [saveFeedback], which check the gradebook, the period, the evaluation and
+/// the values first, and read Skore again to check the save. **It never
+/// publishes**: a new evaluation goes out unpublished, and teachers publish
+/// it in Smartschool themselves; grades and feedback go into an evaluation
+/// that is published or scheduled only when the caller asks for it
+/// (`allowPublished`). Nothing in the service publishes, deletes or moves an
+/// evaluation, nor deletes or changes another teacher's feedback.
 ///
 /// ### The endpoint
 /// Every call is an RPC call to Skore's gradebook service
@@ -73,7 +75,8 @@ export '../models/skore_gradebook_models.dart';
 /// methods in [rpcMethods], and refuses any other before anything is sent
 /// ([checkRpcMethod]). Feedback comes from Skore's REST API instead
 /// (`GET /skore/api/v1/gradebook/feedback/...`), as the feedback panel of
-/// Skore's gradebook reads it ([getFeedback]).
+/// Skore's gradebook reads it ([getFeedback]), and goes there with a `POST`
+/// ([saveFeedback]); the service sends no other request to that API.
 ///
 /// ### Errors
 /// - [SmartschoolSkoreError]: Skore answered with something the service
@@ -88,11 +91,13 @@ export '../models/skore_gradebook_models.dart';
 ///   Its message may quote the answer, which can hold names: keep it in a
 ///   log. What Skore answers an account without a gradebook of its own (a
 ///   pupil, say) was not captured.
-///   From [createEvaluation], [saveGrade] and [saveGrades], it always means
-///   that nothing was saved.
+///   From [createEvaluation], [saveGrade], [saveGrades] and [saveFeedback],
+///   it always means that nothing was saved; from [saveFeedback] also when
+///   Skore refused the save with a `4xx` status.
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
-///   check of [createEvaluation], [saveGrade] or [saveGrades] refused the
-///   change before the save. Nothing was saved; its message says why.
+///   check of [createEvaluation], [saveGrade], [saveGrades] or
+///   [saveFeedback] refused the change before the save. Nothing was saved;
+///   its message says why.
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
@@ -100,6 +105,9 @@ export '../models/skore_gradebook_models.dart';
 /// - [SmartschoolSkoreGradeSaveUnconfirmedError] (the same): [saveGrade] or
 ///   [saveGrades] sent the grades, but could not confirm all of them; it
 ///   says which ones are confirmed. Saving a grade again is harmless.
+/// - [SmartschoolSkoreFeedbackSaveUnconfirmedError] (the same):
+///   [saveFeedback] sent the feedback, but could not confirm it. Read the
+///   feedback again; calling [saveFeedback] again does not add a second.
 /// - [SmartschoolSkoreEvaluationPublicError] (neither): [createEvaluation]
 ///   created the evaluation, but Skore shows it as public. It was created;
 ///   check its publication in Smartschool.
@@ -109,13 +117,14 @@ export '../models/skore_gradebook_models.dart';
 ///   or an evaluation of another gradebook (before anything is sent).
 /// - [SmartschoolParsingError]: the session's user ID
 ///   (`authenticatedUser.id`) is not in the form `4069_146_0`, which
-///   [getFeedback] builds Skore's IDs from.
+///   [getFeedback] and [saveFeedback] build Skore's IDs from.
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered without a session. Sign in again and retry.
 ///   For the save of [createEvaluation], at once, without logging in again:
-///   the save is never sent twice, and was not handled. For [saveGrade] and
-///   [saveGrades], only for the first save: nothing was saved.
+///   the save is never sent twice, and was not handled; so for a new
+///   feedback of [saveFeedback]. For [saveGrade] and [saveGrades], only for
+///   the first save: nothing was saved.
 /// - Another [SmartschoolAuthenticationError]: logging in again failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
 class SkoreGradebookService {
@@ -395,9 +404,7 @@ class SkoreGradebookService {
       );
     }
     final (platform, userId) = await _platformAndUser();
-    final what =
-        'the feedback of pupil $pupilId on evaluation ${evaluation.id}';
-    final response = await _client.getResponse(
+    return _readFeedback(
       feedbackPath(
         platform: platform,
         userId: userId,
@@ -405,11 +412,8 @@ class SkoreGradebookService {
         evaluationId: evaluation.id,
         pupilId: pupilId,
       ),
-    );
-    return parseFeedback(
-      _restJson(response, what),
-      pupilId: pupilId,
-      evaluationId: evaluation.id,
+      pupilId,
+      evaluation.id,
     );
   }
 
@@ -1047,6 +1051,303 @@ class SkoreGradebookService {
   /// [sent] for a message: `"15.5"`, or `cleared`.
   static String _sentText(_GradeValue sent) =>
       sent.number == null ? 'cleared' : '"${sent.text}"';
+
+  /// Gives pupil [pupilId] written feedback on [evaluation] (from
+  /// [getEvaluations]) of [gradebook], or changes the feedback the user gave
+  /// them there before, and returns it as Skore lists it right after the
+  /// save (#152).
+  ///
+  /// [text]: not blank; sent trimmed. An evaluation that is published or
+  /// scheduled is refused unless [allowPublished] is `true`: feedback on a
+  /// published evaluation is visible to the pupil at once.
+  ///
+  /// It reads the pupil's feedback first ([getFeedback]) and keeps to the
+  /// user's own, by teacher ID: **the feedback of other teachers is never
+  /// changed**. Then, through Skore's REST API, as the feedback panel of
+  /// Skore's gradebook sends it (verified live), with a JSON body and
+  /// `X-Requested-With: XMLHttpRequest`:
+  /// - the user has none: it creates one (`POST
+  ///   /skore/api/v1/gradebook/feedback` with `{evaluation, studentId, text,
+  ///   attachments: []}`). **The create is sent once**, never again, not even
+  ///   after logging in again: a second create adds a second feedback (seen
+  ///   live), it does not replace the first;
+  /// - the user has one: it changes its text (`POST
+  ///   .../feedback/{id}` with `{id, evaluation, studentId, text,
+  ///   attachments}`, its attachments sent back as they are). It sends the
+  ///   whole text, so it is sent again after a new login.
+  ///
+  /// `evaluation` is `{evaluationId: "{ss}_{refID}", classGroupId:
+  /// "{ss}_{classId}", teacherId: "{ss}_{userId}_0", context:
+  /// "{modelId}_{groupId}_{classId}"}` and `studentId` `"{ss}_{pupilId}_0"`,
+  /// the IDs of [getFeedback].
+  ///
+  /// Before the save, it reads Skore again and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
+  /// - a pupil ID that is not positive, or a blank [text] (before anything
+  ///   is sent);
+  /// - what [saveGrade] refuses for the gradebook, the period and the
+  ///   evaluation: not one of the user's own gradebooks of Skore's current
+  ///   school year, a period that is closed or read-only, an evaluation of
+  ///   another gradebook, no longer listed, or from the planner, and one
+  ///   that is published or scheduled, without [allowPublished] (any type
+  ///   of evaluation: feedback is not a grade);
+  /// - a pupil without a cell in the evaluation's rows of the gradebook's
+  ///   class;
+  /// - the user's own feedback for the pupil that Skore does not let them
+  ///   change (`capabilities.can_edit` `false`), or **more than one** of it
+  ///   (a second create makes that): it changes none of them, as it cannot
+  ///   tell which one is meant. Keep one in Smartschool.
+  ///
+  /// Skore answering the save with `400` to `499` is a
+  /// [SmartschoolSkoreError] with the `title` and `detail` of its answer:
+  /// Skore refused it, nothing was saved. A session Smartschool refuses (for
+  /// the create, at once; for a change, also after a new login) is a
+  /// [SmartschoolSessionExpiredError]: nothing was saved either.
+  ///
+  /// Skore must answer the save with the feedback (`200`): of the pupil and
+  /// the user, and for a change with the same ID. Then it reads the pupil's
+  /// feedback again: the user's feedback with that ID must have the text
+  /// sent. Otherwise this throws a
+  /// [SmartschoolSkoreFeedbackSaveUnconfirmedError] (also for another
+  /// status, such as a `500`, an answer that is not JSON, or a connection
+  /// that dropped): read the feedback again. Calling `saveFeedback` again is
+  /// safe: it reads first, and changes the feedback a create made.
+  ///
+  /// The checks and the save are separate requests: do not change the same
+  /// feedback from two places at once.
+  Future<SkoreFeedback> saveFeedback(
+    SkoreGradebook gradebook,
+    SkoreEvaluation evaluation,
+    int pupilId,
+    String text, {
+    bool allowPublished = false,
+  }) async {
+    const operation = 'saveFeedback';
+    final sent = text.trim();
+    if (pupilId <= 0) _refuse(operation, '$pupilId is not a pupil ID');
+    if (sent.isEmpty) _refuse(operation, 'the text is blank');
+
+    final checked = await _checkEvaluationWrite(
+      operation,
+      gradebook,
+      evaluation,
+      allowPublished: allowPublished,
+    );
+    final book = checked.target.gradebook;
+    final current = checked.evaluation;
+    final where = checked.where;
+    if (current.results.gradeOf(pupilId) == null) {
+      _refuse(
+        operation,
+        'in $where, pupil $pupilId has no cell in its rows of class '
+        '${book.classId}',
+      );
+    }
+
+    // The user's own feedback for the pupil, as Skore has it now.
+    final (platform, userId) = await _platformAndUser();
+    final readPath = feedbackPath(
+      platform: platform,
+      userId: userId,
+      gradebook: book,
+      evaluationId: current.id,
+      pupilId: pupilId,
+    );
+    final own = [
+      for (final f in await _readFeedback(readPath, pupilId, current.id))
+        if (f.teacherId == userId) f,
+    ];
+    if (own.length > 1) {
+      _refuse(
+        operation,
+        'you gave pupil $pupilId ${own.length} feedbacks on $where already '
+        '(${own.map((f) => f.id).join(', ')}): the library changes none of '
+        'them, as it cannot tell which one is meant. Keep one in Smartschool',
+      );
+    }
+    final existing = own.firstOrNull;
+    if (existing != null && !existing.canEdit) {
+      _refuse(
+        operation,
+        'Skore does not let you change your feedback ${existing.id} for pupil '
+        '$pupilId on $where (can_edit false)',
+      );
+    }
+
+    final isUpdate = existing != null;
+    final reference = {
+      'evaluationId': '${platform}_${current.id}',
+      'classGroupId': '${platform}_${book.classId}',
+      'teacherId': '${platform}_${userId}_0',
+      'context': book.pathIds.join('_'),
+    };
+    final studentId = '${platform}_${pupilId}_0';
+    final Map<String, Object?> body;
+    final String path;
+    if (existing == null) {
+      path = '$_restPath/feedback';
+      body = {
+        'evaluation': reference,
+        'studentId': studentId,
+        'text': sent,
+        'attachments': const <Object?>[],
+      };
+    } else {
+      path = '$_restPath/feedback/${Uri.encodeComponent(existing.id)}';
+      body = {
+        'id': existing.id,
+        'evaluation': reference,
+        'studentId': studentId,
+        'text': sent,
+        'attachments': [for (final a in existing.attachments) a.json],
+      };
+    }
+
+    final what = isUpdate
+        ? '$operation: the change of your feedback ${existing.id} for pupil '
+              '$pupilId on $where'
+        : '$operation: the new feedback for pupil $pupilId on $where';
+    SmartschoolSkoreFeedbackSaveUnconfirmedError unconfirmed(
+      String message, {
+      Object? cause,
+      String? feedbackId,
+    }) {
+      final created = feedbackId == null
+          ? 'It may or may not have been created'
+          : 'Skore answered that it created it';
+      final advice = isUpdate
+          ? 'It may or may not have been changed: saving it again is '
+                'harmless.'
+          : '$created: read the feedback again (getFeedback) before trying '
+                'again. saveFeedback again changes the feedback it created, '
+                'if it did, rather than adding a second.';
+      return SmartschoolSkoreFeedbackSaveUnconfirmedError(
+        '$message $advice',
+        cause: cause,
+        gradebookId: book.gradebookId,
+        periodId: current.periodId,
+        evaluationId: current.id,
+        pupilId: pupilId,
+        text: sent,
+        isUpdate: isUpdate,
+        feedbackId: feedbackId ?? existing?.id,
+      );
+    }
+
+    final Response<String> response;
+    try {
+      response = await _client.postJsonResponse(
+        path,
+        data: body,
+        headers: const {kXRequestedWith: 'XMLHttpRequest'},
+        // A create is not idempotent: a second one adds a second feedback.
+        retryAfterLogin: isUpdate,
+      );
+    } on SmartschoolAuthenticationError {
+      // Smartschool refused the session (for a change, also after a new
+      // login), or logging in again failed: Skore did not handle the save.
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        unconfirmed('$what was sent, but no answer came in ($e).', cause: e),
+        stackTrace,
+      );
+    }
+
+    final status = response.statusCode ?? 0;
+    if (status >= 400 && status < 500) {
+      final problem = _problem(response.data);
+      throw SmartschoolSkoreError(
+        '$what was refused by Skore with HTTP $status'
+        '${problem == null ? '' : ': $problem'}. Nothing was saved.',
+      );
+    }
+    final SkoreFeedback answer;
+    try {
+      if (status != 200) {
+        final problem = _problem(response.data);
+        throw SmartschoolSkoreError(
+          'Skore answered with HTTP $status'
+          '${problem == null ? '' : ': $problem'}',
+        );
+      }
+      answer = _feedback(
+        SkoreRpc.decodeJson(response.data ?? '', 'the save'),
+        'its answer',
+        pupilId: pupilId,
+        evaluationId: current.id,
+      );
+    } on SmartschoolSkoreError catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        unconfirmed(
+          '$what was sent, but Skore\'s answer is not the feedback saved '
+          '(${e.message}).',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    if (answer.teacherId != userId ||
+        (existing != null && answer.id != existing.id)) {
+      throw unconfirmed(
+        '$what was sent, but Skore answered with feedback ${answer.id} of '
+        'teacher ${answer.teacherId} instead of '
+        '${existing == null ? 'a new feedback' : 'feedback ${existing.id}'} '
+        'of yours ($userId).',
+      );
+    }
+
+    // The check: the pupil's feedback read again.
+    final SkoreFeedback? saved;
+    try {
+      saved = (await _readFeedback(
+        readPath,
+        pupilId,
+        current.id,
+      )).where((f) => f.id == answer.id).firstOrNull;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        unconfirmed(
+          '$what was confirmed as feedback ${answer.id}, but reading the '
+          'feedback again to check it failed ($e).',
+          cause: e,
+          feedbackId: answer.id,
+        ),
+        stackTrace,
+      );
+    }
+    if (saved == null) {
+      throw unconfirmed(
+        '$what was confirmed as feedback ${answer.id}, but reading the '
+        'feedback again does not list it.',
+        feedbackId: answer.id,
+      );
+    }
+    if (saved.teacherId != userId || saved.text.trim() != sent) {
+      throw unconfirmed(
+        '$what was confirmed as feedback ${answer.id}, but reading the '
+        'feedback again shows it '
+        '${saved.teacherId != userId ? 'of teacher ${saved.teacherId}' : 'with another text (${saved.text.length} characters, not ${sent.length})'}.',
+        feedbackId: answer.id,
+      );
+    }
+    return saved;
+  }
+
+  /// The feedback of pupil [pupilId] on evaluation [evaluationId], read
+  /// from Skore's REST API at [path] ([feedbackPath]).
+  Future<List<SkoreFeedback>> _readFeedback(
+    String path,
+    int pupilId,
+    int evaluationId,
+  ) async => parseFeedback(
+    _restJson(
+      await _client.getResponse(path),
+      'the feedback of pupil $pupilId on evaluation $evaluationId',
+    ),
+    pupilId: pupilId,
+    evaluationId: evaluationId,
+  );
 
   /// Reads [gradebook] and its period [periodId] again, and refuses a write
   /// in them with a [SmartschoolSkoreChangeRefusedError] that names

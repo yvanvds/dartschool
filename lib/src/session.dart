@@ -291,10 +291,15 @@ class SmartschoolClient {
   /// at once with a [SmartschoolSessionExpiredError], without logging in and
   /// sending it again, and the client's next request logs in before it is
   /// sent (#134; see [postMultipartResponse]).
+  ///
+  /// [headers] go out with the request, besides the client's own, such as
+  /// `X-Requested-With: XMLHttpRequest` for an API whose web client sends it
+  /// (Skore's feedback, #152). Without them, none is added.
   Future<Response<String>> postJsonResponse(
     String path, {
     Object? data,
     Map<String, dynamic>? query,
+    Map<String, String>? headers,
     bool retryAfterLogin = true,
   }) {
     return _send(
@@ -304,6 +309,7 @@ class SmartschoolClient {
         queryParameters: query,
         options: Options(
           contentType: Headers.jsonContentType,
+          headers: headers,
           extra: _sessionStateExtra(retryAfterLogin, null),
         ),
       ),

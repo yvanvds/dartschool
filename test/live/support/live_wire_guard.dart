@@ -51,12 +51,15 @@
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no
 //   presence, so a save of presences (`savePupilsPresences`: setLate,
 //   setPresent) never goes out;
-// - any POST to the Skore module but its two RPC reads `getTeachers` of
+// - any POST to the Skore module but its RPC reads: `getTeachers` of
 //   `owners.php` and `getCourses` of `rapportbeheer/rpc/data.php`
-//   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91):
-//   the live suite changes nothing in Skore, which drives the school's
-//   grading and has no test instance, and both services also hold methods
-//   that write, delete or lock (saveOwner, saveShared, deleteTeacher, ...);
+//   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91),
+//   and `getNavigation`, `init` and `getGradebookContext` of
+//   `gradebook/rpc.php` (SkoreGradebookService, the teacher's own
+//   gradebooks, #148): the live suite changes nothing in Skore, which drives
+//   the school's grading and has no test instance, and these services also
+//   hold methods that write, delete, lock or publish (saveOwner, saveShared,
+//   deleteTeacher, saveEvaluation, deleteEvaluation, setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
 //   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
 //   only reads: the live suite changes nothing in the planner, whose POSTs
@@ -571,21 +574,29 @@ class LiveWireGuard extends Interceptor {
         'but the reads getConfig, getAllCodes and getClass (#104, #105)';
   }
 
-  /// The Skore RPC POSTs that only read, by path: the one method of each
-  /// service the live suite calls (#91).
+  /// The Skore RPC POSTs that only read, by path: the methods of each
+  /// service the live suite calls (#91, #148).
   static const _skoreReads = {
-    '/modules/Skore/backend/models/owners.php': 'getTeachers',
-    '/modules/Skore/modules/rapportbeheer/rpc/data.php': 'getCourses',
+    '/modules/Skore/backend/models/owners.php': {'getTeachers'},
+    '/modules/Skore/modules/rapportbeheer/rpc/data.php': {'getCourses'},
+    '/modules/Skore/backend/gradebook/rpc.php': {
+      'getNavigation',
+      'init',
+      'getGradebookContext',
+    },
   };
 
   /// Why the Skore POST to [path] with [data] may not go out, or `null`:
   /// only the reads go out, never a save.
   String? _skoreRefusal(String path, Object? data) {
     final method = data is Map ? data['rpc_method'] : null;
-    if (method != null && _skoreReads[path] == method) return null;
+    if (method != null && (_skoreReads[path]?.contains(method) ?? false)) {
+      return null;
+    }
     return 'the live suite changes nothing in Skore: it sends no Skore POST '
-        'but the reads getTeachers (owners.php) and getCourses '
-        '(rapportbeheer/rpc/data.php) (#91)';
+        'but the reads getTeachers (owners.php), getCourses '
+        '(rapportbeheer/rpc/data.php) (#91), and getNavigation, init and '
+        'getGradebookContext (gradebook/rpc.php, #148)';
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

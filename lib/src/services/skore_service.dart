@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:dio/dio.dart';
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
@@ -7,6 +5,7 @@ import 'package:html/parser.dart' as html_parser;
 import '../exceptions.dart';
 import '../models/skore_models.dart';
 import '../session.dart';
+import 'skore_rpc.dart';
 
 export '../models/skore_models.dart';
 
@@ -885,40 +884,15 @@ class SkoreService {
     String method,
     List<Object?> params,
     DateTime now,
-  ) => {
-    'rpc_sessionobj': jsonEncode({
-      'requestSource': 'skore-web',
-      'timelimit': null,
-      'client_epoch': now.millisecondsSinceEpoch ~/ 1000,
-    }),
-    'rpc_requestType': 'requestData',
-    'rpc_method': method,
-    'rpc_params': jsonEncode(params),
-  };
+  ) => SkoreRpc.fields(method, params, session: SkoreRpc.session(now));
 
-  /// The `result` of an RPC answer [body] to [method].
+  /// The `result` of an RPC answer [body] to [method] (see
+  /// [SkoreRpc.result]).
   ///
   /// Like Skore's web client, takes an answer without a (truthy) `session`
   /// for an expired session.
-  static dynamic _rpcResult(String body, String method) {
-    final what = 'the RPC call $method';
-    final json = _decodeJson(body, what);
-    if (json is! Map<String, dynamic>) {
-      throw SmartschoolSkoreError(
-        'Skore answered $what with ${json.runtimeType} instead of an object.',
-      );
-    }
-    final session = json['session'];
-    if (session == null || session == false || session == 0 || session == '') {
-      throw SmartschoolSessionExpiredError(
-        'Skore answered $what without a session.',
-      );
-    }
-    if (!json.containsKey('result')) {
-      throw SmartschoolSkoreError('Skore answered $what without a result.');
-    }
-    return json['result'];
-  }
+  static dynamic _rpcResult(String body, String method) =>
+      SkoreRpc.result(body, method);
 
   // ---------------------------------------------------------------------------
   // Pure helpers (exposed for testing)
@@ -1218,44 +1192,17 @@ class SkoreService {
   };
 
   /// Decodes [body], the JSON answer to [what].
-  static dynamic _decodeJson(String body, String what) {
-    final trimmed = body.trimLeft();
-    if (trimmed.isEmpty) {
-      throw SmartschoolSkoreError('Skore answered $what with an empty body.');
-    }
-    if (trimmed.startsWith('<')) {
-      throw SmartschoolSkoreError(
-        'Skore answered $what with an HTML page instead of JSON: '
-        '${_preview(trimmed)}',
-      );
-    }
-    try {
-      return jsonDecode(trimmed);
-    } on FormatException catch (e) {
-      throw SmartschoolSkoreError(
-        'Skore answered $what with invalid JSON (${e.message}): '
-        '${_preview(trimmed)}',
-      );
-    }
-  }
+  static dynamic _decodeJson(String body, String what) =>
+      SkoreRpc.decodeJson(body, what);
 
   /// A Skore ID: an int, or a string of digits as Skore mostly sends them.
-  static int _id(Object? value, String what) {
-    final id = _tryId(value);
-    if (id == null) {
-      throw SmartschoolSkoreError('Skore gave $what the ID "$value".');
-    }
-    return id;
-  }
+  static int _id(Object? value, String what) => SkoreRpc.id(value, what);
 
   /// [value] as a Skore ID (see [_id]), or `null` when it is none.
-  static int? _tryId(Object? value) {
-    if (value is int) return value;
-    return value is String ? int.tryParse(value.trim()) : null;
-  }
+  static int? _tryId(Object? value) => SkoreRpc.tryId(value);
 
   /// [value], a decoded JSON answer, as a short JSON text for a message.
-  static String _jsonPreview(Object? value) => _preview(jsonEncode(value));
+  static String _jsonPreview(Object? value) => SkoreRpc.jsonPreview(value);
 
   /// The text of a tree node's `content`: an icon, `&nbsp;` and the name.
   static String _contentText(Object? content) {
@@ -1278,8 +1225,5 @@ class SkoreService {
     return pixels == null ? 0 : pixels ~/ 10;
   }
 
-  static String _preview(String body, {int max = 160}) {
-    final flat = body.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return flat.length <= max ? flat : '${flat.substring(0, max)}…';
-  }
+  static String _preview(String body) => SkoreRpc.preview(body);
 }

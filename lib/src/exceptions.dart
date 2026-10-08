@@ -1427,10 +1427,16 @@ class SmartschoolPresenceUnreadableAnswerError
   }
 }
 
-/// Thrown by `SkoreService` when Smartschool's Skore module (grading and
-/// reports) does not give what was asked for. The session was accepted:
-/// signing in again does not help. A Skore RPC answer that carries no session
-/// is reported as a [SmartschoolSessionExpiredError] instead.
+/// Thrown by `SkoreService` and `SkoreGradebookService` (#148) when
+/// Smartschool's Skore module (grading and reports) does not give what was
+/// asked for. The session was accepted: signing in again does not help. A
+/// Skore RPC answer that carries no session is reported as a
+/// [SmartschoolSessionExpiredError] instead.
+///
+/// `SkoreGradebookService`, which reads the teacher's own gradebooks, throws
+/// this type itself only: for an answer it cannot use (another HTTP status
+/// than `200`, an HTML page, invalid JSON, a missing RPC `result`, data in
+/// a shape it does not recognise, or an answer about another gradebook).
 ///
 /// Three cases, which a caller handles differently, have a type each (#83):
 /// - [SmartschoolSkoreAccessDeniedError]: Skore refused the request to the

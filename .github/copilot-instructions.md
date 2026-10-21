@@ -15,6 +15,7 @@ This is an unofficial Dart HTTP client for the Smartschool school platform.
 - All services take a `SmartschoolClient` in their constructor
 - Parse HTML with the `html` package (CSS selectors preferred)
 - Parse JSON directly with `dart:convert`
+- Text files are LF, in the repository and in every checkout (`.gitattributes`); a test that needs CRLF builds it in code (#173)
 
 ### The pupil tracking system (LVS)
 Before any work on the LVS (`/?module=LVS`): research, captures, fixtures,

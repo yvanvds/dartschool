@@ -419,9 +419,8 @@ void main() {
     });
 
     // The fixture's HTML has line breaks of its own between some blocks: LF
-    // or CRLF, as the checkout gives them (a Windows checkout gives CRLF), and
-    // as an answer of the LVS can have them. Both are tried, whatever the
-    // checkout.
+    // in the checkout (.gitattributes, #173), but an answer of the LVS can
+    // have LF or CRLF. Both are tried, whatever the checkout.
     for (final (ends, eol) in [('LF', '\n'), ('CRLF', '\r\n')]) {
       test('a rich text as plain text keeps its lines: a line break and each '
           'block of its HTML start a new line, the cells of a row stay on one; '

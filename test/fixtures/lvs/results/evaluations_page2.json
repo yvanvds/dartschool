@@ -1,0 +1,28 @@
+[
+  {
+    "identifier": "900000_900001_0_project_900603",
+    "type": "project",
+    "name": "Testevaluatie",
+    "graphic": {
+      "type": "icon",
+      "color": "steel",
+      "value": "target_lpd_steel",
+      "description": null
+    },
+    "date": "2031-03-02T00:00:00+01:00",
+    "courses": [
+      {
+        "id": 900301,
+        "name": "Testvak",
+        "graphic": {"type": "icon", "value": "knight2"}
+      }
+    ],
+    "period": {
+      "id": 900402,
+      "name": "Testperiode",
+      "icon": "cal_purple_generic_trimester",
+      "class": {"id": 900101, "name": "1A", "type": "K", "icon": "briefcase"}
+    },
+    "feedbacks": []
+  }
+]

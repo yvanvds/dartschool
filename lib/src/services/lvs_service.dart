@@ -2,19 +2,24 @@ import 'dart:convert';
 
 import '../exceptions.dart';
 import '../models/lvs_models.dart';
+import '../models/lvs_results_models.dart';
 import '../session.dart';
 import 'lvs_note_answers.dart';
+import 'lvs_result_answers.dart';
 import 'lvs_wire.dart';
 
 export '../models/lvs_models.dart';
+export '../models/lvs_results_models.dart';
 
 /// Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem",
 /// `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by
 /// name ([searchPupils]) and reads the overview of the pupil's file
 /// ([getPupilFile]): who, which class, today's attendance, and which
-/// sections of the file hold something; and the pupil's notes, per category
-/// ([getNotes]) or all of them ([getAllNotes], #161). [checkAccess] tells
-/// whether the account may use the LVS.
+/// sections of the file hold something; the pupil's notes, per category
+/// ([getNotes]) or all of them ([getAllNotes], #161); and the pupil's
+/// results ([getEvaluations], [getAllEvaluations], [getFeedback],
+/// [getReports], #162). [checkAccess] tells whether the account may use the
+/// LVS.
 ///
 /// ```dart
 /// final lvs = LvsService(client);
@@ -59,7 +64,13 @@ export '../models/lvs_models.dart';
 ///   with the command `lvs_cats/getUserCatItems`, answered with the action
 ///   `renderPupilNotes` (#161);
 /// - [getAllNotes]: the same dispatcher with `lvs_pupils/getUserData`,
-///   answered with `renderPupilAllNotes` (#161).
+///   answered with `renderPupilAllNotes` (#161);
+/// - the results (#162): the GETs of the results app that the file's
+///   "Resultaten" section shows, `/LVS/Results/getConfiguration`,
+///   `getperiods`, `getcourses`, `getevaluationsofuser`, `getfeedback` and
+///   `getreports`, each with `pupilId` and `groupId` (the class) and, but
+///   the first, the school year (`startDate`, `endDate`), answered with
+///   JSON.
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -74,7 +85,10 @@ export '../models/lvs_models.dart';
 /// - [SmartschoolLvsAccessDeniedError] (a [SmartschoolLvsError]): the LVS
 ///   refused the read to the account (HTTP `403`, or a redirect to
 ///   Smartschool's start page). What the LVS answers a teacher without LVS
-///   rights and a pupil account was not captured.
+///   rights and a pupil account was not captured. For the results, a `403`
+///   is what the results app takes for "no access" (#162): with
+///   [checkAccess] `true`, the account may use the LVS but not see the
+///   pupil's results.
 /// - [SmartschoolLvsPupilNotFoundError] (a [SmartschoolLvsError]):
 ///   [getPupilFile] or [getNotes] got the LVS's placeholder pupil: it knows
 ///   no pupil of that ID in that class that the account may see.
@@ -91,8 +105,9 @@ export '../models/lvs_models.dart';
 ///   session, also after the client logged in again and retried once.
 /// - Another [SmartschoolAuthenticationError]: logging in again failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
-/// - [ArgumentError]: a blank search text, an ID that is not positive, or a
-///   school year that ends before it starts, before anything is sent.
+/// - [ArgumentError]: a blank search text, an ID that is not positive, a
+///   school year that ends before it starts, or a page number, page size or
+///   cap that is not positive, before anything is sent.
 class LvsService {
   final LvsWire _wire;
 
@@ -293,6 +308,272 @@ class LvsService {
     return LvsNoteAnswers.allNotes(content, pupilId: pupilId);
   }
 
+  // ---------------------------------------------------------------------------
+  // Results (#162)
+  // ---------------------------------------------------------------------------
+  //
+  // The "Resultaten" section of a pupil's file ([LvsSectionType.results]):
+  // the results app pupils and parents see, embedded in the LVS for one
+  // pupil, so that a teacher sees the pupil's results in every course, not
+  // only in their own gradebooks. A school whose file shows the older
+  // [LvsSectionType.skore] section instead is not covered.
+  //
+  // Each read is one GET; the LVS answered every one of them with HTTP 500
+  // and Smartschool's error page for a made-up pupil ID in a made-up class
+  // (seen live, 2026-10-21): a plain SmartschoolLvsError, never an empty
+  // list. A real pupil's answers were not captured (#168).
+
+  /// What the results app may show the account for pupil [pupilId] in class
+  /// [classId] (#162): `GET /LVS/Results/getConfiguration?pupilId&groupId`,
+  /// answered with `{capabilities: {canUserSeeAll, canUserSeeSchoolyear}}`.
+  ///
+  /// An ID that is not positive is an [ArgumentError], before anything is
+  /// sent.
+  Future<LvsResultsConfiguration> getResultsConfiguration({
+    required int pupilId,
+    required int classId,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    const read = LvsWire.resultsConfiguration;
+    final response = await _wire.get(
+      read.path as String,
+      query: {'pupilId': '$pupilId', 'groupId': '$classId'},
+    );
+    return LvsResultAnswers.configuration(LvsWire.json(response, read));
+  }
+
+  /// The periods of the results of pupil [pupilId] in class [classId] in
+  /// [schoolYear] (the current school year when not given), in the LVS's
+  /// order (#162): `GET /LVS/Results/getperiods`. Their IDs are what
+  /// [getEvaluations] takes in `periodIds`.
+  ///
+  /// An ID that is not positive, or a school year that ends before it
+  /// starts, is an [ArgumentError], before anything is sent.
+  Future<List<LvsResultsPeriod>> getResultsPeriods({
+    required int pupilId,
+    required int classId,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    const read = LvsWire.resultsPeriods;
+    final json = await _readResults(read, pupilId, classId, schoolYear);
+    return LvsResultAnswers.periods(json);
+  }
+
+  /// The courses of the results of pupil [pupilId] in class [classId] in
+  /// [schoolYear] (the current school year when not given), in the LVS's
+  /// order (#162): `GET /LVS/Results/getcourses`. Their IDs are what
+  /// [getEvaluations] takes in `courseIds`.
+  ///
+  /// An ID that is not positive, or a school year that ends before it
+  /// starts, is an [ArgumentError], before anything is sent.
+  Future<List<LvsResultsCourse>> getResultsCourses({
+    required int pupilId,
+    required int classId,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    const read = LvsWire.resultsCourses;
+    final json = await _readResults(read, pupilId, classId, schoolYear);
+    return LvsResultAnswers.courses(json);
+  }
+
+  /// Page [pageNumber] (from 1) of the evaluations of pupil [pupilId] in
+  /// class [classId] in [schoolYear] (the current school year when not
+  /// given), [itemsOnPage] per page, in the LVS's order (#162). Only those
+  /// of the courses [courseIds] and the periods [periodIds] when given; all
+  /// of them when empty, as the results app asks for them.
+  ///
+  /// One request: `GET /LVS/Results/getevaluationsofuser` with `pupilId`,
+  /// `groupId`, `pageNumber`, `itemsOnPage`, `courseIds` and `periodIds`
+  /// (sorted, comma-separated, left out when empty) and the school year
+  /// (`startDate`, `endDate`). The answer is a list: [LvsEvaluationPage]
+  /// tells whether a next page may hold more ([LvsEvaluationPage.mayHaveMore]);
+  /// [getAllEvaluations] reads them all. The results app itself asks for one
+  /// page of 9999; whether the LVS pages a real pupil's list was not
+  /// captured (#168).
+  ///
+  /// An ID that is not positive, a [pageNumber] or [itemsOnPage] that is not
+  /// positive, or a school year that ends before it starts, is an
+  /// [ArgumentError], before anything is sent.
+  Future<LvsEvaluationPage> getEvaluations({
+    required int pupilId,
+    required int classId,
+    Iterable<int> courseIds = const [],
+    Iterable<int> periodIds = const [],
+    int pageNumber = 1,
+    int itemsOnPage = 100,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    _checkCount(pageNumber, 'pageNumber');
+    _checkCount(itemsOnPage, 'itemsOnPage');
+    final courses = _idList(courseIds, 'courseIds');
+    final periods = _idList(periodIds, 'periodIds');
+    final period = _schoolYear(schoolYear);
+    const read = LvsWire.evaluations;
+    final response = await _wire.get(
+      read.path as String,
+      query: {
+        'pupilId': '$pupilId',
+        'groupId': '$classId',
+        'pageNumber': '$pageNumber',
+        'itemsOnPage': '$itemsOnPage',
+        if (courses.isNotEmpty) 'courseIds': courses,
+        if (periods.isNotEmpty) 'periodIds': periods,
+        'startDate': period.firstDay,
+        'endDate': period.lastDay,
+      },
+    );
+    return LvsEvaluationPage(
+      pageNumber: pageNumber,
+      itemsOnPage: itemsOnPage,
+      evaluations: LvsResultAnswers.evaluations(LvsWire.json(response, read)),
+    );
+  }
+
+  /// The evaluations of pupil [pupilId] in class [classId], read page by
+  /// page with [getEvaluations] ([itemsOnPage] per page, the filters as
+  /// there) until a page is not full, or [maxPages] pages were read (#162).
+  ///
+  /// [LvsEvaluationList.isComplete] is `false` when the cap stopped the
+  /// reading with a full page: there may be more. An evaluation that comes
+  /// again on a later page (the list changed while it was read) is kept
+  /// once. A page that holds only evaluations of the pages before it means
+  /// that the LVS does not page the list: a [SmartschoolLvsError], not a
+  /// list that looks complete. A page with more than [itemsOnPage]
+  /// evaluations means it sent all of them at once: the list is complete.
+  ///
+  /// A [maxPages] that is not positive is an [ArgumentError], as are the
+  /// arguments [getEvaluations] refuses, before anything is sent.
+  Future<LvsEvaluationList> getAllEvaluations({
+    required int pupilId,
+    required int classId,
+    Iterable<int> courseIds = const [],
+    Iterable<int> periodIds = const [],
+    int itemsOnPage = 100,
+    int maxPages = 10,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    _checkCount(maxPages, 'maxPages');
+    final courses = courseIds.toList();
+    final periods = periodIds.toList();
+    final year = schoolYear ?? LvsSchoolYear.current();
+    final evaluations = <LvsEvaluation>[];
+    final seen = <String>{};
+    for (var number = 1; number <= maxPages; number++) {
+      final page = await getEvaluations(
+        pupilId: pupilId,
+        classId: classId,
+        courseIds: courses,
+        periodIds: periods,
+        pageNumber: number,
+        itemsOnPage: itemsOnPage,
+        schoolYear: year,
+      );
+      final fresh = [
+        for (final evaluation in page.evaluations)
+          if (seen.add(evaluation.identifier)) evaluation,
+      ];
+      if (number > 1 && page.evaluations.isNotEmpty && fresh.isEmpty) {
+        throw SmartschoolLvsError(
+          "The LVS answered page $number of the pupil's evaluations with the "
+          'evaluations of the pages before it: it does not page the list, so '
+          'the evaluations read are not all of them.',
+          statusCode: 200,
+        );
+      }
+      evaluations.addAll(fresh);
+      if (!page.mayHaveMore) {
+        return LvsEvaluationList(
+          evaluations: evaluations,
+          isComplete: true,
+          pagesRead: number,
+        );
+      }
+    }
+    return LvsEvaluationList(
+      evaluations: evaluations,
+      isComplete: false,
+      pagesRead: maxPages,
+    );
+  }
+
+  /// The feedback on the results of pupil [pupilId] in class [classId] in
+  /// [schoolYear] (the current school year when not given), in the LVS's
+  /// order (#162): `GET /LVS/Results/getfeedback`. Remarks on reports (of
+  /// the class council, or per course) and teachers' feedback on
+  /// evaluations, with their attachments as metadata ([LvsFeedback.kind]).
+  ///
+  /// An ID that is not positive, or a school year that ends before it
+  /// starts, is an [ArgumentError], before anything is sent.
+  Future<List<LvsFeedback>> getFeedback({
+    required int pupilId,
+    required int classId,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    const read = LvsWire.resultsFeedback;
+    final json = await _readResults(read, pupilId, classId, schoolYear);
+    return LvsResultAnswers.feedback(json);
+  }
+
+  /// The reports of pupil [pupilId] in class [classId] in [schoolYear] (the
+  /// current school year when not given), in the LVS's order (#162):
+  /// `GET /LVS/Results/getreports`. Metadata only: the library does not
+  /// download a report ([LvsReport.downloadUrl] is kept).
+  ///
+  /// An ID that is not positive, or a school year that ends before it
+  /// starts, is an [ArgumentError], before anything is sent.
+  Future<List<LvsReport>> getReports({
+    required int pupilId,
+    required int classId,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    const read = LvsWire.reports;
+    final json = await _readResults(read, pupilId, classId, schoolYear);
+    return LvsResultAnswers.reports(json);
+  }
+
+  /// Sends [read], a GET of the results app with `pupilId`, `groupId` and
+  /// the school year, and returns the JSON of its answer.
+  Future<Object?> _readResults(
+    LvsRead read,
+    int pupilId,
+    int classId,
+    LvsSchoolYear? schoolYear,
+  ) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    final period = _schoolYear(schoolYear);
+    final response = await _wire.get(
+      read.path as String,
+      query: {
+        'pupilId': '$pupilId',
+        'groupId': '$classId',
+        'startDate': period.firstDay,
+        'endDate': period.lastDay,
+      },
+    );
+    return LvsWire.json(response, read);
+  }
+
+  /// Throws an [ArgumentError] for a [count] (a page number, a page size, a
+  /// cap) that is not positive.
+  static void _checkCount(int count, String name) {
+    if (count <= 0) throw ArgumentError.value(count, name, 'must be positive');
+  }
+
+  /// [ids] sorted, each once, comma-separated, as the results app sends
+  /// them; `''` for none. Throws an [ArgumentError] for an ID that is not
+  /// positive.
+  static String _idList(Iterable<int> ids, String name) {
+    final sorted = ids.toSet().toList()..sort();
+    for (final id in sorted) {
+      if (id <= 0) throw ArgumentError.value(id, name, 'must be positive');
+    }
+    return sorted.join(',');
+  }
+
   /// Throws an [ArgumentError] for an [id] that is not positive.
   static void _checkId(int id, String name) {
     if (id <= 0) throw ArgumentError.value(id, name, 'must be positive');
@@ -301,6 +582,13 @@ class LvsService {
   /// The `syRange` of [schoolYear], the current school year when `null`:
   /// `{"from":"YYYY-MM-DD","until":"YYYY-MM-DD"}`, as the LVS page sends it.
   static String _period(LvsSchoolYear? schoolYear) {
+    final period = _schoolYear(schoolYear);
+    return jsonEncode({'from': period.firstDay, 'until': period.lastDay});
+  }
+
+  /// [schoolYear], the current school year when `null`. Throws an
+  /// [ArgumentError] for one that ends before it starts.
+  static LvsSchoolYear _schoolYear(LvsSchoolYear? schoolYear) {
     final period = schoolYear ?? LvsSchoolYear.current();
     if (period.isEmpty) {
       throw ArgumentError.value(
@@ -309,7 +597,7 @@ class LvsService {
         'must not end before it starts',
       );
     }
-    return jsonEncode({'from': period.firstDay, 'until': period.lastDay});
+    return period;
   }
 
   // ---------------------------------------------------------------------------

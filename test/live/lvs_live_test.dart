@@ -1,8 +1,9 @@
 // What the pupil tracking system (LVS) answers the account of
-// credentials.yml through LvsService (#160, #161): the root of its class
-// tree (checkAccess), a pupil search, the placeholder pupil of a made-up ID
-// (its file and its notes), and, when the developer names one, the file and
-// the notes of a pupil they teach.
+// credentials.yml through LvsService (#160, #161, #162): the root of its
+// class tree (checkAccess), a pupil search, the placeholder pupil of a
+// made-up ID (its file and its notes), the results app's answers for that
+// ID, and, when the developer names one, the file, the notes and the
+// results of a pupil they teach.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -18,11 +19,13 @@
 // (the classes the account may see), a search for a text no one has, and a
 // made-up pupil ID, which the LVS answers with its school's sections and a
 // placeholder pupil (seen 2026-10-21), for its file and for the notes of a
-// category, and with no data for all its notes. With it, it also searches
-// for that text and reads the file and today's status of the first pupil
-// found, the notes of the first of its categories that holds notes (twice:
-// it prints how many are new before and after, for #168), all its notes,
-// and a made-up category of it:
+// category, with no data for all its notes, and with HTTP 500 for every
+// read of its results. With it, it also searches for that text and reads
+// the file and today's status of the first pupil found, the notes of the
+// first of its categories that holds notes (twice: it prints how many are
+// new before and after, for #168), all its notes, a made-up category of it,
+// and its results (configuration, periods, courses, a page of two
+// evaluations and all of them, feedback, reports: counts and types only):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
 //     dart test -P live test/live/lvs_live_test.dart
@@ -30,7 +33,8 @@
 // The name comes from the environment, never from the code. It only reads:
 // the wire guard (support/live_wire_guard.dart) refuses every LVS POST but
 // getStatusInfo, the root of the class tree and the dispatcher's
-// getUserCatItems and getUserData, and every PUT. As every live
+// getUserCatItems and getUserData, and every PUT; the results app's reads
+// are GETs, on LvsService's own allowlist (#162). As every live
 // run, it takes the lock of the session first, logs in at most once, and
 // prints no credential, no cookie and no name.
 //
@@ -143,6 +147,184 @@ void main() {
         }
         expect(run.guard.violations, isEmpty);
       });
+
+      test("a made-up pupil's results (#162): every read of the results app "
+          'is a SmartschoolLvsError (the LVS answered them with HTTP 500, '
+          'seen 2026-10-21), never an empty list', () async {
+        final reads = <String, Future<Object?> Function()>{
+          'getResultsConfiguration': () => lvs.getResultsConfiguration(
+            pupilId: _madeUpId,
+            classId: _madeUpId,
+          ),
+          'getResultsPeriods': () =>
+              lvs.getResultsPeriods(pupilId: _madeUpId, classId: _madeUpId),
+          'getResultsCourses': () =>
+              lvs.getResultsCourses(pupilId: _madeUpId, classId: _madeUpId),
+          'getEvaluations': () =>
+              lvs.getEvaluations(pupilId: _madeUpId, classId: _madeUpId),
+          'getFeedback': () =>
+              lvs.getFeedback(pupilId: _madeUpId, classId: _madeUpId),
+          'getReports': () =>
+              lvs.getReports(pupilId: _madeUpId, classId: _madeUpId),
+        };
+        for (final MapEntry(key: name, value: read) in reads.entries) {
+          Object? error;
+          try {
+            await read();
+          } catch (e) {
+            error = e;
+          }
+          // The type and the status only: never the message of an answer.
+          print(
+            '$name: ${error.runtimeType}'
+            '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}',
+          );
+          expect(error, isA<SmartschoolLvsError>(), reason: name);
+          expect(
+            error,
+            isNot(isA<SmartschoolLvsRequestNotAllowedError>()),
+            reason: name,
+          );
+          if (access) {
+            expect(
+              error,
+              isNot(isA<SmartschoolLvsAccessDeniedError>()),
+              reason: name,
+            );
+          }
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test(
+        "a pupil the developer teaches (#162): the results of the file's "
+        '"Resultaten" section, its periods, courses, evaluations page by '
+        'page, feedback and reports',
+        skip: pupil == null || pupil.isEmpty
+            ? 'set $_pupilVariable to (part of) the name of a pupil you '
+                  'teach to read their results'
+            : null,
+        () async {
+          expect(access, isTrue, reason: 'checkAccess');
+          final match = (await lvs.searchPupils(pupil!)).first;
+          final file = await lvs.getPupilFile(
+            pupilId: match.pupilId,
+            classId: match.classId,
+          );
+          final types = {for (final s in file.allSections) s.type};
+          print(
+            'sections of type results: '
+            '${types.contains(LvsSectionType.results)}, of type skore: '
+            '${types.contains(LvsSectionType.skore)}',
+          );
+          if (!types.contains(LvsSectionType.results)) {
+            print('no results section: nothing more to read');
+            return;
+          }
+          final ids = (pupilId: match.pupilId, classId: match.classId);
+
+          final config = await lvs.getResultsConfiguration(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          print('configuration: $config');
+
+          final periods = await lvs.getResultsPeriods(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          final courses = await lvs.getResultsCourses(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          print(
+            'periods: ${periods.length} '
+            '(${periods.where((p) => p.isActive).length} active), courses: '
+            '${courses.length} '
+            '(${courses.where((c) => c.parentCourseId != null).length} part '
+            'of another)',
+          );
+          expect(periods.every((p) => p.id > 0), isTrue);
+          expect(courses.every((c) => c.id > 0), isTrue);
+
+          // One small page, to see whether the LVS pages the list (#168).
+          final first = await lvs.getEvaluations(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+            itemsOnPage: 2,
+          );
+          print(
+            'page 1 of 2: ${first.evaluations.length} evaluations '
+            '(more than 2: the LVS does not page the list)',
+          );
+
+          final all = await lvs.getAllEvaluations(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+            itemsOnPage: 50,
+            maxPages: 20,
+          );
+          final evaluations = all.evaluations;
+          // Counts by the library's own words only: a type the library does
+          // not know is counted as "other", not printed.
+          const evaluationTypes = {'normal', 'project', 'project-with-rubrics'};
+          Map<String, int> countBy(
+            Set<String> known,
+            String Function(LvsEvaluation) of,
+          ) => {
+            for (final type in known)
+              type: evaluations.where((e) => of(e) == type).length,
+            'other': evaluations.where((e) => !known.contains(of(e))).length,
+          };
+          print(
+            'evaluations: ${evaluations.length} in ${all.pagesRead} pages '
+            '(complete: ${all.isComplete}), by score type: '
+            '${countBy(LvsScoreType.known, (e) => e.score.type)}, by type: '
+            '${countBy(evaluationTypes, (e) => e.type)}, '
+            'with a date: ${evaluations.where((e) => e.date != null).length}, '
+            'with a period: '
+            '${evaluations.where((e) => e.period != null).length}, '
+            'with a component: '
+            '${evaluations.where((e) => e.componentName.isNotEmpty).length}, '
+            'counting: ${evaluations.where((e) => e.doesCount == true).length}, '
+            'published: '
+            '${evaluations.where((e) => e.isPublished == true).length}, '
+            'with feedback: '
+            '${evaluations.where((e) => e.feedbackCount > 0).length}',
+          );
+          expect(evaluations.every((e) => e.identifier.isNotEmpty), isTrue);
+          expect(evaluations.every((e) => e.courses.isNotEmpty), isTrue);
+          expect(
+            {for (final e in evaluations) e.identifier}.length,
+            evaluations.length,
+          );
+
+          final feedback = await lvs.getFeedback(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          print(
+            'feedback: ${feedback.length}, by kind: '
+            '${{for (final kind in LvsFeedbackKind.values) kind.name: feedback.where((f) => f.kind == kind).length}}, '
+            'attachments: '
+            '${feedback.fold<int>(0, (n, f) => n + f.attachments.length)}',
+          );
+          expect(feedback.every((f) => f.identifier.isNotEmpty), isTrue);
+
+          final reports = await lvs.getReports(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          print(
+            'reports: ${reports.length} '
+            '(${reports.where((r) => r.date != null).length} with a date, '
+            '${reports.where((r) => r.downloadUrl.isNotEmpty).length} with a '
+            'download path)',
+          );
+          expect(reports.every((r) => r.id > 0), isTrue);
+          expect(run.guard.violations, isEmpty);
+        },
+      );
 
       test(
         'a pupil the developer teaches (#161): the notes of a category with '

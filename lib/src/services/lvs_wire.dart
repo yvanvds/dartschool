@@ -22,7 +22,8 @@
 // command of the LVS goes to that one URL, its writes too
 // (`changeItemViewStatus`, `saveProfile`, ...). #160 reads with 3, and with
 // the left tree's `treeBuilder` (2's form, without a `function`); #161 with
-// 1, the notes of a pupil.
+// 1, the notes of a pupil; #162 with 3, the GETs of the results app
+// (`/LVS/Results/*`), but not its export (`exportgoals`).
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -330,6 +331,74 @@ final class LvsWire {
     ),
   );
 
+  /// The query fields of the results app's reads (#162): the pupil, its
+  /// class (`groupId`) and the school year (`startDate`, `endDate`,
+  /// `yyyy-MM-dd`).
+  static const _resultsQuery = {'pupilId', 'groupId', 'startDate', 'endDate'};
+
+  /// What the results app may show the account for a pupil (#162):
+  /// `GET /LVS/Results/getConfiguration?pupilId&groupId`.
+  static const resultsConfiguration = LvsRead(
+    method: 'GET',
+    path: '/LVS/Results/getConfiguration',
+    what: "the configuration of the pupil's results",
+    queryFields: {'pupilId', 'groupId'},
+  );
+
+  /// The periods of a pupil's results (#162):
+  /// `GET /LVS/Results/getperiods?pupilId&groupId&startDate&endDate`.
+  static const resultsPeriods = LvsRead(
+    method: 'GET',
+    path: '/LVS/Results/getperiods',
+    what: "the periods of the pupil's results",
+    queryFields: _resultsQuery,
+  );
+
+  /// The courses of a pupil's results (#162):
+  /// `GET /LVS/Results/getcourses?pupilId&groupId&startDate&endDate`.
+  static const resultsCourses = LvsRead(
+    method: 'GET',
+    path: '/LVS/Results/getcourses',
+    what: "the courses of the pupil's results",
+    queryFields: _resultsQuery,
+  );
+
+  /// A page of a pupil's evaluations (#162):
+  /// `GET /LVS/Results/getevaluationsofuser?pupilId&groupId&pageNumber&`
+  /// `itemsOnPage[&courseIds][&periodIds]&startDate&endDate` (the IDs sorted,
+  /// comma-separated, as the results app sends them). Not its
+  /// `componentIds`, `doesCount` and `isPublished` filters.
+  static const evaluations = LvsRead(
+    method: 'GET',
+    path: '/LVS/Results/getevaluationsofuser',
+    what: "the pupil's evaluations",
+    queryFields: {
+      ..._resultsQuery,
+      'pageNumber',
+      'itemsOnPage',
+      'courseIds',
+      'periodIds',
+    },
+  );
+
+  /// The feedback on a pupil's results (#162):
+  /// `GET /LVS/Results/getfeedback?pupilId&groupId&startDate&endDate`.
+  static const resultsFeedback = LvsRead(
+    method: 'GET',
+    path: '/LVS/Results/getfeedback',
+    what: "the feedback on the pupil's results",
+    queryFields: _resultsQuery,
+  );
+
+  /// A pupil's reports (#162):
+  /// `GET /LVS/Results/getreports?pupilId&groupId&startDate&endDate`.
+  static const reports = LvsRead(
+    method: 'GET',
+    path: '/LVS/Results/getreports',
+    what: "the pupil's reports",
+    queryFields: _resultsQuery,
+  );
+
   /// Every request the LVS services may send. Any other is refused with a
   /// [SmartschoolLvsRequestNotAllowedError] before it is sent.
   static final List<LvsRead> reads = List.unmodifiable([
@@ -339,6 +408,12 @@ final class LvsWire {
     tree,
     categoryNotes,
     allNotes,
+    resultsConfiguration,
+    resultsPeriods,
+    resultsCourses,
+    evaluations,
+    resultsFeedback,
+    reports,
   ]);
 
   /// The read of [reads] that a request of [method] to [path] with [query]

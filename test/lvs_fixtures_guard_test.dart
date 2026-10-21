@@ -257,6 +257,21 @@ const lvsFixtureKinds = <LvsFixtureKind>[
     textFields: {'title', 'keyword', 'fileName'},
     extraFields: _dispatcherNoteFields,
   ),
+  LvsFixtureKind(
+    folder: 'results',
+    about:
+        'Answers of the results app\'s GETs, /LVS/Results/* (#162): what it '
+        'may show (getConfiguration), the periods (getperiods), courses '
+        '(getcourses), a page of evaluations (getevaluationsofuser), the '
+        'feedback (getfeedback) and the reports (getreports) of a pupil.',
+    // `abbreviation` is a component's (a school's own label); `sort` of a
+    // teacher is their name as a sort key (a number elsewhere); `goalId` and
+    // `leerplanId` are UUIDs; `leerplanKey` names a curriculum. The texts of
+    // the feedback are `text` (common).
+    nameFields: {'abbreviation', 'sort'},
+    idFields: {'goalId', 'leerplanId'},
+    textFields: {'leerplanKey'},
+  ),
 ];
 
 /// The fields of the notes of a `notes` fixture by their position, as the

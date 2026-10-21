@@ -57,8 +57,9 @@
 //   other (#161). The LVS has writes next to its reads (`setLastPupil`, the
 //   "viewed" flags, `changeItemViewStatus` on the same dispatcher,
 //   `saveKeyword`, ...), and the live suite changes nothing there; its GETs
-//   (the pupil search and a pupil's file) went out already, and it sends no
-//   PUT (`PUT /LVS/Message`, `PUT /LVS/Watch`) anywhere;
+//   (the pupil search, a pupil's file, and the results app's reads,
+//   `/LVS/Results/*`, #162) went out already, and it sends no PUT
+//   (`PUT /LVS/Message`, `PUT /LVS/Watch`) anywhere;
 // - any request to the Presence module but its three POSTs that only read,
 //   `getConfig`, `getAllCodes` and `getClass` (PresenceService.getConfig,
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no

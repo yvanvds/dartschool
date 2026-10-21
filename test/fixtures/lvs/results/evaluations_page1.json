@@ -1,0 +1,102 @@
+[
+  {
+    "identifier": "900000_900001_0_normal_900601",
+    "type": "normal",
+    "name": "Testevaluatie",
+    "graphic": {
+      "type": "percentage",
+      "color": "yellow",
+      "value": 70,
+      "description": "7/10"
+    },
+    "date": "2030-10-15T00:00:00+02:00",
+    "courses": [
+      {
+        "id": 900301,
+        "name": "Testvak",
+        "graphic": {"type": "icon", "value": "knight2"},
+        "class": {
+          "identifier": "900000_900101",
+          "id": 900101,
+          "platformId": 900000,
+          "name": "1A",
+          "type": "K",
+          "icon": "briefcase"
+        },
+        "skoreClassId": 900101,
+        "parentCourseId": null,
+        "teachers": [
+          {
+            "id": "900000_900201_0",
+            "name": {
+              "startingWithFirstName": "Piet Peeters",
+              "startingWithLastName": "Peeters Piet"
+            }
+          }
+        ]
+      }
+    ],
+    "period": {
+      "id": 900401,
+      "name": "Testperiode",
+      "icon": "cal_purple_generic_week",
+      "class": {"id": 900101, "name": "1A", "type": "K", "icon": "briefcase"}
+    },
+    "component": {"name": "Testcomponent", "abbreviation": "TEST"},
+    "doesCount": true,
+    "isPublished": true,
+    "feedbacks": [
+      {
+        "teacher": {
+          "id": "900000_900201_0",
+          "name": {
+            "startingWithFirstName": "Piet Peeters",
+            "startingWithLastName": "Peeters Piet"
+          }
+        },
+        "text": "Testfeedback bij de evaluatie."
+      }
+    ]
+  },
+  {
+    "identifier": "900000_900001_0_normal_900602",
+    "type": "normal",
+    "name": "Testevaluatie",
+    "graphic": {
+      "type": "text",
+      "color": "green",
+      "value": "A",
+      "description": "Testbeoordeling"
+    },
+    "date": "2030-11-05T00:00:00+01:00",
+    "courses": [
+      {
+        "id": 900302,
+        "name": "Testvak",
+        "graphic": {
+          "type": "image",
+          "value": "/skore/api/v1/assets/skore-data/image/900901/view"
+        },
+        "parentCourseId": 900301,
+        "teachers": [
+          {
+            "id": "900000_900202_0",
+            "name": {
+              "startingWithFirstName": "Céline Dupré",
+              "startingWithLastName": "Dupré Céline"
+            }
+          }
+        ]
+      }
+    ],
+    "period": {
+      "id": 900401,
+      "name": "Testperiode",
+      "icon": "cal_purple_generic_week",
+      "class": {"id": 900101, "name": "1A", "type": "K", "icon": "briefcase"}
+    },
+    "doesCount": false,
+    "isPublished": false,
+    "feedbacks": []
+  }
+]

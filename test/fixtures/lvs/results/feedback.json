@@ -1,0 +1,127 @@
+[
+  {
+    "identifier": "00000000-0000-0000-0000-000000901001",
+    "text": "Testopmerking van de klassenraad.",
+    "type": {
+      "identifier": "900911",
+      "name": "Testcomponent",
+      "sort": 1,
+      "isVisible": true,
+      "maximumCharacters": 500
+    },
+    "report": {
+      "id": 900501,
+      "name": "Testrapport",
+      "icon": "document_certificate",
+      "date": "2030-12-20T12:00:00+01:00",
+      "class": null,
+      "schoolyearLabel": "2030-2031",
+      "downloadUrl": "/skore/api/v1/reports/900501/student/900001/download"
+    }
+  },
+  {
+    "identifier": "00000000-0000-0000-0000-000000901002",
+    "text": "Testopmerking voor het vak.",
+    "course": {
+      "id": 900301,
+      "name": "Testvak",
+      "graphic": {"type": "icon", "value": "knight2"},
+      "class": {
+        "identifier": "900000_900101",
+        "id": 900101,
+        "platformId": 900000,
+        "name": "1A",
+        "type": "K",
+        "icon": "briefcase"
+      },
+      "skoreClassId": 900101,
+      "parentCourseId": null
+    },
+    "report": {
+      "id": 900501,
+      "name": "Testrapport",
+      "icon": "document_certificate",
+      "date": "2030-12-20T12:00:00+01:00",
+      "class": null,
+      "schoolyearLabel": "2030-2031",
+      "downloadUrl": "/skore/api/v1/reports/900501/student/900001/download"
+    }
+  },
+  {
+    "identifier": "00000000-0000-0000-0000-000000901003",
+    "text": "Testfeedback bij de evaluatie.",
+    "owner": {
+      "id": "900000_900201_0",
+      "name": {
+        "startingWithFirstName": "Piet Peeters",
+        "startingWithLastName": "Peeters Piet"
+      },
+      "description": {"startingWithFirstName": "", "startingWithLastName": ""},
+      "deleted": false
+    },
+    "evaluation": {
+      "identifier": "900000_900001_0_normal_900601",
+      "name": "Testevaluatie",
+      "courses": [{"id": 900301, "name": "Testvak", "class": {"id": 900101}}],
+      "period": {
+        "id": 900401,
+        "name": "Testperiode",
+        "icon": "cal_purple_generic_week",
+        "class": {"id": 900101, "name": "1A", "type": "K", "icon": "briefcase"},
+        "skoreWorkYear": {
+          "id": 900801,
+          "dateRange": {
+            "start": "2030-09-01T00:00:00+02:00",
+            "end": "2031-08-31T23:59:59+02:00"
+          }
+        },
+        "isActive": true
+      },
+      "schoolyearLabel": "2030-2031",
+      "date": "2030-10-15T00:00:00+02:00"
+    },
+    "attachments": [
+      {
+        "id": "00000000-0000-0000-0000-000000900701",
+        "name": "Testbijlage.pdf",
+        "type": "OTHER",
+        "size": 12345,
+        "metadata": {"length": null, "thumb": null},
+        "downloadUrl": "/results/api/v1/attachments/00000000-0000-0000-0000-000000900701/download",
+        "wopiUrl": null
+      }
+    ]
+  },
+  {
+    "identifier": "00000000-0000-0000-0000-000000901004",
+    "text": "Testfeedback bij een doel.",
+    "owner": {
+      "id": "900000_900202_0",
+      "name": {
+        "startingWithFirstName": "Céline Dupré",
+        "startingWithLastName": "Dupré Céline"
+      },
+      "deleted": false
+    },
+    "evaluation": {
+      "identifier": "900000_900001_0_project_900603",
+      "name": "Testevaluatie",
+      "courses": [{"id": 900301, "name": "Testvak", "class": {"id": 900101}}],
+      "period": {
+        "id": 900402,
+        "name": "Testperiode",
+        "icon": "cal_purple_generic_trimester",
+        "class": {"id": 900101, "name": "1A", "type": "K", "icon": "briefcase"},
+        "isActive": false
+      },
+      "schoolyearLabel": "2030-2031",
+      "date": "2031-03-02T00:00:00+01:00"
+    },
+    "attachments": [],
+    "goal": {
+      "goalId": "00000000-0000-0000-0000-000000902001",
+      "leerplanId": "00000000-0000-0000-0000-000000902002",
+      "leerplanKey": "testleerplan"
+    }
+  }
+]

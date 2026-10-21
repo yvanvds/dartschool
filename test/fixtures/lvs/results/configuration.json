@@ -1,0 +1,6 @@
+{
+  "capabilities": {
+    "canUserSeeAll": true,
+    "canUserSeeSchoolyear": false
+  }
+}

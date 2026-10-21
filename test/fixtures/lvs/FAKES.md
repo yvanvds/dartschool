@@ -61,6 +61,9 @@ school), it goes here too.
 - `Testcode`
 - `Testrapport`
 - `Testcomponent`
+- `TEST` — the abbreviation of a component (#162)
+- `Testevaluatie` — an evaluation of a pupil's results (#162)
+- `Testbijlage.pdf` — the file name of an attachment of feedback (#162)
 - `Testsectie` — a section of a pupil's file in the LVS (#160)
 - `Testrichting` — the description of a class (#160)
 - `Klassen` — Smartschool's own title of the root of the LVS's class tree (#160)

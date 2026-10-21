@@ -20,6 +20,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback; create an evaluation in a period, never published, and save pupils' grades and feedback in it.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
 - Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
+- Pupil tracking system support (`LvsService`, LVS): as the logged-in teacher, find a pupil by name and read the overview of the pupil's file (who, which class, today's attendance, and which sections of the file hold something), the pupil's notes per category (behaviour, care, talks with parents: the school's own categories) or all of them, with their fields, the pupil's results in every course (evaluations with their scores, feedback, reports), the pupil's support plan (support needs, goals, approach, profile sketch), and whether the account may use the LVS; read only, by an allowlist of requests, with models and errors that never print a pupil's data (see [`doc/lvs-privacy.md`](doc/lvs-privacy.md)).
 
 ---
 
@@ -1412,6 +1413,83 @@ The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, un
 
 ---
 
+## `LvsService`
+
+Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem", `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by name, reads the overview of the pupil's file, the pupil's notes per category (#161), results (#162) and support plan (#163). The read of absences follows (#164). The LVS holds the most sensitive data of Smartschool: what this service returns is about pupils, see [`doc/lvs-privacy.md`](doc/lvs-privacy.md).
+
+```dart
+final lvs = LvsService(client);
+
+if (await lvs.checkAccess()) {
+  final found = await lvs.searchPupils('janssens');   // List<LvsPupilMatch>
+  final file = await lvs.getPupilFile(                // LvsPupilFile
+    pupilId: found.first.pupilId,
+    classId: found.first.classId,
+  );
+  final withItems = file.allSections.where((s) => s.hasItems);
+  print('${withItems.length} sections hold something');
+
+  // The school's own categories of notes ("gedrag", "zorg", ...).
+  for (final category in file.noteCategories.where((c) => c.hasNotes)) {
+    final notes = await lvs.getNotes(                 // List<LvsNote>
+      pupilId: file.pupilId,
+      classId: file.classId,
+      categoryId: category.id,
+    );
+    print('${notes.length} notes');
+  }
+
+  // The results, in every course: evaluations page by page, up to a cap.
+  final evaluations = await lvs.getAllEvaluations(    // LvsEvaluationList
+    pupilId: file.pupilId,
+    classId: file.classId,
+  );
+  print('${evaluations.evaluations.length} evaluations');
+}
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `checkAccess()` | `Future<bool>` | Whether the account may use the LVS: `true` when the LVS answers the root of its left tree (`POST /?module=LVS&file=treeBuilder`, `id` `0`: the classes the account may see, no pupil), `false` when it refuses it (`SmartschoolLvsAccessDeniedError`). Any other failure is thrown. |
+| `searchPupils(text)` | `Future<List<LvsPupilMatch>>` | The pupils whose name matches `text`, in the LVS's order (`GET /LVS/Spotlight?searchVal=<text>`); empty when none does. `LvsPupilMatch`: `pupilId`, `classId`, `name` (plain text: the LVS's `foundName` without the markup that highlights the match), `className`. The classes the search also finds are left out. A blank `text` is an `ArgumentError`, before anything is sent. |
+| `getPupilFile({pupilId, classId})` | `Future<LvsPupilFile>` | The overview of a pupil's file: `GET /LVS/Spotlight/<pupilId>?classID=<classId>`, then today's status (`POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`). See *Models*. An ID that is not positive is an `ArgumentError`, before anything is sent. |
+| `getNotes({pupilId, classId, categoryId, schoolYear})` | `Future<List<LvsNote>>` | The notes of a category of the pupil's file with those of its sub-categories, in the LVS's order; empty when it holds none in `schoolYear` (an `LvsSchoolYear`, the current school year when not given). `LvsPupilFile.noteCategories` lists the categories. One request to the LVS's XML dispatcher (`POST /?module=LVS&file=dispatcher`, the command `lvs_cats/getUserCatItems` with `catID`, `userID`, `toolbarType`, `syRange`, `groupID`, `toolbarSide`; answered with `renderPupilNotes`) (#161). An ID that is not positive, or a school year that ends before it starts, is an `ArgumentError`, before anything is sent. |
+| `getAllNotes({pupilId, classId, schoolYear})` | `Future<List<LvsNote>>` | All notes of the pupil's file, of every category, in the order of the LVS's "all items" view (its `dates`); empty when there are none. The dispatcher's `lvs_pupils/getUserData` (`viewAllFilter` `[]`, `filterData` `0`, as the web client opens the view; answered with `renderPupilAllNotes`, whose reports, absences and other items are left out) (#161). |
+| `getResultsConfiguration({pupilId, classId})` | `Future<LvsResultsConfiguration>` | What the results app may show the account for the pupil (#162): `GET /LVS/Results/getConfiguration?pupilId&groupId` (`groupId` is the class), `{capabilities: {canUserSeeAll, canUserSeeSchoolyear}}`. |
+| `getResultsPeriods({pupilId, classId, schoolYear})` | `Future<List<LvsResultsPeriod>>` | The periods of the pupil's results in `schoolYear` (the current one when not given), in the LVS's order: `GET /LVS/Results/getperiods` with `pupilId`, `groupId`, `startDate`, `endDate` (#162). |
+| `getResultsCourses({pupilId, classId, schoolYear})` | `Future<List<LvsResultsCourse>>` | The courses of the pupil's results: `GET /LVS/Results/getcourses`, as above (#162). |
+| `getEvaluations({pupilId, classId, courseIds, periodIds, pageNumber, itemsOnPage, schoolYear})` | `Future<LvsEvaluationPage>` | One page (from 1; 100 per page by default) of the pupil's evaluations with their scores, of the courses and periods given (all when empty), in the LVS's order: `GET /LVS/Results/getevaluationsofuser` with `pageNumber`, `itemsOnPage`, `courseIds` / `periodIds` (sorted, comma-separated, left out when empty) and the school year (#162). `mayHaveMore` tells whether the page is full. |
+| `getAllEvaluations({pupilId, classId, courseIds, periodIds, itemsOnPage, maxPages, schoolYear})` | `Future<LvsEvaluationList>` | The evaluations page after page until one is not full, or `maxPages` (10) pages were read: `isComplete` is `false` when the cap stopped a full page. An evaluation that comes again is kept once; a page of only the evaluations before it (the LVS does not page) is a `SmartschoolLvsError`; a page with more than `itemsOnPage` is all of them (#162). |
+| `getFeedback({pupilId, classId, schoolYear})` | `Future<List<LvsFeedback>>` | The feedback on the pupil's results, in the LVS's order: remarks on reports (of the class council, or per course) and teachers' feedback on evaluations and on a project's goals, with attachments as metadata: `GET /LVS/Results/getfeedback` (#162). |
+| `getReports({pupilId, classId, schoolYear})` | `Future<List<LvsReport>>` | The pupil's reports, metadata only (no download): `GET /LVS/Results/getreports` (#162). |
+| `getSupportPlanPeriods({pupilId, classId})` | `Future<List<LvsPlanPeriod>>` | The periods of the support plans, in the LVS's order; empty when there are none (#163). |
+| `getSupportPlan({pupilId, classId, periodId})` | `Future<LvsSupportPlan>` | The pupil's individual plan ("IHP") in a period (the current one when not given), its `status`: `plan`, `noPlan` or `noPeriod` (#163). |
+| `getProfileSketch({pupilId, classId, periodId})` | `Future<LvsProfileSketch>` | The pupil's profile sketch in a period; `hasSketch` is `false` when there is none (#163). |
+| `getAbsences({pupilId, classId})` | `Future<LvsAbsences>` | The pupil's absences in the school year the LVS picks, per period: `POST /LVS/Pupilpresences` with `pupilID`, `groupID` (#164). |
+
+- **Only reads, by an allowlist.** The LVS has writes right next to its reads, some on the same URL (`PUT /LVS/Message`, `PUT /LVS/Watch`, `setLastPupil`, which the web client sends for every pupil it shows, the "viewed" flags, the edit locks, every `save*`). The service sends only its reads, each on an explicit list (method, path, query and form fields), and refuses any other request before it is sent (`SmartschoolLvsRequestNotAllowedError`). Reading a pupil's file through the library does not make it the last pupil the account viewed, and marks nothing as seen.
+- **No page load.** The reads answer straight after a login: the LVS page (some 300 KB) is not loaded first (seen live, 2026-10-21).
+- **A pupil the LVS does not know** in that class: the LVS does not refuse it, it answers with its school's sections (none holding anything) and a placeholder pupil whose class is `null` (seen live for a made-up ID). `getPupilFile` throws a `SmartschoolLvsPupilNotFoundError` for it, and does not read today's status (which the LVS answered with a `500` for that ID).
+- **Notes** (#161). The categories are the school's own: the library lists them (`noteCategories`) and reads the notes of one by its ID, or all of them. A note's fields carry what it says, each with its label and the text the web client shows (`LvsNoteField.value`: a text, a rich text as plain text with its HTML in `html`, the chosen option(s), the day of a date in Belgian time, attachment names); a type the library does not know is kept with its raw values. Attachments are metadata only (no download). Confidential notes come marked (`isConfidential`), not left out: the LVS decides which ones the account receives. The default period is the current school year (1 September to 31 August, Belgian time); the LVS page itself sends the period of the user's own settings. The library sends no "viewed" flag and no edit lock (`changeItemViewStatus`, `setItemViewState`, `checkItemEditor` are refused by the allowlist).
+- **Unknown IDs** for the notes: the LVS answers a pupil it does not know with its placeholder pupil (`SmartschoolLvsPupilNotFoundError`) and a category it does not know without the category (`SmartschoolLvsCategoryNotFoundError`), both seen live for made-up IDs. For `getAllNotes` it sends no data at all, the same as for a pupil without notes: an empty list (`getPupilFile` tells the two apart).
+- **Results** (#162). The pupil's file shows its "Resultaten" section (type `results`) with the results app pupils and parents see, embedded for one pupil: the library sends that app's GETs (`/LVS/Results/*`, with `pupilId` and `groupId`, the class), so a teacher reads the pupil's results in **every** course, not only in their own gradebooks. Not its export (`exportgoals`), which the allowlist refuses. Scores are kept as the LVS gives them (`LvsScore`: `type`, `value`, `percentage`, `description`, `color`): a score in points comes as a percentage with the points as the web client shows them ("7/10"); the library computes no averages. Reports and attachments are metadata only (their `downloadUrl` is kept, nothing is downloaded). A `403` is a `SmartschoolLvsAccessDeniedError` (the results app's "no access"), never an empty list; the LVS answered every results read of a made-up pupil ID with a `500` and Smartschool's error page (seen live): a `SmartschoolLvsError`. The shapes come from the results app's JavaScript; a real pupil's answers, and whether the LVS pages the evaluations (the app itself asks for one page of 9999), are the developer's capture step (#168). A school whose file shows the older `skore` section instead is not covered.
+- **Support plans** (#163). One POST each to the LVS's JSON dispatchers (`jqDispatcher_hp`: `getIHP`, `getProfielSchets`; `jqDispatcher_settings`: `getLVSspecificTitles`), the live plan only (`exportID` 0); the edit flow's calls (`getIHPondersteuningsnood`, `getOD_doelstellingen`, `checkSyntheseEditor`, every `save*`/`set*`) are refused by the allowlist. A school without support plans has no section of their type in the file (`LvsPupilFile.supportPlanSections`); a class without their structure gets `noPeriod` (seen live for a made-up class). The evaluation of the plan, its report and its versions are not read (#170).
+- **Not captured**: what the LVS answers a teacher without LVS rights, a pupil account, and a teacher for a pupil they may not see; a real pupil's notes (their shapes come from the LVS's JavaScript, with the envelope and the first parts of the answers seen live for made-up IDs); and whether the LVS takes notes as seen by the account when they are read (their `isNew`). These are the developer's capture step (#168). The service takes a `403` and a redirect to Smartschool's start page for a refusal; any other answer it cannot read is a `SmartschoolLvsError`, never an empty result.
+- **Privacy.** The models print counts only (`toString()`); the errors never carry a name, a text or an ID of an answer in their message. When Smartschool refuses the session for a search, or the client is disposed during one, the search text is left out of the error's message (`searchVal=<searchVal>`).
+
+### Errors
+
+- `SmartschoolLvsError` — the LVS answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page, invalid JSON or XML (the parser's error in `cause`, which `toString()` does not print), a dispatcher `status` other than `ok` (its `message` in `cause`), or an unknown shape. Never an empty result. The session was accepted: signing in again does not help.
+- `SmartschoolLvsAccessDeniedError` (a `SmartschoolLvsError`) — the LVS refused the read to the account (`403`, or a redirect to Smartschool's start page).
+- `SmartschoolLvsPupilNotFoundError` (a `SmartschoolLvsError`) — `getPupilFile` or `getNotes` got the LVS's placeholder pupil. Carries `pupilId` and `classId`; its message holds neither.
+- `SmartschoolLvsCategoryNotFoundError` (a `SmartschoolLvsError`) — `getNotes` got no category: the LVS knows no category of notes of that ID. Carries `pupilId`, `classId` and `categoryId`; its message holds none of them.
+- `SmartschoolLvsRequestNotAllowedError` (a `SmartschoolLvsError`) — the service refused to send a request that is not one of its reads (a bug of the library): nothing was sent. Carries the `method` and `path`.
+- `SmartschoolSessionExpiredError`, `SmartschoolConnectionError` — as for every service.
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -1630,6 +1708,48 @@ What the authenticated user may do with an element: `flags` (every `canUser...` 
 ### `LessonContentItem`
 Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `lessonContentId` of `PlannerService.planLessonContent`), `platformId`, `type` (`LessonContentType`; `other` for a kind the library does not know), `typeName` (`lessons`, `assignments`), `name`, `icon` (`String?`), `publicInfo` (HTML, `""` when empty), `isVisible`, `ownerId` (`String?`, the whole user ID), `dateLastChanged` / `dateStateChanged` (`DateTime?`, local time), `courses` (`LessonContentCourse`: `id`, `platformId`, `name` — `String?`, from the school's course list, `null` when not known), `labels` (`LessonContentLabel`: `id`, `text`, `color`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`), `assignmentType` (`PlannerAssignmentType?`, assignment lesfiches only), `attachmentCount`, `weblinkCount`, `partnerWeblinkCount`, `deeplinkCount`, `capabilities` (every `canUser...` flag by name; `can(flag)`), and `raw` (as the module gave it, read-only).
 
+### `LvsPupilMatch`
+Returned by `LvsService.searchPupils()`. A pupil whose name matches: `pupilId`, `classId`, `name` (plain text), `className`. Prints no value.
+
+### `LvsPupilFile` / `LvsTeacher`
+Returned by `LvsService.getPupilFile()`. `pupilId`, `classId`, `name`, `className`, `classDescription` (`""` when none), `teachers` (the class teachers, `LvsTeacher`: `id`, `name`; empty when none: the LVS sends an empty map as `[]`), `sections` (`List<LvsSection>`, top level first), `todayStatus` (`LvsTodayStatus`), and the getters `allSections` (every section at any depth, depth first) and `supportPlanSections` (#163). Prints counts only.
+
+### `LvsSection` / `LvsSectionType`
+A section of a pupil's file: `id` (for a category of notes or of support plans, the category ID; `0` for the LVS's own parts, so not unique), `type` as the LVS names it (`LvsSectionType`: `items`, `handelingsplannen` (`supportPlans`), `skore`, `results`, `deliberation`, `forms`, `contact_moments`, `absents`, `career`, `messages`, `smartsignal`; another type is kept as it comes, `isKnownType` tells), `name`, `isTitle` (a heading only), `hasItems`, `hasNewItems`, `children`, and the getter `descendants`. The sections are the school's, the same for every pupil; the flags are about the pupil.
+
+### `LvsTodayStatus` / `LvsHalfDayStatus`
+A pupil's attendance today: `halfDays` (empty when none), and the getters `am` and `pm`. `LvsHalfDayStatus`: `partOfDay` (`am`, `pm`), `code`, `name`, `color` (`String?`).
+
+### `LvsCategory`
+From `LvsPupilFile.noteCategories` (#161): a category of notes, a section of type `items`, with `id` (what `getNotes` takes), `name` (the school's own), `isTitle`, `hasNotes`, `hasNewNotes`, `subcategories` and the getter `descendants`. A category under a section of another type is listed in that section's place. Prints counts only.
+
+### `LvsSchoolYear`
+The period of `getNotes`, `getAllNotes` and the results reads (sent as `startDate` / `endDate`): `from` and `until` (days), `firstDay` / `lastDay` (`YYYY-MM-DD`), `isEmpty`. `LvsSchoolYear.starting(2030)` is 1 September 2030 to 31 August 2031; `containing(day)`; `current({now})` the one of today in Belgian time. Any other range of days can be given.
+
+### `LvsNote`
+From `getNotes` and `getAllNotes` (#161): `id`, `categoryId` (the category read or a sub-category), `categoryName` (`""` when the answer names none), `title`, `date` (UTC), `author`, `isConfidential`, `isNew`, `viewed`, `schoolYear` (as the LVS gives it), `fields`. Prints the count of fields only.
+
+### `LvsNoteField` / `LvsNoteFieldType` / `LvsAttachment`
+A field of a note: `paramId`, `typeCode` (the LVS's number) and `type` (`LvsNoteFieldType`: `text` 1, `richText` 2, `radio` 3, `checkbox` 4, `select` 5, `attachment` 6, `date` 7, `heading` 8, `unknown`), `label`, `value` (the text to show; empty for a heading and an empty field), `html` (rich text), `optionIds` (a choice's option IDs; their texts are in `value`), `date` (UTC; `null` for none or the LVS's `current`), `attachments` (`LvsAttachment`: `id`, `name`, `mimeType`; metadata only), `rawValue` / `rawOptionValue` (as sent), and `hasValue`. A field prints its type only, an attachment nothing.
+
+### `LvsResultsConfiguration`
+From `getResultsConfiguration` (#162): `canSeeAll` (`canUserSeeAll`: the web client enables its school year picker with it) and `canSeeSchoolYear` (`canUserSeeSchoolyear`), each `bool?`.
+
+### `LvsResultsPeriod` / `LvsResultsCourse`
+From `getResultsPeriods`, `getResultsCourses`, and an evaluation's own (#162). A period: `id` (what `getEvaluations` takes in `periodIds`), `name`, `icon`, `classId` / `className`, `isActive`, `workYearId` / `workYearStart` / `workYearEnd` (its Skore school year, UTC). A course: `id` (for `courseIds`), `name`, `classId` / `className`, `skoreClassId`, `parentCourseId` (`null` for a course of its own), `graphicType` / `graphicValue` (an icon or an image), `teacherNames` (as an evaluation names them). Print a flag or a count only.
+
+### `LvsEvaluation` / `LvsScore` / `LvsScoreType` / `LvsEvaluationPage` / `LvsEvaluationList`
+An evaluation (#162): `identifier`, `type` (`normal`, `project`, `project-with-rubrics`), `name`, `date` (UTC), `score`, `courses`, `period`, `componentName` / `componentAbbreviation`, `doesCount`, `isPublished` (`bool?`), `feedbackCount`. `LvsScore` (its `graphic`): `type` (`LvsScoreType`: `percentage`, `text`, `icon`, `image`, `rubrics`; another kept as it comes, `isKnownType`), `value` (as text), `percentage` (when a number), `description` (the points, "7/10"), `color`; `LvsScore.none` without a graphic. `LvsEvaluationPage`: `pageNumber`, `itemsOnPage`, `evaluations`, `mayHaveMore`. `LvsEvaluationList`: `evaluations`, `isComplete`, `pagesRead`. Print types and counts only.
+
+### `LvsFeedback` / `LvsFeedbackKind` / `LvsFeedbackEvaluation` / `LvsReport` / `LvsResultsAttachment`
+A feedback (#162): `identifier`, `kind` (`LvsFeedbackKind`: `classCouncil`, `course`, `evaluation`, `goal`, or `unknown`, kept with its identifier and text), `text`, `author` (`""` for a remark on a report), `report` and `reportPart` (a class council's remark), `course` (a remark per course), `evaluation` (`LvsFeedbackEvaluation`: `identifier`, `name`, `date`, `courses`, `period`, `schoolYearLabel`), `goalId` / `curriculumId` (a project's goal), `attachments` (`LvsResultsAttachment`: `id`, `name`, `type`, `size`, `downloadUrl`; metadata only). `LvsReport`: `id`, `name`, `icon`, `date` (UTC), `classId` / `className`, `schoolYearLabel`, `downloadUrl` (metadata only). A feedback prints its kind and count of attachments, a report or an attachment nothing.
+
+### `LvsPlanPeriod` / `LvsSupportPlan` / `LvsPlanItem` / `LvsPlanGoal` / `LvsProfileSketch`
+From the support plan reads (#163). `LvsPlanPeriod`: `id`, `name`, `heading`. `LvsSupportPlan`: `period` (`LvsPlanPeriodInfo`: `id`, `hasError`, `message`, `isOpen`), `items`, `status` (`LvsSupportPlanStatus`). `LvsPlanItem`: `id`, `type`, `kind` (`LvsPlanItemKind`: `needs`, `goals`, `document`, `unknown`), `fromGroupPlan`, `author`, `date`, `supportNeeds`, `mainGoals`, `workGoals`, `approach`, `approachComment`, `courses`, `theme`, `startSituation`, `goals` (`LvsPlanGoal`: `id`, `name`, `domain`, `isDeprecated`, `objectives`, `approach`, `planning`), `fileName`, `mimeType`. `LvsProfileSketch`: `period`, `hasSketch`, `html`, `text`, `lastRevision`. Print kinds, flags and counts only.
+
+### `LvsAbsences` / `LvsAbsencePeriod` / `LvsAbsence` / `LvsAbsenceTotal`
+From `getAbsences` (#164). `LvsAbsences`: `yearLabel`, `periods` (`label`, `absences`), `absences`, `isEmpty`, `halfDays`, `totalsByCode` (`code`, `codeDescription`, `color`, `count`, `halfDays`). `LvsAbsence`: `date` (UTC), `dateKey`, `formattedDate`, `dayPart` (`DayPart`; `null` for a whole day, `isFullDay`), `partOfDayLabel`, `code`, `codeDescription`, `color`, `motivation` (plain text) / `motivationHtml`, `halfDays`. Print counts only.
+
 ---
 
 ## Enums
@@ -1685,6 +1805,11 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolLessonContentError` | The Lesfiches module, or the course list, answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
 | `SmartschoolLessonContentCourseListError` | `LessonContentService.getItems` read the lesfiches, but the course list that names their courses answered with something it cannot use (carries the course list's `statusCode`, and the lesfiches as read in `items`, with every course name `null`). A `SmartschoolLessonContentError` (#118) |
 | `SmartschoolLessonContentVisibilityNotSetError` | `LessonContentService.addAttachments` added the files, but setting the visibility of one of them failed (#135): a `SmartschoolLessonContentSaveUnconfirmedError` that carries the `addedAttachments`, the `attachment` whose change failed with its asked `visibility`, and the `visibilitiesNotSet` (that one's and those not tried after it, by attachment ID); `cause` is the change's failure. Do not add the files again: set those visibilities. See `LessonContentService` > *Errors* |
+| `SmartschoolLvsError` | `LvsService`: the LVS answers with something the service cannot use (another status than `200`, carried in `statusCode`; an HTML page; invalid JSON, the decoder's error in `cause`; an unknown shape). Never an empty result; its message quotes nothing of the answer. Not a session problem (#160) |
+| `SmartschoolLvsAccessDeniedError` | `LvsService`: the LVS refused the read to the account (`403`, or a redirect to Smartschool's start page). `checkAccess()` returns `false` for it. A `SmartschoolLvsError` (#160) |
+| `SmartschoolLvsPupilNotFoundError` | `LvsService.getPupilFile`, `getNotes`: the LVS answered with its placeholder pupil: it knows no pupil of that ID in that class that the account may see (carries `pupilId` and `classId`, which its message leaves out). A `SmartschoolLvsError` (#160, #161) |
+| `SmartschoolLvsCategoryNotFoundError` | `LvsService.getNotes`: the LVS answered without the category: it knows no category of notes of that ID (carries `pupilId`, `classId` and `categoryId`, which its message leaves out). A `SmartschoolLvsError` (#161) |
+| `SmartschoolLvsRequestNotAllowedError` | `LvsService` refused to send a request that is not one of its reads (carries `method` and `path`). Nothing was sent; a bug of the library. A `SmartschoolLvsError` (#160) |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server's errors: typed in `saveErrors`, their messages in `errors`, #109), an answer of the Presence module cannot be read (the subtype below), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolPresenceUnreadableAnswerError` | `PresenceService`: an answer of the Presence module cannot be read (carries the `path`, the HTTP `statusCode`, the `kind`, a `PresenceUnreadableAnswerKind`: `empty`, `html`, `malformedJson`, or `errorStatus` for valid JSON with a status outside `200`–`299`, #143, and for a page its `title` and `heading`). Can be gone a moment later (a proxy's `502`). For a read nothing changed; for the save it is not known whether it landed, and calling `setLate` / `setPresent` again is safe. A `SmartschoolPresenceError` (#137) |
 | `SmartschoolPresenceChangeRefusedError` | `PresenceService.setLate` / `setPresent` with `onlyReplacing`: the half-day, as read right before the save, holds a status it does not allow (carries `userId`, `part`, `date`, `halfDay`, `heldStatus`, `onlyReplacing`). Nothing was sent. A `SmartschoolPresenceError` (#105) |
@@ -1761,6 +1886,10 @@ The `pre-commit` hook runs the same checks as CI, in parallel:
 
 The tests never use the network: they talk to fake Smartschools, and every test file calls `forbidRealNetwork()` (`test/support/no_network.dart`) and gives its clients a temporary cache folder (`tempCacheDir()`); `test/network_guard_test.dart` and `test/cache_dir_guard_test.dart` fail otherwise.
 
+### LVS data
+
+The pupil tracking system (LVS, `/?module=LVS`) holds the most sensitive data of Smartschool. Before any work on it (research, captures, fixtures, tests, examples, issues, PRs), read **[`doc/lvs-privacy.md`](doc/lvs-privacy.md)**: no value from a live LVS answer goes into the repository or onto GitHub; raw captures stay in a temp folder outside the repository, never in `dev_dumps/`; LVS fixtures (`test/fixtures/lvs/`) are written by hand with the fakes of `test/fixtures/lvs/FAKES.md`, and `test/lvs_fixtures_guard_test.dart` checks them (fake names, ids in a reserved range, no base64 names anywhere under `test/`, no pasted answers).
+
 ### Live tests
 
 `test/live/` holds a live suite that **really sends messages** on the Smartschool of `credentials.yml`, to check that sending still works there (Smartschool can change its compose flow at any time). It is local and on demand only: `dart_test.yaml` skips the suites tagged `live` without loading them, so `dart test` (and so CI and the pre-commit hook) never runs it. Run it on purpose, with a `credentials.yml` in the package root (without one, it skips):
@@ -1827,5 +1956,9 @@ This repository includes a local [MCP](https://modelcontextprotocol.io) server t
 5. Design the Dart service method and models from the confirmed response shape.
 
 Pass `maxBodyChars` to any tool to truncate large responses before they fill the context window.
+
+### Captures
+
+Write captured answers to a folder **outside the repository** (a temp folder), not into the working tree. `dev_dumps/` is git-ignored, but a `git add -f`, a tool or an agent can still pick a file up there; an answer of the pupil tracking system (LVS) never goes there, nor anything that quotes one: see [`doc/lvs-privacy.md`](doc/lvs-privacy.md). The server tells an MCP client the same in its `initialize` instructions.
 
 > **Keep `credentials.yml` local and private.** It is listed in `.gitignore` and must never be committed.

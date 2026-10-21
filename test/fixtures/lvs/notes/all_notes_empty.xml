@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-written for #161: renderPupilAllNotes without data (hasData 0, empty
+  lists), as seen live for a made-up pupil ID: the LVS answers a pupil it
+  does not know this way too.
+-->
+<server><response><status>ok</status><actions><action><subsystem>lvs_pupil</subsystem><command>renderPupilAllNotes</command><data><content><hasData>0</hasData><buttons/><updateToolbar>1</updateToolbar><pupilID>900001</pupilID><dates><![CDATA[[]]]></dates><reports></reports><absents></absents><notes></notes><filterData>0</filterData><evals><![CDATA[[]]]></evals><skore_rights><![CDATA[{"printrep":1,"viewrep":1}]]></skore_rights><messages><![CDATA[[]]]></messages><smartsignals><![CDATA[[]]]></smartsignals></content></data></action></actions></response></server>

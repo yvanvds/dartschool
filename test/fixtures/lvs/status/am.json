@@ -1,0 +1,10 @@
+[
+  {
+    "partOfDay": "am",
+    "code": {
+      "name": "Testcode",
+      "code": "TA",
+      "color": "green"
+    }
+  }
+]

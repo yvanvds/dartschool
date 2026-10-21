@@ -1,0 +1,35 @@
+[
+  {
+    "id": 900301,
+    "name": "Testvak",
+    "graphic": {"type": "icon", "value": "knight2"},
+    "class": {
+      "identifier": "900000_900101",
+      "id": 900101,
+      "platformId": 900000,
+      "name": "1A",
+      "type": "K",
+      "icon": "briefcase"
+    },
+    "skoreClassId": 900101,
+    "parentCourseId": null
+  },
+  {
+    "id": 900302,
+    "name": "Testvak",
+    "graphic": {
+      "type": "image",
+      "value": "/skore/api/v1/assets/skore-data/image/900901/view"
+    },
+    "class": {
+      "identifier": "900000_900101",
+      "id": 900101,
+      "platformId": 900000,
+      "name": "1A",
+      "type": "K",
+      "icon": "briefcase"
+    },
+    "skoreClassId": 900101,
+    "parentCourseId": 900301
+  }
+]

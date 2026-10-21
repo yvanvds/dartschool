@@ -38,6 +38,19 @@ const _other = MessageSearchUser(
 String _fixture(String name) =>
     File('test/fixtures/smartschool/requests/$name').readAsStringSync();
 
+/// An LVS fixture (#160): hand-written, with the fakes of
+/// test/fixtures/lvs/FAKES.md.
+String _lvsFixture(String name) =>
+    File('test/fixtures/lvs/$name').readAsStringSync();
+
+/// The `command` form field of the LVS's XML dispatcher (#161) for one
+/// command with [params].
+String _lvsCommand(
+  String subsystem,
+  String action,
+  Map<String, String> params,
+) => XmlInterface.buildCommand(subsystem, action, params);
+
 final _newMessageForm = _fixture('get/composemessage/new-message.html');
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
 final _quickDeleteAnswer = _fixture('post/postboxes/quick delete.xml');
@@ -599,6 +612,67 @@ class _Smartschool implements HttpClientAdapter {
           _presenceAnswers[path] ?? '{"hasErrors":false,"errors":[]}',
           contentType: 'application/json',
         );
+      // The LVS (#160): its reads, and any other request answered as a write
+      // that went through.
+      case (false, '/LVS/Spotlight', _, _):
+        return _answer(
+          _lvsFixture('spotlight/search_one.json'),
+          contentType: 'application/json',
+        );
+      case (false, final path, _, _) when path.startsWith('/LVS/Spotlight/'):
+        return _answer(
+          _lvsFixture('spotlight/pupil_file.json'),
+          contentType: 'application/json',
+        );
+      case (true, '/LVS/Pupilxhr/getStatusInfo', _, _):
+        return _answer(
+          _lvsFixture('status/both.json'),
+          contentType: 'application/json',
+        );
+      case (true, '/', 'treeBuilder', null) when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('tree/root.json'),
+          contentType: 'text/json; charset=utf-8',
+        );
+      // The LVS's XML dispatcher (#161): the notes of a category, and all
+      // of a pupil's file.
+      case (true, '/', 'dispatcher', null) when query['module'] == 'LVS':
+        final command = (options.data as Map)['command'] as String;
+        final fixture = command.contains('<action>getUserData</action>')
+            ? 'notes/all_notes.xml'
+            : 'notes/category.xml';
+        return _answer(
+          _lvsFixture(fixture),
+          contentType: 'application/xml; charset=UTF-8',
+        );
+      // The LVS's JSON dispatchers (#163): the support plan reads.
+      case (true, '/', 'jqDispatcher_settings', 'getLVSspecificTitles')
+          when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('supportplan/periods.json'),
+          contentType: 'text/html; charset=UTF-8',
+        );
+      case (true, '/', 'jqDispatcher_hp', 'getIHP')
+          when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('supportplan/plan.json'),
+          contentType: 'text/html; charset=UTF-8',
+        );
+      case (true, '/', 'jqDispatcher_hp', 'getProfielSchets')
+          when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('supportplan/profile.json'),
+          contentType: 'text/html; charset=UTF-8',
+        );
+      // A pupil's absences (#164).
+      case (true, '/LVS/Pupilpresences', null, null):
+        return _answer(
+          _lvsFixture('absences/absences.json'),
+          contentType: 'application/json',
+        );
+      case (_, final path, _, _)
+          when path.startsWith('/LVS/') || query['module'] == 'LVS':
+        return _answer('{"status":1}', contentType: 'application/json');
       case (true, final path, _, _) when path.startsWith('/modules/Skore/'):
         final method = (options.data as Map)['rpc_method'];
         skoreCalls.add('$path $method');
@@ -1217,6 +1291,95 @@ void main() {
         'POST /Presence/Class/getClass',
         'POST /Presence/Code/getAllCodes',
       ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the LVS reads: the root of the class tree, a pupil search, and a '
+        "pupil's file with today's status (#160)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      expect(await lvs.checkAccess(), isTrue);
+      final match = (await lvs.searchPupils('janssens')).single;
+      final file = await lvs.getPupilFile(
+        pupilId: match.pupilId,
+        classId: match.classId,
+      );
+
+      expect(file.todayStatus.halfDays, hasLength(2));
+      expect(server.log, [
+        'POST /?module=LVS&file=treeBuilder',
+        'GET /LVS/Spotlight?searchVal=janssens',
+        'GET /LVS/Spotlight/900001?classID=900101',
+        'POST /LVS/Pupilxhr/getStatusInfo',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the LVS reads of the XML dispatcher: the notes of a category, and '
+        "all of a pupil's file (#161)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      final notes = await lvs.getNotes(
+        pupilId: 900001,
+        classId: 900101,
+        categoryId: 900401,
+      );
+      final all = await lvs.getAllNotes(pupilId: 900001, classId: 900101);
+
+      expect(notes, hasLength(3));
+      expect(all, hasLength(3));
+      expect(server.log, [
+        'POST /?module=LVS&file=dispatcher',
+        'POST /?module=LVS&file=dispatcher',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the LVS reads of its JSON dispatchers: the periods, the plan and '
+        "the profile sketch of a pupil's support plans (#163)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      final periods = await lvs.getSupportPlanPeriods(
+        pupilId: 900001,
+        classId: 900101,
+      );
+      final plan = await lvs.getSupportPlan(
+        pupilId: 900001,
+        classId: 900101,
+        periodId: periods.first.id,
+      );
+      final sketch = await lvs.getProfileSketch(
+        pupilId: 900001,
+        classId: 900101,
+      );
+
+      expect(periods, hasLength(2));
+      expect(plan.items, hasLength(4));
+      expect(sketch.hasSketch, isTrue);
+      expect(server.log, [
+        'POST /?module=LVS&file=jqDispatcher_settings'
+            '&function=getLVSspecificTitles',
+        'POST /?module=LVS&file=jqDispatcher_hp&function=getIHP',
+        'POST /?module=LVS&file=jqDispatcher_hp&function=getProfielSchets',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test("the LVS read of a pupil's absences (#164)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      final absences = await lvs.getAbsences(pupilId: 900001, classId: 900101);
+
+      expect(absences.absences, hasLength(5));
+      expect(server.log, ['POST /LVS/Pupilpresences']);
       expect(guard.violations, isEmpty);
     });
 
@@ -2849,6 +3012,157 @@ void main() {
           contains('POST /Presence/Class/deletePresences was not sent'),
           contains('changes no presence'),
         ),
+      ]);
+    });
+
+    test('any LVS POST but its reads, and any PUT to the LVS (#160)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guardedClient(server);
+      final dio = _dio(server, guard);
+      final form = Options(contentType: Headers.formUrlEncodedContentType);
+
+      final posts = [
+        // The web client sends it for every pupil it shows.
+        (
+          '/?module=LVS&file=jqDispatcher_settings&function=setLastPupil',
+          {'pupilID': '900001'},
+        ),
+        ('/?module=LVS&file=dispatcher', {'command': '<request/>'}),
+        ('/LVS/Itemxhr/setItemViewState', {'itemID': '900301'}),
+        ('/LVS/Pupilxhr/saveKeyword', {'pupilID': '900001'}),
+        ('/LVS/Classnoteeditor/checkEditor', {'classID': '900101'}),
+        // The reads, but not as LvsService sends them: a class node of the
+        // tree (its pupils), another tree, and a field more.
+        ('/?module=LVS&file=treeBuilder', {'id': 'tree_class_900101'}),
+        ('/?module=LVS&file=treeBuilder&function=adminTree', {'id': '0'}),
+        ('/LVS/Pupilxhr/getStatusInfo', {'pupilID': '900001', 'save': '1'}),
+        // The dispatcher (#161): a write ("viewed"), the list layouts the web
+        // client asks for with a category's notes, the read with a param
+        // more, with a second command, or with a field more.
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_pupils', 'changeItemViewStatus', {
+              'userID': '900001',
+              'itemID': '900301',
+              'viewed': '1',
+            }),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_pupils', 'getCatListView', {
+              'catID': '900401',
+              'userID': '900001',
+            }),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_cats', 'getUserCatItems', {
+              'catID': '900401',
+              'userID': '900001',
+              'itemID': '900301',
+            }),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command':
+                _lvsCommand('lvs_cats', 'getUserCatItems', {
+                  'catID': '900401',
+                }).replaceFirst(
+                  '</request>',
+                  '<command><subsystem>lvs_pupils</subsystem>'
+                      '<action>changeItemViewStatus</action><params/></command>'
+                      '</request>',
+                ),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_pupils', 'getUserData', {
+              'userID': '900001',
+            }),
+            'save': '1',
+          },
+        ),
+        // The support plans (#163): the reads and the lock of their edit
+        // flow, their writes, and the reads with a field more or in another
+        // file.
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getIHPondersteuningsnood',
+          {'versionID': '900611', 'classID': '900101'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getOD_doelstellingen',
+          {'groupID': '900101'},
+        ),
+        ('/LVS/Handelingsplannen/checkSyntheseEditor', {'pupilID': '900001'}),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=setProfielSchets',
+          {'pupilID': '900001', 'content': '<p>Testprofielschets.</p>'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=saveIHPversion',
+          {'pupilID': '900001'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getIHP',
+          {'pupilID': '900001', 'content': 'Test'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hpEval&function=getIHP',
+          {'pupilID': '900001'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getIHP&exportID=900801',
+          {'pupilID': '900001'},
+        ),
+        // The absences (#164): their charts, the class view, the older
+        // route, and the read with a field more or with a query.
+        (
+          '/LVS/Pupilpresencesgraphs',
+          {'pupilID': '900001', 'groupID': '900101'},
+        ),
+        ('/LVS/Classpresences', {'groupID': '900101'}),
+        (
+          '/?module=LVS&file=jqDispatcher_presence&function=getPupilPresences',
+          {'pupilID': '900001', 'groupID': '900101', 'type': 'official'},
+        ),
+        (
+          '/LVS/Pupilpresences',
+          {'pupilID': '900001', 'groupID': '900101', 'save': '1'},
+        ),
+        (
+          '/LVS/Pupilpresences?schoolyear=2030',
+          {'pupilID': '900001', 'groupID': '900101'},
+        ),
+      ];
+      for (final (path, data) in posts) {
+        await expectLater(
+          dio.post<String>(path, data: data, options: form),
+          throwsA(isA<DioException>()),
+          reason: path,
+        );
+      }
+      for (final path in ['/LVS/Message', '/LVS/Watch']) {
+        await expectLater(
+          dio.put<String>(path, data: {'id': '900301'}, options: form),
+          throwsA(isA<DioException>()),
+          reason: path,
+        );
+      }
+
+      expect(server.log, isEmpty);
+      expect(_violations(guard), [
+        for (final _ in posts) contains('changes nothing in the LVS'),
+        contains('the live suite sends no PUT'),
+        contains('the live suite sends no PUT'),
       ]);
     });
 

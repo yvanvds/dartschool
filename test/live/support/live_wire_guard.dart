@@ -46,6 +46,28 @@
 //   sent, listed in the inbox or in its archive folder with the run's subject
 //   and checked there, and not moved to the trash; and one in a folder of the
 //   inbox other than the archive folder (#94);
+// - any POST to the pupil tracking system (LVS, `/LVS/` and
+//   `/?module=LVS`) but the reads that LvsService sends: a pupil's
+//   attendance today (`/LVS/Pupilxhr/getStatusInfo` with `pupilID`) and the
+//   root of the left tree (`file=treeBuilder`, without a `function`, with
+//   `id` 0: the classes, no pupil) (#160); and, to its XML dispatcher
+//   (`file=dispatcher`), a request of one command, the notes of a category
+//   (`lvs_cats/getUserCatItems`) or all of a pupil's file
+//   (`lvs_pupils/getUserData`), with the params LvsService sends and no
+//   other (#161); and, to its JSON dispatchers, the support plan reads
+//   (`jqDispatcher_hp` `getIHP` and `getProfielSchets`, and
+//   `jqDispatcher_settings` `getLVSspecificTitles`), with their own form
+//   fields and no other, but none of the plans' edit flow
+//   (`getIHPondersteuningsnood`, `getOD_doelstellingen`,
+//   `/LVS/Handelingsplannen/checkSyntheseEditor`, every `save*`, `set*`)
+//   (#163); and a pupil's absences (`/LVS/Pupilpresences` with `pupilID`
+//   and `groupID`), but not their charts (`Pupilpresencesgraphs`) (#164).
+//   The LVS has writes next to its reads (`setLastPupil`, the
+//   "viewed" flags, `changeItemViewStatus` on the same dispatcher,
+//   `saveKeyword`, ...), and the live suite changes nothing there; its GETs
+//   (the pupil search, a pupil's file, and the results app's reads,
+//   `/LVS/Results/*`, #162) went out already, and it sends no PUT
+//   (`PUT /LVS/Message`, `PUT /LVS/Watch`) anywhere;
 // - any request to the Presence module but its three POSTs that only read,
 //   `getConfig`, `getAllCodes` and `getClass` (PresenceService.getConfig,
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no
@@ -535,6 +557,10 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/lesson-content/')) {
       return _lessonContentRefusal(path, options.data);
     }
+    if (path.startsWith('/LVS/') ||
+        (path == '/' && uri.queryParameters['module'] == 'LVS')) {
+      return _lvsRefusal(uri, options.data);
+    }
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -611,6 +637,159 @@ class LiveWireGuard extends Interceptor {
         'getGradebookContext, getEvaluations, getNewEvalDialogBox and '
         'getPosComponents (gradebook/rpc.php, #148-#151); no saveEvaluation '
         'or saveGrade, and none to its REST API (/skore/)';
+  }
+
+  /// The LVS POSTs that only read and that the live suite sends, by path,
+  /// with the form fields they carry: a pupil's attendance today
+  /// (LvsService.getPupilFile, #160) and a pupil's absences
+  /// (LvsService.getAbsences, #164).
+  static const _lvsReads = {
+    '/LVS/Pupilxhr/getStatusInfo': {'pupilID'},
+    '/LVS/Pupilpresences': {'pupilID', 'groupID'},
+  };
+
+  /// The functions of the LVS's JSON dispatchers that only read and that the
+  /// live suite sends (`/?module=LVS&file=<file>&function=<function>`), by
+  /// file and function, with the form fields they carry: the support plans
+  /// (LvsService.getSupportPlanPeriods, getSupportPlan, getProfileSketch,
+  /// #163).
+  static const _lvsJsonReads = {
+    ('jqDispatcher_settings', 'getLVSspecificTitles'): {
+      'groupID',
+      'pupilID',
+      'type',
+      'activeID',
+      'color',
+      'archiveID',
+    },
+    ('jqDispatcher_hp', 'getIHP'): {
+      'groupID',
+      'pupilID',
+      'periodID',
+      'exportID',
+    },
+    ('jqDispatcher_hp', 'getProfielSchets'): {
+      'pupilID',
+      'classID',
+      'periodID',
+      'exportID',
+    },
+  };
+
+  /// The commands of the LVS's XML dispatcher that only read and that the
+  /// live suite sends, by subsystem and action, with the params they carry:
+  /// the notes of a category and all of a pupil's file
+  /// (LvsService.getNotes, getAllNotes, #161).
+  static const _lvsCommands = {
+    ('lvs_cats', 'getUserCatItems'): {
+      'catID',
+      'userID',
+      'toolbarType',
+      'syRange',
+      'groupID',
+      'toolbarSide',
+    },
+    ('lvs_pupils', 'getUserData'): {
+      'userID',
+      'toolbarType',
+      'groupID',
+      'syRange',
+      'viewAllFilter',
+      'filterData',
+    },
+  };
+
+  /// Why the LVS POST to [uri] with [data] may not go out, or `null`: only
+  /// the reads of LvsService (#160, #161, #163, #164) go out, never a write.
+  String? _lvsRefusal(Uri uri, Object? data) {
+    final form = data is Map ? data : const {};
+    final query = uri.queryParameters;
+    final fields = _lvsReads[uri.path];
+    if (fields != null && query.isEmpty && form.keys.every(fields.contains)) {
+      return null;
+    }
+    final isTreeRoot =
+        uri.path == '/' &&
+        query.length == 2 &&
+        query['module'] == 'LVS' &&
+        query['file'] == 'treeBuilder' &&
+        form.length == 1 &&
+        form['id'] == '0';
+    if (isTreeRoot) return null;
+    final jsonRead = uri.path == '/' && query.length == 3
+        ? _lvsJsonReads[(query['file'], query['function'])]
+        : null;
+    if (jsonRead != null &&
+        query['module'] == 'LVS' &&
+        form.keys.every(jsonRead.contains)) {
+      return null;
+    }
+    final isDispatcher =
+        uri.path == '/' &&
+        query.length == 2 &&
+        query['module'] == 'LVS' &&
+        query['file'] == 'dispatcher' &&
+        form.length == 1;
+    if (isDispatcher && _isLvsReadCommand(form['command'])) return null;
+    return 'the live suite changes nothing in the LVS: it sends no LVS POST '
+        'but the reads getStatusInfo (with pupilID) and the root of the class '
+        'tree (treeBuilder, id 0) (#160), and the dispatcher\'s '
+        'getUserCatItems and getUserData alone, with their params (#161), '
+        'and the support plan reads getLVSspecificTitles, getIHP and '
+        'getProfielSchets, with their fields (#163), and the absences '
+        '(Pupilpresences, with pupilID and groupID) (#164)';
+  }
+
+  /// Whether [command], the form field of the LVS's XML dispatcher, is a
+  /// `<request>` of one `<command>` of [_lvsCommands] (its `<subsystem>`,
+  /// `<action>` and `<params>`, nothing else), whose params are its own,
+  /// each once.
+  static bool _isLvsReadCommand(Object? command) {
+    if (command is! String) return false;
+    final XmlDocument xml;
+    try {
+      xml = XmlDocument.parse(command);
+    } on XmlException {
+      return false;
+    }
+    bool onlyElements(XmlElement element) => element.children.every(
+      (node) =>
+          node is XmlElement || (node is XmlText && node.value.trim() == ''),
+    );
+    final roots = xml.childElements.toList();
+    if (roots.length != 1 || roots.single.name.qualified != 'request') {
+      return false;
+    }
+    final request = roots.single;
+    final commands = request.childElements.toList();
+    if (!onlyElements(request) ||
+        commands.length != 1 ||
+        commands.single.name.qualified != 'command' ||
+        !onlyElements(commands.single)) {
+      return false;
+    }
+    final parts = commands.single.childElements.toList();
+    if (parts.map((part) => part.name.qualified).join(',') !=
+            'subsystem,action,params' ||
+        !onlyElements(parts[2])) {
+      return false;
+    }
+    final allowed =
+        _lvsCommands[(parts[0].innerText.trim(), parts[1].innerText.trim())];
+    if (allowed == null) return false;
+    final names = <String>{};
+    for (final param in parts[2].childElements) {
+      final name = param.getAttribute('name');
+      if (param.name.qualified != 'param' ||
+          name == null ||
+          param.attributes.length != 1 ||
+          param.childElements.isNotEmpty ||
+          !allowed.contains(name) ||
+          !names.add(name)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

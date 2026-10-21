@@ -1,0 +1,58 @@
+{
+  "presences": {
+    "Testperiode": {
+      "2030-09-16": {
+        "full": {
+          "formattedDate": "ma 16/09/2030",
+          "partOfDay": "Volledige dag",
+          "code": "TA",
+          "codeColor": "red",
+          "codeDescr": "Testcode",
+          "motivation": "<p>Testmotivatie: <b>thuis</b> gebleven.</p>"
+        }
+      },
+      "2030-10-02": {
+        "am": {
+          "formattedDate": "wo 02/10/2030",
+          "partOfDay": "Voormiddag",
+          "code": "TB",
+          "codeColor": "yellow",
+          "codeDescr": "Testcode 2",
+          "motivation": ""
+        },
+        "pm": {
+          "formattedDate": "wo 02/10/2030",
+          "partOfDay": "Namiddag",
+          "code": "TA",
+          "codeColor": "red",
+          "codeDescr": "Testcode",
+          "motivation": "Testmotivatie in platte tekst."
+        }
+      }
+    },
+    "Testperiode 2": {
+      "2031-01-13": {
+        "pm": {
+          "formattedDate": "ma 13/01/2031",
+          "partOfDay": "Namiddag",
+          "code": "TB",
+          "codeColor": "yellow",
+          "codeDescr": "Testcode 2",
+          "motivation": "<p>Testmotivatie met <i>opmaak</i> &amp; een teken.</p>"
+        }
+      },
+      "2031-02-03": {
+        "full": {
+          "formattedDate": "ma 03/02/2031",
+          "partOfDay": "Volledige dag",
+          "code": "TA",
+          "codeColor": "red",
+          "codeDescr": "Testcode",
+          "motivation": null
+        }
+      }
+    }
+  },
+  "lng_noresults": "Geen resultaten",
+  "year_label": "2030 - 2031"
+}

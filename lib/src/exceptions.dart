@@ -2411,3 +2411,151 @@ class SmartschoolSkoreFeedbackSaveUnconfirmedError
     this.feedbackId,
   });
 }
+
+/// Thrown by `LvsService`, the pupil tracking system (LVS,
+/// "leerlingvolgsysteem", `/?module=LVS`, #160), when the LVS answers a read
+/// with something the service cannot use: another HTTP status than `200` (in
+/// [statusCode], such as the `500` with Smartschool's error page that the LVS
+/// answered today's status of a made-up pupil ID with, seen live), an HTML
+/// page instead of data, an answer that is not JSON (or, for the reads of
+/// the LVS's XML dispatcher, #161, not well-formed XML, or a `status` other
+/// than `ok`), or an answer in a shape it does not recognise (such as a
+/// search answer without its `pupils`, a section of a pupil's file without
+/// its `type`, or a note without its date). Never an empty result.
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept is a [SmartschoolSessionExpiredError] instead.
+///
+/// The LVS holds the most sensitive data of Smartschool, and an app logs
+/// messages: the [message] of this type and of its subtypes never quotes the
+/// answer, and holds no name, no note text and no ID from it
+/// (`doc/lvs-privacy.md`, rule 6). It names the read (`"the pupil search"`)
+/// and what was wrong with the answer. [cause] holds the underlying error,
+/// if any (the `FormatException` of the JSON decoder or the XML parser,
+/// which may quote the answer; the text of the dispatcher's `message` for a
+/// `status` other than `ok`): `toString()` does not print it, so an app
+/// decides what to do with it.
+///
+/// The subtypes: [SmartschoolLvsAccessDeniedError] (the LVS refused the read
+/// to the account), [SmartschoolLvsPupilNotFoundError] (no pupil of that ID
+/// in that class that the account may see),
+/// [SmartschoolLvsCategoryNotFoundError] (no category of notes of that ID)
+/// and [SmartschoolLvsRequestNotAllowedError] (the service refused to send a
+/// request that is not one of its reads; nothing was sent).
+class SmartschoolLvsError extends SmartschoolException {
+  /// The HTTP status of the answer, when the answer is the problem; `null`
+  /// otherwise.
+  final int? statusCode;
+
+  /// The underlying error, if any. It may quote the answer: see the class
+  /// doc.
+  final Object? cause;
+
+  const SmartschoolLvsError(super.message, {this.statusCode, this.cause});
+}
+
+/// Thrown by `LvsService` when the LVS refuses a read to the account: HTTP
+/// `403` (Forbidden), or an answer that sends the request on to Smartschool's
+/// start page (`/?module=Homepage`, as Skore does for an account without its
+/// rights, #91). The request was refused: no data came.
+///
+/// **Not captured live** (#160): what the LVS answers a teacher without LVS
+/// rights and a pupil account. The two answers above are what the service
+/// takes for a refusal; any other answer it cannot read is a plain
+/// [SmartschoolLvsError], never an empty result. `LvsService.checkAccess`
+/// tells whether the account may use the LVS.
+///
+/// Its message names the read, and quotes nothing of the answer. A
+/// [SmartschoolLvsError], so `catch` clauses for that type keep catching it.
+class SmartschoolLvsAccessDeniedError extends SmartschoolLvsError {
+  const SmartschoolLvsAccessDeniedError(super.message, {super.statusCode});
+}
+
+/// Thrown by `LvsService.getPupilFile` and `LvsService.getNotes` when the LVS
+/// knows no pupil with the ID asked for in the class asked for that the
+/// account may see (#160, #161).
+///
+/// The LVS does not refuse such a read: it answers with HTTP `200`, the
+/// school's sections, none of which holds anything, and a placeholder pupil
+/// whose class is `null` (seen live for a made-up pupil ID in a made-up
+/// class: a "not available" name, an unknown class, no class teachers). The
+/// service throws this error for that answer instead of returning the
+/// placeholder as a pupil's file. The notes of a category of such a pupil
+/// come with the same placeholder (`pupilInfo`, seen live): no notes, and
+/// this error instead of an empty list. Whether the LVS answers a pupil the
+/// account may not see the same way was not captured.
+///
+/// Its message holds neither ID: they are in [pupilId] and [classId]. A
+/// [SmartschoolLvsError], so `catch` clauses for that type keep catching it.
+class SmartschoolLvsPupilNotFoundError extends SmartschoolLvsError {
+  /// The pupil ID that was asked for.
+  final int pupilId;
+
+  /// The class ID that was asked for.
+  final int classId;
+
+  const SmartschoolLvsPupilNotFoundError(
+    super.message, {
+    required this.pupilId,
+    required this.classId,
+  });
+}
+
+/// Thrown by `LvsService.getNotes` when the LVS knows no category of notes
+/// with the ID asked for (#161).
+///
+/// The LVS does not refuse such a read either: it answers with HTTP `200`,
+/// no notes, and a category without its ID and name (seen live for a
+/// made-up category ID). The service throws this error for that answer
+/// instead of returning an empty list, which would read as a category
+/// without notes. Whether the LVS answers a category the account may not see
+/// the same way was not captured. `LvsPupilFile.noteCategories` lists the
+/// categories of a pupil's file.
+///
+/// Its message holds none of the IDs: they are in [pupilId], [classId] and
+/// [categoryId]. A [SmartschoolLvsError], so `catch` clauses for that type
+/// keep catching it.
+class SmartschoolLvsCategoryNotFoundError extends SmartschoolLvsError {
+  /// The pupil ID that was asked for.
+  final int pupilId;
+
+  /// The class ID that was asked for.
+  final int classId;
+
+  /// The category ID that was asked for.
+  final int categoryId;
+
+  const SmartschoolLvsCategoryNotFoundError(
+    super.message, {
+    required this.pupilId,
+    required this.classId,
+    required this.categoryId,
+  });
+}
+
+/// Thrown by `LvsService` when it is about to send a request that is not one
+/// of its reads (#160). **Nothing was sent.**
+///
+/// The LVS has writes right next to its reads, some on the same URL (a
+/// `PUT /LVS/Message` deletes a message link, `GET /LVS/Message` reads it;
+/// `jqDispatcher_settings&function=setLastPupil` is sent by the web client for
+/// every pupil it shows). So every request of the service is checked against
+/// an explicit list of reads (method, path, and the query and form fields it
+/// may carry) before it goes out, and any other is refused with this error.
+/// It means a bug in the library, not a problem of Smartschool.
+///
+/// Its message names the method and the path (never the values of the query
+/// or the form). A [SmartschoolLvsError].
+class SmartschoolLvsRequestNotAllowedError extends SmartschoolLvsError {
+  /// The method of the refused request (`GET`, `POST`, `PUT`, ...).
+  final String method;
+
+  /// The path of the refused request, without its query.
+  final String path;
+
+  const SmartschoolLvsRequestNotAllowedError(
+    super.message, {
+    required this.method,
+    required this.path,
+  });
+}

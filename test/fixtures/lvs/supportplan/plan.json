@@ -1,0 +1,133 @@
+{
+  "count": 4,
+  "period": {
+    "currentPeriodID": 900501,
+    "error": 0,
+    "message": "<span>Testperiode</span>",
+    "currentlyInOpenPeriod": 1
+  },
+  "items": [
+    {
+      "itemID": 900601,
+      "type": "ihp",
+      "author": "Piet Peeters",
+      "authorID": 900201,
+      "courses": {"900301": 1},
+      "rights": {"edit": 0, "del": 0},
+      "itemHistory": [
+        {"authorName": "Piet Peeters", "dateToShow": "14/10/2030"}
+      ],
+      "lastversion": {
+        "itemID": 900601,
+        "versionID": 900611,
+        "versionType": "normal",
+        "dateToShow": "14/10/2030",
+        "ihp": {
+          "noden": [
+            {"ondName": "Testondersteuningsnood"},
+            {"ondName": "<b>Tweede</b> testnood &amp; meer"}
+          ],
+          "hoofddoelen": [
+            {"doelID": 900711, "parentID": 900701, "doelName": "Testhoofddoel"}
+          ],
+          "werkdoelen": [
+            {"doelName": "Testwerkdoel"},
+            {"doelName": "Tweede testwerkdoel"}
+          ],
+          "aanpak": [{"aanpakName": "Testaanpak"}],
+          "aanpakcomment": "<p>Testcommentaar bij de <i>aanpak</i>.</p>",
+          "courses": [{"title": "Testvak"}]
+        }
+      }
+    },
+    {
+      "itemID": 900602,
+      "type": "from_gwp",
+      "source": "gwp",
+      "author": "Céline Dupré",
+      "authorID": 900202,
+      "courses": {"900301": 1},
+      "rights": {"edit": 0, "del": 0},
+      "itemHistory": [],
+      "lastversion": {
+        "itemID": 900602,
+        "versionID": "900612",
+        "versionType": "normal",
+        "dateToShow": "21/10/2030",
+        "themeName": "Testthema",
+        "beginsituatie": "<p>Testbeginsituatie van de leerling.</p>",
+        "hasSynthese": 0,
+        "oplProf": 0,
+        "doelen": [
+          {
+            "parentID": 900801,
+            "parentName": "Testdoel",
+            "parentDeprecated": "0",
+            "deleted": 0,
+            "path": "Testdomein &gt; Testsubdomein",
+            "doelstellingen": [
+              {"doelID": 900811, "doelName": "Testdoelstelling"}
+            ],
+            "aanpak": [
+              {"aanpakID": 900821, "aanpakName": "Testaanpak bij het doel"}
+            ],
+            "occurrence": [
+              {"occType": "course", "occID": 900301, "occName": "Testvak"}
+            ]
+          },
+          {
+            "parentID": 900802,
+            "parentName": "Testdoel uit het leerplan",
+            "parentDeprecated": 1,
+            "deleted": 2,
+            "path": ""
+          }
+        ]
+      }
+    },
+    {
+      "itemID": 900603,
+      "type": "from_gwp",
+      "source": "new",
+      "author": "Piet Peeters",
+      "authorID": 900201,
+      "courses": [],
+      "rights": {"edit": 0, "del": 0},
+      "itemHistory": [],
+      "lastversion": {
+        "itemID": 900603,
+        "versionID": 900613,
+        "versionType": "eigendb",
+        "dateToShow": "28/10/2030",
+        "themeName": "",
+        "beginsituatie": "",
+        "doelen": [
+          {
+            "parentID": 900803,
+            "parentName": "Testdoel van de school",
+            "parentDeprecated": 0,
+            "path": "Testdomein",
+            "offDoelen": {"list": [], "count": 0},
+            "doelstellingen": [],
+            "aanpak": [],
+            "occurrence": []
+          }
+        ]
+      }
+    },
+    {
+      "documentID": 900604,
+      "type": "document",
+      "author": 900201,
+      "authorName": "Piet Peeters",
+      "dateToShow": "02/11/2030",
+      "fileName": "Testhandelingsplan.pdf",
+      "mime": {"type": "PDF", "icon": "smsc/img/fake/pdf.png"},
+      "rights": {"edit": 0, "del": 0}
+    }
+  ],
+  "filters": {"groupBy": 0, "filterTeacher": 0, "filterCourse": 0},
+  "OV": 0,
+  "canWrite": false,
+  "courses": []
+}

@@ -1,0 +1,55 @@
+{
+  "categories": [
+    {
+      "id": 900401,
+      "parentID": 0,
+      "name": "Testcategorie",
+      "sort": 1,
+      "icon": "",
+      "isTitle": 0,
+      "type": "items",
+      "role": 0,
+      "hasChildren": false,
+      "isFollowing": false,
+      "hasItems": false,
+      "hasNewItems": false
+    },
+    {
+      "id": 0,
+      "parentID": 0,
+      "name": "Testsectie",
+      "sort": 14,
+      "icon": "results",
+      "isTitle": 0,
+      "type": "results",
+      "role": 0,
+      "hasChildren": false,
+      "isFollowing": false,
+      "hasItems": false,
+      "hasNewItems": false
+    }
+  ],
+  "pupil": {
+    "pupilID": 900009,
+    "name": "Niet beschikbaar",
+    "keyword": "",
+    "keywordShow": false,
+    "pictureShow": true,
+    "pictureUrl": "/smsc/img/fake/initials_FALLBACK.png",
+    "class": "Klas niet gekend",
+    "classDesc": "",
+    "classID": null,
+    "teachers": [],
+    "classtituShow": 2,
+    "userIsPupil": false,
+    "userIsCanEdit": 0,
+    "birthday": "",
+    "age": "",
+    "presences": [],
+    "picUrl": "/smsc/img/fake/initials_FALLBACK.png",
+    "classPupils": [],
+    "ssID": 49,
+    "following": false,
+    "hasSasData": false
+  }
+}

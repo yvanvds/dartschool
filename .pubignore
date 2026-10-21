@@ -10,6 +10,9 @@
 # file; 0.3.1 shipped it by mistake)
 /PROJECT_OVERVIEW.md
 
+# Notes for coding agents working on this repository
+/CLAUDE.md
+
 # Workspace tooling not needed by package consumers
 /tool/
 

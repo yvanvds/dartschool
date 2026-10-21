@@ -1,0 +1,16 @@
+{
+  "check": 1,
+  "content": "<p>Testprofielschets van de leerling: <b>sterk</b> in testen.</p>",
+  "avatarHash": "initials_JJ",
+  "pupilName": "Jan Janssens",
+  "birthdate": "01/01/2017",
+  "age": "13j en 9m",
+  "className_teacher": "1A",
+  "lastrevision": "Testversie van 01/10/2030",
+  "period": {
+    "currentPeriodID": 900501,
+    "error": 0,
+    "message": "Testperiode",
+    "currentlyInOpenPeriod": 0
+  }
+}

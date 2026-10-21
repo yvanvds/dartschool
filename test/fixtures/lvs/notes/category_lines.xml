@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-written for #171 (doc/lvs-privacy.md), in the shape of category.xml
+  (lvs_cats/getUserCatItems, action renderPupilNotes): one note with a rich
+  text whose HTML has line breaks (<br>) and blocks next to each other (a
+  heading, paragraphs, an empty paragraph, a list, a div, a table), with
+  white space between some of them and none between others.
+-->
+<server>
+  <response>
+    <status>ok</status>
+    <actions>
+      <action>
+        <subsystem>lvs_pupil</subsystem>
+        <command>renderPupilNotes</command>
+        <data>
+          <content>
+            <hasData>1</hasData>
+            <buttons/>
+            <updateToolbar>1</updateToolbar>
+            <pupilID>900001</pupilID>
+            <catID>900401</catID>
+            <catInfo><![CDATA[{"catID":"900401","parentID":"0","name":"Testcategorie","catType":"1","gFilter":1,"following":false}]]></catInfo>
+            <hideWindow>0</hideWindow>
+            <catFilter><![CDATA[{"start":"2030-09-01","end":"2031-08-31"}]]></catFilter>
+            <pupilInfo><![CDATA[{"pupilID":900001,"name":"Janssens Jan","class":"1A","classDesc":"Testrichting","classID":900101,"teachers":[],"userIsPupil":false}]]></pupilInfo>
+            <viewType>form</viewType>
+            <items>
+              <item>
+                <itemID>900304</itemID>
+                <groupID>900101</groupID>
+                <pupilID>900001</pupilID>
+                <catID>900401</catID>
+                <title><![CDATA[Testnotitie met regels.]]></title>
+                <date>1917073800</date>
+                <author><![CDATA[Peeters Piet]]></author>
+                <rights><![CDATA[{"edit":0,"print":1,"duplicate":0,"follow":1,"unfollow":-1,"del":0}]]></rights>
+                <assigned>0</assigned>
+                <assignees><![CDATA[[]]]></assignees>
+                <history/>
+                <params>
+                  <param>
+                    <itemID>900304</itemID>
+                    <paramID>900613</paramID>
+                    <type>2</type>
+                    <val><![CDATA[<h3>Testkop</h3>
+<p>Testtekst met<br>twee regels</p><p>Tweede testalinea.</p>
+<p>&nbsp;</p>
+<ul>
+  <li>Testpunt een</li><li>Testpunt <b>twee</b></li>
+</ul><div>Testblok</div><table><tbody><tr><td>Testcel een</td><td>Testcel twee</td></tr><tr><td>Testcel drie</td></tr></tbody></table><p>Testslot.<br></p>]]></val>
+                    <title><![CDATA[Testveld verslag]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>1</sortorder>
+                  </param>
+                </params>
+                <viewed>0</viewed>
+                <privateFile>0</privateFile>
+                <studierichting><![CDATA[Testrichting]]></studierichting>
+                <itemGroupID>900101</itemGroupID>
+                <authorSex>m</authorSex>
+                <bulkID>0</bulkID>
+                <schoolyear>2030</schoolyear>
+                <isNew>0</isNew>
+                <originalCreate>0</originalCreate>
+                <catName><![CDATA[Testcategorie]]></catName>
+                <authorReverse><![CDATA[Piet Peeters]]></authorReverse>
+              </item>
+            </items>
+            <catsInfo><![CDATA[{"900401":{"catID":900401,"name":"Testcategorie"}}]]></catsInfo>
+            <catOrder><![CDATA[[900401]]]></catOrder>
+            <catViews><![CDATA[{"900401":"form"}]]></catViews>
+          </content>
+        </data>
+      </action>
+    </actions>
+  </response>
+</server>

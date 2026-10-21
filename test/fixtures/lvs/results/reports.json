@@ -1,0 +1,27 @@
+[
+  {
+    "id": 900501,
+    "name": "Testrapport",
+    "icon": "document_certificate",
+    "date": "2030-12-20T12:00:00+01:00",
+    "class": {
+      "identifier": "900000_900101",
+      "id": 900101,
+      "platformId": 900000,
+      "name": "1A",
+      "type": "K",
+      "icon": "briefcase"
+    },
+    "schoolyearLabel": "2030-2031",
+    "downloadUrl": "/skore/api/v1/reports/900501/student/900001/download"
+  },
+  {
+    "id": 900502,
+    "name": "Testrapport",
+    "icon": "document_certificate",
+    "date": "2031-06-30T12:00:00+02:00",
+    "class": null,
+    "schoolyearLabel": "2030-2031",
+    "downloadUrl": "/skore/api/v1/reports/900502/student/900001/download"
+  }
+]

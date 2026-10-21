@@ -1,0 +1,17 @@
+{
+  "search": "janssens",
+  "classes": [],
+  "pupils": [
+    {
+      "userID": 900001,
+      "classID": 900101,
+      "className": "1A",
+      "showClassName": true,
+      "sex": "m",
+      "foundName": "<b>Janssens</b> Jan"
+    }
+  ],
+  "teachers": [],
+  "groups": [],
+  "groupUsers": []
+}

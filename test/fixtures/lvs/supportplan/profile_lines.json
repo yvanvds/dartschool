@@ -1,0 +1,11 @@
+{
+  "check": 1,
+  "content": "<h3>Testprofielschets</h3><p>Testtekst met<br>twee regels</p><p>Tweede testalinea.</p><ul><li>Sterk in testen</li><li>Test graag</li></ul>",
+  "lastrevision": "Testversie van 01/10/2030",
+  "period": {
+    "currentPeriodID": 900501,
+    "error": 0,
+    "message": "Testperiode",
+    "currentlyInOpenPeriod": 0
+  }
+}

@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-written for #161 (doc/lvs-privacy.md), in the shape of the answer to
+  the dispatcher's lvs_cats/getUserCatItems: the action renderPupilNotes.
+  The envelope and the names of the first ten children of content were seen
+  live for a made-up pupil; the names from the notes on are not captured
+  (the service reads every child by its position, as the web client does).
+  Three notes: one of the category with a field of every type (a "]]>" in
+  the rich text, split over two CDATA sections as PHP does, an unknown type
+  42, a date field "current", an empty choice), a confidential one of a
+  sub-category, and one without catName and authorReverse (an older shape).
+-->
+<server>
+  <response>
+    <status>ok</status>
+    <actions>
+      <action>
+        <subsystem>lvs_pupil</subsystem>
+        <command>renderPupilNotes</command>
+        <data>
+          <content>
+            <hasData>1</hasData>
+            <buttons/>
+            <updateToolbar>1</updateToolbar>
+            <pupilID>900001</pupilID>
+            <catID>900401</catID>
+            <catInfo><![CDATA[{"catID":"900401","parentID":"0","name":"Testcategorie","date_created":"2030-09-01 08:00:00","catOrder":"1","filter":"0","deleted":"0","deletedDate":null,"catType":"1","catRole":"pupil","deletable":"1","iconclass":"","gFilter":1,"following":false}]]></catInfo>
+            <hideWindow>0</hideWindow>
+            <catFilter><![CDATA[{"start":"2030-09-01","end":"2031-08-31"}]]></catFilter>
+            <pupilInfo><![CDATA[{"pupilID":900001,"name":"Janssens Jan","keyword":"","keywordShow":false,"pictureShow":true,"pictureUrl":"/smsc/img/fake/initials_JJ.png","class":"1A","classDesc":"Testrichting","classID":900101,"teachers":{"900201":"Peeters Piet"},"classtituShow":2,"userIsPupil":false}]]></pupilInfo>
+            <viewType>form</viewType>
+            <items>
+              <item>
+                <itemID>900301</itemID>
+                <groupID>900101</groupID>
+                <pupilID>900001</pupilID>
+                <catID>900401</catID>
+                <title><![CDATA[Testnotitie over de les.]]></title>
+                <date>1917073800</date>
+                <author><![CDATA[Peeters Piet]]></author>
+                <rights><![CDATA[{"edit":1,"print":1,"duplicate":1,"follow":1,"unfollow":-1,"del":0}]]></rights>
+                <assigned>0</assigned>
+                <assignees><![CDATA[[]]]></assignees>
+                <history>
+                  <entry>
+                    <date>1917073800</date>
+                    <author><![CDATA[Peeters Piet]]></author>
+                  </entry>
+                </history>
+                <params>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900601</paramID>
+                    <type>1</type>
+                    <val><![CDATA[Testtekst over het gedrag.]]></val>
+                    <title><![CDATA[Testveld tekst]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>1</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900602</paramID>
+                    <type>2</type>
+                    <val><![CDATA[<p>Testverslag met <b>nadruk</b> &amp; ]]]]><![CDATA[> erin.</p>]]></val>
+                    <title><![CDATA[Testveld verslag]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>2</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900603</paramID>
+                    <type>3</type>
+                    <val>900701</val>
+                    <title><![CDATA[Testveld keuze]]></title>
+                    <optionValue><![CDATA[Testoptie goed]]></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>3</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900604</paramID>
+                    <type>4</type>
+                    <val>900702,900703</val>
+                    <title><![CDATA[Testveld vinkjes]]></title>
+                    <optionValue><![CDATA[Testoptie een, Testoptie twee]]></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>4</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900605</paramID>
+                    <type>5</type>
+                    <val>900704</val>
+                    <title><![CDATA[Testveld lijst]]></title>
+                    <optionValue><![CDATA[Testoptie &amp; meer]]></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>5</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900606</paramID>
+                    <type>6</type>
+                    <val></val>
+                    <title><![CDATA[Testveld bijlagen]]></title>
+                    <optionValue><![CDATA[{"900801":{"fileName":"testverslag.pdf","fileMime":"application/pdf","fileHash":""},"900802":{"fileName":"testfoto.jpg","fileMime":"image/jpeg"}}]]></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>6</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900607</paramID>
+                    <type>7</type>
+                    <val>1918245600</val>
+                    <title><![CDATA[Testveld datum]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>7</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900608</paramID>
+                    <type>8</type>
+                    <val></val>
+                    <title><![CDATA[Testtitel]]></title>
+                    <optionValue>2</optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>8</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900609</paramID>
+                    <type>42</type>
+                    <val><![CDATA[Testwaarde onbekend]]></val>
+                    <title><![CDATA[Testveld onbekend]]></title>
+                    <optionValue><![CDATA[Testoptie onbekend]]></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>9</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900610</paramID>
+                    <type>7</type>
+                    <val>current</val>
+                    <title><![CDATA[Testveld vandaag]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>10</sortorder>
+                  </param>
+                  <param>
+                    <itemID>900301</itemID>
+                    <paramID>900611</paramID>
+                    <type>5</type>
+                    <val></val>
+                    <title><![CDATA[Testveld leeg]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>11</sortorder>
+                  </param>
+                </params>
+                <viewed>0</viewed>
+                <privateFile>0</privateFile>
+                <studierichting><![CDATA[Testrichting]]></studierichting>
+                <itemGroupID>900101</itemGroupID>
+                <authorSex>m</authorSex>
+                <bulkID>0</bulkID>
+                <schoolyear>2030</schoolyear>
+                <isNew>1</isNew>
+                <originalCreate>0</originalCreate>
+                <catName><![CDATA[Testcategorie]]></catName>
+                <authorReverse><![CDATA[Piet Peeters]]></authorReverse>
+              </item>
+              <item>
+                <itemID>900302</itemID>
+                <groupID>900101</groupID>
+                <pupilID>900001</pupilID>
+                <catID>900402</catID>
+                <title><![CDATA[Testnotitie vertrouwelijk.]]></title>
+                <date>1917698400</date>
+                <author><![CDATA[Dupré Céline]]></author>
+                <rights><![CDATA[{"edit":0,"print":1,"duplicate":0,"follow":1,"unfollow":-1,"del":-1}]]></rights>
+                <assigned>0</assigned>
+                <assignees><![CDATA[[]]]></assignees>
+                <history/>
+                <params>
+                  <param>
+                    <itemID>900302</itemID>
+                    <paramID>900612</paramID>
+                    <type>2</type>
+                    <val><![CDATA[<p>Testnotitie, vertrouwelijk.</p>]]></val>
+                    <title><![CDATA[Testveld verslag]]></title>
+                    <optionValue></optionValue>
+                    <itemType>1</itemType>
+                    <sortorder>1</sortorder>
+                  </param>
+                </params>
+                <viewed>1</viewed>
+                <privateFile>1</privateFile>
+                <studierichting><![CDATA[Testrichting]]></studierichting>
+                <itemGroupID>900101</itemGroupID>
+                <authorSex>f</authorSex>
+                <bulkID>0</bulkID>
+                <schoolyear>2030</schoolyear>
+                <isNew>0</isNew>
+                <originalCreate>0</originalCreate>
+                <catName><![CDATA[Testsubcategorie]]></catName>
+                <authorReverse><![CDATA[Céline Dupré]]></authorReverse>
+              </item>
+              <item>
+                <itemID>900303</itemID>
+                <groupID>900101</groupID>
+                <pupilID>900001</pupilID>
+                <catID>900401</catID>
+                <title></title>
+                <date>1920114900</date>
+                <author><![CDATA[Jacobs Els]]></author>
+                <rights><![CDATA[{"edit":0,"print":1,"duplicate":0,"follow":1,"unfollow":-1,"del":0}]]></rights>
+                <assigned>0</assigned>
+                <assignees><![CDATA[[]]]></assignees>
+                <history/>
+                <params/>
+                <viewed>0</viewed>
+                <privateFile>0</privateFile>
+                <studierichting><![CDATA[Testrichting]]></studierichting>
+                <itemGroupID>900101</itemGroupID>
+                <authorSex>f</authorSex>
+                <bulkID>0</bulkID>
+                <schoolyear>2030</schoolyear>
+                <isNew>0</isNew>
+                <originalCreate>0</originalCreate>
+              </item>
+            </items>
+            <catsInfo><![CDATA[{"900401":{"catID":900401,"name":"Testcategorie"},"900402":{"catID":900402,"parentID":900401,"name":"Testsubcategorie"}}]]></catsInfo>
+            <catOrder><![CDATA[[900401,900402]]]></catOrder>
+            <catViews><![CDATA[{"900401":"form","900402":"form"}]]></catViews>
+          </content>
+        </data>
+      </action>
+    </actions>
+  </response>
+</server>

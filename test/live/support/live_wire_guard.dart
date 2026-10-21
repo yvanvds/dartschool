@@ -54,7 +54,13 @@
 //   (`file=dispatcher`), a request of one command, the notes of a category
 //   (`lvs_cats/getUserCatItems`) or all of a pupil's file
 //   (`lvs_pupils/getUserData`), with the params LvsService sends and no
-//   other (#161). The LVS has writes next to its reads (`setLastPupil`, the
+//   other (#161); and, to its JSON dispatchers, the support plan reads
+//   (`jqDispatcher_hp` `getIHP` and `getProfielSchets`, and
+//   `jqDispatcher_settings` `getLVSspecificTitles`), with their own form
+//   fields and no other, but none of the plans' edit flow
+//   (`getIHPondersteuningsnood`, `getOD_doelstellingen`,
+//   `/LVS/Handelingsplannen/checkSyntheseEditor`, every `save*`, `set*`)
+//   (#163). The LVS has writes next to its reads (`setLastPupil`, the
 //   "viewed" flags, `changeItemViewStatus` on the same dispatcher,
 //   `saveKeyword`, ...), and the live suite changes nothing there; its GETs
 //   (the pupil search, a pupil's file, and the results app's reads,
@@ -638,6 +644,34 @@ class LiveWireGuard extends Interceptor {
     '/LVS/Pupilxhr/getStatusInfo': {'pupilID'},
   };
 
+  /// The functions of the LVS's JSON dispatchers that only read and that the
+  /// live suite sends (`/?module=LVS&file=<file>&function=<function>`), by
+  /// file and function, with the form fields they carry: the support plans
+  /// (LvsService.getSupportPlanPeriods, getSupportPlan, getProfileSketch,
+  /// #163).
+  static const _lvsJsonReads = {
+    ('jqDispatcher_settings', 'getLVSspecificTitles'): {
+      'groupID',
+      'pupilID',
+      'type',
+      'activeID',
+      'color',
+      'archiveID',
+    },
+    ('jqDispatcher_hp', 'getIHP'): {
+      'groupID',
+      'pupilID',
+      'periodID',
+      'exportID',
+    },
+    ('jqDispatcher_hp', 'getProfielSchets'): {
+      'pupilID',
+      'classID',
+      'periodID',
+      'exportID',
+    },
+  };
+
   /// The commands of the LVS's XML dispatcher that only read and that the
   /// live suite sends, by subsystem and action, with the params they carry:
   /// the notes of a category and all of a pupil's file
@@ -662,7 +696,7 @@ class LiveWireGuard extends Interceptor {
   };
 
   /// Why the LVS POST to [uri] with [data] may not go out, or `null`: only
-  /// the reads of LvsService (#160, #161) go out, never a write.
+  /// the reads of LvsService (#160, #161, #163) go out, never a write.
   String? _lvsRefusal(Uri uri, Object? data) {
     final form = data is Map ? data : const {};
     final query = uri.queryParameters;
@@ -678,6 +712,14 @@ class LiveWireGuard extends Interceptor {
         form.length == 1 &&
         form['id'] == '0';
     if (isTreeRoot) return null;
+    final jsonRead = uri.path == '/' && query.length == 3
+        ? _lvsJsonReads[(query['file'], query['function'])]
+        : null;
+    if (jsonRead != null &&
+        query['module'] == 'LVS' &&
+        form.keys.every(jsonRead.contains)) {
+      return null;
+    }
     final isDispatcher =
         uri.path == '/' &&
         query.length == 2 &&
@@ -688,7 +730,9 @@ class LiveWireGuard extends Interceptor {
     return 'the live suite changes nothing in the LVS: it sends no LVS POST '
         'but the reads getStatusInfo (with pupilID) and the root of the class '
         'tree (treeBuilder, id 0) (#160), and the dispatcher\'s '
-        'getUserCatItems and getUserData alone, with their params (#161)';
+        'getUserCatItems and getUserData alone, with their params (#161), '
+        'and the support plan reads getLVSspecificTitles, getIHP and '
+        'getProfielSchets, with their fields (#163)';
   }
 
   /// Whether [command], the form field of the LVS's XML dispatcher, is a

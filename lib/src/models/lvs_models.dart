@@ -1,7 +1,8 @@
 /// Models for Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem",
 /// `/?module=LVS`, #160): a pupil found by name, and the overview of one
 /// pupil's file: who, which class, today's attendance, and which sections of
-/// the file hold something; the notes of a pupil, per category (#161).
+/// the file hold something; the notes of a pupil, per category (#161). The
+/// results (#162) and the support plans (#163) have models of their own.
 ///
 /// The LVS is an **internal** Smartschool module, not part of the official
 /// (public) API, and it holds the most sensitive data Smartschool has. So
@@ -112,6 +113,16 @@ class LvsPupilFile {
   /// one by its [LvsCategory.id].
   List<LvsCategory> get noteCategories =>
       LvsCategory._ofSections(sections, LvsSectionType.items);
+
+  /// The sections of type [LvsSectionType.supportPlans] of the file, at any
+  /// depth, in the LVS's order (#163). Empty when the school does not use
+  /// the LVS's support plans ("handelingsplannen"), or the account may not
+  /// see them: `LvsService.getSupportPlan` then has nothing to read.
+  /// [LvsSection.hasItems] tells whether one holds something for the pupil.
+  List<LvsSection> get supportPlanSections => [
+    for (final section in allSections)
+      if (section.type == LvsSectionType.supportPlans) section,
+  ];
 
   /// Shows counts only: the values are a pupil's.
   @override

@@ -2,13 +2,16 @@ import 'dart:convert';
 
 import '../exceptions.dart';
 import '../models/lvs_models.dart';
+import '../models/lvs_plan_models.dart';
 import '../models/lvs_results_models.dart';
 import '../session.dart';
 import 'lvs_note_answers.dart';
+import 'lvs_plan_answers.dart';
 import 'lvs_result_answers.dart';
 import 'lvs_wire.dart';
 
 export '../models/lvs_models.dart';
+export '../models/lvs_plan_models.dart';
 export '../models/lvs_results_models.dart';
 
 /// Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem",
@@ -18,8 +21,9 @@ export '../models/lvs_results_models.dart';
 /// sections of the file hold something; the pupil's notes, per category
 /// ([getNotes]) or all of them ([getAllNotes], #161); and the pupil's
 /// results ([getEvaluations], [getAllEvaluations], [getFeedback],
-/// [getReports], #162). [checkAccess] tells whether the account may use the
-/// LVS.
+/// [getReports], #162); and the pupil's support plan ([getSupportPlan],
+/// [getSupportPlanPeriods], [getProfileSketch], #163). [checkAccess] tells
+/// whether the account may use the LVS.
 ///
 /// ```dart
 /// final lvs = LvsService(client);
@@ -70,7 +74,12 @@ export '../models/lvs_results_models.dart';
 ///   `getperiods`, `getcourses`, `getevaluationsofuser`, `getfeedback` and
 ///   `getreports`, each with `pupilId` and `groupId` (the class) and, but
 ///   the first, the school year (`startDate`, `endDate`), answered with
-///   JSON.
+///   JSON;
+/// - the support plans (#163): the LVS's JSON dispatchers,
+///   `POST /?module=LVS&file=jqDispatcher_hp&function=getIHP` (the plan) and
+///   `getProfielSchets` (the profile sketch), and
+///   `jqDispatcher_settings&function=getLVSspecificTitles` (the periods),
+///   form-encoded, answered with JSON as text.
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -555,6 +564,134 @@ class LvsService {
       },
     );
     return LvsWire.json(response, read);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Support plans (#163)
+  // ---------------------------------------------------------------------------
+  //
+  // The sections of type `handelingsplannen` of a pupil's file
+  // ([LvsPupilFile.supportPlanSections]): the individual plan ("IHP") of the
+  // pupil, per period of the school's structure of support plans, and the
+  // profile sketch. Only the live plan is read (`exportID` 0): not an
+  // archived export, nor the versions of an item. The evaluation of the plan
+  // and its report are not read either (#170). Every read is one form POST of the
+  // LVS's JSON dispatchers, as the web client opens a view; none of the calls
+  // of its edit flow (`getIHPondersteuningsnood`, `getOD_doelstellingen`,
+  // `/LVS/Handelingsplannen/checkSyntheseEditor`, ...) is on the allowlist.
+
+  /// The left tree's colour that the web client sends with the period menu.
+  static const _menuColor = '#418b09';
+
+  /// The periods of the support plans of pupil [pupilId] in class [classId]
+  /// (#163), in the LVS's order: what [getSupportPlan] and [getProfileSketch]
+  /// take as `periodId`. Empty when the LVS gives no period menu, as for a
+  /// class without a structure of support plans (seen live for a made-up
+  /// class).
+  ///
+  /// One request: `POST /?module=LVS&file=jqDispatcher_settings&function=`
+  /// `getLVSspecificTitles` with `groupID`, `pupilID`, `type` `hp_ihp`,
+  /// `activeID` `0`, `color` and `archiveID` `0`, the menu the web client
+  /// shows above the plan.
+  ///
+  /// An ID that is not positive is an [ArgumentError], before anything is
+  /// sent.
+  Future<List<LvsPlanPeriod>> getSupportPlanPeriods({
+    required int pupilId,
+    required int classId,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    const read = LvsWire.supportPlanPeriods;
+    final response = await _wire.post(
+      '/',
+      query: read.fixedQuery,
+      form: {
+        'groupID': '$classId',
+        'pupilID': '$pupilId',
+        'type': 'hp_ihp',
+        'activeID': '0',
+        'color': _menuColor,
+        'archiveID': '0',
+      },
+    );
+    return LvsPlanAnswers.periods(LvsWire.json(response, read));
+  }
+
+  /// The support plan of pupil [pupilId] in class [classId] in period
+  /// [periodId] (one of [getSupportPlanPeriods]; the current period when not
+  /// given) (#163): the individual plan ("IHP") with its items, each with the
+  /// support needs, goals and approach of its last version.
+  ///
+  /// [LvsSupportPlan.status] tells the outcomes apart: a plan, no plan for
+  /// the pupil in the period, or no period (the LVS answered a made-up class
+  /// so, seen live: a class without a structure of support plans). A school
+  /// that does not use support plans has no section of their type in the
+  /// pupil's file ([LvsPupilFile.supportPlanSections]). The LVS's answer for
+  /// a pupil it does not know in a class it knows was not captured (#168):
+  /// [getPupilFile] tells it apart.
+  ///
+  /// One request: `POST /?module=LVS&file=jqDispatcher_hp&function=getIHP`
+  /// with `groupID`, `pupilID`, `periodID` (`0` for the current one) and
+  /// `exportID` `0` (the live plan, not an archived export). The item filters
+  /// the web client saves for the account are not applied.
+  ///
+  /// An ID that is not positive is an [ArgumentError], before anything is
+  /// sent.
+  Future<LvsSupportPlan> getSupportPlan({
+    required int pupilId,
+    required int classId,
+    int? periodId,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    if (periodId != null) _checkId(periodId, 'periodId');
+    const read = LvsWire.supportPlan;
+    final response = await _wire.post(
+      '/',
+      query: read.fixedQuery,
+      form: {
+        'groupID': '$classId',
+        'pupilID': '$pupilId',
+        'periodID': '${periodId ?? 0}',
+        'exportID': '0',
+      },
+    );
+    return LvsPlanAnswers.plan(LvsWire.json(response, read));
+  }
+
+  /// The profile sketch ("profielschets") of pupil [pupilId] in class
+  /// [classId] in period [periodId] (the current period when not given)
+  /// (#163). [LvsProfileSketch.hasSketch] is `false` when there is none: the
+  /// LVS's own message in its place is left out.
+  ///
+  /// One request: `POST /?module=LVS&file=jqDispatcher_hp&function=`
+  /// `getProfielSchets` with `pupilID`, `classID`, `periodID` (`0` for the
+  /// current one) and `exportID` `0`. The pupil's name, birth date and age
+  /// in its answer are not read.
+  ///
+  /// An ID that is not positive is an [ArgumentError], before anything is
+  /// sent.
+  Future<LvsProfileSketch> getProfileSketch({
+    required int pupilId,
+    required int classId,
+    int? periodId,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    if (periodId != null) _checkId(periodId, 'periodId');
+    const read = LvsWire.profileSketch;
+    final response = await _wire.post(
+      '/',
+      query: read.fixedQuery,
+      form: {
+        'pupilID': '$pupilId',
+        'classID': '$classId',
+        'periodID': '${periodId ?? 0}',
+        'exportID': '0',
+      },
+    );
+    return LvsPlanAnswers.profileSketch(LvsWire.json(response, read));
   }
 
   /// Throws an [ArgumentError] for a [count] (a page number, a page size, a

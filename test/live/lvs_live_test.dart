@@ -1,9 +1,9 @@
 // What the pupil tracking system (LVS) answers the account of
-// credentials.yml through LvsService (#160, #161, #162): the root of its
-// class tree (checkAccess), a pupil search, the placeholder pupil of a
-// made-up ID (its file and its notes), the results app's answers for that
-// ID, and, when the developer names one, the file, the notes and the
-// results of a pupil they teach.
+// credentials.yml through LvsService (#160, #161, #162, #163): the root of
+// its class tree (checkAccess), a pupil search, the placeholder pupil of a
+// made-up ID (its file and its notes), the results app's and the support
+// plans' answers for that ID, and, when the developer names one, the file,
+// the notes, the results and the support plan of a pupil they teach.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -20,20 +20,27 @@
 // made-up pupil ID, which the LVS answers with its school's sections and a
 // placeholder pupil (seen 2026-10-21), for its file and for the notes of a
 // category, with no data for all its notes, and with HTTP 500 for every
-// read of its results. With it, it also searches for that text and reads
+// read of its results, and with no period of support plans (a made-up
+// class has no structure of them) for the support plan reads. With it, it
+// also searches for that text and reads
 // the file and today's status of the first pupil found, the notes of the
 // first of its categories that holds notes (twice: it prints how many are
 // new before and after, for #168), all its notes, a made-up category of it,
-// and its results (configuration, periods, courses, a page of two
-// evaluations and all of them, feedback, reports: counts and types only):
+// its results (configuration, periods, courses, a page of two
+// evaluations and all of them, feedback, reports: counts and types only),
+// and, when its file has a section of support plans, their periods, the
+// plan of the current period and the profile sketch (status, kinds and
+// counts only):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
 //     dart test -P live test/live/lvs_live_test.dart
 //
 // The name comes from the environment, never from the code. It only reads:
 // the wire guard (support/live_wire_guard.dart) refuses every LVS POST but
-// getStatusInfo, the root of the class tree and the dispatcher's
-// getUserCatItems and getUserData, and every PUT; the results app's reads
+// getStatusInfo, the root of the class tree, the dispatcher's
+// getUserCatItems and getUserData, and the support plan reads
+// getLVSspecificTitles, getIHP and getProfielSchets, and every PUT; the
+// results app's reads
 // are GETs, on LvsService's own allowlist (#162). As every live
 // run, it takes the lock of the session first, logs in at most once, and
 // prints no credential, no cookie and no name.
@@ -195,6 +202,120 @@ void main() {
         }
         expect(run.guard.violations, isEmpty);
       });
+
+      test("a made-up pupil's support plan (#163): no periods, no period for "
+          'the plan (status noPeriod) and no profile sketch, as the LVS '
+          'answers a class without a structure of support plans (seen '
+          '2026-10-21)', () async {
+        if (!access) {
+          // What the LVS answers without rights was not captured (#168): an
+          // error, never an empty result.
+          await expectLater(
+            lvs.getSupportPlan(pupilId: _madeUpId, classId: _madeUpId),
+            throwsA(isA<SmartschoolLvsError>()),
+          );
+          expect(run.guard.violations, isEmpty);
+          return;
+        }
+        final periods = await lvs.getSupportPlanPeriods(
+          pupilId: _madeUpId,
+          classId: _madeUpId,
+        );
+        expect(periods.length, 0);
+        final plan = await lvs.getSupportPlan(
+          pupilId: _madeUpId,
+          classId: _madeUpId,
+        );
+        expect(plan.status == LvsSupportPlanStatus.noPeriod, isTrue);
+        expect(plan.items.length, 0);
+        final sketch = await lvs.getProfileSketch(
+          pupilId: _madeUpId,
+          classId: _madeUpId,
+        );
+        expect(sketch.hasSketch, isFalse);
+        expect(sketch.period.hasError, isTrue);
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test(
+        'a pupil the developer teaches (#163): the periods of the support '
+        'plans, the plan of the current period by kind, and the profile '
+        'sketch',
+        skip: pupil == null || pupil.isEmpty
+            ? 'set $_pupilVariable to (part of) the name of a pupil you '
+                  'teach to read their support plan'
+            : null,
+        () async {
+          expect(access, isTrue, reason: 'checkAccess');
+          final match = (await lvs.searchPupils(pupil!)).first;
+          final file = await lvs.getPupilFile(
+            pupilId: match.pupilId,
+            classId: match.classId,
+          );
+          final sections = file.supportPlanSections;
+          print(
+            'sections of support plans: ${sections.length} '
+            '(${sections.where((s) => s.hasItems).length} with items)',
+          );
+          if (sections.isEmpty) {
+            print('no section of support plans: nothing more to read');
+            return;
+          }
+          final ids = (pupilId: match.pupilId, classId: match.classId);
+
+          final periods = await lvs.getSupportPlanPeriods(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          print(
+            'periods: ${periods.length} '
+            '(${periods.where((p) => p.heading.isNotEmpty).length} under a '
+            'heading)',
+          );
+          expect(periods.every((p) => p.id > 0), isTrue);
+          expect(periods.every((p) => p.name.isNotEmpty), isTrue);
+
+          final plan = await lvs.getSupportPlan(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          final items = plan.items;
+          int count(Iterable<int> Function(LvsPlanItem) of) =>
+              items.fold(0, (n, item) => n + of(item).fold(0, (a, b) => a + b));
+          print(
+            'plan: ${plan.status.name}, period: ${plan.period}, '
+            'period on the menu: '
+            '${periods.any((p) => p.id == plan.period.id)}, items: '
+            '${items.length}, by kind: '
+            '${{for (final kind in LvsPlanItemKind.values) kind.name: items.where((i) => i.kind == kind).length}}, '
+            'from the group plan: '
+            '${items.where((i) => i.fromGroupPlan).length}, support needs: '
+            '${count((i) => [i.supportNeeds.length])}, main goals: '
+            '${count((i) => [i.mainGoals.length])}, work goals: '
+            '${count((i) => [i.workGoals.length])}, approach: '
+            '${count((i) => [i.approach.length])}, goals: '
+            '${count((i) => [i.goals.length])} (objectives: '
+            '${count((i) => i.goals.map((g) => g.objectives.length))}), with '
+            'a start situation: '
+            '${items.where((i) => i.startSituation.isNotEmpty).length}',
+          );
+          expect(items.every((i) => i.id > 0), isTrue);
+          expect(
+            {for (final item in items) '${item.type} ${item.id}'}.length,
+            items.length,
+          );
+
+          final sketch = await lvs.getProfileSketch(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+          );
+          print(
+            'profile sketch: $sketch, with text: ${sketch.text.isNotEmpty}, '
+            'with a last change: ${sketch.lastRevision.isNotEmpty}',
+          );
+          expect(run.guard.violations, isEmpty);
+        },
+      );
 
       test(
         "a pupil the developer teaches (#162): the results of the file's "

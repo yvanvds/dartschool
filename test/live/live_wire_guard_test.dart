@@ -645,6 +645,25 @@ class _Smartschool implements HttpClientAdapter {
           _lvsFixture(fixture),
           contentType: 'application/xml; charset=UTF-8',
         );
+      // The LVS's JSON dispatchers (#163): the support plan reads.
+      case (true, '/', 'jqDispatcher_settings', 'getLVSspecificTitles')
+          when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('supportplan/periods.json'),
+          contentType: 'text/html; charset=UTF-8',
+        );
+      case (true, '/', 'jqDispatcher_hp', 'getIHP')
+          when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('supportplan/plan.json'),
+          contentType: 'text/html; charset=UTF-8',
+        );
+      case (true, '/', 'jqDispatcher_hp', 'getProfielSchets')
+          when query['module'] == 'LVS':
+        return _answer(
+          _lvsFixture('supportplan/profile.json'),
+          contentType: 'text/html; charset=UTF-8',
+        );
       case (_, final path, _, _)
           when path.startsWith('/LVS/') || query['module'] == 'LVS':
         return _answer('{"status":1}', contentType: 'application/json');
@@ -1310,6 +1329,38 @@ void main() {
       expect(server.log, [
         'POST /?module=LVS&file=dispatcher',
         'POST /?module=LVS&file=dispatcher',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the LVS reads of its JSON dispatchers: the periods, the plan and '
+        "the profile sketch of a pupil's support plans (#163)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      final periods = await lvs.getSupportPlanPeriods(
+        pupilId: 900001,
+        classId: 900101,
+      );
+      final plan = await lvs.getSupportPlan(
+        pupilId: 900001,
+        classId: 900101,
+        periodId: periods.first.id,
+      );
+      final sketch = await lvs.getProfileSketch(
+        pupilId: 900001,
+        classId: 900101,
+      );
+
+      expect(periods, hasLength(2));
+      expect(plan.items, hasLength(4));
+      expect(sketch.hasSketch, isTrue);
+      expect(server.log, [
+        'POST /?module=LVS&file=jqDispatcher_settings'
+            '&function=getLVSspecificTitles',
+        'POST /?module=LVS&file=jqDispatcher_hp&function=getIHP',
+        'POST /?module=LVS&file=jqDispatcher_hp&function=getProfielSchets',
       ]);
       expect(guard.violations, isEmpty);
     });
@@ -3021,6 +3072,38 @@ void main() {
             }),
             'save': '1',
           },
+        ),
+        // The support plans (#163): the reads and the lock of their edit
+        // flow, their writes, and the reads with a field more or in another
+        // file.
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getIHPondersteuningsnood',
+          {'versionID': '900611', 'classID': '900101'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getOD_doelstellingen',
+          {'groupID': '900101'},
+        ),
+        ('/LVS/Handelingsplannen/checkSyntheseEditor', {'pupilID': '900001'}),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=setProfielSchets',
+          {'pupilID': '900001', 'content': '<p>Testprofielschets.</p>'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=saveIHPversion',
+          {'pupilID': '900001'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getIHP',
+          {'pupilID': '900001', 'content': 'Test'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hpEval&function=getIHP',
+          {'pupilID': '900001'},
+        ),
+        (
+          '/?module=LVS&file=jqDispatcher_hp&function=getIHP&exportID=900801',
+          {'pupilID': '900001'},
         ),
       ];
       for (final (path, data) in posts) {

@@ -23,7 +23,10 @@
 // (`changeItemViewStatus`, `saveProfile`, ...). #160 reads with 3, and with
 // the left tree's `treeBuilder` (2's form, without a `function`); #161 with
 // 1, the notes of a pupil; #162 with 3, the GETs of the results app
-// (`/LVS/Results/*`), but not its export (`exportgoals`).
+// (`/LVS/Results/*`), but not its export (`exportgoals`); #163 with 2, the
+// support plans (`jqDispatcher_hp`: `getIHP`, `getProfielSchets`) and their
+// periods (`jqDispatcher_settings`: `getLVSspecificTitles`), but none of the
+// calls of their edit flow.
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -399,6 +402,64 @@ final class LvsWire {
     queryFields: _resultsQuery,
   );
 
+  /// The periods of the support plans of a pupil's class (#163): the LVS's
+  /// period menu, `POST /?module=LVS&file=jqDispatcher_settings&function=`
+  /// `getLVSspecificTitles` with `groupID`, `pupilID`, `type`, `activeID`,
+  /// `color` and `archiveID`. Not the other functions of that file
+  /// (`setLastPupil`, `setUserSetting`, ...).
+  static const supportPlanPeriods = LvsRead(
+    method: 'POST',
+    path: '/',
+    what: 'the periods of the support plans',
+    fixedQuery: {
+      'module': 'LVS',
+      'file': 'jqDispatcher_settings',
+      'function': 'getLVSspecificTitles',
+    },
+    formFields: {
+      'groupID',
+      'pupilID',
+      'type',
+      'activeID',
+      'color',
+      'archiveID',
+    },
+  );
+
+  /// A pupil's support plan in a period (#163): the individual plan,
+  /// `POST /?module=LVS&file=jqDispatcher_hp&function=getIHP` with
+  /// `groupID`, `pupilID`, `periodID` and `exportID`. Not the reads of its
+  /// edit flow (`getIHPondersteuningsnood`, `getIHPhoofddoelen`,
+  /// `getIHPWerkdoelen`, `getOD_doelstellingen`, ...), nor any `save*`,
+  /// `set*`, `add*`, `copy*`, `create*`, `delete*` or `print*`.
+  static const supportPlan = LvsRead(
+    method: 'POST',
+    path: '/',
+    what: "the pupil's support plan",
+    fixedQuery: {
+      'module': 'LVS',
+      'file': 'jqDispatcher_hp',
+      'function': 'getIHP',
+    },
+    formFields: {'groupID', 'pupilID', 'periodID', 'exportID'},
+  );
+
+  /// A pupil's profile sketch in a period (#163):
+  /// `POST /?module=LVS&file=jqDispatcher_hp&function=getProfielSchets` with
+  /// `pupilID`, `classID`, `periodID` and `exportID`. Not its versions or
+  /// its save (`getProfielSchetsVersions`, `setProfielSchets`).
+  static const profileSketch = LvsRead(
+    method: 'POST',
+    path: '/',
+    what: "the pupil's profile sketch",
+    fixedQuery: {
+      'module': 'LVS',
+      'file': 'jqDispatcher_hp',
+      'function': 'getProfielSchets',
+    },
+    formFields: {'pupilID', 'classID', 'periodID', 'exportID'},
+  );
+
   /// Every request the LVS services may send. Any other is refused with a
   /// [SmartschoolLvsRequestNotAllowedError] before it is sent.
   static final List<LvsRead> reads = List.unmodifiable([
@@ -414,6 +475,9 @@ final class LvsWire {
     evaluations,
     resultsFeedback,
     reports,
+    supportPlanPeriods,
+    supportPlan,
+    profileSketch,
   ]);
 
   /// The read of [reads] that a request of [method] to [path] with [query]

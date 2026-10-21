@@ -272,6 +272,38 @@ const lvsFixtureKinds = <LvsFixtureKind>[
     idFields: {'goalId', 'leerplanId'},
     textFields: {'leerplanKey'},
   ),
+  LvsFixtureKind(
+    folder: 'supportplan',
+    about:
+        'Answers of the LVS\'s JSON dispatchers for the support plans (#163): '
+        'the menu of periods (jqDispatcher_settings, getLVSspecificTitles), '
+        'the individual plan (jqDispatcher_hp, getIHP) and the profile '
+        'sketch (jqDispatcher_hp, getProfielSchets).',
+    // `titleText` names a period or a heading of the menu, `title` the
+    // menu's current title and a course of a plan; `className_teacher` is
+    // the pupil's class. The plan's support needs, goals, objectives,
+    // approach and planning (`ondName`, `doelName`, `parentName`,
+    // `aanpakName`, `occName`), its theme, start situation and comment
+    // (`themeName`, `beginsituatie`, `aanpakcomment`), a goal's domain
+    // (`path`), the sketch (`content`, `lastrevision`), a period's
+    // `message` and an uploaded plan's `fileName` are free text.
+    nameFields: {'titleText', 'title', 'className_teacher'},
+    textFields: {
+      'ondName',
+      'doelName',
+      'parentName',
+      'aanpakName',
+      'occName',
+      'themeName',
+      'beginsituatie',
+      'aanpakcomment',
+      'path',
+      'content',
+      'lastrevision',
+      'message',
+      'fileName',
+    },
+  ),
 ];
 
 /// The fields of the notes of a `notes` fixture by their position, as the

@@ -1,0 +1,31 @@
+{
+  "check": 1,
+  "title": "<span class='lvsTitleText'>Testperiode</span>",
+  "titleMenu": [
+    {
+      "titleGroup": 1,
+      "titleType": "title",
+      "titleIcon": "",
+      "actionID": 0,
+      "titleText": "Testschooljaar",
+      "selected": 0
+    },
+    {
+      "titleGroup": 0,
+      "titleType": "",
+      "titleIcon": "icon_period",
+      "actionID": 900501,
+      "titleText": "Testperiode",
+      "selected": 0
+    },
+    {
+      "titleGroup": 0,
+      "titleType": "",
+      "titleIcon": "icon_period",
+      "actionID": "900502",
+      "titleText": "<b>Testperiode 2</b>",
+      "selected": 0
+    }
+  ],
+  "width": 300
+}

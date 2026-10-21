@@ -1,0 +1,18 @@
+{
+  "count": 0,
+  "period": {
+    "error": 1,
+    "message": "Testfout: maak eerst een structuur aan voor deze klas"
+  },
+  "items": [],
+  "filters": {"groupBy": 0, "filterTeacher": 0, "filterCourse": 0},
+  "domains": {
+    "gwp": {"doelen": [], "minidb": [], "doelenCount": 0, "minidbCount": 0},
+    "gwpNew": {"doelen": [], "minidb": [], "doelenCount": 0, "minidbCount": 0},
+    "ihp": [],
+    "doc": []
+  },
+  "OV": 0,
+  "canWrite": true,
+  "courses": []
+}

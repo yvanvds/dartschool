@@ -69,6 +69,8 @@ school), it goes here too.
 - `Klassen` — Smartschool's own title of the root of the LVS's class tree (#160)
 - `Niet beschikbaar` — Smartschool's own name of the LVS's placeholder pupil (#160)
 - `Klas niet gekend` — Smartschool's own class of that placeholder (#160)
+- `Testperiode 2` — a second period of the support plans (#163)
+- `Testschooljaar` — a heading of the menu of periods of the support plans (#163)
 
 ## The rest, in short
 

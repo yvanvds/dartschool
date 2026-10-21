@@ -27,6 +27,18 @@ String? _parseDefaultCredentialsPath(List<String> args) {
   return null;
 }
 
+/// What an MCP client is told when it connects (`initialize`): where
+/// captures go, and the rules for the pupil tracking system (#159).
+const _instructions =
+    'For development and research only. Write captured answers to a folder '
+    'outside the repository (a temp folder), never into the working tree, '
+    'dev_dumps/ included. The pupil tracking system (LVS, /?module=LVS): '
+    'read doc/lvs-privacy.md first. Do not open a pupil\'s data (the '
+    'developer captures those answers); describe LVS answers by their shape '
+    'only (field names, types, placeholders), and never put a value of one '
+    '(a name, an id, a date or text of a note) in code, fixtures, issues, '
+    'PRs or commit messages.';
+
 class _SmartschoolResearcherServer {
   _SmartschoolResearcherServer({this.defaultCredentialsPath});
 
@@ -192,6 +204,7 @@ class _SmartschoolResearcherServer {
               'capabilities': {
                 'tools': {'listChanged': false},
               },
+              'instructions': _instructions,
             });
             break;
 

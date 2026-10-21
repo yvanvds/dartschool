@@ -1761,6 +1761,10 @@ The `pre-commit` hook runs the same checks as CI, in parallel:
 
 The tests never use the network: they talk to fake Smartschools, and every test file calls `forbidRealNetwork()` (`test/support/no_network.dart`) and gives its clients a temporary cache folder (`tempCacheDir()`); `test/network_guard_test.dart` and `test/cache_dir_guard_test.dart` fail otherwise.
 
+### LVS data
+
+The pupil tracking system (LVS, `/?module=LVS`) holds the most sensitive data of Smartschool. Before any work on it (research, captures, fixtures, tests, examples, issues, PRs), read **[`doc/lvs-privacy.md`](doc/lvs-privacy.md)**: no value from a live LVS answer goes into the repository or onto GitHub; raw captures stay in a temp folder outside the repository, never in `dev_dumps/`; LVS fixtures (`test/fixtures/lvs/`) are written by hand with the fakes of `test/fixtures/lvs/FAKES.md`, and `test/lvs_fixtures_guard_test.dart` checks them (fake names, ids in a reserved range, no base64 names anywhere under `test/`, no pasted answers).
+
 ### Live tests
 
 `test/live/` holds a live suite that **really sends messages** on the Smartschool of `credentials.yml`, to check that sending still works there (Smartschool can change its compose flow at any time). It is local and on demand only: `dart_test.yaml` skips the suites tagged `live` without loading them, so `dart test` (and so CI and the pre-commit hook) never runs it. Run it on purpose, with a `credentials.yml` in the package root (without one, it skips):
@@ -1827,5 +1831,9 @@ This repository includes a local [MCP](https://modelcontextprotocol.io) server t
 5. Design the Dart service method and models from the confirmed response shape.
 
 Pass `maxBodyChars` to any tool to truncate large responses before they fill the context window.
+
+### Captures
+
+Write captured answers to a folder **outside the repository** (a temp folder), not into the working tree. `dev_dumps/` is git-ignored, but a `git add -f`, a tool or an agent can still pick a file up there; an answer of the pupil tracking system (LVS) never goes there, nor anything that quotes one: see [`doc/lvs-privacy.md`](doc/lvs-privacy.md). The server tells an MCP client the same in its `initialize` instructions.
 
 > **Keep `credentials.yml` local and private.** It is listed in `.gitignore` and must never be committed.

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Made up for #159, not the shape of an LVS answer. A note's children here
+  are known by position only, as in some answers of the LVS's XML
+  dispatcher: [0] the note's id, [1] its author, [2] its text. The kind
+  "example" in test/lvs_fixtures_guard_test.dart checks them by position
+  (extraFields); a JSON text inside a node is read as JSON.
+-->
+<server>
+  <param name="pupilID"><![CDATA[900001]]></param>
+  <notes>
+    <note>
+      <value>900301</value>
+      <value>Piet Peeters</value>
+      <value><![CDATA[<p>Testnotitie over de leerling.</p>]]></value>
+      <value><![CDATA[{"paramID": 900601, "title": "Testveld", "teacher": "Céline Dupré"}]]></value>
+    </note>
+    <note>
+      <value>900302</value>
+      <value>Dupré Céline</value>
+      <value><![CDATA[Testnotitie, vertrouwelijk.]]></value>
+    </note>
+  </notes>
+</server>

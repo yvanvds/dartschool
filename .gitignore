@@ -26,7 +26,9 @@ credentials.yml
 .env
 
 # ── Project-specific ─────────────────────────────────────────────────────────
-# Raw HTML/JSON response captures from the live Smartschool site
+# Raw HTML/JSON response captures from the live Smartschool site. Never an
+# answer of the pupil tracking system (LVS): those stay in a temp folder
+# outside the repository (doc/lvs-privacy.md, #159).
 /dev_dumps/
 
 # Python reference implementation (nested project, kept local)

@@ -13,7 +13,11 @@ import 'dev_request_options.dart';
 /// final inspector = await DevInspector.create(credentials);
 /// final result = await inspector.getPage('/?module=Messages');
 /// inspector.prettyPrint(result);
-/// await inspector.saveToFile(result, 'messages_page.html');
+/// // Outside the repository: see saveToFile.
+/// await inspector.saveToFile(
+///   result,
+///   '${Directory.systemTemp.path}/messages_page.html',
+/// );
 /// ```
 class DevInspector {
   final SmartschoolClient _client;
@@ -186,6 +190,11 @@ class DevInspector {
   }
 
   /// Saves the body of an [InspectionResult] to a local file.
+  ///
+  /// Give it a path outside the repository (a temp folder), not one in the
+  /// working tree, `dev_dumps/` included: a file there is easily committed
+  /// or read by a tool. An answer of the pupil tracking system (LVS) never
+  /// goes into the repository: see `doc/lvs-privacy.md`.
   Future<void> saveToFile(InspectionResult result, String filename) async {
     final file = File(filename);
     await file.writeAsString(result.body);

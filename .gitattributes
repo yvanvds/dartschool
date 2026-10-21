@@ -1,0 +1,13 @@
+# Line ends (#173): every text file is stored and checked out with LF, on
+# every platform and whatever core.autocrlf says, so that a fresh clone and
+# the Windows CI runner have the bytes a tool wrote. A test that needs CRLF
+# builds its CRLF variant in code; it never relies on the checkout.
+* text=auto eol=lf
+
+# cmd.exe misreads LF batch files (labels, goto): these keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary: never converted. A download fixture that holds a PDF, byte-exact.
+*.pdf binary
+test/fixtures/smartschool/requests/get/documents/download/index/htm/0/courseid/4496/docid/461338/ssid/49.json binary

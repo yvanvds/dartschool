@@ -24,9 +24,12 @@ jobs:
         run: dart analyze
       - name: Test with coverage
         run: dart test --coverage=coverage
+      # Pinned: coverage 1.16.0's format_coverage throws on the empty report
+      # that a test file with only skipped tests (test/live) leaves behind,
+      # where 1.15.1 skips it.
       - name: Convert coverage to lcov
         run: |
-          dart pub global activate coverage
+          dart pub global activate coverage 1.15.1
           dart pub global run coverage:format_coverage --lcov --in=coverage --out=coverage/lcov.info --report-on=lib
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v6

@@ -43,6 +43,14 @@ String _fixture(String name) =>
 String _lvsFixture(String name) =>
     File('test/fixtures/lvs/$name').readAsStringSync();
 
+/// The `command` form field of the LVS's XML dispatcher (#161) for one
+/// command with [params].
+String _lvsCommand(
+  String subsystem,
+  String action,
+  Map<String, String> params,
+) => XmlInterface.buildCommand(subsystem, action, params);
+
 final _newMessageForm = _fixture('get/composemessage/new-message.html');
 final _sendAnswer = _fixture('post/composemessage/on_send.html');
 final _quickDeleteAnswer = _fixture('post/postboxes/quick delete.xml');
@@ -625,6 +633,17 @@ class _Smartschool implements HttpClientAdapter {
         return _answer(
           _lvsFixture('tree/root.json'),
           contentType: 'text/json; charset=utf-8',
+        );
+      // The LVS's XML dispatcher (#161): the notes of a category, and all
+      // of a pupil's file.
+      case (true, '/', 'dispatcher', null) when query['module'] == 'LVS':
+        final command = (options.data as Map)['command'] as String;
+        final fixture = command.contains('<action>getUserData</action>')
+            ? 'notes/all_notes.xml'
+            : 'notes/category.xml';
+        return _answer(
+          _lvsFixture(fixture),
+          contentType: 'application/xml; charset=UTF-8',
         );
       case (_, final path, _, _)
           when path.startsWith('/LVS/') || query['module'] == 'LVS':
@@ -1269,6 +1288,28 @@ void main() {
         'GET /LVS/Spotlight?searchVal=janssens',
         'GET /LVS/Spotlight/900001?classID=900101',
         'POST /LVS/Pupilxhr/getStatusInfo',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the LVS reads of the XML dispatcher: the notes of a category, and '
+        "all of a pupil's file (#161)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      final notes = await lvs.getNotes(
+        pupilId: 900001,
+        classId: 900101,
+        categoryId: 900401,
+      );
+      final all = await lvs.getAllNotes(pupilId: 900001, classId: 900101);
+
+      expect(notes, hasLength(3));
+      expect(all, hasLength(3));
+      expect(server.log, [
+        'POST /?module=LVS&file=dispatcher',
+        'POST /?module=LVS&file=dispatcher',
       ]);
       expect(guard.violations, isEmpty);
     });
@@ -2926,6 +2967,61 @@ void main() {
         ('/?module=LVS&file=treeBuilder', {'id': 'tree_class_900101'}),
         ('/?module=LVS&file=treeBuilder&function=adminTree', {'id': '0'}),
         ('/LVS/Pupilxhr/getStatusInfo', {'pupilID': '900001', 'save': '1'}),
+        // The dispatcher (#161): a write ("viewed"), the list layouts the web
+        // client asks for with a category's notes, the read with a param
+        // more, with a second command, or with a field more.
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_pupils', 'changeItemViewStatus', {
+              'userID': '900001',
+              'itemID': '900301',
+              'viewed': '1',
+            }),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_pupils', 'getCatListView', {
+              'catID': '900401',
+              'userID': '900001',
+            }),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_cats', 'getUserCatItems', {
+              'catID': '900401',
+              'userID': '900001',
+              'itemID': '900301',
+            }),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command':
+                _lvsCommand('lvs_cats', 'getUserCatItems', {
+                  'catID': '900401',
+                }).replaceFirst(
+                  '</request>',
+                  '<command><subsystem>lvs_pupils</subsystem>'
+                      '<action>changeItemViewStatus</action><params/></command>'
+                      '</request>',
+                ),
+          },
+        ),
+        (
+          '/?module=LVS&file=dispatcher',
+          {
+            'command': _lvsCommand('lvs_pupils', 'getUserData', {
+              'userID': '900001',
+            }),
+            'save': '1',
+          },
+        ),
       ];
       for (final (path, data) in posts) {
         await expectLater(

@@ -2417,9 +2417,11 @@ class SmartschoolSkoreFeedbackSaveUnconfirmedError
 /// with something the service cannot use: another HTTP status than `200` (in
 /// [statusCode], such as the `500` with Smartschool's error page that the LVS
 /// answered today's status of a made-up pupil ID with, seen live), an HTML
-/// page instead of data, an answer that is not JSON, or JSON in a shape it
-/// does not recognise (such as a search answer without its `pupils`, or a
-/// section of a pupil's file without its `type`). Never an empty result.
+/// page instead of data, an answer that is not JSON (or, for the reads of
+/// the LVS's XML dispatcher, #161, not well-formed XML, or a `status` other
+/// than `ok`), or an answer in a shape it does not recognise (such as a
+/// search answer without its `pupils`, a section of a pupil's file without
+/// its `type`, or a note without its date). Never an empty result.
 ///
 /// The session was accepted: signing in again does not help. A session that
 /// Smartschool does not accept is a [SmartschoolSessionExpiredError] instead.
@@ -2429,14 +2431,16 @@ class SmartschoolSkoreFeedbackSaveUnconfirmedError
 /// answer, and holds no name, no note text and no ID from it
 /// (`doc/lvs-privacy.md`, rule 6). It names the read (`"the pupil search"`)
 /// and what was wrong with the answer. [cause] holds the underlying error,
-/// if any (the `FormatException` of the JSON decoder, which may quote the
-/// answer): `toString()` does not print it, so an app decides what to do
-/// with it.
+/// if any (the `FormatException` of the JSON decoder or the XML parser,
+/// which may quote the answer; the text of the dispatcher's `message` for a
+/// `status` other than `ok`): `toString()` does not print it, so an app
+/// decides what to do with it.
 ///
 /// The subtypes: [SmartschoolLvsAccessDeniedError] (the LVS refused the read
 /// to the account), [SmartschoolLvsPupilNotFoundError] (no pupil of that ID
-/// in that class that the account may see) and
-/// [SmartschoolLvsRequestNotAllowedError] (the service refused to send a
+/// in that class that the account may see),
+/// [SmartschoolLvsCategoryNotFoundError] (no category of notes of that ID)
+/// and [SmartschoolLvsRequestNotAllowedError] (the service refused to send a
 /// request that is not one of its reads; nothing was sent).
 class SmartschoolLvsError extends SmartschoolException {
   /// The HTTP status of the answer, when the answer is the problem; `null`
@@ -2467,15 +2471,18 @@ class SmartschoolLvsAccessDeniedError extends SmartschoolLvsError {
   const SmartschoolLvsAccessDeniedError(super.message, {super.statusCode});
 }
 
-/// Thrown by `LvsService.getPupilFile` when the LVS knows no pupil with the
-/// ID asked for in the class asked for that the account may see (#160).
+/// Thrown by `LvsService.getPupilFile` and `LvsService.getNotes` when the LVS
+/// knows no pupil with the ID asked for in the class asked for that the
+/// account may see (#160, #161).
 ///
 /// The LVS does not refuse such a read: it answers with HTTP `200`, the
 /// school's sections, none of which holds anything, and a placeholder pupil
 /// whose class is `null` (seen live for a made-up pupil ID in a made-up
 /// class: a "not available" name, an unknown class, no class teachers). The
 /// service throws this error for that answer instead of returning the
-/// placeholder as a pupil's file. Whether the LVS answers a pupil the
+/// placeholder as a pupil's file. The notes of a category of such a pupil
+/// come with the same placeholder (`pupilInfo`, seen live): no notes, and
+/// this error instead of an empty list. Whether the LVS answers a pupil the
 /// account may not see the same way was not captured.
 ///
 /// Its message holds neither ID: they are in [pupilId] and [classId]. A
@@ -2491,6 +2498,38 @@ class SmartschoolLvsPupilNotFoundError extends SmartschoolLvsError {
     super.message, {
     required this.pupilId,
     required this.classId,
+  });
+}
+
+/// Thrown by `LvsService.getNotes` when the LVS knows no category of notes
+/// with the ID asked for (#161).
+///
+/// The LVS does not refuse such a read either: it answers with HTTP `200`,
+/// no notes, and a category without its ID and name (seen live for a
+/// made-up category ID). The service throws this error for that answer
+/// instead of returning an empty list, which would read as a category
+/// without notes. Whether the LVS answers a category the account may not see
+/// the same way was not captured. `LvsPupilFile.noteCategories` lists the
+/// categories of a pupil's file.
+///
+/// Its message holds none of the IDs: they are in [pupilId], [classId] and
+/// [categoryId]. A [SmartschoolLvsError], so `catch` clauses for that type
+/// keep catching it.
+class SmartschoolLvsCategoryNotFoundError extends SmartschoolLvsError {
+  /// The pupil ID that was asked for.
+  final int pupilId;
+
+  /// The class ID that was asked for.
+  final int classId;
+
+  /// The category ID that was asked for.
+  final int categoryId;
+
+  const SmartschoolLvsCategoryNotFoundError(
+    super.message, {
+    required this.pupilId,
+    required this.classId,
+    required this.categoryId,
   });
 }
 

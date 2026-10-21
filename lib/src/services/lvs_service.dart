@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import '../exceptions.dart';
 import '../models/lvs_models.dart';
 import '../session.dart';
+import 'lvs_note_answers.dart';
 import 'lvs_wire.dart';
 
 export '../models/lvs_models.dart';
@@ -9,19 +12,26 @@ export '../models/lvs_models.dart';
 /// `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by
 /// name ([searchPupils]) and reads the overview of the pupil's file
 /// ([getPupilFile]): who, which class, today's attendance, and which
-/// sections of the file hold something. [checkAccess] tells whether the
-/// account may use the LVS.
+/// sections of the file hold something; and the pupil's notes, per category
+/// ([getNotes]) or all of them ([getAllNotes], #161). [checkAccess] tells
+/// whether the account may use the LVS.
 ///
 /// ```dart
 /// final lvs = LvsService(client);
 ///
 /// final found = await lvs.searchPupils('janssens'); // several can match
+/// final pupil = found.first;
 /// final file = await lvs.getPupilFile(
-///   pupilId: found.first.pupilId,
-///   classId: found.first.classId,
+///   pupilId: pupil.pupilId,
+///   classId: pupil.classId,
 /// );
-/// for (final section in file.allSections.where((s) => s.hasItems)) {
-///   print('${section.type}: ${section.name}');
+/// for (final category in file.noteCategories.where((c) => c.hasNotes)) {
+///   final notes = await lvs.getNotes(
+///     pupilId: pupil.pupilId,
+///     classId: pupil.classId,
+///     categoryId: category.id,
+///   );
+///   print('${notes.length} notes'); // the notes are about the pupil
 /// }
 /// ```
 ///
@@ -44,7 +54,12 @@ export '../models/lvs_models.dart';
 ///   `POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`, answered with a list
 ///   of `{partOfDay, code: {name, code, color}}`;
 /// - [checkAccess]: `POST /?module=LVS&file=treeBuilder` with `id` `0`, the
-///   root of the LVS's left tree: the classes the account may see, no pupil.
+///   root of the LVS's left tree: the classes the account may see, no pupil;
+/// - [getNotes]: the LVS's XML dispatcher, `POST /?module=LVS&file=dispatcher`
+///   with the command `lvs_cats/getUserCatItems`, answered with the action
+///   `renderPupilNotes` (#161);
+/// - [getAllNotes]: the same dispatcher with `lvs_pupils/getUserData`,
+///   answered with `renderPupilAllNotes` (#161).
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -61,8 +76,11 @@ export '../models/lvs_models.dart';
 ///   Smartschool's start page). What the LVS answers a teacher without LVS
 ///   rights and a pupil account was not captured.
 /// - [SmartschoolLvsPupilNotFoundError] (a [SmartschoolLvsError]):
-///   [getPupilFile] got the LVS's placeholder pupil: it knows no pupil of
-///   that ID in that class that the account may see.
+///   [getPupilFile] or [getNotes] got the LVS's placeholder pupil: it knows
+///   no pupil of that ID in that class that the account may see.
+/// - [SmartschoolLvsCategoryNotFoundError] (a [SmartschoolLvsError]):
+///   [getNotes] got no category: the LVS knows no category of notes of that
+///   ID.
 /// - [SmartschoolLvsRequestNotAllowedError] (a [SmartschoolLvsError]): the
 ///   service refused to send a request that is not one of its reads (a bug
 ///   of the library). Nothing was sent.
@@ -73,8 +91,8 @@ export '../models/lvs_models.dart';
 ///   session, also after the client logged in again and retried once.
 /// - Another [SmartschoolAuthenticationError]: logging in again failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
-/// - [ArgumentError]: a blank search text, or an ID that is not positive,
-///   before anything is sent.
+/// - [ArgumentError]: a blank search text, an ID that is not positive, or a
+///   school year that ends before it starts, before anything is sent.
 class LvsService {
   final LvsWire _wire;
 
@@ -175,6 +193,123 @@ class LvsService {
       sections: file.sections,
       todayStatus: status,
     );
+  }
+
+  /// The notes of category [categoryId] of the file of pupil [pupilId] in
+  /// class [classId], with those of its sub-categories, in the LVS's order
+  /// (#161). Empty when the category holds no notes in [schoolYear].
+  ///
+  /// [LvsPupilFile.noteCategories] lists the categories (the school's own:
+  /// "gedrag", "zorg", ...). [schoolYear] is the period of the notes: the
+  /// current school year (1 September to 31 August, Belgian time) when not
+  /// given. Confidential notes come with [LvsNote.isConfidential] `true`:
+  /// the LVS decides which ones the account receives, the library does not
+  /// leave them out.
+  ///
+  /// One request: the dispatcher's `lvs_cats/getUserCatItems` with `catID`,
+  /// `userID`, `toolbarType` `main`, `syRange` (`{"from", "until"}`),
+  /// `groupID` and `toolbarSide` `left`, as the web client opens a category
+  /// (without its list layouts, `getCatListView`). The library sends nothing
+  /// else: no "viewed" flag, no edit lock. Whether the LVS itself takes the
+  /// notes as seen by the account on this read (their [LvsNote.isNew]) was
+  /// not captured (#168).
+  ///
+  /// The LVS answers a pupil it does not know in that class with its
+  /// placeholder pupil, a [SmartschoolLvsPupilNotFoundError], and a category
+  /// it does not know without the category, a
+  /// [SmartschoolLvsCategoryNotFoundError] (both seen live for made-up IDs),
+  /// never an empty list. An ID that is not positive, or a [schoolYear] that
+  /// ends before it starts, is an [ArgumentError], before anything is sent.
+  Future<List<LvsNote>> getNotes({
+    required int pupilId,
+    required int classId,
+    required int categoryId,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    _checkId(categoryId, 'categoryId');
+    final period = _period(schoolYear);
+    const read = LvsWire.categoryNotes;
+    final response = await _wire.dispatch(read, {
+      'catID': '$categoryId',
+      'userID': '$pupilId',
+      'toolbarType': 'main',
+      'syRange': period,
+      'groupID': '$classId',
+      'toolbarSide': 'left',
+    });
+    final content = LvsWire.dispatcherContent(
+      response,
+      read,
+      answer: 'renderPupilNotes',
+    );
+    return LvsNoteAnswers.categoryNotes(
+      content,
+      pupilId: pupilId,
+      classId: classId,
+      categoryId: categoryId,
+    );
+  }
+
+  /// All notes of the file of pupil [pupilId] in class [classId], of every
+  /// category, in the order of the LVS's "all items" view of the file (its
+  /// `dates`) (#161). Empty when the file holds no notes in [schoolYear].
+  ///
+  /// [schoolYear] is as for [getNotes]. One request: the dispatcher's
+  /// `lvs_pupils/getUserData` with `userID`, `toolbarType` `main`, `groupID`,
+  /// `syRange`, `viewAllFilter` `[]` and `filterData` `0`, as the web client
+  /// opens the view, before it shows its filter buttons. Its
+  /// answer holds the file's reports, absences, evaluations, messages and
+  /// signals too: only the notes are read.
+  ///
+  /// The LVS answers a pupil it does not know with no data at all (seen live
+  /// for a made-up ID): an empty list, as for a pupil without notes.
+  /// [getPupilFile] tells the two apart. An ID that is not positive, or a
+  /// [schoolYear] that ends before it starts, is an [ArgumentError], before
+  /// anything is sent.
+  Future<List<LvsNote>> getAllNotes({
+    required int pupilId,
+    required int classId,
+    LvsSchoolYear? schoolYear,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    final period = _period(schoolYear);
+    const read = LvsWire.allNotes;
+    final response = await _wire.dispatch(read, {
+      'userID': '$pupilId',
+      'toolbarType': 'main',
+      'groupID': '$classId',
+      'syRange': period,
+      'viewAllFilter': '[]',
+      'filterData': '0',
+    });
+    final content = LvsWire.dispatcherContent(
+      response,
+      read,
+      answer: 'renderPupilAllNotes',
+    );
+    return LvsNoteAnswers.allNotes(content, pupilId: pupilId);
+  }
+
+  /// Throws an [ArgumentError] for an [id] that is not positive.
+  static void _checkId(int id, String name) {
+    if (id <= 0) throw ArgumentError.value(id, name, 'must be positive');
+  }
+
+  /// The `syRange` of [schoolYear], the current school year when `null`:
+  /// `{"from":"YYYY-MM-DD","until":"YYYY-MM-DD"}`, as the LVS page sends it.
+  static String _period(LvsSchoolYear? schoolYear) {
+    final period = schoolYear ?? LvsSchoolYear.current();
+    if (period.isEmpty) {
+      throw ArgumentError.value(
+        period,
+        'schoolYear',
+        'must not end before it starts',
+      );
+    }
+    return jsonEncode({'from': period.firstDay, 'until': period.lastDay});
   }
 
   // ---------------------------------------------------------------------------

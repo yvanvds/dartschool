@@ -17,15 +17,155 @@
 // 3. controller routes, `/LVS/<Controller>/<action>` (GET or POST, JSON).
 // An [LvsRead] names the method, the path and the query fields of a request
 // (for 1 and 2, the fixed `module`, `file` and `function`), and the form
-// fields it may carry. #160 reads with 3, and with the left tree's
-// `treeBuilder` (2's form, without a `function`).
+// fields it may carry; for 1, also the one command its `command` field may
+// hold ([LvsCommand]: subsystem, action and param names), since every
+// command of the LVS goes to that one URL, its writes too
+// (`changeItemViewStatus`, `saveProfile`, ...). #160 reads with 3, and with
+// the left tree's `treeBuilder` (2's form, without a `function`); #161 with
+// 1, the notes of a pupil.
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html_parser;
+import 'package:xml/xml.dart';
 
 import '../exceptions.dart';
 import '../session.dart';
+import '../xml_answer.dart' show isHtmlAnswer;
+
+/// The one command of the LVS's XML dispatcher (`POST
+/// /?module=LVS&file=dispatcher`, form field `command`) that an [LvsRead]
+/// may send: its subsystem, its action, and the names of the params it may
+/// carry (#161).
+final class LvsCommand {
+  const LvsCommand({
+    required this.subsystem,
+    required this.action,
+    required this.params,
+  });
+
+  /// The command's `subsystem`, such as `lvs_cats`.
+  final String subsystem;
+
+  /// The command's `action`, such as `getUserCatItems`.
+  final String action;
+
+  /// The names of the params it may carry, with any value.
+  final Set<String> params;
+
+  /// The `command` form field for this command with [values]: a `<request>`
+  /// of one `<command>`, each value in a CDATA section (a `]]>` in it split
+  /// over two sections, as the web client does).
+  String build(Map<String, String> values) {
+    final unknown = values.keys.where((name) => !params.contains(name));
+    if (unknown.isNotEmpty) {
+      throw ArgumentError.value(
+        unknown.join(', '),
+        'values',
+        'not params of $subsystem/$action',
+      );
+    }
+    final buffer = StringBuffer()
+      ..write('<request><command>')
+      ..write('<subsystem>$subsystem</subsystem>')
+      ..write('<action>$action</action>')
+      ..write('<params>');
+    for (final MapEntry(:key, :value) in values.entries) {
+      final cdata = value.replaceAll(']]>', ']]]]><![CDATA[>');
+      buffer.write('<param name="$key"><![CDATA[$cdata]]></param>');
+    }
+    buffer.write('</params></command></request>');
+    return buffer.toString();
+  }
+
+  /// Whether the `command` form field [xml] is this command: a `<request>`
+  /// with one `<command>` of this [subsystem] and [action], whose `<params>`
+  /// hold only `<param>`s of [params], each once, and nothing else.
+  bool allows(String? xml) {
+    final command = _commandOf(xml);
+    if (command == null) return false;
+    final (:subsystem, :action, :params) = command;
+    return subsystem == this.subsystem &&
+        action == this.action &&
+        params != null &&
+        params.every(this.params.contains);
+  }
+
+  /// The subsystem and action of the `command` form field [xml], for a
+  /// message, when it is a `<request>` of one command; `null` otherwise.
+  static String? describe(String? xml) {
+    final command = _commandOf(xml);
+    if (command == null) return null;
+    return '${command.subsystem}/${command.action}';
+  }
+
+  /// The subsystem, the action and the param names (`null` when a param is
+  /// not a `<param name>` or comes twice) of the `<request>` [xml] of one
+  /// `<command>` with `<subsystem>`, `<action>` and `<params>`, each once and
+  /// nothing else; `null` for any other text.
+  static ({String subsystem, String action, List<String>? params})? _commandOf(
+    String? xml,
+  ) {
+    if (xml == null) return null;
+    final XmlDocument document;
+    try {
+      document = XmlDocument.parse(xml);
+    } on XmlException {
+      return null;
+    }
+    final roots = document.childElements.toList();
+    if (roots.length != 1) return null;
+    final request = roots.single;
+    if (request.name.qualified != 'request' || !_onlyElements(request)) {
+      return null;
+    }
+    final commands = request.childElements.toList();
+    if (commands.length != 1 || commands.single.name.qualified != 'command') {
+      return null;
+    }
+    final command = commands.single;
+    if (!_onlyElements(command) || command.attributes.isNotEmpty) return null;
+    final parts = command.childElements.toList();
+    final names = parts.map((part) => part.name.qualified).toList();
+    if (names.length != 3 ||
+        names[0] != 'subsystem' ||
+        names[1] != 'action' ||
+        names[2] != 'params' ||
+        parts[0].childElements.isNotEmpty ||
+        parts[1].childElements.isNotEmpty ||
+        !_onlyElements(parts[2])) {
+      return null;
+    }
+    final params = <String>[];
+    for (final param in parts[2].childElements) {
+      final name = param.getAttribute('name');
+      if (param.name.qualified != 'param' ||
+          name == null ||
+          param.attributes.length != 1 ||
+          param.childElements.isNotEmpty ||
+          params.contains(name)) {
+        return (
+          subsystem: parts[0].innerText.trim(),
+          action: parts[1].innerText.trim(),
+          params: null,
+        );
+      }
+      params.add(name);
+    }
+    return (
+      subsystem: parts[0].innerText.trim(),
+      action: parts[1].innerText.trim(),
+      params: params,
+    );
+  }
+
+  /// Whether [element] holds elements and white space only (no text, no
+  /// CDATA, no comments or instructions between them).
+  static bool _onlyElements(XmlElement element) => element.children.every(
+    (node) =>
+        node is XmlElement || (node is XmlText && node.value.trim() == ''),
+  );
+}
 
 /// A request the LVS services may send: a read of the LVS.
 final class LvsRead {
@@ -36,6 +176,7 @@ final class LvsRead {
     this.fixedQuery = const {},
     this.queryFields = const {},
     this.formFields = const {},
+    this.command,
   });
 
   /// `GET` or `POST`.
@@ -57,6 +198,10 @@ final class LvsRead {
 
   /// The form fields a `POST` may carry, with any value.
   final Set<String> formFields;
+
+  /// For a read of the XML dispatcher: the one command its `command` form
+  /// field must hold. `null` for the other reads.
+  final LvsCommand? command;
 
   /// Whether a request of [method] to [path] with [query] and [form] is this
   /// read.
@@ -81,7 +226,9 @@ final class LvsRead {
       }
     }
     if (method.toUpperCase() != 'POST' && form.isNotEmpty) return false;
-    return form.keys.every(formFields.contains);
+    if (!form.keys.every(formFields.contains)) return false;
+    final command = this.command;
+    return command == null || command.allows(form['command']);
   }
 }
 
@@ -130,6 +277,59 @@ final class LvsWire {
     formFields: {'id'},
   );
 
+  /// The query of the LVS's XML dispatcher: `/?module=LVS&file=dispatcher`.
+  static const dispatcherQuery = {'module': 'LVS', 'file': 'dispatcher'};
+
+  /// The notes of a category of a pupil's file (#161): the dispatcher's
+  /// `lvs_cats/getUserCatItems` with the params the web client sends
+  /// (`catID`, `userID`, `toolbarType`, `syRange`, `groupID`,
+  /// `toolbarSide`), answered with the action `renderPupilNotes`. The web
+  /// client sends `lvs_pupils/getCatListView` (its saved list layouts) in the
+  /// same request: not on the list.
+  static const categoryNotes = LvsRead(
+    method: 'POST',
+    path: '/',
+    what: 'the notes of a category',
+    fixedQuery: dispatcherQuery,
+    formFields: {'command'},
+    command: LvsCommand(
+      subsystem: 'lvs_cats',
+      action: 'getUserCatItems',
+      params: {
+        'catID',
+        'userID',
+        'toolbarType',
+        'syRange',
+        'groupID',
+        'toolbarSide',
+      },
+    ),
+  );
+
+  /// All of a pupil's file, the "all items" view (#161): the dispatcher's
+  /// `lvs_pupils/getUserData` with `userID`, `toolbarType`, `groupID`,
+  /// `syRange`, `viewAllFilter` and `filterData`, answered with the action
+  /// `renderPupilAllNotes`.
+  static const allNotes = LvsRead(
+    method: 'POST',
+    path: '/',
+    what: "all of a pupil's notes",
+    fixedQuery: dispatcherQuery,
+    formFields: {'command'},
+    command: LvsCommand(
+      subsystem: 'lvs_pupils',
+      action: 'getUserData',
+      params: {
+        'userID',
+        'toolbarType',
+        'groupID',
+        'syRange',
+        'viewAllFilter',
+        'filterData',
+      },
+    ),
+  );
+
   /// Every request the LVS services may send. Any other is refused with a
   /// [SmartschoolLvsRequestNotAllowedError] before it is sent.
   static final List<LvsRead> reads = List.unmodifiable([
@@ -137,6 +337,8 @@ final class LvsWire {
     pupilFile,
     todayStatus,
     tree,
+    categoryNotes,
+    allNotes,
   ]);
 
   /// The read of [reads] that a request of [method] to [path] with [query]
@@ -185,6 +387,22 @@ final class LvsWire {
     );
   }
 
+  /// Sends the command of [read], a read of the XML dispatcher (one with a
+  /// [LvsRead.command]), with the params [params], when it is one of
+  /// [reads].
+  Future<Response<String>> dispatch(LvsRead read, Map<String, String> params) {
+    final command = read.command;
+    final path = read.path;
+    if (command == null || path is! String) {
+      throw StateError('${read.what} is not a read of the XML dispatcher.');
+    }
+    return post(
+      path,
+      query: read.fixedQuery,
+      form: {'command': command.build(params)},
+    );
+  }
+
   /// Sends any request, when it is one of [reads]: for the tests of the
   /// allowlist, which try what the services never send (a `PUT`, a
   /// `setLastPupil`).
@@ -213,9 +431,13 @@ final class LvsWire {
     if (read != null) return read;
     final upper = method.toUpperCase();
     final fields = [...query.keys, ...form.keys];
+    // The command of the dispatcher, by its subsystem and action (the
+    // library's own words, never a value of the params).
+    final command = LvsCommand.describe(form['command']);
     throw SmartschoolLvsRequestNotAllowedError(
       'The LVS service does not send $upper $path'
-      '${fields.isEmpty ? '' : ' (with ${fields.join(', ')})'}: it is not '
+      '${fields.isEmpty ? '' : ' (with ${fields.join(', ')})'}'
+      '${command == null ? '' : ' with the command $command'}: it is not '
       'one of its reads. Nothing was sent.',
       method: upper,
       path: path,
@@ -275,6 +497,100 @@ final class LvsWire {
   static Object? json(Response<String> response, LvsRead read) {
     final what = read.what;
     final status = response.statusCode ?? 0;
+    final body = _body(response, read);
+    if (body.startsWith('<')) {
+      throw SmartschoolLvsError(
+        'The LVS answered $what with an HTML page instead of data.',
+        statusCode: status,
+      );
+    }
+    try {
+      return jsonDecode(body);
+    } on FormatException catch (e) {
+      throw SmartschoolLvsError(
+        'The LVS answered $what with something that is not JSON.',
+        statusCode: status,
+        cause: e,
+      );
+    }
+  }
+
+  /// The data of the action [answer] in [response], the XML dispatcher's
+  /// answer to [read] (#161): the one element in its `<data>`, whose
+  /// children the web client reads by position.
+  ///
+  /// The answer is (seen live):
+  ///
+  /// ```text
+  /// <server><response><status>ok</status><actions><action>
+  ///   <subsystem>…</subsystem><command>[answer]</command><data>…</data>
+  /// </action>…</actions></response></server>
+  /// ```
+  ///
+  /// Throws a
+  /// [SmartschoolLvsAccessDeniedError] for a refusal (as [json]), and a
+  /// [SmartschoolLvsError] for an answer that is not XML, a `status` other
+  /// than `ok` (the answer's `message` in [SmartschoolLvsError.cause]), and
+  /// an answer without the action. Never quotes the answer.
+  static XmlElement dispatcherContent(
+    Response<String> response,
+    LvsRead read, {
+    required String answer,
+  }) {
+    final what = read.what;
+    final status = response.statusCode ?? 0;
+    final body = _body(response, read);
+    if (isHtmlAnswer(body)) {
+      throw SmartschoolLvsError(
+        'The LVS answered $what with an HTML page instead of data.',
+        statusCode: status,
+      );
+    }
+    final XmlDocument document;
+    try {
+      document = XmlDocument.parse(body);
+    } on XmlException catch (e) {
+      throw SmartschoolLvsError(
+        'The LVS answered $what with something that is not well-formed XML.',
+        statusCode: status,
+        cause: e,
+      );
+    }
+    final server = document.childElements.singleOrNull;
+    if (server == null || server.name.local != 'server') {
+      throw unknownShape(read, 'no <server>');
+    }
+    for (final reply in server.childElements) {
+      if (reply.name.local != 'response') continue;
+      final state = reply.getElement('status')?.innerText.trim();
+      if (state != 'ok') {
+        throw SmartschoolLvsError(
+          'The LVS answered $what with an error (its status is not "ok").',
+          statusCode: status,
+          cause: reply.getElement('message')?.innerText.trim(),
+        );
+      }
+      final actions = reply.getElement('actions')?.childElements ?? const [];
+      for (final action in actions) {
+        final parts = action.childElements.toList();
+        if (parts.length < 3 || parts[1].innerText.trim() != answer) continue;
+        final content = parts[2].childElements.toList();
+        if (content.length != 1) {
+          throw unknownShape(read, 'the data of $answer is not one element');
+        }
+        return content.single;
+      }
+    }
+    throw unknownShape(read, 'no $answer action');
+  }
+
+  /// The body of [response], the answer to [read], trimmed. Throws a
+  /// [SmartschoolLvsAccessDeniedError] for a refusal (HTTP `403`, or a
+  /// redirect to Smartschool's start page), and a [SmartschoolLvsError] for
+  /// another status than `200` and an empty answer.
+  static String _body(Response<String> response, LvsRead read) {
+    final what = read.what;
+    final status = response.statusCode ?? 0;
     if (status == 403) {
       throw SmartschoolLvsAccessDeniedError(
         'The LVS refused $what to the account (HTTP 403).',
@@ -301,21 +617,7 @@ final class LvsWire {
         statusCode: status,
       );
     }
-    if (body.startsWith('<')) {
-      throw SmartschoolLvsError(
-        'The LVS answered $what with an HTML page instead of data.',
-        statusCode: status,
-      );
-    }
-    try {
-      return jsonDecode(body);
-    } on FormatException catch (e) {
-      throw SmartschoolLvsError(
-        'The LVS answered $what with something that is not JSON.',
-        statusCode: status,
-        cause: e,
-      );
-    }
+    return body;
   }
 
   /// Whether [response] sends its request on to Smartschool's start page,

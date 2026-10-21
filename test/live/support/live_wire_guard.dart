@@ -47,14 +47,18 @@
 //   and checked there, and not moved to the trash; and one in a folder of the
 //   inbox other than the archive folder (#94);
 // - any POST to the pupil tracking system (LVS, `/LVS/` and
-//   `/?module=LVS`) but its two reads that LvsService sends (#160): a
-//   pupil's attendance today (`/LVS/Pupilxhr/getStatusInfo` with
-//   `pupilID`) and the root of the left tree (`file=treeBuilder`, without a
-//   `function`, with `id` 0: the classes, no pupil). The LVS has writes next
-//   to its reads (`setLastPupil`, the "viewed" flags, `saveKeyword`, ...),
-//   and the live suite changes nothing there; its GETs (the pupil search
-//   and a pupil's file) went out already, and it sends no PUT
-//   (`PUT /LVS/Message`, `PUT /LVS/Watch`) anywhere;
+//   `/?module=LVS`) but the reads that LvsService sends: a pupil's
+//   attendance today (`/LVS/Pupilxhr/getStatusInfo` with `pupilID`) and the
+//   root of the left tree (`file=treeBuilder`, without a `function`, with
+//   `id` 0: the classes, no pupil) (#160); and, to its XML dispatcher
+//   (`file=dispatcher`), a request of one command, the notes of a category
+//   (`lvs_cats/getUserCatItems`) or all of a pupil's file
+//   (`lvs_pupils/getUserData`), with the params LvsService sends and no
+//   other (#161). The LVS has writes next to its reads (`setLastPupil`, the
+//   "viewed" flags, `changeItemViewStatus` on the same dispatcher,
+//   `saveKeyword`, ...), and the live suite changes nothing there; its GETs
+//   (the pupil search and a pupil's file) went out already, and it sends no
+//   PUT (`PUT /LVS/Message`, `PUT /LVS/Watch`) anywhere;
 // - any request to the Presence module but its three POSTs that only read,
 //   `getConfig`, `getAllCodes` and `getClass` (PresenceService.getConfig,
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no
@@ -633,8 +637,31 @@ class LiveWireGuard extends Interceptor {
     '/LVS/Pupilxhr/getStatusInfo': {'pupilID'},
   };
 
+  /// The commands of the LVS's XML dispatcher that only read and that the
+  /// live suite sends, by subsystem and action, with the params they carry:
+  /// the notes of a category and all of a pupil's file
+  /// (LvsService.getNotes, getAllNotes, #161).
+  static const _lvsCommands = {
+    ('lvs_cats', 'getUserCatItems'): {
+      'catID',
+      'userID',
+      'toolbarType',
+      'syRange',
+      'groupID',
+      'toolbarSide',
+    },
+    ('lvs_pupils', 'getUserData'): {
+      'userID',
+      'toolbarType',
+      'groupID',
+      'syRange',
+      'viewAllFilter',
+      'filterData',
+    },
+  };
+
   /// Why the LVS POST to [uri] with [data] may not go out, or `null`: only
-  /// the reads of LvsService (#160) go out, never a write.
+  /// the reads of LvsService (#160, #161) go out, never a write.
   String? _lvsRefusal(Uri uri, Object? data) {
     final form = data is Map ? data : const {};
     final query = uri.queryParameters;
@@ -650,9 +677,69 @@ class LiveWireGuard extends Interceptor {
         form.length == 1 &&
         form['id'] == '0';
     if (isTreeRoot) return null;
+    final isDispatcher =
+        uri.path == '/' &&
+        query.length == 2 &&
+        query['module'] == 'LVS' &&
+        query['file'] == 'dispatcher' &&
+        form.length == 1;
+    if (isDispatcher && _isLvsReadCommand(form['command'])) return null;
     return 'the live suite changes nothing in the LVS: it sends no LVS POST '
         'but the reads getStatusInfo (with pupilID) and the root of the class '
-        'tree (treeBuilder, id 0) (#160)';
+        'tree (treeBuilder, id 0) (#160), and the dispatcher\'s '
+        'getUserCatItems and getUserData alone, with their params (#161)';
+  }
+
+  /// Whether [command], the form field of the LVS's XML dispatcher, is a
+  /// `<request>` of one `<command>` of [_lvsCommands] (its `<subsystem>`,
+  /// `<action>` and `<params>`, nothing else), whose params are its own,
+  /// each once.
+  static bool _isLvsReadCommand(Object? command) {
+    if (command is! String) return false;
+    final XmlDocument xml;
+    try {
+      xml = XmlDocument.parse(command);
+    } on XmlException {
+      return false;
+    }
+    bool onlyElements(XmlElement element) => element.children.every(
+      (node) =>
+          node is XmlElement || (node is XmlText && node.value.trim() == ''),
+    );
+    final roots = xml.childElements.toList();
+    if (roots.length != 1 || roots.single.name.qualified != 'request') {
+      return false;
+    }
+    final request = roots.single;
+    final commands = request.childElements.toList();
+    if (!onlyElements(request) ||
+        commands.length != 1 ||
+        commands.single.name.qualified != 'command' ||
+        !onlyElements(commands.single)) {
+      return false;
+    }
+    final parts = commands.single.childElements.toList();
+    if (parts.map((part) => part.name.qualified).join(',') !=
+            'subsystem,action,params' ||
+        !onlyElements(parts[2])) {
+      return false;
+    }
+    final allowed =
+        _lvsCommands[(parts[0].innerText.trim(), parts[1].innerText.trim())];
+    if (allowed == null) return false;
+    final names = <String>{};
+    for (final param in parts[2].childElements) {
+      final name = param.getAttribute('name');
+      if (param.name.qualified != 'param' ||
+          name == null ||
+          param.attributes.length != 1 ||
+          param.childElements.isNotEmpty ||
+          !allowed.contains(name) ||
+          !names.add(name)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

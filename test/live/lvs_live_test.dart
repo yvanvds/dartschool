@@ -1,7 +1,8 @@
 // What the pupil tracking system (LVS) answers the account of
-// credentials.yml through LvsService (#160): the root of its class tree
-// (checkAccess), a pupil search, the placeholder pupil of a made-up ID, and,
-// when the developer names one, the file of a pupil they teach.
+// credentials.yml through LvsService (#160, #161): the root of its class
+// tree (checkAccess), a pupil search, the placeholder pupil of a made-up ID
+// (its file and its notes), and, when the developer names one, the file and
+// the notes of a pupil they teach.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -16,15 +17,20 @@
 // Without the environment variable below, it reads no pupil: the class tree
 // (the classes the account may see), a search for a text no one has, and a
 // made-up pupil ID, which the LVS answers with its school's sections and a
-// placeholder pupil (seen 2026-10-21). With it, it also searches for that
-// text and reads the file and today's status of the first pupil found:
+// placeholder pupil (seen 2026-10-21), for its file and for the notes of a
+// category, and with no data for all its notes. With it, it also searches
+// for that text and reads the file and today's status of the first pupil
+// found, the notes of the first of its categories that holds notes (twice:
+// it prints how many are new before and after, for #168), all its notes,
+// and a made-up category of it:
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
 //     dart test -P live test/live/lvs_live_test.dart
 //
 // The name comes from the environment, never from the code. It only reads:
 // the wire guard (support/live_wire_guard.dart) refuses every LVS POST but
-// getStatusInfo and the root of the class tree, and every PUT. As every live
+// getStatusInfo, the root of the class tree and the dispatcher's
+// getUserCatItems and getUserData, and every PUT. As every live
 // run, it takes the lock of the session first, logs in at most once, and
 // prints no credential, no cookie and no name.
 //
@@ -105,6 +111,126 @@ void main() {
         );
         expect(run.guard.violations, isEmpty);
       });
+
+      test("a made-up pupil's notes (#161): SmartschoolLvsPupilNotFoundError "
+          'for a category, the LVS\'s placeholder; no notes at all in the '
+          '"all items" view', () async {
+        if (access) {
+          await expectLater(
+            lvs.getNotes(
+              pupilId: _madeUpId,
+              classId: _madeUpId,
+              categoryId: _madeUpId,
+            ),
+            throwsA(isA<SmartschoolLvsPupilNotFoundError>()),
+          );
+          final all = await lvs.getAllNotes(
+            pupilId: _madeUpId,
+            classId: _madeUpId,
+          );
+          expect(all.length, 0);
+        } else {
+          // What the dispatcher answers without rights was not captured
+          // (#168): an error, never an empty list.
+          await expectLater(
+            lvs.getNotes(
+              pupilId: _madeUpId,
+              classId: _madeUpId,
+              categoryId: _madeUpId,
+            ),
+            throwsA(isA<SmartschoolLvsError>()),
+          );
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test(
+        'a pupil the developer teaches (#161): the notes of a category with '
+        'notes, each with a date and fields, all of them in the "all items" '
+        'view; a made-up category is SmartschoolLvsCategoryNotFoundError',
+        skip: pupil == null || pupil.isEmpty
+            ? 'set $_pupilVariable to (part of) the name of a pupil you '
+                  'teach to read their notes'
+            : null,
+        () async {
+          expect(access, isTrue, reason: 'checkAccess');
+          final match = (await lvs.searchPupils(pupil!)).first;
+          final file = await lvs.getPupilFile(
+            pupilId: match.pupilId,
+            classId: match.classId,
+          );
+          final categories = [
+            for (final category in file.noteCategories) ...[
+              category,
+              ...category.descendants,
+            ],
+          ];
+          print(
+            'note categories: ${categories.length} '
+            '(${categories.where((c) => c.hasNotes).length} with notes, '
+            '${categories.where((c) => c.hasNewNotes).length} with new ones)',
+          );
+          expect(categories.every((c) => c.id > 0), isTrue);
+
+          await expectLater(
+            lvs.getNotes(
+              pupilId: match.pupilId,
+              classId: match.classId,
+              categoryId: _madeUpId,
+            ),
+            throwsA(isA<SmartschoolLvsCategoryNotFoundError>()),
+          );
+
+          final category = categories
+              .where((c) => c.hasNotes && !c.isTitle)
+              .firstOrNull;
+          if (category == null) {
+            print('no category with notes: nothing more to read');
+            return;
+          }
+          final ids = {category.id, ...category.descendants.map((c) => c.id)};
+          final notes = await lvs.getNotes(
+            pupilId: match.pupilId,
+            classId: match.classId,
+            categoryId: category.id,
+          );
+          final fields = [for (final note in notes) ...note.fields];
+          print(
+            'notes: ${notes.length} (${notes.where((n) => n.isNew).length} '
+            'new, ${notes.where((n) => n.viewed).length} viewed, '
+            '${notes.where((n) => n.isConfidential).length} confidential), '
+            'fields: ${fields.length}, by type: '
+            '${{for (final type in LvsNoteFieldType.values) type.name: fields.where((f) => f.type == type).length}}',
+          );
+          expect(notes.every((n) => n.id > 0), isTrue);
+          expect(notes.every((n) => ids.contains(n.categoryId)), isTrue);
+          expect(notes.every((n) => n.date.year >= 2000), isTrue);
+          expect(notes.every((n) => n.fields.isNotEmpty), isTrue);
+          expect(fields.every((f) => f.paramId >= 0), isTrue);
+
+          // Whether reading the notes takes them as seen (#168): counts only.
+          final again = await lvs.getNotes(
+            pupilId: match.pupilId,
+            classId: match.classId,
+            categoryId: category.id,
+          );
+          print(
+            'new before and after a read: '
+            '${notes.where((n) => n.isNew).length} -> '
+            '${again.where((n) => n.isNew).length}',
+          );
+
+          final all = await lvs.getAllNotes(
+            pupilId: match.pupilId,
+            classId: match.classId,
+          );
+          final allIds = {for (final note in all) note.id};
+          print('all notes: ${all.length} (${allIds.length} distinct)');
+          expect(allIds.length, all.length);
+          expect(notes.every((n) => allIds.contains(n.id)), isTrue);
+          expect(run.guard.violations, isEmpty);
+        },
+      );
 
       test(
         'a pupil the developer teaches: found, and the overview of their '

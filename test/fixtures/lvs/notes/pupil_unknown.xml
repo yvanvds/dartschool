@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Hand-written for #161: renderPupilNotes for a pupil ID the LVS does not
+  know in that class. hasData 0, and the LVS's placeholder pupil in
+  pupilInfo, with a classID of null (seen live for a made-up pupil ID, as in
+  the pupil's file of #160).
+-->
+<server><response><status>ok</status><actions><action><subsystem>lvs_pupil</subsystem><command>renderPupilNotes</command><data><content><hasData>0</hasData><buttons/><updateToolbar>1</updateToolbar><pupilID>999998</pupilID><catID>900401</catID><catInfo><![CDATA[{"catID":"900401","parentID":"0","name":"Testcategorie","catType":"1","gFilter":1,"following":false}]]></catInfo><hideWindow>0</hideWindow><catFilter><![CDATA[{"start":"2030-09-01","end":"2031-08-31"}]]></catFilter><pupilInfo><![CDATA[{"pupilID":999998,"name":"Niet beschikbaar","keyword":"","pictureShow":true,"pictureUrl":"/smsc/img/fake/initials_JJ.png","class":"Klas niet gekend","classDesc":"","classID":null,"teachers":[],"userIsPupil":false}]]></pupilInfo><viewType></viewType></content></data></action></actions></response></server>

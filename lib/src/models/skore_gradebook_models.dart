@@ -589,7 +589,7 @@ class SkoreFeedback {
   /// The text.
   final String text;
 
-  /// The pupil's Smartschool user ID (the middle part of `4069_9200_0`).
+  /// The pupil's Smartschool user ID (the middle part of `4069_900001_0`).
   final int pupilId;
 
   /// The Smartschool user ID of the teacher who wrote it.

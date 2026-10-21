@@ -2259,7 +2259,7 @@ class SkoreGradebookService {
   ///   reads the last two). Entries of another gradebook (`ownerID`) are
   ///   left out; one of another period is refused.
   /// - `details.stream`, one cell per row and evaluation, such as
-  ///   `{"c": "395742", "r": "pupil_9200_2440", "v": "...", "p": [1, 0,
+  ///   `{"c": "395742", "r": "pupil_900001_2440", "v": "...", "p": [1, 0,
   ///   "395742", "32508", 395742]}`, whose `v` is HTML
   ///   (`<div class="gbc" raw="79">79</div>...`). The grade is the `raw`
   ///   of `div.gbc` (`""`: none); a `span` with the class `gbc_message`
@@ -2668,7 +2668,7 @@ class SkoreGradebookService {
   /// Parses the answer of Skore's REST API to the feedback of pupil
   /// [pupilId] on evaluation [evaluationId] (#149): a list of
   /// `{"id": "1d44ef86-...", "evaluationId": "4069_395742", "student":
-  /// {"id": "4069_9200_0", "name": {...}, ...}, "teacher": {"id":
+  /// {"id": "4069_900001_0", "name": {...}, ...}, "teacher": {"id":
   /// "4069_146_0", "name": {"startingWithFirstName": ...}, ...}, "text":
   /// "...", "createdAt": "2026-10-08T09:49:36+02:00", "changedAt": ...,
   /// "attachments": [], "capabilities": {"can_read": true, "can_edit":
@@ -2765,8 +2765,9 @@ class SkoreGradebookService {
     );
   }
 
-  /// The ID after the platform in a Skore REST ID (`9200` of `4069_9200_0`,
-  /// `395742` of `4069_395742`), or `null` when [value] is none.
+  /// The ID after the platform in a Skore REST ID (`900001` of
+  /// `4069_900001_0`, `395742` of `4069_395742`), or `null` when [value]
+  /// is none.
   static int? _middleId(Object? value) {
     final match = value is String ? _restId.firstMatch(value.trim()) : null;
     return match == null ? null : int.parse(match.group(1)!);

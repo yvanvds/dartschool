@@ -27,6 +27,7 @@ highlights) is stripped first. A list of fakes in one field
 - `Marie Peeters` — pupil
 - `Noor Van den Broeck` — pupil, with a last name of three words
 - `Chloé Dupont` — pupil, with an accent
+- `Lars Peeters` — pupil, a second Peeters (a search with several matches, #160)
 - `An Aerts` — pupil (also in the Skore gradebook tests)
 - `Bart Claes` — pupil (Skore)
 - `Lotte Maes` — pupil (Skore)
@@ -60,6 +61,11 @@ school), it goes here too.
 - `Testcode`
 - `Testrapport`
 - `Testcomponent`
+- `Testsectie` — a section of a pupil's file in the LVS (#160)
+- `Testrichting` — the description of a class (#160)
+- `Klassen` — Smartschool's own title of the root of the LVS's class tree (#160)
+- `Niet beschikbaar` — Smartschool's own name of the LVS's placeholder pupil (#160)
+- `Klas niet gekend` — Smartschool's own class of that placeholder (#160)
 
 ## The rest, in short
 

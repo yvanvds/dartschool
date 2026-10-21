@@ -46,6 +46,15 @@
 //   sent, listed in the inbox or in its archive folder with the run's subject
 //   and checked there, and not moved to the trash; and one in a folder of the
 //   inbox other than the archive folder (#94);
+// - any POST to the pupil tracking system (LVS, `/LVS/` and
+//   `/?module=LVS`) but its two reads that LvsService sends (#160): a
+//   pupil's attendance today (`/LVS/Pupilxhr/getStatusInfo` with
+//   `pupilID`) and the root of the left tree (`file=treeBuilder`, without a
+//   `function`, with `id` 0: the classes, no pupil). The LVS has writes next
+//   to its reads (`setLastPupil`, the "viewed" flags, `saveKeyword`, ...),
+//   and the live suite changes nothing there; its GETs (the pupil search
+//   and a pupil's file) went out already, and it sends no PUT
+//   (`PUT /LVS/Message`, `PUT /LVS/Watch`) anywhere;
 // - any request to the Presence module but its three POSTs that only read,
 //   `getConfig`, `getAllCodes` and `getClass` (PresenceService.getConfig,
 //   getAllCodes and getClassPupils, #104, #105): the live suite changes no
@@ -535,6 +544,10 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/lesson-content/')) {
       return _lessonContentRefusal(path, options.data);
     }
+    if (path.startsWith('/LVS/') ||
+        (path == '/' && uri.queryParameters['module'] == 'LVS')) {
+      return _lvsRefusal(uri, options.data);
+    }
 
     final query = uri.queryParameters;
     if (path == '/' && query['module'] == 'Messages') {
@@ -611,6 +624,35 @@ class LiveWireGuard extends Interceptor {
         'getGradebookContext, getEvaluations, getNewEvalDialogBox and '
         'getPosComponents (gradebook/rpc.php, #148-#151); no saveEvaluation '
         'or saveGrade, and none to its REST API (/skore/)';
+  }
+
+  /// The LVS POSTs that only read and that the live suite sends, by path,
+  /// with the form fields they carry: a pupil's attendance today
+  /// (LvsService.getPupilFile, #160).
+  static const _lvsReads = {
+    '/LVS/Pupilxhr/getStatusInfo': {'pupilID'},
+  };
+
+  /// Why the LVS POST to [uri] with [data] may not go out, or `null`: only
+  /// the reads of LvsService (#160) go out, never a write.
+  String? _lvsRefusal(Uri uri, Object? data) {
+    final form = data is Map ? data : const {};
+    final query = uri.queryParameters;
+    final fields = _lvsReads[uri.path];
+    if (fields != null && query.isEmpty && form.keys.every(fields.contains)) {
+      return null;
+    }
+    final isTreeRoot =
+        uri.path == '/' &&
+        query.length == 2 &&
+        query['module'] == 'LVS' &&
+        query['file'] == 'treeBuilder' &&
+        form.length == 1 &&
+        form['id'] == '0';
+    if (isTreeRoot) return null;
+    return 'the live suite changes nothing in the LVS: it sends no LVS POST '
+        'but the reads getStatusInfo (with pupilID) and the root of the class '
+        'tree (treeBuilder, id 0) (#160)';
   }
 
   /// The planner's POSTs that the live suite sends, which only read: the

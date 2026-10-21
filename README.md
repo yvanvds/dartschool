@@ -20,6 +20,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback; create an evaluation in a period, never published, and save pupils' grades and feedback in it.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
 - Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
+- Pupil tracking system support (`LvsService`, LVS): as the logged-in teacher, find a pupil by name and read the overview of the pupil's file (who, which class, today's attendance, and which sections of the file hold something), and whether the account may use the LVS; read only, by an allowlist of requests, with models and errors that never print a pupil's data (see [`doc/lvs-privacy.md`](doc/lvs-privacy.md)).
 
 ---
 
@@ -1412,6 +1413,48 @@ The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, un
 
 ---
 
+## `LvsService`
+
+Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem", `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by name and reads the overview of the pupil's file. It is the base of the reads of a pupil's file that follow (notes per category, results, support plans, absences: #161 to #164). The LVS holds the most sensitive data of Smartschool: what this service returns is about pupils, see [`doc/lvs-privacy.md`](doc/lvs-privacy.md).
+
+```dart
+final lvs = LvsService(client);
+
+if (await lvs.checkAccess()) {
+  final found = await lvs.searchPupils('janssens');   // List<LvsPupilMatch>
+  final file = await lvs.getPupilFile(                // LvsPupilFile
+    pupilId: found.first.pupilId,
+    classId: found.first.classId,
+  );
+  final withItems = file.allSections.where((s) => s.hasItems);
+  print('${withItems.length} sections hold something');
+}
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `checkAccess()` | `Future<bool>` | Whether the account may use the LVS: `true` when the LVS answers the root of its left tree (`POST /?module=LVS&file=treeBuilder`, `id` `0`: the classes the account may see, no pupil), `false` when it refuses it (`SmartschoolLvsAccessDeniedError`). Any other failure is thrown. |
+| `searchPupils(text)` | `Future<List<LvsPupilMatch>>` | The pupils whose name matches `text`, in the LVS's order (`GET /LVS/Spotlight?searchVal=<text>`); empty when none does. `LvsPupilMatch`: `pupilId`, `classId`, `name` (plain text: the LVS's `foundName` without the markup that highlights the match), `className`. The classes the search also finds are left out. A blank `text` is an `ArgumentError`, before anything is sent. |
+| `getPupilFile({pupilId, classId})` | `Future<LvsPupilFile>` | The overview of a pupil's file: `GET /LVS/Spotlight/<pupilId>?classID=<classId>`, then today's status (`POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`). See *Models*. An ID that is not positive is an `ArgumentError`, before anything is sent. |
+
+- **Only reads, by an allowlist.** The LVS has writes right next to its reads, some on the same URL (`PUT /LVS/Message`, `PUT /LVS/Watch`, `setLastPupil`, which the web client sends for every pupil it shows, the "viewed" flags, the edit locks, every `save*`). The service sends only its reads, each on an explicit list (method, path, query and form fields), and refuses any other request before it is sent (`SmartschoolLvsRequestNotAllowedError`). Reading a pupil's file through the library does not make it the last pupil the account viewed, and marks nothing as seen.
+- **No page load.** The reads answer straight after a login: the LVS page (some 300 KB) is not loaded first (seen live, 2026-10-21).
+- **A pupil the LVS does not know** in that class: the LVS does not refuse it, it answers with its school's sections (none holding anything) and a placeholder pupil whose class is `null` (seen live for a made-up ID). `getPupilFile` throws a `SmartschoolLvsPupilNotFoundError` for it, and does not read today's status (which the LVS answered with a `500` for that ID).
+- **Not captured**: what the LVS answers a teacher without LVS rights, a pupil account, and a teacher for a pupil they may not see. The service takes a `403` and a redirect to Smartschool's start page for a refusal; any other answer it cannot read is a `SmartschoolLvsError`, never an empty result.
+- **Privacy.** The models print counts only (`toString()`); the errors never carry a name, a text or an ID of an answer in their message. When Smartschool refuses the session for a search, or the client is disposed during one, the search text is left out of the error's message (`searchVal=<searchVal>`).
+
+### Errors
+
+- `SmartschoolLvsError` — the LVS answered with something the service cannot use: another status than `200` (in `statusCode`), an HTML page, invalid JSON (the decoder's error in `cause`, which `toString()` does not print), or an unknown shape. Never an empty result. The session was accepted: signing in again does not help.
+- `SmartschoolLvsAccessDeniedError` (a `SmartschoolLvsError`) — the LVS refused the read to the account (`403`, or a redirect to Smartschool's start page).
+- `SmartschoolLvsPupilNotFoundError` (a `SmartschoolLvsError`) — `getPupilFile` got the LVS's placeholder pupil. Carries `pupilId` and `classId`; its message holds neither.
+- `SmartschoolLvsRequestNotAllowedError` (a `SmartschoolLvsError`) — the service refused to send a request that is not one of its reads (a bug of the library): nothing was sent. Carries the `method` and `path`.
+- `SmartschoolSessionExpiredError`, `SmartschoolConnectionError` — as for every service.
+
+---
+
 ## Models
 
 ### `ShortMessage`
@@ -1630,6 +1673,18 @@ What the authenticated user may do with an element: `flags` (every `canUser...` 
 ### `LessonContentItem`
 Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `lessonContentId` of `PlannerService.planLessonContent`), `platformId`, `type` (`LessonContentType`; `other` for a kind the library does not know), `typeName` (`lessons`, `assignments`), `name`, `icon` (`String?`), `publicInfo` (HTML, `""` when empty), `isVisible`, `ownerId` (`String?`, the whole user ID), `dateLastChanged` / `dateStateChanged` (`DateTime?`, local time), `courses` (`LessonContentCourse`: `id`, `platformId`, `name` — `String?`, from the school's course list, `null` when not known), `labels` (`LessonContentLabel`: `id`, `text`, `color`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`), `assignmentType` (`PlannerAssignmentType?`, assignment lesfiches only), `attachmentCount`, `weblinkCount`, `partnerWeblinkCount`, `deeplinkCount`, `capabilities` (every `canUser...` flag by name; `can(flag)`), and `raw` (as the module gave it, read-only).
 
+### `LvsPupilMatch`
+Returned by `LvsService.searchPupils()`. A pupil whose name matches: `pupilId`, `classId`, `name` (plain text), `className`. Prints no value.
+
+### `LvsPupilFile` / `LvsTeacher`
+Returned by `LvsService.getPupilFile()`. `pupilId`, `classId`, `name`, `className`, `classDescription` (`""` when none), `teachers` (the class teachers, `LvsTeacher`: `id`, `name`; empty when none: the LVS sends an empty map as `[]`), `sections` (`List<LvsSection>`, top level first), `todayStatus` (`LvsTodayStatus`), and the getter `allSections` (every section at any depth, depth first). Prints counts only.
+
+### `LvsSection` / `LvsSectionType`
+A section of a pupil's file: `id` (for a category of notes or of support plans, the category ID; `0` for the LVS's own parts, so not unique), `type` as the LVS names it (`LvsSectionType`: `items`, `handelingsplannen` (`supportPlans`), `skore`, `results`, `deliberation`, `forms`, `contact_moments`, `absents`, `career`, `messages`, `smartsignal`; another type is kept as it comes, `isKnownType` tells), `name`, `isTitle` (a heading only), `hasItems`, `hasNewItems`, `children`, and the getter `descendants`. The sections are the school's, the same for every pupil; the flags are about the pupil.
+
+### `LvsTodayStatus` / `LvsHalfDayStatus`
+A pupil's attendance today: `halfDays` (empty when none), and the getters `am` and `pm`. `LvsHalfDayStatus`: `partOfDay` (`am`, `pm`), `code`, `name`, `color` (`String?`).
+
 ---
 
 ## Enums
@@ -1685,6 +1740,10 @@ Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `le
 | `SmartschoolLessonContentError` | The Lesfiches module, or the course list, answers `LessonContentService` with something it cannot use: another status than `200` (carries the `statusCode`), an HTML page, invalid JSON, an unknown shape. From `PlannerService.planLessonContent`, which reads the lesfiches first: nothing was sent. Not a session problem, not a `SmartschoolPlannerError` |
 | `SmartschoolLessonContentCourseListError` | `LessonContentService.getItems` read the lesfiches, but the course list that names their courses answered with something it cannot use (carries the course list's `statusCode`, and the lesfiches as read in `items`, with every course name `null`). A `SmartschoolLessonContentError` (#118) |
 | `SmartschoolLessonContentVisibilityNotSetError` | `LessonContentService.addAttachments` added the files, but setting the visibility of one of them failed (#135): a `SmartschoolLessonContentSaveUnconfirmedError` that carries the `addedAttachments`, the `attachment` whose change failed with its asked `visibility`, and the `visibilitiesNotSet` (that one's and those not tried after it, by attachment ID); `cause` is the change's failure. Do not add the files again: set those visibilities. See `LessonContentService` > *Errors* |
+| `SmartschoolLvsError` | `LvsService`: the LVS answers with something the service cannot use (another status than `200`, carried in `statusCode`; an HTML page; invalid JSON, the decoder's error in `cause`; an unknown shape). Never an empty result; its message quotes nothing of the answer. Not a session problem (#160) |
+| `SmartschoolLvsAccessDeniedError` | `LvsService`: the LVS refused the read to the account (`403`, or a redirect to Smartschool's start page). `checkAccess()` returns `false` for it. A `SmartschoolLvsError` (#160) |
+| `SmartschoolLvsPupilNotFoundError` | `LvsService.getPupilFile`: the LVS answered with its placeholder pupil: it knows no pupil of that ID in that class that the account may see (carries `pupilId` and `classId`, which its message leaves out). A `SmartschoolLvsError` (#160) |
+| `SmartschoolLvsRequestNotAllowedError` | `LvsService` refused to send a request that is not one of its reads (carries `method` and `path`). Nothing was sent; a bug of the library. A `SmartschoolLvsError` (#160) |
 | `SmartschoolPresenceError` | A presence save is rejected (carries the server's errors: typed in `saveErrors`, their messages in `errors`, #109), an answer of the Presence module cannot be read (the subtype below), or a class/code/pupil cannot be resolved. Not a session problem |
 | `SmartschoolPresenceUnreadableAnswerError` | `PresenceService`: an answer of the Presence module cannot be read (carries the `path`, the HTTP `statusCode`, the `kind`, a `PresenceUnreadableAnswerKind`: `empty`, `html`, `malformedJson`, or `errorStatus` for valid JSON with a status outside `200`–`299`, #143, and for a page its `title` and `heading`). Can be gone a moment later (a proxy's `502`). For a read nothing changed; for the save it is not known whether it landed, and calling `setLate` / `setPresent` again is safe. A `SmartschoolPresenceError` (#137) |
 | `SmartschoolPresenceChangeRefusedError` | `PresenceService.setLate` / `setPresent` with `onlyReplacing`: the half-day, as read right before the save, holds a status it does not allow (carries `userId`, `part`, `date`, `halfDay`, `heldStatus`, `onlyReplacing`). Nothing was sent. A `SmartschoolPresenceError` (#105) |

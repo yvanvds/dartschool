@@ -1,0 +1,132 @@
+{
+  "categories": [
+    {
+      "id": 900401,
+      "parentID": 0,
+      "name": "Testcategorie",
+      "sort": 1,
+      "icon": "",
+      "isTitle": 0,
+      "type": "items",
+      "role": 0,
+      "hasChildren": true,
+      "children": [
+        {
+          "id": 900402,
+          "parentID": 900401,
+          "name": "Testsubcategorie",
+          "sort": 1,
+          "icon": "",
+          "isTitle": 0,
+          "type": "items",
+          "role": 0,
+          "hasChildren": false,
+          "isFollowing": false,
+          "hasItems": true,
+          "hasNewItems": true
+        },
+        {
+          "id": 900403,
+          "parentID": 900401,
+          "name": "Testsubcategorie",
+          "sort": 2,
+          "icon": "",
+          "isTitle": 1,
+          "type": "items",
+          "role": 0,
+          "hasChildren": true,
+          "children": [
+            {
+              "id": 900404,
+              "parentID": 900403,
+              "name": "Testsubcategorie",
+              "sort": 1,
+              "icon": "",
+              "isTitle": 0,
+              "type": "items",
+              "role": 0,
+              "hasChildren": false,
+              "isFollowing": false,
+              "hasItems": true,
+              "hasNewItems": false
+            }
+          ],
+          "isFollowing": false,
+          "hasItems": true,
+          "hasNewItems": false
+        }
+      ],
+      "isFollowing": false,
+      "hasItems": true,
+      "hasNewItems": true
+    },
+    {
+      "id": "900405",
+      "parentID": 0,
+      "name": "Testsectie",
+      "sort": 2,
+      "icon": "",
+      "isTitle": 0,
+      "type": "handelingsplannen",
+      "role": 0,
+      "hasChildren": false,
+      "isFollowing": false,
+      "hasItems": 0,
+      "hasNewItems": 0
+    },
+    {
+      "id": 0,
+      "parentID": 0,
+      "name": "Testsectie",
+      "sort": 14,
+      "icon": "results",
+      "isTitle": 0,
+      "type": "results",
+      "role": 0,
+      "hasChildren": false,
+      "isFollowing": false,
+      "hasItems": true,
+      "hasNewItems": false
+    },
+    {
+      "id": 0,
+      "parentID": 0,
+      "name": "Testsectie",
+      "sort": 15,
+      "icon": "testicon",
+      "isTitle": 0,
+      "type": "testsection",
+      "role": 0,
+      "hasChildren": false,
+      "isFollowing": false,
+      "hasItems": false,
+      "hasNewItems": false
+    }
+  ],
+  "pupil": {
+    "pupilID": 900001,
+    "name": "Janssens Jan",
+    "keyword": "",
+    "keywordShow": false,
+    "pictureShow": true,
+    "pictureUrl": "/smsc/img/fake/initials_JJ.png",
+    "class": "1A",
+    "classDesc": "Testrichting",
+    "classID": 900101,
+    "teachers": {
+      "900201": "Peeters Piet",
+      "900202": "Dupré Céline"
+    },
+    "classtituShow": 2,
+    "userIsPupil": false,
+    "userIsCanEdit": 0,
+    "birthday": "14/03/2016",
+    "age": "14",
+    "presences": [],
+    "picUrl": "/smsc/img/fake/initials_JJ.png",
+    "classPupils": [],
+    "ssID": 49,
+    "following": false,
+    "hasSasData": false
+  }
+}

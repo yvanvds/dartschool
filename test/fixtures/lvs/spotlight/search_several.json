@@ -1,0 +1,33 @@
+{
+  "search": "peeters",
+  "classes": [
+    {
+      "groupID": 900102,
+      "name": "2B",
+      "skoreClassID": 900112,
+      "hasSkore": true,
+      "foundName": "<b>2B</b>"
+    }
+  ],
+  "pupils": [
+    {
+      "userID": 900002,
+      "classID": 900102,
+      "className": "2B",
+      "showClassName": true,
+      "sex": "f",
+      "foundName": "<b>Peeters</b> Marie"
+    },
+    {
+      "userID": "900005",
+      "classID": "900103",
+      "className": "3C",
+      "showClassName": true,
+      "sex": "m",
+      "foundName": "  <span class=\"found\">Peeters</span>&nbsp;Lars  "
+    }
+  ],
+  "teachers": [],
+  "groups": [],
+  "groupUsers": []
+}

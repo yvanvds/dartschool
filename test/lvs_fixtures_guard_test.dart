@@ -213,6 +213,34 @@ const lvsFixtureKinds = <LvsFixtureKind>[
     textFields: {'summary'},
     extraFields: _exampleNoteFields,
   ),
+  LvsFixtureKind(
+    folder: 'spotlight',
+    about:
+        'Answers of GET /LVS/Spotlight (#160): the pupil search '
+        '(?searchVal=<text>) and the overview of a pupil\'s file '
+        '(/<pupil id>?classID=<class id>), with the placeholder pupil the LVS '
+        'answers for a pupil it does not know.',
+    // `search` echoes the text searched for (a name); `classDesc` is the
+    // school's description of a class; `keyword` is a teacher's keyword on
+    // the pupil.
+    nameFields: {'search', 'classDesc'},
+    textFields: {'keyword'},
+  ),
+  LvsFixtureKind(
+    folder: 'status',
+    about:
+        'Answers of POST /LVS/Pupilxhr/getStatusInfo (#160): a pupil\'s '
+        'attendance today, per half-day.',
+  ),
+  LvsFixtureKind(
+    folder: 'tree',
+    about:
+        'Answers of POST /?module=LVS&file=treeBuilder (#160): the root of '
+        'the LVS\'s left tree, the classes the account may see.',
+    // A node's `data.title` is its label: a class name, or Smartschool's
+    // own title of the root.
+    nameFields: {'title'},
+  ),
 ];
 
 /// The fields of each `note` of the `example` kind's XML, known by position

@@ -1,0 +1,39 @@
+[
+  {
+    "attributes": {
+      "id": "lvs_0",
+      "rel": "lvs"
+    },
+    "state": "open",
+    "data": {
+      "title": "Klassen",
+      "icon": "/smsc/img/fake/lvs_icon.png"
+    },
+    "children": [
+      {
+        "attributes": {
+          "id": "tree_class_900101",
+          "rel": "class",
+          "gid": "900101"
+        },
+        "state": "closed",
+        "data": {
+          "title": "1A",
+          "icon": "/smsc/img/fake/group_icon.png"
+        }
+      },
+      {
+        "attributes": {
+          "id": "tree_class_900102",
+          "rel": "class",
+          "gid": "900102"
+        },
+        "state": "closed",
+        "data": {
+          "title": "2B",
+          "icon": "/smsc/img/fake/group_icon.png"
+        }
+      }
+    ]
+  }
+]

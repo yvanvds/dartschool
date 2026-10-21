@@ -966,6 +966,17 @@ void main() {
         ),
         'Testtekst over twee\nregels.',
       );
+      // CRLF line ends of the source too: white space, no line of their own.
+      expect(
+        LvsWire.plainText(
+          '<p>Testtekst\r\nover twee</p>\r\n\r\n<p>regels.<br>\r\n</p>\r\n',
+        ),
+        'Testtekst over twee\nregels.',
+      );
+      expect(
+        LvsWire.plainText('Testtekst\r\nzonder opmaak'),
+        'Testtekst zonder opmaak',
+      );
       expect(LvsWire.plainText('<p>&nbsp;</p><br>'), '');
       expect(LvsWire.plainText(''), '');
     });

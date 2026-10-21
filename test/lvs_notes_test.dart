@@ -418,31 +418,51 @@ void main() {
       expect(files.hasValue, isTrue);
     });
 
-    test('a rich text as plain text keeps its lines: a line break and each '
-        'block of its HTML start a new line, the cells of a row stay on one '
-        '(#171)', () async {
-      final (_, lvs) = await _serve({'notes': _xml('category_lines.xml')});
+    // The fixture's HTML has line breaks of its own between some blocks: LF
+    // or CRLF, as the checkout gives them (a Windows checkout gives CRLF), and
+    // as an answer of the LVS can have them. Both are tried, whatever the
+    // checkout.
+    for (final (ends, eol) in [('LF', '\n'), ('CRLF', '\r\n')]) {
+      test('a rich text as plain text keeps its lines: a line break and each '
+          'block of its HTML start a new line, the cells of a row stay on one; '
+          'the line ends of the HTML ($ends) are white space (#171)', () async {
+        final answer = _fixture(
+          'notes/category_lines.xml',
+        ).replaceAll('\r\n', '\n').replaceAll('\n', eol);
+        final (_, lvs) = await _serve({'notes': _text(answer)});
 
-      final field = (await _notesOf(lvs)).single.fields.single;
+        final field = (await _notesOf(lvs)).single.fields.single;
 
-      expect(field.type, LvsNoteFieldType.richText);
-      expect(
-        field.value,
-        [
-          'Testkop',
-          'Testtekst met',
-          'twee regels',
-          'Tweede testalinea.',
-          'Testpunt een',
-          'Testpunt twee',
-          'Testblok',
-          'Testcel een Testcel twee',
-          'Testcel drie',
-          'Testslot.',
-        ].join('\n'),
-      );
-      expect(field.html, startsWith('<h3>Testkop</h3>\n<p>Testtekst met<br>'));
-    });
+        expect(field.type, LvsNoteFieldType.richText);
+        expect(
+          field.value,
+          [
+            'Testkop',
+            'Testtekst met',
+            'twee regels',
+            'Tweede testalinea.',
+            'Testpunt een',
+            'Testpunt twee',
+            'Testblok',
+            'Testcel een Testcel twee',
+            'Testcel drie',
+            'Testslot.',
+          ].join('\n'),
+        );
+        // The HTML as the LVS sent it, its line ends kept.
+        expect(LineSplitter.split(field.html!), [
+          '<h3>Testkop</h3>',
+          '<p>Testtekst met<br>twee regels</p><p>Tweede testalinea.</p>',
+          '<p>&nbsp;</p>',
+          '<ul>',
+          '  <li>Testpunt een</li><li>Testpunt <b>twee</b></li>',
+          '</ul><div>Testblok</div><table><tbody><tr><td>Testcel een</td>'
+              '<td>Testcel twee</td></tr><tr><td>Testcel drie</td></tr></tbody>'
+              '</table><p>Testslot.<br></p>',
+        ]);
+        expect(field.html, contains('</h3>$eol<p>'));
+      });
+    }
 
     test(
       'a category without notes in the school year: an empty list',

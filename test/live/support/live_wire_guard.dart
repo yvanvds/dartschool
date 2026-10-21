@@ -60,7 +60,9 @@
 //   fields and no other, but none of the plans' edit flow
 //   (`getIHPondersteuningsnood`, `getOD_doelstellingen`,
 //   `/LVS/Handelingsplannen/checkSyntheseEditor`, every `save*`, `set*`)
-//   (#163). The LVS has writes next to its reads (`setLastPupil`, the
+//   (#163); and a pupil's absences (`/LVS/Pupilpresences` with `pupilID`
+//   and `groupID`), but not their charts (`Pupilpresencesgraphs`) (#164).
+//   The LVS has writes next to its reads (`setLastPupil`, the
 //   "viewed" flags, `changeItemViewStatus` on the same dispatcher,
 //   `saveKeyword`, ...), and the live suite changes nothing there; its GETs
 //   (the pupil search, a pupil's file, and the results app's reads,
@@ -639,9 +641,11 @@ class LiveWireGuard extends Interceptor {
 
   /// The LVS POSTs that only read and that the live suite sends, by path,
   /// with the form fields they carry: a pupil's attendance today
-  /// (LvsService.getPupilFile, #160).
+  /// (LvsService.getPupilFile, #160) and a pupil's absences
+  /// (LvsService.getAbsences, #164).
   static const _lvsReads = {
     '/LVS/Pupilxhr/getStatusInfo': {'pupilID'},
+    '/LVS/Pupilpresences': {'pupilID', 'groupID'},
   };
 
   /// The functions of the LVS's JSON dispatchers that only read and that the
@@ -696,7 +700,7 @@ class LiveWireGuard extends Interceptor {
   };
 
   /// Why the LVS POST to [uri] with [data] may not go out, or `null`: only
-  /// the reads of LvsService (#160, #161, #163) go out, never a write.
+  /// the reads of LvsService (#160, #161, #163, #164) go out, never a write.
   String? _lvsRefusal(Uri uri, Object? data) {
     final form = data is Map ? data : const {};
     final query = uri.queryParameters;
@@ -732,7 +736,8 @@ class LiveWireGuard extends Interceptor {
         'tree (treeBuilder, id 0) (#160), and the dispatcher\'s '
         'getUserCatItems and getUserData alone, with their params (#161), '
         'and the support plan reads getLVSspecificTitles, getIHP and '
-        'getProfielSchets, with their fields (#163)';
+        'getProfielSchets, with their fields (#163), and the absences '
+        '(Pupilpresences, with pupilID and groupID) (#164)';
   }
 
   /// Whether [command], the form field of the LVS's XML dispatcher, is a

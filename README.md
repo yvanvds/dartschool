@@ -1467,6 +1467,7 @@ if (await lvs.checkAccess()) {
 | `getSupportPlanPeriods({pupilId, classId})` | `Future<List<LvsPlanPeriod>>` | The periods of the support plans, in the LVS's order; empty when there are none (#163). |
 | `getSupportPlan({pupilId, classId, periodId})` | `Future<LvsSupportPlan>` | The pupil's individual plan ("IHP") in a period (the current one when not given), its `status`: `plan`, `noPlan` or `noPeriod` (#163). |
 | `getProfileSketch({pupilId, classId, periodId})` | `Future<LvsProfileSketch>` | The pupil's profile sketch in a period; `hasSketch` is `false` when there is none (#163). |
+| `getAbsences({pupilId, classId})` | `Future<LvsAbsences>` | The pupil's absences in the school year the LVS picks, per period: `POST /LVS/Pupilpresences` with `pupilID`, `groupID` (#164). |
 
 - **Only reads, by an allowlist.** The LVS has writes right next to its reads, some on the same URL (`PUT /LVS/Message`, `PUT /LVS/Watch`, `setLastPupil`, which the web client sends for every pupil it shows, the "viewed" flags, the edit locks, every `save*`). The service sends only its reads, each on an explicit list (method, path, query and form fields), and refuses any other request before it is sent (`SmartschoolLvsRequestNotAllowedError`). Reading a pupil's file through the library does not make it the last pupil the account viewed, and marks nothing as seen.
 - **No page load.** The reads answer straight after a login: the LVS page (some 300 KB) is not loaded first (seen live, 2026-10-21).
@@ -1745,6 +1746,9 @@ A feedback (#162): `identifier`, `kind` (`LvsFeedbackKind`: `classCouncil`, `cou
 
 ### `LvsPlanPeriod` / `LvsSupportPlan` / `LvsPlanItem` / `LvsPlanGoal` / `LvsProfileSketch`
 From the support plan reads (#163). `LvsPlanPeriod`: `id`, `name`, `heading`. `LvsSupportPlan`: `period` (`LvsPlanPeriodInfo`: `id`, `hasError`, `message`, `isOpen`), `items`, `status` (`LvsSupportPlanStatus`). `LvsPlanItem`: `id`, `type`, `kind` (`LvsPlanItemKind`: `needs`, `goals`, `document`, `unknown`), `fromGroupPlan`, `author`, `date`, `supportNeeds`, `mainGoals`, `workGoals`, `approach`, `approachComment`, `courses`, `theme`, `startSituation`, `goals` (`LvsPlanGoal`: `id`, `name`, `domain`, `isDeprecated`, `objectives`, `approach`, `planning`), `fileName`, `mimeType`. `LvsProfileSketch`: `period`, `hasSketch`, `html`, `text`, `lastRevision`. Print kinds, flags and counts only.
+
+### `LvsAbsences` / `LvsAbsencePeriod` / `LvsAbsence` / `LvsAbsenceTotal`
+From `getAbsences` (#164). `LvsAbsences`: `yearLabel`, `periods` (`label`, `absences`), `absences`, `isEmpty`, `halfDays`, `totalsByCode` (`code`, `codeDescription`, `color`, `count`, `halfDays`). `LvsAbsence`: `date` (UTC), `dateKey`, `formattedDate`, `dayPart` (`DayPart`; `null` for a whole day, `isFullDay`), `partOfDayLabel`, `code`, `codeDescription`, `color`, `motivation` (plain text) / `motivationHtml`, `halfDays`. Print counts only.
 
 ---
 

@@ -1,9 +1,10 @@
 // What the pupil tracking system (LVS) answers the account of
-// credentials.yml through LvsService (#160, #161, #162, #163): the root of
-// its class tree (checkAccess), a pupil search, the placeholder pupil of a
-// made-up ID (its file and its notes), the results app's and the support
-// plans' answers for that ID, and, when the developer names one, the file,
-// the notes, the results and the support plan of a pupil they teach.
+// credentials.yml through LvsService (#160, #161, #162, #163, #164): the
+// root of its class tree (checkAccess), a pupil search, the placeholder
+// pupil of a made-up ID (its file and its notes), the results app's, the
+// support plans' and the absences' answers for that ID, and, when the
+// developer names one, the file, the notes, the results, the support plan
+// and the absences of a pupil they teach.
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
@@ -20,9 +21,9 @@
 // made-up pupil ID, which the LVS answers with its school's sections and a
 // placeholder pupil (seen 2026-10-21), for its file and for the notes of a
 // category, with no data for all its notes, and with HTTP 500 for every
-// read of its results, and with no period of support plans (a made-up
-// class has no structure of them) for the support plan reads. With it, it
-// also searches for that text and reads
+// read of its results and for its absences, and with no period of support
+// plans (a made-up class has no structure of them) for the support plan
+// reads. With it, it also searches for that text and reads
 // the file and today's status of the first pupil found, the notes of the
 // first of its categories that holds notes (twice: it prints how many are
 // new before and after, for #168), all its notes, a made-up category of it,
@@ -30,7 +31,8 @@
 // evaluations and all of them, feedback, reports: counts and types only),
 // and, when its file has a section of support plans, their periods, the
 // plan of the current period and the profile sketch (status, kinds and
-// counts only):
+// counts only), and its absences (counts by period, part of the day and
+// code only):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
 //     dart test -P live test/live/lvs_live_test.dart
@@ -38,8 +40,9 @@
 // The name comes from the environment, never from the code. It only reads:
 // the wire guard (support/live_wire_guard.dart) refuses every LVS POST but
 // getStatusInfo, the root of the class tree, the dispatcher's
-// getUserCatItems and getUserData, and the support plan reads
-// getLVSspecificTitles, getIHP and getProfielSchets, and every PUT; the
+// getUserCatItems and getUserData, the support plan reads
+// getLVSspecificTitles, getIHP and getProfielSchets, and the absences
+// (Pupilpresences), and every PUT; the
 // results app's reads
 // are GETs, on LvsService's own allowlist (#162). As every live
 // run, it takes the lock of the session first, logs in at most once, and
@@ -202,6 +205,85 @@ void main() {
         }
         expect(run.guard.violations, isEmpty);
       });
+
+      test("a made-up pupil's absences (#164): a SmartschoolLvsError (the "
+          'LVS answered them with HTTP 500, seen 2026-10-21), never an empty '
+          'list', () async {
+        Object? error;
+        try {
+          await lvs.getAbsences(pupilId: _madeUpId, classId: _madeUpId);
+        } catch (e) {
+          error = e;
+        }
+        // The type and the status only: never the message of an answer.
+        print(
+          'getAbsences: ${error.runtimeType}'
+          '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}',
+        );
+        expect(error, isA<SmartschoolLvsError>());
+        expect(error, isNot(isA<SmartschoolLvsRequestNotAllowedError>()));
+        if (access) {
+          expect(error, isNot(isA<SmartschoolLvsAccessDeniedError>()));
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test(
+        'a pupil the developer teaches (#164): the absences of the file, by '
+        'period, part of the day and code',
+        skip: pupil == null || pupil.isEmpty
+            ? 'set $_pupilVariable to (part of) the name of a pupil you '
+                  'teach to read their absences'
+            : null,
+        () async {
+          expect(access, isTrue, reason: 'checkAccess');
+          final match = (await lvs.searchPupils(pupil!)).first;
+          final file = await lvs.getPupilFile(
+            pupilId: match.pupilId,
+            classId: match.classId,
+          );
+          final sections = [
+            for (final s in file.allSections)
+              if (s.type == LvsSectionType.absences) s,
+          ];
+          print(
+            'sections of type absents: ${sections.length} '
+            '(${sections.where((s) => s.hasItems).length} with items)',
+          );
+
+          final absences = await lvs.getAbsences(
+            pupilId: match.pupilId,
+            classId: match.classId,
+          );
+          final all = absences.absences;
+          final totals = absences.totalsByCode;
+          print(
+            'absences: $absences, with a year label: '
+            '${absences.yearLabel.isNotEmpty}, periods with a label: '
+            '${absences.periods.where((p) => p.label.isNotEmpty).length}, '
+            'whole days: ${all.where((a) => a.isFullDay).length}, mornings: '
+            '${all.where((a) => a.dayPart == DayPart.morning).length}, '
+            'afternoons: '
+            '${all.where((a) => a.dayPart == DayPart.afternoon).length}, '
+            'with a date: ${all.where((a) => a.date != null).length}, with a '
+            'shown date: ${all.where((a) => a.formattedDate.isNotEmpty).length}, '
+            'with a description: '
+            '${all.where((a) => a.codeDescription.isNotEmpty).length}, with a '
+            'colour: ${all.where((a) => a.color != null).length}, with a '
+            'motivation: ${all.where((a) => a.motivation.isNotEmpty).length}, '
+            'codes: ${totals.length}',
+          );
+          // The day keys are taken for `YYYY-MM-DD` (the class view's), and
+          // every absence has a code: shapes, not values.
+          expect(all.every((a) => a.date != null), isTrue);
+          expect(all.every((a) => a.code.isNotEmpty), isTrue);
+          expect(
+            totals.fold<int>(0, (n, t) => n + t.halfDays),
+            absences.halfDays,
+          );
+          expect(run.guard.violations, isEmpty);
+        },
+      );
 
       test("a made-up pupil's support plan (#163): no periods, no period for "
           'the plan (status noPeriod) and no profile sketch, as the LVS '

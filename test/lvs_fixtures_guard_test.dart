@@ -304,7 +304,30 @@ const lvsFixtureKinds = <LvsFixtureKind>[
       'fileName',
     },
   ),
+  LvsFixtureKind(
+    folder: 'absences',
+    about:
+        'Answers of POST /LVS/Pupilpresences (#164): a pupil\'s absences in '
+        'a school year, per period and day, as the file\'s absences section '
+        'lists them.',
+    // `codeDescr` is the description of a school's absence code (a label);
+    // the motivation is `motivation` (common). The labels of the periods
+    // are the keys of `presences`: _absencePeriodLabels.
+    nameFields: {'codeDescr'},
+    extraFields: _absencePeriodLabels,
+  ),
 ];
+
+/// The labels of the periods of an `absences` fixture: the keys of its
+/// `presences` (a school's own labels), which no field name finds.
+Iterable<LvsField> _absencePeriodLabels(Object? document) sync* {
+  if (document is! Map) return;
+  final presences = document['presences'];
+  if (presences is! Map) return;
+  for (final (i, label) in presences.keys.indexed) {
+    yield LvsField('presences key [$i]', LvsFieldType.name, '$label');
+  }
+}
 
 /// The fields of the notes of a `notes` fixture by their position, as the
 /// service reads them (the names of the elements in a note are not
@@ -1310,6 +1333,39 @@ void main() {
       };
       expect(jsonProblems(json), isEmpty, reason: 'without the kind');
       expect(jsonProblems(json, kind: kind), hasLength(4));
+    });
+
+    test('checks the labels of the periods and of the codes of the absences '
+        '(#164), and their motivation, without the values', () {
+      final kind = lvsFixtureKinds.singleWhere((k) => k.folder == 'absences');
+      Map<String, Object?> answer(String period, String code, String text) => {
+        'presences': {
+          period: {
+            '2030-09-16': {
+              'full': {'code': 'TA', 'codeDescr': code, 'motivation': text},
+            },
+          },
+        },
+        'year_label': '2030 - 2031',
+      };
+
+      expect(
+        jsonProblems(
+          answer('Testcategorie', 'Testcategorie', 'Testmotivatie.'),
+          kind: kind,
+        ),
+        isEmpty,
+      );
+      final problems = jsonProblems(
+        answer('Onbekende periode', 'Onbekende code', 'Ziek thuis.'),
+        kind: kind,
+      );
+      expect(problems, hasLength(3));
+      expect(problems.join('\n'), contains('presences key [0]'));
+      expect(problems.join('\n'), contains('codeDescr'));
+      expect(problems.join('\n'), contains('motivation'));
+      expect(problems.join('\n'), isNot(contains('Onbekende')));
+      expect(problems.join('\n'), isNot(contains('Ziek')));
     });
 
     test('reads XML: elements, attributes, name="key", embedded JSON', () {

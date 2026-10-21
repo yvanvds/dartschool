@@ -1,15 +1,18 @@
 import 'dart:convert';
 
 import '../exceptions.dart';
+import '../models/lvs_absence_models.dart';
 import '../models/lvs_models.dart';
 import '../models/lvs_plan_models.dart';
 import '../models/lvs_results_models.dart';
 import '../session.dart';
+import 'lvs_absence_answers.dart';
 import 'lvs_note_answers.dart';
 import 'lvs_plan_answers.dart';
 import 'lvs_result_answers.dart';
 import 'lvs_wire.dart';
 
+export '../models/lvs_absence_models.dart';
 export '../models/lvs_models.dart';
 export '../models/lvs_plan_models.dart';
 export '../models/lvs_results_models.dart';
@@ -22,8 +25,9 @@ export '../models/lvs_results_models.dart';
 /// ([getNotes]) or all of them ([getAllNotes], #161); and the pupil's
 /// results ([getEvaluations], [getAllEvaluations], [getFeedback],
 /// [getReports], #162); and the pupil's support plan ([getSupportPlan],
-/// [getSupportPlanPeriods], [getProfileSketch], #163). [checkAccess] tells
-/// whether the account may use the LVS.
+/// [getSupportPlanPeriods], [getProfileSketch], #163); and the pupil's
+/// absences ([getAbsences], #164). [checkAccess] tells whether the account
+/// may use the LVS.
 ///
 /// ```dart
 /// final lvs = LvsService(client);
@@ -79,7 +83,9 @@ export '../models/lvs_results_models.dart';
 ///   `POST /?module=LVS&file=jqDispatcher_hp&function=getIHP` (the plan) and
 ///   `getProfielSchets` (the profile sketch), and
 ///   `jqDispatcher_settings&function=getLVSspecificTitles` (the periods),
-///   form-encoded, answered with JSON as text.
+///   form-encoded, answered with JSON as text;
+/// - [getAbsences] (#164): `POST /LVS/Pupilpresences` with `pupilID` and
+///   `groupID`, answered with JSON.
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -692,6 +698,47 @@ class LvsService {
       },
     );
     return LvsPlanAnswers.profileSketch(LvsWire.json(response, read));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Absences (#164)
+  // ---------------------------------------------------------------------------
+
+  /// The absences of pupil [pupilId] in class [classId] (#164): the
+  /// half-days with an absence code in a school year, grouped by period,
+  /// each with its code, the code's description and colour, and the
+  /// motivation; [LvsAbsences.totalsByCode] counts them per code. What the
+  /// file's absences section ([LvsSectionType.absences]) shows a teacher;
+  /// the Presence module's own reads (`PresenceService`) are for absence
+  /// administrators.
+  ///
+  /// One request: `POST /LVS/Pupilpresences` with `pupilID` and `groupID`
+  /// (the class), as the web client opens the section. It sends no school
+  /// year: the LVS picks it ([LvsAbsences.yearLabel] names it), and the
+  /// library cannot ask for another. The section's charts
+  /// (`/LVS/Pupilpresencesgraphs`) are not read. A motivation can hold
+  /// health information: the library returns it, the app decides whether to
+  /// show it.
+  ///
+  /// The LVS answered a made-up pupil ID in a made-up class with HTTP 500
+  /// and Smartschool's error page (seen live, 2026-10-21): a plain
+  /// [SmartschoolLvsError], never an empty list. A real pupil's answer was
+  /// not captured (#168): its shape comes from the LVS's JavaScript.
+  ///
+  /// An ID that is not positive is an [ArgumentError], before anything is
+  /// sent.
+  Future<LvsAbsences> getAbsences({
+    required int pupilId,
+    required int classId,
+  }) async {
+    _checkId(pupilId, 'pupilId');
+    _checkId(classId, 'classId');
+    const read = LvsWire.absences;
+    final response = await _wire.post(
+      read.path as String,
+      form: {'pupilID': '$pupilId', 'groupID': '$classId'},
+    );
+    return LvsAbsenceAnswers.absences(LvsWire.json(response, read));
   }
 
   /// Throws an [ArgumentError] for a [count] (a page number, a page size, a

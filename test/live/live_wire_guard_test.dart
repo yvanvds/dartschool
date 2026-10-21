@@ -664,6 +664,12 @@ class _Smartschool implements HttpClientAdapter {
           _lvsFixture('supportplan/profile.json'),
           contentType: 'text/html; charset=UTF-8',
         );
+      // A pupil's absences (#164).
+      case (true, '/LVS/Pupilpresences', null, null):
+        return _answer(
+          _lvsFixture('absences/absences.json'),
+          contentType: 'application/json',
+        );
       case (_, final path, _, _)
           when path.startsWith('/LVS/') || query['module'] == 'LVS':
         return _answer('{"status":1}', contentType: 'application/json');
@@ -1362,6 +1368,18 @@ void main() {
         'POST /?module=LVS&file=jqDispatcher_hp&function=getIHP',
         'POST /?module=LVS&file=jqDispatcher_hp&function=getProfielSchets',
       ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test("the LVS read of a pupil's absences (#164)", () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lvs = LvsService(client);
+
+      final absences = await lvs.getAbsences(pupilId: 900001, classId: 900101);
+
+      expect(absences.absences, hasLength(5));
+      expect(server.log, ['POST /LVS/Pupilpresences']);
       expect(guard.violations, isEmpty);
     });
 
@@ -3104,6 +3122,25 @@ void main() {
         (
           '/?module=LVS&file=jqDispatcher_hp&function=getIHP&exportID=900801',
           {'pupilID': '900001'},
+        ),
+        // The absences (#164): their charts, the class view, the older
+        // route, and the read with a field more or with a query.
+        (
+          '/LVS/Pupilpresencesgraphs',
+          {'pupilID': '900001', 'groupID': '900101'},
+        ),
+        ('/LVS/Classpresences', {'groupID': '900101'}),
+        (
+          '/?module=LVS&file=jqDispatcher_presence&function=getPupilPresences',
+          {'pupilID': '900001', 'groupID': '900101', 'type': 'official'},
+        ),
+        (
+          '/LVS/Pupilpresences',
+          {'pupilID': '900001', 'groupID': '900101', 'save': '1'},
+        ),
+        (
+          '/LVS/Pupilpresences?schoolyear=2030',
+          {'pupilID': '900001', 'groupID': '900101'},
         ),
       ];
       for (final (path, data) in posts) {

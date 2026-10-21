@@ -71,6 +71,7 @@ school), it goes here too.
 - `Klas niet gekend` — Smartschool's own class of that placeholder (#160)
 - `Testperiode 2` — a second period of the support plans (#163)
 - `Testschooljaar` — a heading of the menu of periods of the support plans (#163)
+- `Testcode 2` — a second absence code of a pupil's absences (#164)
 
 ## The rest, in short
 

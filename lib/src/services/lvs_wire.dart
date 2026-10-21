@@ -26,7 +26,8 @@
 // (`/LVS/Results/*`), but not its export (`exportgoals`); #163 with 2, the
 // support plans (`jqDispatcher_hp`: `getIHP`, `getProfielSchets`) and their
 // periods (`jqDispatcher_settings`: `getLVSspecificTitles`), but none of the
-// calls of their edit flow.
+// calls of their edit flow; #164 with 3, a pupil's absences
+// (`/LVS/Pupilpresences`).
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -460,6 +461,18 @@ final class LvsWire {
     formFields: {'pupilID', 'classID', 'periodID', 'exportID'},
   );
 
+  /// A pupil's absences (#164): `POST /LVS/Pupilpresences` with `pupilID`
+  /// and `groupID`, the list the file's absences section shows. Not its
+  /// charts (`/LVS/Pupilpresencesgraphs`), the class view
+  /// (`/LVS/Classpresences`), nor the older route
+  /// (`jqDispatcher_presence`, `getPupilPresences`).
+  static const absences = LvsRead(
+    method: 'POST',
+    path: '/LVS/Pupilpresences',
+    what: "the pupil's absences",
+    formFields: {'pupilID', 'groupID'},
+  );
+
   /// Every request the LVS services may send. Any other is refused with a
   /// [SmartschoolLvsRequestNotAllowedError] before it is sent.
   static final List<LvsRead> reads = List.unmodifiable([
@@ -478,6 +491,7 @@ final class LvsWire {
     supportPlanPeriods,
     supportPlan,
     profileSketch,
+    absences,
   ]);
 
   /// The read of [reads] that a request of [method] to [path] with [query]

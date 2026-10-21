@@ -2,7 +2,8 @@
 /// `/?module=LVS`, #160): a pupil found by name, and the overview of one
 /// pupil's file: who, which class, today's attendance, and which sections of
 /// the file hold something; the notes of a pupil, per category (#161). The
-/// results (#162) and the support plans (#163) have models of their own.
+/// results (#162), the support plans (#163) and the absences (#164) have
+/// models of their own.
 ///
 /// The LVS is an **internal** Smartschool module, not part of the official
 /// (public) API, and it holds the most sensitive data Smartschool has. So
@@ -175,7 +176,7 @@ abstract final class LvsSectionType {
   /// Contact moments.
   static const contactMoments = 'contact_moments';
 
-  /// Absences.
+  /// Absences: `LvsService.getAbsences` reads what it shows (#164).
   static const absences = 'absents';
 
   /// The pupil's whole school career ("Alle informatie").

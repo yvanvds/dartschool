@@ -881,6 +881,107 @@ void main() {
       );
     });
   });
+
+  // The plain text of every HTML the LVS services read (#171): the notes'
+  // rich texts, the support plans' texts, the absences' motivations; their
+  // tests through LvsService are in the test files of those reads.
+  group('LvsWire.plainText', () {
+    test('a line break starts a new line', () {
+      expect(
+        LvsWire.plainText('<p>Testtekst met<br>twee regels</p>'),
+        'Testtekst met\ntwee regels',
+      );
+      expect(LvsWire.plainText('Test<br/>regel'), 'Test\nregel');
+    });
+
+    test('each block starts a new line: paragraphs, divisions, items of a '
+        'list, rows of a table, headings, and the other blocks', () {
+      expect(
+        LvsWire.plainText('<p>Eerste testalinea.</p><p>Tweede.</p>'),
+        'Eerste testalinea.\nTweede.',
+      );
+      for (final block in [
+        'p',
+        'div',
+        'li',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'h5',
+        'h6',
+        'blockquote',
+        'pre',
+        'dt',
+        'dd',
+        'section',
+        'article',
+        'header',
+        'footer',
+        'address',
+        'figcaption',
+      ]) {
+        expect(
+          LvsWire.plainText('Test<$block>een</$block><$block>twee</$block>na'),
+          'Test\neen\ntwee\nna',
+          reason: block,
+        );
+      }
+      expect(
+        LvsWire.plainText('<ul><li>Testpunt een</li><li>twee</li></ul>verder'),
+        'Testpunt een\ntwee\nverder',
+      );
+      expect(
+        LvsWire.plainText('<ol><li>Test</li></ol><dl><dt>een</dt></dl>'),
+        'Test\neen',
+      );
+      expect(LvsWire.plainText('Test<hr>regel'), 'Test\nregel');
+    });
+
+    test('the cells of a row stay on its line, apart', () {
+      expect(
+        LvsWire.plainText(
+          '<table><thead><tr><th>Testkop</th><th>twee</th></tr></thead>'
+          '<tbody><tr><td>Testcel</td><td>twee</td></tr>'
+          '<tr><td>drie</td></tr></tbody></table>',
+        ),
+        'Testkop twee\nTestcel twee\ndrie',
+      );
+    });
+
+    test('inline elements do not split a word, nor start a line', () {
+      expect(LvsWire.plainText('<b>Jan</b>ssens'), 'Janssens');
+      expect(
+        LvsWire.plainText('<span>Test</span><i>tekst</i> met <a>een</a> link'),
+        'Testtekst met een link',
+      );
+    });
+
+    test('white space collapsed within a line; no empty lines, nothing before '
+        'or after', () {
+      expect(
+        LvsWire.plainText(
+          '\n  <p>  Testtekst\n   over\ttwee  </p>\n\n  <p>&nbsp;</p>'
+          '<p></p><br><br>  <div> <p>regels.<br></p> </div>\n',
+        ),
+        'Testtekst over twee\nregels.',
+      );
+      expect(LvsWire.plainText('<p>&nbsp;</p><br>'), '');
+      expect(LvsWire.plainText(''), '');
+    });
+
+    test('entities decoded; a text without HTML has its white space '
+        'collapsed, as HTML does', () {
+      expect(
+        LvsWire.plainText('<p>Test &amp; meer &lt;b&gt;</p>'),
+        'Test & meer <b>',
+      );
+      expect(
+        LvsWire.plainText('  Testtekst\n zonder   opmaak '),
+        'Testtekst zonder opmaak',
+      );
+    });
+  });
 }
 
 /// A Smartschool that refuses every LVS request with a bare `401`, also

@@ -284,6 +284,22 @@ void main() {
       ]);
     });
 
+    test('the motivation as plain text keeps its lines: a line break and each '
+        'block of its HTML start a new line (#171)', () async {
+      final (_, lvs) = await _serve(_file('absences_lines.json'));
+
+      final absence = (await _read(lvs)).absences.single;
+
+      expect(
+        absence.motivation,
+        'Testmotivatie met\ntwee regels\nTweede testalinea.',
+      );
+      expect(
+        absence.motivationHtml,
+        '<p>Testmotivatie met<br>twee regels</p><p>Tweede testalinea.</p>',
+      );
+    });
+
     test('the totals per code, in the order a code first comes: the '
         'absences and the half-days (a whole day counts two)', () async {
       final (_, lvs) = await _serve(_file('absences.json'));

@@ -418,6 +418,32 @@ void main() {
       expect(files.hasValue, isTrue);
     });
 
+    test('a rich text as plain text keeps its lines: a line break and each '
+        'block of its HTML start a new line, the cells of a row stay on one '
+        '(#171)', () async {
+      final (_, lvs) = await _serve({'notes': _xml('category_lines.xml')});
+
+      final field = (await _notesOf(lvs)).single.fields.single;
+
+      expect(field.type, LvsNoteFieldType.richText);
+      expect(
+        field.value,
+        [
+          'Testkop',
+          'Testtekst met',
+          'twee regels',
+          'Tweede testalinea.',
+          'Testpunt een',
+          'Testpunt twee',
+          'Testblok',
+          'Testcel een Testcel twee',
+          'Testcel drie',
+          'Testslot.',
+        ].join('\n'),
+      );
+      expect(field.html, startsWith('<h3>Testkop</h3>\n<p>Testtekst met<br>'));
+    });
+
     test(
       'a category without notes in the school year: an empty list',
       () async {

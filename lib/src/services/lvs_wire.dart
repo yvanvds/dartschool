@@ -31,6 +31,7 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:xml/xml.dart';
 
@@ -829,12 +830,60 @@ final class LvsWire {
     _ => null,
   };
 
-  /// The plain text of [html]: without its tags, its entities decoded, its
-  /// white space collapsed.
+  /// The plain text of [html], with its lines as the web client shows them
+  /// (#171): without its tags, its entities decoded; a line break (`<br>`)
+  /// and each block element ([_blocks]: a paragraph, a heading, an item of a
+  /// list, a row of a table, ...) start a new line (`\n`), and the cells of
+  /// a row are apart; within a line, its white space (line breaks of the
+  /// source too, as in HTML) collapsed to single spaces. No empty lines, and
+  /// nothing before or after. Inline elements (`<b>`, `<span>`, ...) split
+  /// nothing: `<b>Jan</b>ssens` is `Janssens`.
   static String plainText(String html) {
-    final text = html.contains('<') || html.contains('&')
-        ? html_parser.parseFragment(html).text ?? ''
-        : html;
-    return text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (!html.contains('<') && !html.contains('&')) {
+      return html.replaceAll(_whiteSpace, ' ').trim();
+    }
+    final text = StringBuffer();
+    void write(html_dom.Node node) {
+      for (final child in node.nodes) {
+        if (child is html_dom.Text) {
+          // Its own line breaks are white space: only the HTML's make lines.
+          text.write(child.data.replaceAll(_whiteSpace, ' '));
+        } else if (child is html_dom.Element) {
+          final name = child.localName;
+          if (name == 'br') {
+            text.write('\n');
+          } else if (_blocks.contains(name)) {
+            text.write('\n');
+            write(child);
+            text.write('\n');
+          } else {
+            write(child);
+            if (name == 'td' || name == 'th') text.write(' ');
+          }
+        }
+      }
+    }
+
+    write(html_parser.parseFragment(html));
+    return text
+        .toString()
+        .split('\n')
+        .map((line) => line.replaceAll(_whiteSpace, ' ').trim())
+        .where((line) => line.isNotEmpty)
+        .join('\n');
   }
+
+  static final _whiteSpace = RegExp(r'\s+');
+
+  /// The elements that [plainText] puts on lines of their own: HTML's block
+  /// elements.
+  static const _blocks = {
+    'p', 'div', 'pre', 'blockquote', 'center', 'address', 'hr', // blocks
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', // headings
+    'ul', 'ol', 'li', 'dl', 'dt', 'dd', // lists
+    'table', 'caption', 'thead', 'tbody', 'tfoot', 'tr', // tables
+    'section', 'article', 'aside', 'nav', 'main', 'header', 'footer', // parts
+    'figure', 'figcaption', 'details', 'summary', 'dialog', // more parts
+    'form', 'fieldset', 'legend', // forms
+  };
 }

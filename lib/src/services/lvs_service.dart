@@ -90,6 +90,17 @@ export '../models/lvs_results_models.dart';
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
 ///
+/// ### Plain text
+/// The LVS sends most texts as HTML. A text the models hold "as plain text"
+/// is that HTML without its tags, its entities decoded, with its lines as
+/// the web client shows them (#171): a line break (`<br>`) and each block
+/// (a paragraph, a heading, an item of a list, a row of a table, ...) start
+/// a new line (`\n`); within a line, white space comes as single spaces; no
+/// empty lines, nothing before or after. The rich texts keep their HTML
+/// too ([LvsNoteField.html], [LvsPlanItem.approachCommentHtml],
+/// [LvsPlanItem.startSituationHtml], [LvsProfileSketch.html],
+/// [LvsAbsence.motivationHtml]).
+///
 /// ### Privacy
 /// What this service returns is about pupils: see `doc/lvs-privacy.md`. Its
 /// models print counts only (`toString()`), and its errors never carry a

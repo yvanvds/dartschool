@@ -576,8 +576,9 @@ enum LvsNoteFieldType {
 /// client shows them.
 ///
 /// [value] is the text to show, for every type: the text, the rich text as
-/// plain text, the chosen option(s) as the LVS names them, the day of a date
-/// (`YYYY-MM-DD`, Belgian time), the names of the attachments (one per
+/// plain text (a line for each line break and block of its HTML, see
+/// `LvsService`), the chosen option(s) as the LVS names them, the day of a
+/// date (`YYYY-MM-DD`, Belgian time), the names of the attachments (one per
 /// line); empty for a heading and for a field left empty. The other getters
 /// hold what a type adds ([html], [optionIds], [date], [attachments]);
 /// [rawValue] and [rawOptionValue] what the LVS sent.

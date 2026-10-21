@@ -133,7 +133,8 @@ class LvsAbsence {
   /// web client such as `red`), or `null` when it gives none.
   final String? color;
 
-  /// The motivation (`motivation`) as plain text: the LVS's HTML left out.
+  /// The motivation (`motivation`) as plain text: the LVS's HTML left out,
+  /// with a line for each line break and block of it (see `LvsService`).
   /// Empty when there is none. It can hold health information.
   final String motivation;
 

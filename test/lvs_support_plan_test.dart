@@ -422,6 +422,35 @@ void main() {
       expect(own.goals.single.domain, 'Testdomein');
     });
 
+    test('texts as plain text keep their lines: a line break and each block '
+        'of their HTML start a new line (#171)', () async {
+      final (_, lvs) = await _serve({'plan': _file('plan_lines.json')});
+
+      final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+      final [needs, goals] = plan.items;
+      expect(needs.supportNeeds, ['Testnood op\ntwee regels']);
+      expect(needs.workGoals, ['Testwerkdoel.\nTweede testalinea.']);
+      expect(needs.approach, ['Testaanpak een\nTestaanpak twee']);
+      expect(
+        needs.approachComment,
+        'Testcommentaar met\ntwee regels\nTweede testalinea.',
+      );
+      expect(
+        needs.approachCommentHtml,
+        '<p>Testcommentaar met<br>twee regels</p><p>Tweede testalinea.</p>',
+      );
+      expect(
+        goals.startSituation,
+        'Testbeginsituatie\nTestregel een\nTestregel twee',
+      );
+      final goal = goals.goals.single;
+      expect(goal.name, 'Testdoel met\ntwee regels');
+      expect(goal.objectives, [
+        'Testdoelstelling een.\nTestdoelstelling twee.',
+      ]);
+    });
+
     test('an uploaded plan: its metadata only, the author by name', () async {
       final (_, lvs) = await _serve({'plan': _file('plan.json')});
 
@@ -551,6 +580,29 @@ void main() {
       expect(sketch.period.id, 900501);
       // A closed period.
       expect(sketch.period.isOpen, isFalse);
+    });
+
+    test('the sketch as plain text keeps its lines: a line break and each '
+        'block of its HTML start a new line (#171)', () async {
+      final (_, lvs) = await _serve({'sketch': _file('profile_lines.json')});
+
+      final sketch = await lvs.getProfileSketch(
+        pupilId: 900001,
+        classId: 900101,
+      );
+
+      expect(
+        sketch.text,
+        [
+          'Testprofielschets',
+          'Testtekst met',
+          'twee regels',
+          'Tweede testalinea.',
+          'Sterk in testen',
+          'Test graag',
+        ].join('\n'),
+      );
+      expect(sketch.html, startsWith('<h3>Testprofielschets</h3><p>'));
     });
 
     test('the period asked for', () async {

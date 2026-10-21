@@ -147,8 +147,9 @@ enum LvsPlanItemKind {
 /// last version holds (`lastversion`).
 ///
 /// Which fields hold something depends on the [kind]; the others are empty.
-/// Texts are plain text (the LVS's HTML left out); the two rich texts also
-/// keep their HTML ([startSituationHtml], [approachCommentHtml]).
+/// Texts are plain text (the LVS's HTML left out, with a line for each line
+/// break and block of it, see `LvsService`); the two rich texts also keep
+/// their HTML ([startSituationHtml], [approachCommentHtml]).
 class LvsPlanItem {
   /// The item's ID (`itemID`; `documentID` for a [LvsPlanItemKind.document]).
   final int id;
@@ -317,7 +318,8 @@ class LvsProfileSketch {
   /// The sketch as HTML (`content`); empty without a sketch.
   final String html;
 
-  /// The sketch as plain text; empty without a sketch.
+  /// The sketch as plain text, with a line for each line break and block of
+  /// [html] (see `LvsService`); empty without a sketch.
   final String text;
 
   /// The last change as the LVS shows it (`lastrevision`): a text, kept as

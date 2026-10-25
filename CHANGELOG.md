@@ -1,4 +1,4 @@
-## Unreleased
+## 0.3.9 - 2026-10-25
 
 ### Added
 - LVS: the pupil tracking system ("leerlingvolgsysteem", `/?module=LVS`) can be read as the logged-in teacher, with the new `LvsService` (#160): find a pupil by name and read the overview of the pupil's file. It is the base of the reads of a pupil's file that follow (notes per category, results, support plans, absences: #161-#164). It only reads, and follows the privacy rules of #159 (`doc/lvs-privacy.md`).

@@ -30,7 +30,7 @@ Add the package to `pubspec.yaml`:
 
 ```yaml
 dependencies:
-	flutter_smartschool: ^0.3.8
+	flutter_smartschool: ^0.3.9
 ```
 
 or directly from GitHub (`dartschool`) while iterating:

@@ -326,8 +326,9 @@ class LvsHalfDayStatus {
 ///
 /// The categories are made by each school ("gedrag", "zorg", "oudercontact",
 /// ...): the library lists them, it does not know them by name.
-/// `LvsService.getNotes` reads the notes of one by its [id], with those of
-/// its sub-categories.
+/// `LvsService.getNotes` reads the notes of one by its [id]: its own notes,
+/// never those of its sub-categories (#180), which are read by their own
+/// IDs ([descendants]).
 class LvsCategory {
   /// The category ID (the section's `id`), which `LvsService.getNotes`
   /// takes as `categoryId`.
@@ -397,7 +398,8 @@ class LvsCategory {
 /// The period of the notes `LvsService.getNotes` and `getAllNotes` read
 /// (#161): a school year, from its first to its last day, sent to the LVS
 /// as its page does (`syRange`: `{"from": "YYYY-MM-DD", "until":
-/// "YYYY-MM-DD"}`).
+/// "YYYY-MM-DD"}`). The LVS does not apply it reliably (#180), so the
+/// service keeps the notes of the period itself ([includesNote]).
 ///
 /// A school year in Belgium runs from 1 September to 31 August
 /// ([LvsSchoolYear.starting]); [LvsSchoolYear.current] is the one of today,
@@ -443,6 +445,43 @@ class LvsSchoolYear {
   /// Whether [until] is before [from] (by their days).
   bool get isEmpty => lastDay.compareTo(firstDay) < 0;
 
+  /// The school year that [label] names, as the LVS labels a note's
+  /// ([LvsNote.schoolYear]): two years, the second the one after the first
+  /// (`"2030-2031"`, spaces around the dash allowed), is
+  /// `LvsSchoolYear.starting(2030)`. `null` for an empty label or any other
+  /// text (one year alone, `"2030"`, says not which school year it is).
+  static LvsSchoolYear? tryParse(String label) {
+    final match = _label.firstMatch(label.trim());
+    if (match == null) return null;
+    final first = int.parse(match[1]!);
+    if (int.parse(match[2]!) != first + 1) return null;
+    return LvsSchoolYear.starting(first);
+  }
+
+  static final _label = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
+
+  /// Whether the day of [instant] in Belgian time, the LVS's, is one of the
+  /// days [from] to [until], both included.
+  bool includesDay(DateTime instant) {
+    final day = isoDay(brusselsWallTime(instant));
+    return day.compareTo(firstDay) >= 0 && day.compareTo(lastDay) <= 0;
+  }
+
+  /// Whether [note] is of this period, as `LvsService.getNotes` and
+  /// `getAllNotes` keep the notes (#180). Of a school year (1 September to
+  /// 31 August, as [LvsSchoolYear.starting] makes it): a note whose label
+  /// ([LvsNote.schoolYear], [tryParse]) names it, or, when the label is
+  /// empty or names no school year, a note whose [LvsNote.date] is one of
+  /// its days ([includesDay]). Of any other range of days: a note whose date
+  /// is one of them.
+  bool includesNote(LvsNote note) {
+    if (this == LvsSchoolYear.containing(from)) {
+      final labelled = tryParse(note.schoolYear);
+      if (labelled != null) return labelled == this;
+    }
+    return includesDay(note.date);
+  }
+
   @override
   bool operator ==(Object other) =>
       other is LvsSchoolYear &&
@@ -472,8 +511,8 @@ class LvsNote {
   /// The note's ID (`itemID`).
   final int id;
 
-  /// The ID of the note's category (`catID`): the category read, or one of
-  /// its sub-categories.
+  /// The ID of the note's category (`catID`): for `LvsService.getNotes`, the
+  /// category read (a category's own notes, never its sub-categories', #180).
   final int categoryId;
 
   /// The name of the note's category as the LVS gives it (`catName`, or the
@@ -498,8 +537,9 @@ class LvsNote {
   /// Whether the note is marked as viewed for the account (`viewed`).
   final bool viewed;
 
-  /// The school year of the note as the LVS gives it (`schoolyear`); empty
-  /// when it gives none.
+  /// The school year of the note as the LVS gives it (`schoolyear`,
+  /// `"<YYYY-YYYY>"`: [LvsSchoolYear.tryParse] reads it); empty when it gives
+  /// none.
   final String schoolYear;
 
   /// The fields of the note, in the LVS's order.

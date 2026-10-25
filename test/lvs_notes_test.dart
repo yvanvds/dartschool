@@ -1,17 +1,19 @@
 // Tests for issue #161: the notes of a pupil's file in the LVS, read as the
 // logged-in teacher through LvsService: the note categories of a pupil's file
-// (LvsPupilFile.noteCategories), the notes of one category with those of its
-// sub-categories (getNotes), all notes of the file (getAllNotes), the school
-// year sent (LvsSchoolYear), the allowlist of the XML dispatcher's commands,
-// and errors that carry no name.
+// (LvsPupilFile.noteCategories), the notes of one category, its own (getNotes,
+// #180), all notes of the file (getAllNotes), the school year sent and the
+// notes kept of it (LvsSchoolYear, #180), the allowlist of the XML
+// dispatcher's commands, and errors that carry no name.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/notes/
 // (doc/lvs-privacy.md: never trimmed from a live answer), in the shapes read
 // from the LVS's own JavaScript and seen live for a made-up pupil and a
 // made-up category (2026-10-21): the dispatcher's envelope, the parts of
 // renderPupilNotes and renderPupilAllNotes up to the notes, the placeholder
-// pupil and the category without its ID. Smaller variants (an unknown shape,
-// a refusal) are made from them below.
+// pupil and the category without its ID. The notes of two school years
+// (category_years.xml, all_notes_years.xml) are as the LVS answers whatever
+// the period it is sent (seen live for a real pupil, counts only, #180).
+// Smaller variants (an unknown shape, a refusal) are made from them below.
 //
 // The fake Smartschool fails the test on any request that is not one of the
 // service's reads.
@@ -223,14 +225,34 @@ String _replaceNth(String text, String from, String to, int n) {
   return text.replaceRange(at, at + from.length, to);
 }
 
-/// The notes of category 900401 of pupil 900001 in class 900101.
+/// The school year of the notes of the fixtures: 2030-2031.
+final _year = LvsSchoolYear.starting(2030);
+
+/// The notes of category 900401 of pupil 900001 in class 900101, in
+/// [schoolYear] (the fixtures' [_year] when not given).
 Future<List<LvsNote>> _notesOf(LvsService lvs, {LvsSchoolYear? schoolYear}) =>
     lvs.getNotes(
       pupilId: 900001,
       classId: 900101,
       categoryId: 900401,
-      schoolYear: schoolYear,
+      schoolYear: schoolYear ?? _year,
     );
+
+/// All notes of pupil 900001 in class 900101, in [schoolYear] (the fixtures'
+/// [_year] when not given).
+Future<List<LvsNote>> _allNotesOf(
+  LvsService lvs, {
+  LvsSchoolYear? schoolYear,
+}) => lvs.getAllNotes(
+  pupilId: 900001,
+  classId: 900101,
+  schoolYear: schoolYear ?? _year,
+);
+
+/// [answer] with its line ends made [eol] (the checkout has LF, #173; an
+/// answer of the LVS can have either).
+String _withLineEnds(String answer, String eol) =>
+    answer.replaceAll('\r\n', '\n').replaceAll('\n', eol);
 
 void main() {
   forbidRealNetwork();
@@ -268,7 +290,7 @@ void main() {
     test('without a school year: the current one, in Belgian time', () async {
       final (server, lvs) = await _serve({'notes': _xml('category.xml')});
 
-      await _notesOf(lvs);
+      await lvs.getNotes(pupilId: 900001, classId: 900101, categoryId: 900401);
 
       final current = LvsSchoolYear.current();
       expect(jsonDecode(server.commands.single.params['syRange']!), {
@@ -277,18 +299,17 @@ void main() {
       });
     });
 
-    test("the notes of the category and its sub-categories, in the LVS's "
-        'order', () async {
+    test("the category's own notes, in the LVS's order (#180)", () async {
       final (_, lvs) = await _serve({'notes': _xml('category.xml')});
 
       final notes = await _notesOf(lvs);
 
       expect(notes.map((n) => n.id), [900301, 900302, 900303]);
-      expect(notes.map((n) => n.categoryId), [900401, 900402, 900401]);
+      expect(notes.map((n) => n.categoryId), [900401, 900401, 900401]);
       // The third note comes without catName: the name of the category read.
       expect(notes.map((n) => n.categoryName), [
         'Testcategorie',
-        'Testsubcategorie',
+        'Testcategorie',
         'Testcategorie',
       ]);
       expect(notes.map((n) => n.title), [
@@ -307,7 +328,11 @@ void main() {
         'Dupré Céline',
         'Jacobs Els',
       ]);
-      expect(notes.map((n) => n.schoolYear), ['2030', '2030', '2030']);
+      expect(notes.map((n) => n.schoolYear), [
+        '2030-2031',
+        '2030-2031',
+        '2030-2031',
+      ]);
       expect(notes.map((n) => n.fields.length), [11, 1, 0]);
     });
 
@@ -425,9 +450,7 @@ void main() {
       test('a rich text as plain text keeps its lines: a line break and each '
           'block of its HTML start a new line, the cells of a row stay on one; '
           'the line ends of the HTML ($ends) are white space (#171)', () async {
-        final answer = _fixture(
-          'notes/category_lines.xml',
-        ).replaceAll('\r\n', '\n').replaceAll('\n', eol);
+        final answer = _withLineEnds(_fixture('notes/category_lines.xml'), eol);
         final (_, lvs) = await _serve({'notes': _text(answer)});
 
         final field = (await _notesOf(lvs)).single.fields.single;
@@ -781,7 +804,7 @@ void main() {
         '(its dates), not the order of the answer', () async {
       final (_, lvs) = await _serve({'allNotes': _xml('all_notes.xml')});
 
-      final notes = await lvs.getAllNotes(pupilId: 900001, classId: 900101);
+      final notes = await _allNotesOf(lvs);
 
       expect(notes.map((n) => n.id), [900303, 900301, 900302]);
       expect(notes.map((n) => n.categoryId), [900404, 900401, 900402]);
@@ -803,7 +826,7 @@ void main() {
       );
       final (_, lvs) = await _serve({'allNotes': _text(body)});
 
-      final notes = await lvs.getAllNotes(pupilId: 900001, classId: 900101);
+      final notes = await _allNotesOf(lvs);
 
       expect(notes.map((n) => n.id), [900302, 900301, 900303]);
     });
@@ -812,7 +835,7 @@ void main() {
         'not know: an empty list', () async {
       final (_, lvs) = await _serve({'allNotes': _xml('all_notes_empty.xml')});
 
-      expect(await lvs.getAllNotes(pupilId: 900001, classId: 900101), isEmpty);
+      expect(await _allNotesOf(lvs), isEmpty);
     });
 
     test('an answer the service cannot read is a SmartschoolLvsError that '
@@ -848,7 +871,7 @@ void main() {
       for (final MapEntry(key: name, value: body) in answers.entries) {
         final (_, lvs) = await _serve({'allNotes': _text(body)});
         await expectLater(
-          lvs.getAllNotes(pupilId: 900001, classId: 900101),
+          _allNotesOf(lvs),
           throwsA(_unreadable(statusCode: 200)),
           reason: name,
         );
@@ -876,6 +899,120 @@ void main() {
       );
       expect(server.requests, isEmpty);
     });
+  });
+
+  // The LVS answers both reads with notes of other school years too,
+  // whatever the syRange it is sent (seen live, #180): the fake Smartschool
+  // answers every period with the same notes of two school years.
+  group('the notes of the school year asked for (#180)', () {
+    final yearBefore = LvsSchoolYear.starting(2029);
+    final october = LvsSchoolYear(
+      from: DateTime.utc(2030, 10, 1),
+      until: DateTime.utc(2030, 10, 31),
+    );
+
+    for (final (ends, eol) in [('LF', '\n'), ('CRLF', '\r\n')]) {
+      Future<(_Lvs, LvsService)> serveYears() => _serve({
+        'notes': _text(
+          _withLineEnds(_fixture('notes/category_years.xml'), eol),
+        ),
+        'allNotes': _text(
+          _withLineEnds(_fixture('notes/all_notes_years.xml'), eol),
+        ),
+      });
+
+      test('getNotes: only the notes of the school year, in the LVS\'s '
+          'order; the period still sent as syRange ($ends)', () async {
+        final (server, lvs) = await serveYears();
+
+        final notes = await _notesOf(lvs);
+        final before = await _notesOf(lvs, schoolYear: yearBefore);
+
+        expect(notes.map((n) => n.id), [900311, 900313, 900315, 900317]);
+        expect(before.map((n) => n.id), [900312, 900314, 900318]);
+        expect(server.commands.map((c) => c.params['syRange']), [
+          '{"from":"2030-09-01","until":"2031-08-31"}',
+          '{"from":"2029-09-01","until":"2030-08-31"}',
+        ]);
+      });
+
+      test('getAllNotes: only the notes of the school year, in the order of '
+          'the "all items" view; the period still sent ($ends)', () async {
+        final (server, lvs) = await serveYears();
+
+        final notes = await _allNotesOf(lvs);
+        final before = await _allNotesOf(lvs, schoolYear: yearBefore);
+
+        expect(notes.map((n) => n.id), [900323, 900321, 900325]);
+        expect(before.map((n) => n.id), [900326, 900322, 900324]);
+        expect(server.commands.map((c) => c.params['syRange']), [
+          '{"from":"2030-09-01","until":"2031-08-31"}',
+          '{"from":"2029-09-01","until":"2030-08-31"}',
+        ]);
+      });
+
+      test('a label of the school year keeps a note dated outside it; a label '
+          'of another one drops a note dated in it ($ends)', () async {
+        final (_, lvs) = await serveYears();
+
+        final notes = await _notesOf(lvs);
+        final all = await _allNotesOf(lvs);
+
+        // 900317 and 900325: labelled 2030-2031, dated 15 September 2031.
+        expect(notes.map((n) => n.id), contains(900317));
+        expect(all.map((n) => n.id), contains(900325));
+        // 900318 and 900326: labelled 2029-2030, dated 15 October 2030.
+        expect(notes.map((n) => n.id), isNot(contains(900318)));
+        expect(all.map((n) => n.id), isNot(contains(900326)));
+      });
+
+      test('a note without a label, or with one that names no school year '
+          '("0", one year alone), is kept or dropped by its day in Belgian '
+          'time ($ends)', () async {
+        final (_, lvs) = await serveYears();
+
+        final notes = await _notesOf(lvs);
+        final next = await _notesOf(
+          lvs,
+          schoolYear: LvsSchoolYear.starting(2031),
+        );
+
+        // No label: 900313 (February 2031) kept, 900314 (November 2029) not.
+        expect(notes.map((n) => n.id), contains(900313));
+        expect(notes.map((n) => n.id), isNot(contains(900314)));
+        // "0": 900315, 31 August 2030 22:30 UTC, the first day in Brussels.
+        expect(notes.map((n) => n.id), contains(900315));
+        // "2030": 900316, 31 August 2031 22:30 UTC, the day after the last
+        // in Brussels: of the school year after, not of 2030-2031.
+        expect(notes.map((n) => n.id), isNot(contains(900316)));
+        expect(next.map((n) => n.id), [900316]);
+      });
+
+      test('another range of days: the notes dated in it, whatever their '
+          'label ($ends)', () async {
+        final (server, lvs) = await serveYears();
+
+        final notes = await _notesOf(lvs, schoolYear: october);
+        final all = await _allNotesOf(lvs, schoolYear: october);
+
+        expect(notes.map((n) => n.id), [900311, 900318]);
+        expect(all.map((n) => n.id), [900326, 900321]);
+        expect(
+          server.commands.map((c) => c.params['syRange']).toSet().single,
+          '{"from":"2030-10-01","until":"2030-10-31"}',
+        );
+      });
+
+      test('a school year the answer holds no notes of: an empty list, for '
+          'both reads ($ends)', () async {
+        final (server, lvs) = await serveYears();
+        final none = LvsSchoolYear.starting(2028);
+
+        expect(await _notesOf(lvs, schoolYear: none), isEmpty);
+        expect(await _allNotesOf(lvs, schoolYear: none), isEmpty);
+        expect(server.requests, hasLength(2));
+      });
+    }
   });
 
   group('noteCategories', () {
@@ -999,6 +1136,92 @@ void main() {
         ).isEmpty,
         isTrue,
       );
+    });
+
+    test('tryParse: a label of two years, the second the one after the '
+        'first (#180); null for anything else', () {
+      expect(LvsSchoolYear.tryParse('2030-2031'), LvsSchoolYear.starting(2030));
+      expect(
+        LvsSchoolYear.tryParse(' 2029 - 2030 '),
+        LvsSchoolYear.starting(2029),
+      );
+      for (final label in [
+        '',
+        ' ',
+        '0',
+        '2030',
+        '2030-2032',
+        '2031-2030',
+        '2030/2031',
+        '30-31',
+        'Testjaar',
+      ]) {
+        expect(LvsSchoolYear.tryParse(label), isNull, reason: label);
+      }
+    });
+
+    test('includesDay: the day in Belgian time, the first and the last '
+        'included (#180)', () {
+      final year = LvsSchoolYear.starting(2030);
+      // 1 September 2030 00:30 in Brussels (CEST), 31 August 23:59.
+      expect(year.includesDay(DateTime.utc(2030, 8, 31, 22, 30)), isTrue);
+      expect(year.includesDay(DateTime.utc(2030, 8, 31, 21, 59)), isFalse);
+      // 31 August 2031 23:30 in Brussels, 1 September 2031 00:00.
+      expect(year.includesDay(DateTime.utc(2031, 8, 31, 21, 30)), isTrue);
+      expect(year.includesDay(DateTime.utc(2031, 8, 31, 22)), isFalse);
+      // A range of one day: 1 October 2030 in Brussels.
+      final day = LvsSchoolYear(
+        from: DateTime.utc(2030, 10, 1),
+        until: DateTime.utc(2030, 10, 1),
+      );
+      expect(day.includesDay(DateTime.utc(2030, 9, 30, 22)), isTrue);
+      expect(day.includesDay(DateTime.utc(2030, 10, 1, 22)), isFalse);
+    });
+
+    test('includesNote: of a school year by its label, by its date without '
+        'one; of another range of days by its date (#180)', () {
+      LvsNote note(String label, DateTime date) => LvsNote(
+        id: 900301,
+        categoryId: 900401,
+        categoryName: 'Testcategorie',
+        title: 'Testnotitie',
+        date: date,
+        author: 'Peeters Piet',
+        isConfidential: false,
+        isNew: false,
+        viewed: false,
+        schoolYear: label,
+        fields: const [],
+      );
+      final inYear = DateTime.utc(2030, 10, 15, 10);
+      final after = DateTime.utc(2031, 9, 15, 10);
+      final year = LvsSchoolYear.starting(2030);
+
+      expect(year.includesNote(note('2030-2031', inYear)), isTrue);
+      expect(year.includesNote(note('2030-2031', after)), isTrue);
+      expect(year.includesNote(note('2029-2030', inYear)), isFalse);
+      expect(year.includesNote(note('', inYear)), isTrue);
+      expect(year.includesNote(note('', after)), isFalse);
+      expect(year.includesNote(note('2030', after)), isFalse);
+      // The same school year made by hand is a school year too.
+      final byHand = LvsSchoolYear(
+        from: DateTime(2030, 9),
+        until: DateTime(2031, 8, 31),
+      );
+      expect(byHand.includesNote(note('2030-2031', after)), isTrue);
+      // A range that is no school year: by the date alone.
+      final october = LvsSchoolYear(
+        from: DateTime.utc(2030, 10, 1),
+        until: DateTime.utc(2030, 10, 31),
+      );
+      expect(october.includesNote(note('2029-2030', inYear)), isTrue);
+      expect(october.includesNote(note('2030-2031', after)), isFalse);
+      final twoYears = LvsSchoolYear(
+        from: DateTime.utc(2029, 9),
+        until: DateTime.utc(2031, 8, 31),
+      );
+      expect(twoYears.includesNote(note('2030-2031', after)), isFalse);
+      expect(twoYears.includesNote(note('2028-2029', inYear)), isTrue);
     });
   });
 

@@ -38,7 +38,11 @@ export '../models/lvs_results_models.dart';
 ///   pupilId: pupil.pupilId,
 ///   classId: pupil.classId,
 /// );
-/// for (final category in file.noteCategories.where((c) => c.hasNotes)) {
+/// // Each category on its own: a category's notes are not its sub-categories'.
+/// final categories = [
+///   for (final c in file.noteCategories) ...[c, ...c.descendants],
+/// ];
+/// for (final category in categories.where((c) => c.hasNotes)) {
 ///   final notes = await lvs.getNotes(
 ///     pupilId: pupil.pupilId,
 ///     classId: pupil.classId,
@@ -238,15 +242,25 @@ class LvsService {
   }
 
   /// The notes of category [categoryId] of the file of pupil [pupilId] in
-  /// class [classId], with those of its sub-categories, in the LVS's order
-  /// (#161). Empty when the category holds no notes in [schoolYear].
+  /// class [classId] in [schoolYear], in the LVS's order (#161). Empty when
+  /// the category holds no notes of its own in [schoolYear].
   ///
-  /// [LvsPupilFile.noteCategories] lists the categories (the school's own:
-  /// "gedrag", "zorg", ...). [schoolYear] is the period of the notes: the
-  /// current school year (1 September to 31 August, Belgian time) when not
-  /// given. Confidential notes come with [LvsNote.isConfidential] `true`:
-  /// the LVS decides which ones the account receives, the library does not
-  /// leave them out.
+  /// A category's own notes only, never those of its sub-categories (seen
+  /// live, #180: the LVS answers a parent without the notes of its
+  /// sub-categories, and each sub-category with its own). Read each of
+  /// [LvsCategory.descendants] for those. [LvsPupilFile.noteCategories] lists
+  /// the categories (the school's own: "gedrag", "zorg", ...).
+  ///
+  /// [schoolYear] is the period of the notes: the current school year
+  /// (1 September to 31 August, Belgian time) when not given. Only the notes
+  /// of that period are returned ([LvsSchoolYear.includesNote]: of a school
+  /// year, those its label names, by their date when they have no label;
+  /// of another range of days, by their date): the LVS is sent the period,
+  /// as the web client sends it, but does not apply it reliably (seen live,
+  /// #180: it answered notes of other school years, in this read and in
+  /// [getAllNotes]). Confidential notes come with [LvsNote.isConfidential]
+  /// `true`: the LVS decides which ones the account receives, the library
+  /// does not leave them out.
   ///
   /// One request: the dispatcher's `lvs_cats/getUserCatItems` with `catID`,
   /// `userID`, `toolbarType` `main`, `syRange` (`{"from", "until"}`),
@@ -271,13 +285,13 @@ class LvsService {
     _checkId(pupilId, 'pupilId');
     _checkId(classId, 'classId');
     _checkId(categoryId, 'categoryId');
-    final period = _period(schoolYear);
+    final period = _schoolYear(schoolYear);
     const read = LvsWire.categoryNotes;
     final response = await _wire.dispatch(read, {
       'catID': '$categoryId',
       'userID': '$pupilId',
       'toolbarType': 'main',
-      'syRange': period,
+      'syRange': _range(period),
       'groupID': '$classId',
       'toolbarSide': 'left',
     });
@@ -286,19 +300,26 @@ class LvsService {
       read,
       answer: 'renderPupilNotes',
     );
-    return LvsNoteAnswers.categoryNotes(
-      content,
-      pupilId: pupilId,
-      classId: classId,
-      categoryId: categoryId,
+    return _notesOf(
+      period,
+      LvsNoteAnswers.categoryNotes(
+        content,
+        pupilId: pupilId,
+        classId: classId,
+        categoryId: categoryId,
+      ),
     );
   }
 
-  /// All notes of the file of pupil [pupilId] in class [classId], of every
-  /// category, in the order of the LVS's "all items" view of the file (its
-  /// `dates`) (#161). Empty when the file holds no notes in [schoolYear].
+  /// All notes of the file of pupil [pupilId] in class [classId] in
+  /// [schoolYear], of every category, in the order of the LVS's "all items"
+  /// view of the file (its `dates`) (#161). Empty when the file holds no
+  /// notes in [schoolYear].
   ///
-  /// [schoolYear] is as for [getNotes]. One request: the dispatcher's
+  /// [schoolYear] is as for [getNotes]: only the notes of that period are
+  /// returned ([LvsSchoolYear.includesNote]). The LVS answers this read with
+  /// the notes of other school years too (seen live, #180: most of the
+  /// view's notes were of other school years). One request: the dispatcher's
   /// `lvs_pupils/getUserData` with `userID`, `toolbarType` `main`, `groupID`,
   /// `syRange`, `viewAllFilter` `[]` and `filterData` `0`, as the web client
   /// opens the view, before it shows its filter buttons. Its
@@ -317,13 +338,13 @@ class LvsService {
   }) async {
     _checkId(pupilId, 'pupilId');
     _checkId(classId, 'classId');
-    final period = _period(schoolYear);
+    final period = _schoolYear(schoolYear);
     const read = LvsWire.allNotes;
     final response = await _wire.dispatch(read, {
       'userID': '$pupilId',
       'toolbarType': 'main',
       'groupID': '$classId',
-      'syRange': period,
+      'syRange': _range(period),
       'viewAllFilter': '[]',
       'filterData': '0',
     });
@@ -332,8 +353,14 @@ class LvsService {
       read,
       answer: 'renderPupilAllNotes',
     );
-    return LvsNoteAnswers.allNotes(content, pupilId: pupilId);
+    return _notesOf(period, LvsNoteAnswers.allNotes(content, pupilId: pupilId));
   }
+
+  /// The notes of [notes] that are of [period], in their order (#180).
+  static List<LvsNote> _notesOf(LvsSchoolYear period, List<LvsNote> notes) => [
+    for (final note in notes)
+      if (period.includesNote(note)) note,
+  ];
 
   // ---------------------------------------------------------------------------
   // Results (#162)
@@ -794,12 +821,10 @@ class LvsService {
     if (id <= 0) throw ArgumentError.value(id, name, 'must be positive');
   }
 
-  /// The `syRange` of [schoolYear], the current school year when `null`:
+  /// The `syRange` of [period]:
   /// `{"from":"YYYY-MM-DD","until":"YYYY-MM-DD"}`, as the LVS page sends it.
-  static String _period(LvsSchoolYear? schoolYear) {
-    final period = _schoolYear(schoolYear);
-    return jsonEncode({'from': period.firstDay, 'until': period.lastDay});
-  }
+  static String _range(LvsSchoolYear period) =>
+      jsonEncode({'from': period.firstDay, 'until': period.lastDay});
 
   /// [schoolYear], the current school year when `null`. Throws an
   /// [ArgumentError] for one that ends before it starts.

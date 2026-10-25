@@ -5,10 +5,12 @@
   The envelope and the names of the first ten children of content were seen
   live for a made-up pupil; the names from the notes on are not captured
   (the service reads every child by its position, as the web client does).
-  Three notes: one of the category with a field of every type (a "]]>" in
-  the rich text, split over two CDATA sections as PHP does, an unknown type
-  42, a date field "current", an empty choice), a confidential one of a
-  sub-category, and one without catName and authorReverse (an older shape).
+  Three notes of the category itself, never of a sub-category (a category's
+  own notes: seen live, #180), of school year 2030-2031: one with a field of
+  every type (a "]]>" in the rich text, split over two CDATA sections as PHP
+  does, an unknown type 42, a date field "current", an empty choice), a
+  confidential one, and one without catName and authorReverse (an older
+  shape).
 -->
 <server>
   <response>
@@ -165,7 +167,7 @@
                 <itemGroupID>900101</itemGroupID>
                 <authorSex>m</authorSex>
                 <bulkID>0</bulkID>
-                <schoolyear>2030</schoolyear>
+                <schoolyear>2030-2031</schoolyear>
                 <isNew>1</isNew>
                 <originalCreate>0</originalCreate>
                 <catName><![CDATA[Testcategorie]]></catName>
@@ -175,7 +177,7 @@
                 <itemID>900302</itemID>
                 <groupID>900101</groupID>
                 <pupilID>900001</pupilID>
-                <catID>900402</catID>
+                <catID>900401</catID>
                 <title><![CDATA[Testnotitie vertrouwelijk.]]></title>
                 <date>1917698400</date>
                 <author><![CDATA[Dupré Céline]]></author>
@@ -201,10 +203,10 @@
                 <itemGroupID>900101</itemGroupID>
                 <authorSex>f</authorSex>
                 <bulkID>0</bulkID>
-                <schoolyear>2030</schoolyear>
+                <schoolyear>2030-2031</schoolyear>
                 <isNew>0</isNew>
                 <originalCreate>0</originalCreate>
-                <catName><![CDATA[Testsubcategorie]]></catName>
+                <catName><![CDATA[Testcategorie]]></catName>
                 <authorReverse><![CDATA[Céline Dupré]]></authorReverse>
               </item>
               <item>
@@ -226,14 +228,14 @@
                 <itemGroupID>900101</itemGroupID>
                 <authorSex>f</authorSex>
                 <bulkID>0</bulkID>
-                <schoolyear>2030</schoolyear>
+                <schoolyear>2030-2031</schoolyear>
                 <isNew>0</isNew>
                 <originalCreate>0</originalCreate>
               </item>
             </items>
-            <catsInfo><![CDATA[{"900401":{"catID":900401,"name":"Testcategorie"},"900402":{"catID":900402,"parentID":900401,"name":"Testsubcategorie"}}]]></catsInfo>
-            <catOrder><![CDATA[[900401,900402]]]></catOrder>
-            <catViews><![CDATA[{"900401":"form","900402":"form"}]]></catViews>
+            <catsInfo><![CDATA[{"900401":{"catID":900401,"name":"Testcategorie"}}]]></catsInfo>
+            <catOrder><![CDATA[[900401]]]></catOrder>
+            <catViews><![CDATA[{"900401":"form"}]]></catViews>
           </content>
         </data>
       </action>

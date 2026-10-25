@@ -18,6 +18,14 @@
 //   for the LVS's placeholder pupil (seen live)  [9] viewType
 //   (form|list|title, or empty); with hasData 1 also [10] the notes,
 //   [11] the categories' info, [12] their order, [13] their views (JSON).
+//   The notes are the category's own, never those of its sub-categories
+//   (seen live for a real pupil, #180: a parent read without the note of
+//   its sub-category, the sub-category read with it; the categories' info
+//   of a browser capture described the one category read, #168).
+//
+// Neither answer keeps to the `syRange` it was asked for (seen live, #180:
+// notes of other school years, by their date and by their `schoolyear`):
+// LvsService keeps the notes of the period itself, not this file.
 //
 // renderPupilAllNotes (lvs_pupils/getUserData), the children of `content`:
 //   [0] hasData  [1] buttons  [2] updateToolbar  [3] pupilID  [4] dates,
@@ -32,8 +40,8 @@
 //   [7] rights (JSON) [8] assigned [9] assignees (JSON) [10] history
 //   [11] params (the fields) [12] viewed [13] privateFile (1: confidential)
 //   [14] studierichting [15] itemGroupID [16] authorSex [17] bulkID
-//   [18] schoolyear [19] isNew [20] originalCreate; and, in newer answers,
-//   [21] catName [22] authorReverse.
+//   [18] schoolyear ("<YYYY-YYYY>") [19] isNew [20] originalCreate; and, in
+//   newer answers, [21] catName [22] authorReverse.
 //
 // A field (a child of params), by position: [0] itemID [1] paramID [2] type
 //   [3] val [4] title [5] optionValue [6] itemType [7] sortorder. By type:
@@ -55,8 +63,9 @@ import 'lvs_wire.dart';
 /// [LvsWire.allNotes].
 abstract final class LvsNoteAnswers {
   /// The notes of `renderPupilNotes`, the answer to the notes of category
-  /// [categoryId] of pupil [pupilId] in class [classId], in the LVS's order
-  /// (the category's own and those of its sub-categories).
+  /// [categoryId] of pupil [pupilId] in class [classId], in the LVS's order:
+  /// the category's own, never those of its sub-categories (#180), of any
+  /// school year the LVS answers with.
   ///
   /// Throws a [SmartschoolLvsPupilNotFoundError] for the LVS's placeholder
   /// pupil, a [SmartschoolLvsCategoryNotFoundError] for a category it does
@@ -127,9 +136,9 @@ abstract final class LvsNoteAnswers {
   }
 
   /// The notes of `renderPupilAllNotes`, the answer to all of the file of
-  /// pupil [pupilId], in the order of the LVS's "all items" view (its
-  /// `dates`); a note it leaves out of that order comes after, in the
-  /// answer's order.
+  /// pupil [pupilId], of any school year the LVS answers with, in the order
+  /// of the LVS's "all items" view (its `dates`); a note it leaves out of
+  /// that order comes after, in the answer's order.
   static List<LvsNote> allNotes(XmlElement content, {required int pupilId}) {
     const read = LvsWire.allNotes;
     final parts = content.childElements.toList();

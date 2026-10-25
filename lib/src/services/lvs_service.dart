@@ -350,8 +350,9 @@ class LvsService {
   // [LvsWire.resultsHeaders], #175). Without them, the LVS answered every one
   // of them with HTTP 500 and Smartschool's error page, for a made-up pupil
   // ID in a made-up class (seen live, 2026-10-21) and for a real pupil
-  // (#168): a plain SmartschoolLvsError. With them, it answers the
-  // configuration of a made-up pupil (seen live, 2026-10-25); a real
+  // (#168): a plain SmartschoolLvsError. With them, it answers every one of
+  // them for a made-up pupil, the configuration and an empty list or page
+  // for the others, none with HTTP 500 (seen live, 2026-10-25); a real
   // pupil's answers match the parser's shapes (a browser capture, #175).
 
   /// What the results app may show the account for pupil [pupilId] in class

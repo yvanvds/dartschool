@@ -20,10 +20,11 @@
 // (the classes the account may see), a search for a text no one has, and a
 // made-up pupil ID, which the LVS answers with its school's sections and a
 // placeholder pupil (seen 2026-10-21), for its file and for the notes of a
-// category, with no data for all its notes, with an answer to the
-// configuration of its results since they carry the results app's headers
-// (seen 2026-10-25, #175; HTTP 500 for every read of them without), with
-// HTTP 500 for its absences, and with no period of support
+// category, with no data for all its notes, with an answer to every read of
+// its results since they carry the results app's headers (#175, seen
+// 2026-10-25: the configuration, and an empty list or page for the others;
+// HTTP 500 for every one of them without the headers), with HTTP 500 for
+// its absences, and with no period of support
 // plans (a made-up class has no structure of them) for the support plan
 // reads. With it, it also searches for that text and reads
 // the file and today's status of the first pupil found, the notes of the
@@ -170,9 +171,10 @@ void main() {
 
       test("a made-up pupil's results (#162, #175): every read of the "
           'results app is answered or is a SmartschoolLvsError, never one '
-          'the allowlist refuses (without the app\'s headers the LVS answered '
-          'them with HTTP 500, seen 2026-10-21; with them it answers the '
-          'configuration, seen 2026-10-25)', () async {
+          'the allowlist refuses (with the app\'s headers the LVS answers all '
+          'six, the configuration and an empty list or page for the others, '
+          'none with HTTP 500, seen 2026-10-25; without them it answered '
+          'every one with HTTP 500, seen 2026-10-21)', () async {
         final reads = <String, Future<Object?> Function()>{
           'getResultsConfiguration': () => lvs.getResultsConfiguration(
             pupilId: _madeUpId,

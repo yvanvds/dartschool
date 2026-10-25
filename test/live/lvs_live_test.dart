@@ -56,6 +56,11 @@
 // run, it takes the lock of the session first, logs in at most once, and
 // prints no credential, no cookie and no name.
 //
+// What the web client itself sends and gets for that pupil is the browser's
+// capture (#168): save it as a HAR file in a temp folder and reduce it to
+// shapes with `dart run tool/lvs_har_shapes.dart <file.har>` (#178;
+// doc/lvs-privacy.md, "Capturing with the browser").
+//
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
 @Tags(['live'])

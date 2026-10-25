@@ -1888,7 +1888,7 @@ The tests never use the network: they talk to fake Smartschools, and every test 
 
 ### LVS data
 
-The pupil tracking system (LVS, `/?module=LVS`) holds the most sensitive data of Smartschool. Before any work on it (research, captures, fixtures, tests, examples, issues, PRs), read **[`doc/lvs-privacy.md`](doc/lvs-privacy.md)**: no value from a live LVS answer goes into the repository or onto GitHub; raw captures stay in a temp folder outside the repository, never in `dev_dumps/`; LVS fixtures (`test/fixtures/lvs/`) are written by hand with the fakes of `test/fixtures/lvs/FAKES.md`, and `test/lvs_fixtures_guard_test.dart` checks them (fake names, ids in a reserved range, no base64 names anywhere under `test/`, no pasted answers).
+The pupil tracking system (LVS, `/?module=LVS`) holds the most sensitive data of Smartschool. Before any work on it (research, captures, fixtures, tests, examples, issues, PRs), read **[`doc/lvs-privacy.md`](doc/lvs-privacy.md)**: no value from a live LVS answer goes into the repository or onto GitHub; raw captures stay in a temp folder outside the repository, never in `dev_dumps/`; LVS fixtures (`test/fixtures/lvs/`) are written by hand with the fakes of `test/fixtures/lvs/FAKES.md`, and `test/lvs_fixtures_guard_test.dart` checks them (fake names, ids in a reserved range, no base64 names anywhere under `test/`, no pasted answers). A browser capture is reduced to shapes with `tool/lvs_har_shapes.dart` before it is shared (*Capturing with the browser* in `doc/lvs-privacy.md`).
 
 ### Live tests
 

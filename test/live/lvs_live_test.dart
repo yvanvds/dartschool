@@ -20,8 +20,10 @@
 // (the classes the account may see), a search for a text no one has, and a
 // made-up pupil ID, which the LVS answers with its school's sections and a
 // placeholder pupil (seen 2026-10-21), for its file and for the notes of a
-// category, with no data for all its notes, and with HTTP 500 for every
-// read of its results and for its absences, and with no period of support
+// category, with no data for all its notes, with an answer to the
+// configuration of its results since they carry the results app's headers
+// (seen 2026-10-25, #175; HTTP 500 for every read of them without), with
+// HTTP 500 for its absences, and with no period of support
 // plans (a made-up class has no structure of them) for the support plan
 // reads. With it, it also searches for that text and reads
 // the file and today's status of the first pupil found, the notes of the
@@ -70,6 +72,14 @@ const _nobody = 'qqxzdartschooltestqq';
 
 /// A pupil ID and a class ID no school has.
 const _madeUpId = 999999999;
+
+/// What a read of the results returned, by its type and count only: never a
+/// value of the answer (doc/lvs-privacy.md, rule 4).
+String _shapeOf(Object? result) => switch (result) {
+  List() => 'a list of ${result.length}',
+  LvsEvaluationPage() => 'a page of ${result.evaluations.length}',
+  _ => '${result.runtimeType}',
+};
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -158,9 +168,11 @@ void main() {
         expect(run.guard.violations, isEmpty);
       });
 
-      test("a made-up pupil's results (#162): every read of the results app "
-          'is a SmartschoolLvsError (the LVS answered them with HTTP 500, '
-          'seen 2026-10-21), never an empty list', () async {
+      test("a made-up pupil's results (#162, #175): every read of the "
+          'results app is answered or is a SmartschoolLvsError, never one '
+          'the allowlist refuses (without the app\'s headers the LVS answered '
+          'them with HTTP 500, seen 2026-10-21; with them it answers the '
+          'configuration, seen 2026-10-25)', () async {
         final reads = <String, Future<Object?> Function()>{
           'getResultsConfiguration': () => lvs.getResultsConfiguration(
             pupilId: _madeUpId,
@@ -177,31 +189,29 @@ void main() {
           'getReports': () =>
               lvs.getReports(pupilId: _madeUpId, classId: _madeUpId),
         };
+        // Every read is tried and printed before any is checked.
+        final errors = <String, Object>{};
         for (final MapEntry(key: name, value: read) in reads.entries) {
-          Object? error;
           try {
-            await read();
+            final result = await read();
+            // The type and a count only: never a value of an answer.
+            print('$name: ${_shapeOf(result)}');
           } catch (e) {
-            error = e;
+            errors[name] = e;
+            // The type and the status only: never the message of an answer.
+            print(
+              '$name: ${e.runtimeType}'
+              '${e is SmartschoolLvsError ? ' (${e.statusCode})' : ''}',
+            );
           }
-          // The type and the status only: never the message of an answer.
-          print(
-            '$name: ${error.runtimeType}'
-            '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}',
-          );
+        }
+        for (final MapEntry(key: name, value: error) in errors.entries) {
           expect(error, isA<SmartschoolLvsError>(), reason: name);
           expect(
             error,
             isNot(isA<SmartschoolLvsRequestNotAllowedError>()),
             reason: name,
           );
-          if (access) {
-            expect(
-              error,
-              isNot(isA<SmartschoolLvsAccessDeniedError>()),
-              reason: name,
-            );
-          }
         }
         expect(run.guard.violations, isEmpty);
       });

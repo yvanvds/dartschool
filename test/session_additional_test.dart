@@ -345,6 +345,42 @@ void main() {
       expect(request.query, {'module': 'Messages', 'page': '2'});
     });
 
+    test('getResponse GETs the path with the headers given besides its own, '
+        'and none without them (#175)', () async {
+      final server = _Smartschool(
+        answer: '{"id": 1}',
+        answerType: Headers.jsonContentType,
+      );
+      final client = await _clientOf(server);
+
+      final response = await client.getResponse(
+        '/LVS/Results/getConfiguration',
+        query: {'pupilId': '900001'},
+        headers: const {
+          kXRequestedWith: 'XMLHttpRequest',
+          Headers.contentTypeHeader: Headers.jsonContentType,
+        },
+      );
+      await client.getResponse('/LVS/Spotlight');
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"id": 1}');
+      final [withHeaders, without] = server.requests;
+      expect(withHeaders.method, 'GET');
+      expect(withHeaders.path, '/LVS/Results/getConfiguration');
+      expect(withHeaders.query, {'pupilId': '900001'});
+      expect(withHeaders.options.headers[kXRequestedWith], 'XMLHttpRequest');
+      expect(withHeaders.contentType, Headers.jsonContentType);
+      expect(withHeaders.body, isEmpty);
+      expect(
+        withHeaders.options.headers['User-Agent'],
+        'unofficial Smartschool API interface',
+      );
+      expect(without.method, 'GET');
+      expect(without.options.headers.containsKey(kXRequestedWith), isFalse);
+      expect(without.contentType, isNull);
+    });
+
     test('download throws a SmartschoolDownloadError with the status code '
         'when Smartschool answers an error (#50)', () async {
       final client = await SmartschoolClient.create(

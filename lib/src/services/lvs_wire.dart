@@ -23,11 +23,11 @@
 // (`changeItemViewStatus`, `saveProfile`, ...). #160 reads with 3, and with
 // the left tree's `treeBuilder` (2's form, without a `function`); #161 with
 // 1, the notes of a pupil; #162 with 3, the GETs of the results app
-// (`/LVS/Results/*`), but not its export (`exportgoals`); #163 with 2, the
-// support plans (`jqDispatcher_hp`: `getIHP`, `getProfielSchets`) and their
-// periods (`jqDispatcher_settings`: `getLVSspecificTitles`), but none of the
-// calls of their edit flow; #164 with 3, a pupil's absences
-// (`/LVS/Pupilpresences`).
+// (`/LVS/Results/*`, with the app's headers, #175), but not its export
+// (`exportgoals`); #163 with 2, the support plans (`jqDispatcher_hp`:
+// `getIHP`, `getProfielSchets`) and their periods (`jqDispatcher_settings`:
+// `getLVSspecificTitles`), but none of the calls of their edit flow; #164
+// with 3, a pupil's absences (`/LVS/Pupilpresences`).
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -183,6 +183,7 @@ final class LvsRead {
     this.queryFields = const {},
     this.formFields = const {},
     this.command,
+    this.headers = const {},
   });
 
   /// `GET` or `POST`.
@@ -208,6 +209,12 @@ final class LvsRead {
   /// For a read of the XML dispatcher: the one command its `command` form
   /// field must hold. `null` for the other reads.
   final LvsCommand? command;
+
+  /// The headers a GET of this read goes out with, besides the client's
+  /// own, as the LVS's web client sends them: those of the results app
+  /// (#175). None for the other GETs. (A POST goes out as a form with
+  /// `X-Requested-With`, see [SmartschoolClient.postFormResponse].)
+  final Map<String, String> headers;
 
   /// Whether a request of [method] to [path] with [query] and [form] is this
   /// read.
@@ -341,13 +348,25 @@ final class LvsWire {
   /// `yyyy-MM-dd`).
   static const _resultsQuery = {'pupilId', 'groupId', 'startDate', 'endDate'};
 
+  /// The headers of the results app's reads (#175): its GETs carry
+  /// `X-Requested-With: XMLHttpRequest` and `Content-Type:
+  /// application/json` (seen in a browser capture). Without them, the LVS
+  /// answered a real pupil's configuration with HTTP 500 and Smartschool's
+  /// error page (seen live).
+  static const resultsHeaders = {
+    kXRequestedWith: 'XMLHttpRequest',
+    Headers.contentTypeHeader: Headers.jsonContentType,
+  };
+
   /// What the results app may show the account for a pupil (#162):
-  /// `GET /LVS/Results/getConfiguration?pupilId&groupId`.
+  /// `GET /LVS/Results/getConfiguration?pupilId&groupId`, with
+  /// [resultsHeaders] (#175), as every read of the results app.
   static const resultsConfiguration = LvsRead(
     method: 'GET',
     path: '/LVS/Results/getConfiguration',
     what: "the configuration of the pupil's results",
     queryFields: {'pupilId', 'groupId'},
+    headers: resultsHeaders,
   );
 
   /// The periods of a pupil's results (#162):
@@ -357,6 +376,7 @@ final class LvsWire {
     path: '/LVS/Results/getperiods',
     what: "the periods of the pupil's results",
     queryFields: _resultsQuery,
+    headers: resultsHeaders,
   );
 
   /// The courses of a pupil's results (#162):
@@ -366,6 +386,7 @@ final class LvsWire {
     path: '/LVS/Results/getcourses',
     what: "the courses of the pupil's results",
     queryFields: _resultsQuery,
+    headers: resultsHeaders,
   );
 
   /// A page of a pupil's evaluations (#162):
@@ -384,6 +405,7 @@ final class LvsWire {
       'courseIds',
       'periodIds',
     },
+    headers: resultsHeaders,
   );
 
   /// The feedback on a pupil's results (#162):
@@ -393,6 +415,7 @@ final class LvsWire {
     path: '/LVS/Results/getfeedback',
     what: "the feedback on the pupil's results",
     queryFields: _resultsQuery,
+    headers: resultsHeaders,
   );
 
   /// A pupil's reports (#162):
@@ -402,6 +425,7 @@ final class LvsWire {
     path: '/LVS/Results/getreports',
     what: "the pupil's reports",
     queryFields: _resultsQuery,
+    headers: resultsHeaders,
   );
 
   /// The periods of the support plans of a pupil's class (#163): the LVS's
@@ -509,16 +533,22 @@ final class LvsWire {
     return null;
   }
 
-  /// Sends a GET of [path] with [query], when it is one of [reads].
+  /// Sends a GET of [path] with [query], when it is one of [reads], with the
+  /// [LvsRead.headers] of that read.
   Future<Response<String>> get(
     String path, {
     Map<String, String> query = const {},
   }) {
     final read = _check('GET', path, query, const {});
+    final headers = read.headers;
     return _guarded(
       read,
       query,
-      () => _client.getResponse(path, query: query.isEmpty ? null : query),
+      () => _client.getResponse(
+        path,
+        query: query.isEmpty ? null : query,
+        headers: headers.isEmpty ? null : headers,
+      ),
     );
   }
 

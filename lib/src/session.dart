@@ -542,11 +542,23 @@ class SmartschoolClient {
   /// this page, such as the tokens of a form it holds, so that the request
   /// goes out only in the session the page was loaded in (see
   /// [postMultipartResponse]).
+  ///
+  /// [headers] go out with the request, besides the client's own, such as
+  /// `X-Requested-With: XMLHttpRequest` and `Content-Type: application/json`
+  /// for an API whose web client sends them (the LVS's results app, #175).
+  /// Without them, none is added.
   Future<Response<String>> getResponse(
     String path, {
     Map<String, dynamic>? query,
+    Map<String, String>? headers,
   }) {
-    return _send(() => _dio.get<String>(path, queryParameters: query));
+    return _send(
+      () => _dio.get<String>(
+        path,
+        queryParameters: query,
+        options: headers == null ? null : Options(headers: headers),
+      ),
+    );
   }
 
   /// Performs an authenticated `application/x-www-form-urlencoded` POST and

@@ -77,8 +77,9 @@ export '../models/lvs_results_models.dart';
 ///   "Resultaten" section shows, `/LVS/Results/getConfiguration`,
 ///   `getperiods`, `getcourses`, `getevaluationsofuser`, `getfeedback` and
 ///   `getreports`, each with `pupilId` and `groupId` (the class) and, but
-///   the first, the school year (`startDate`, `endDate`), answered with
-///   JSON;
+///   the first, the school year (`startDate`, `endDate`), and, as the
+///   results app sends them, the headers `X-Requested-With: XMLHttpRequest`
+///   and `Content-Type: application/json` (#175), answered with JSON;
 /// - the support plans (#163): the LVS's JSON dispatchers,
 ///   `POST /?module=LVS&file=jqDispatcher_hp&function=getIHP` (the plan) and
 ///   `getProfielSchets` (the profile sketch), and
@@ -344,14 +345,22 @@ class LvsService {
   // only in their own gradebooks. A school whose file shows the older
   // [LvsSectionType.skore] section instead is not covered.
   //
-  // Each read is one GET; the LVS answered every one of them with HTTP 500
-  // and Smartschool's error page for a made-up pupil ID in a made-up class
-  // (seen live, 2026-10-21): a plain SmartschoolLvsError, never an empty
-  // list. A real pupil's answers were not captured (#168).
+  // Each read is one GET, with the results app's headers
+  // (`X-Requested-With: XMLHttpRequest`, `Content-Type: application/json`,
+  // [LvsWire.resultsHeaders], #175). Without them, the LVS answered every one
+  // of them with HTTP 500 and Smartschool's error page, for a made-up pupil
+  // ID in a made-up class (seen live, 2026-10-21) and for a real pupil
+  // (#168): a plain SmartschoolLvsError. With them, it answers the
+  // configuration of a made-up pupil (seen live, 2026-10-25); a real
+  // pupil's answers match the parser's shapes (a browser capture, #175).
 
   /// What the results app may show the account for pupil [pupilId] in class
   /// [classId] (#162): `GET /LVS/Results/getConfiguration?pupilId&groupId`,
   /// answered with `{capabilities: {canUserSeeAll, canUserSeeSchoolyear}}`.
+  ///
+  /// Like every read of the results app, it goes out with the app's headers,
+  /// `X-Requested-With: XMLHttpRequest` and `Content-Type: application/json`
+  /// (#175): without them, the LVS answered a real pupil with HTTP 500.
   ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
@@ -371,7 +380,8 @@ class LvsService {
 
   /// The periods of the results of pupil [pupilId] in class [classId] in
   /// [schoolYear] (the current school year when not given), in the LVS's
-  /// order (#162): `GET /LVS/Results/getperiods`. Their IDs are what
+  /// order (#162): `GET /LVS/Results/getperiods`, with the results app's
+  /// headers (see [getResultsConfiguration]). Their IDs are what
   /// [getEvaluations] takes in `periodIds`.
   ///
   /// An ID that is not positive, or a school year that ends before it
@@ -388,7 +398,8 @@ class LvsService {
 
   /// The courses of the results of pupil [pupilId] in class [classId] in
   /// [schoolYear] (the current school year when not given), in the LVS's
-  /// order (#162): `GET /LVS/Results/getcourses`. Their IDs are what
+  /// order (#162): `GET /LVS/Results/getcourses`, with the results app's
+  /// headers (see [getResultsConfiguration]). Their IDs are what
   /// [getEvaluations] takes in `courseIds`.
   ///
   /// An ID that is not positive, or a school year that ends before it
@@ -412,7 +423,8 @@ class LvsService {
   /// One request: `GET /LVS/Results/getevaluationsofuser` with `pupilId`,
   /// `groupId`, `pageNumber`, `itemsOnPage`, `courseIds` and `periodIds`
   /// (sorted, comma-separated, left out when empty) and the school year
-  /// (`startDate`, `endDate`). The answer is a list: [LvsEvaluationPage]
+  /// (`startDate`, `endDate`), with the results app's headers (see
+  /// [getResultsConfiguration]). The answer is a list: [LvsEvaluationPage]
   /// tells whether a next page may hold more ([LvsEvaluationPage.mayHaveMore]);
   /// [getAllEvaluations] reads them all. The results app itself asks for one
   /// page of 9999; whether the LVS pages a real pupil's list was not
@@ -527,7 +539,8 @@ class LvsService {
 
   /// The feedback on the results of pupil [pupilId] in class [classId] in
   /// [schoolYear] (the current school year when not given), in the LVS's
-  /// order (#162): `GET /LVS/Results/getfeedback`. Remarks on reports (of
+  /// order (#162): `GET /LVS/Results/getfeedback`, with the results app's
+  /// headers (see [getResultsConfiguration]). Remarks on reports (of
   /// the class council, or per course) and teachers' feedback on
   /// evaluations, with their attachments as metadata ([LvsFeedback.kind]).
   ///
@@ -545,7 +558,8 @@ class LvsService {
 
   /// The reports of pupil [pupilId] in class [classId] in [schoolYear] (the
   /// current school year when not given), in the LVS's order (#162):
-  /// `GET /LVS/Results/getreports`. Metadata only: the library does not
+  /// `GET /LVS/Results/getreports`, with the results app's headers (see
+  /// [getResultsConfiguration]). Metadata only: the library does not
   /// download a report ([LvsReport.downloadUrl] is kept).
   ///
   /// An ID that is not positive, or a school year that ends before it
@@ -561,7 +575,8 @@ class LvsService {
   }
 
   /// Sends [read], a GET of the results app with `pupilId`, `groupId` and
-  /// the school year, and returns the JSON of its answer.
+  /// the school year (and the app's headers, [LvsRead.headers]), and returns
+  /// the JSON of its answer.
   Future<Object?> _readResults(
     LvsRead read,
     int pupilId,

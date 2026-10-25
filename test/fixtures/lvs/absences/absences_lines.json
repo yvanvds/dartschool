@@ -1,18 +1,42 @@
 {
+  "lng_noresults": "Geen resultaten",
+  "lng_months": [
+    "januari",
+    "februari",
+    "maart",
+    "april",
+    "mei",
+    "juni",
+    "juli",
+    "augustus",
+    "september",
+    "oktober",
+    "november",
+    "december"
+  ],
+  "lng_days": [
+    "zondag",
+    "maandag",
+    "dinsdag",
+    "woensdag",
+    "donderdag",
+    "vrijdag",
+    "zaterdag"
+  ],
   "presences": {
-    "Testperiode": {
-      "2030-09-16": {
+    "2030-2031": [
+      {
         "full": {
-          "formattedDate": "ma 16/09/2030",
           "partOfDay": "Volledige dag",
+          "codeKey": "900501",
           "code": "TA",
           "codeColor": "red",
           "codeDescr": "Testcode",
-          "motivation": "<p>Testmotivatie met<br>twee regels</p><p>Tweede testalinea.</p>"
+          "motivation": "<p>Testmotivatie met<br>twee regels</p><p>Tweede testalinea.</p>",
+          "formattedDate": "ma 16 september 2030"
         }
       }
-    }
+    ]
   },
-  "lng_noresults": "Geen resultaten",
-  "year_label": "2030 - 2031"
+  "year_label": "2030-2031"
 }

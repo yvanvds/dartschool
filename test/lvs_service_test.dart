@@ -101,6 +101,10 @@ class _Lvs implements HttpClientAdapter {
   /// Every request that reached it, as `METHOD path?query form`.
   final requests = <String>[];
 
+  /// The headers of each of them, in order, as the adapter sends them, by
+  /// their names in lower case.
+  final headers = <Map<String, String>>[];
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -110,6 +114,10 @@ class _Lvs implements HttpClientAdapter {
     final uri = options.uri;
     final data = options.data;
     final form = data is Map ? data : const {};
+    headers.add({
+      for (final MapEntry(:key, :value) in options.headers.entries)
+        key.toLowerCase(): '$value',
+    });
     requests.add(
       [
         options.method,
@@ -698,6 +706,47 @@ void main() {
         await expectLater(lvs.checkAccess(), throwsA(_unreadable()));
       }
     });
+  });
+
+  // Only the reads of the results app go out with its headers (#175,
+  // test/lvs_results_test.dart): the LVS answers the Spotlight GETs without
+  // them (seen live).
+  group("the results app's headers (#175)", () {
+    test(
+      'the Spotlight GETs go out without X-Requested-With and without a '
+      'Content-Type; the POSTs, form-encoded, with X-Requested-With',
+      () async {
+        final (server, lvs) = await _serve({
+          'search': _json('spotlight/search_one.json'),
+          'file': _json('spotlight/pupil_file.json'),
+          'status': _json('status/none.json'),
+          'tree': () => _answer(
+            _fixture('tree/root.json'),
+            contentType: 'text/json; charset=utf-8',
+          ),
+        });
+
+        await lvs.searchPupils('janssens');
+        await lvs.getPupilFile(pupilId: 900001, classId: 900101);
+        await lvs.checkAccess();
+
+        expect(server.requests, [
+          'GET /LVS/Spotlight?searchVal=janssens',
+          'GET /LVS/Spotlight/900001?classID=900101',
+          'POST /LVS/Pupilxhr/getStatusInfo pupilID=900001',
+          'POST /?module=LVS&file=treeBuilder id=0',
+        ]);
+        final [search, file, status, tree] = server.headers;
+        for (final get in [search, file]) {
+          expect(get.containsKey('x-requested-with'), isFalse);
+          expect(get.containsKey('content-type'), isFalse);
+        }
+        for (final post in [status, tree]) {
+          expect(post['x-requested-with'], 'XMLHttpRequest');
+          expect(post['content-type'], Headers.formUrlEncodedContentType);
+        }
+      },
+    );
   });
 
   group('the allowlist', () {

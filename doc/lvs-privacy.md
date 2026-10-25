@@ -28,7 +28,9 @@ found.
    A coding agent does not open a pupil's data: it may read the LVS's static
    code and pages that hold no pupil (the app shell, the JavaScript
    bundles, the root of the class tree); capturing a pupil's answer is the
-   developer's step.
+   developer's step. A capture in the browser goes the same way, and is
+   reduced to shapes before anyone else sees it: see
+   [Capturing with the browser](#capturing-with-the-browser).
 2. **Issues, PRs, commit messages, CHANGELOG, code comments and docs**
    describe an LVS answer by its **shape**: field names, types, nesting, and
    placeholder values (`<pupil id>`, `<text>`, `"Jan Janssens"`). Never a
@@ -71,6 +73,56 @@ found.
    their `message` (an app logs messages); a `cause` or a separate field
    can, so that an app decides. Models do not print their values in
    `toString()`.
+
+## Capturing with the browser
+
+What the web client itself sends and gets, for the developer's capture
+step (#168), is captured in the browser. The live test reads a pupil
+through the library and asserts shapes and counts only
+(`DARTSCHOOL_LVS_PUPIL`, see `test/live/lvs_live_test.dart`); a browser
+capture shows what the web client does besides. A HAR file holds every
+answer in full, and the session's cookies, so it is reduced to shapes
+before anyone else sees it (#178):
+
+1. Open Smartschool in the browser, open the DevTools (F12) on their
+   **Network** tab, and check **Preserve log** (Firefox: *Persist Logs*),
+   so that a redirect or a new page keeps the requests before it.
+2. Do what the capture is for (open the pupil's file, a category, the
+   absences, ...), and little else.
+3. Save the log as a HAR file (Chrome and Edge: *Export HAR* on the
+   Network tab; Firefox: *Save All As HAR*) into a temp folder outside the
+   repository, `%TEMP%\lvs-capture\` on Windows, `/tmp/lvs-capture/`
+   elsewhere (rule 1). Where the browser offers a sanitized export, take
+   it: it leaves the cookies out (the answers are in the file either way).
+4. From the package root, run:
+
+   ```bash
+   dart run tool/lvs_har_shapes.dart <temp folder>/<file>.har
+   ```
+
+   It refuses a HAR file inside the repository. Per request to Smartschool
+   (static files, the web apps' translations `/smsc/locales/` and other
+   hosts left out), it prints the method and the path, the query and form
+   fields with the pattern of their values (`"9999-99-99"`, `<text>`,
+   `<html>`, `<url>`, `<uuid>`, `<JSON text: ...>`; the XML of the
+   dispatcher's `command` as a shape), the names of the request headers
+   that are not a browser's own, the status, the content type, a
+   redirect's path, and the answer's shape: JSON keys with the kinds of
+   their values, XML elements and attributes (repeated children as lists
+   with their lengths), JSON inside a text, JSON encoded twice. Keys that
+   are data (days, school years, ids, labels) and the numbers in a path or
+   a name (`<n>`) are masked like values. Only a few enum-like keys show their
+   value (`type`, `partOfDay`, `color`, `status`, ...), and the names of
+   endpoints (`module`, `file`, `function`, the dispatcher's `subsystem`
+   and `action` or `command`, a param's `@name`), and only as a lower-case
+   word or an identifier, never one with a number in it.
+5. Read the output before you share it, as rule 2 asks of every shape:
+   besides the shapes, only those words and the counts may show.
+6. Delete the HAR file.
+
+`test/tool/lvs_har_shapes_test.dart` checks, on a fake HAR made of the
+fakes of `FAKES.md`, that no value of it shows in the output, that the
+shapes do, and that a HAR file inside the repository is refused.
 
 ## Writing an LVS fixture
 

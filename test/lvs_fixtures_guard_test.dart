@@ -307,27 +307,39 @@ const lvsFixtureKinds = <LvsFixtureKind>[
   LvsFixtureKind(
     folder: 'absences',
     about:
-        'Answers of POST /LVS/Pupilpresences (#164): a pupil\'s absences in '
-        'a school year, per period and day, as the file\'s absences section '
-        'lists them.',
-    // `codeDescr` is the description of a school's absence code (a label);
-    // the motivation is `motivation` (common). The labels of the periods
-    // are the keys of `presences`: _absencePeriodLabels.
+        'Answers of POST /LVS/Pupilpresences (#164, #176): a pupil\'s '
+        'absences per school year (a list of days each), as the file\'s '
+        'absences section lists them.',
+    // `codeDescr` is the description of a school's absence code (a label),
+    // `codeKey` the key of the code (ids: `<n>` or `<n>-<n>`); the
+    // motivation is `motivation` (common). The keys of `presences` are
+    // school years (`2030-2031`, no label) or labels of periods:
+    // _absencePeriodLabels. Not checked: `formattedDate` (a day, made up as
+    // FAKES.md says; no field type tells a made-up day), and `partOfDay`,
+    // `lng_months`, `lng_days` and `lng_noresults`, words of Smartschool
+    // itself.
     nameFields: {'codeDescr'},
+    idFields: {'codeKey'},
     extraFields: _absencePeriodLabels,
   ),
 ];
 
 /// The labels of the periods of an `absences` fixture: the keys of its
-/// `presences` (a school's own labels), which no field name finds.
+/// `presences` that are not a school year `YYYY-YYYY` (a school's own
+/// labels), which no field name finds. A school year, as the LVS keys the
+/// periods of a pupil's file (#176), is no label.
 Iterable<LvsField> _absencePeriodLabels(Object? document) sync* {
   if (document is! Map) return;
   final presences = document['presences'];
   if (presences is! Map) return;
   for (final (i, label) in presences.keys.indexed) {
+    if (_schoolYearKey.hasMatch('$label')) continue;
     yield LvsField('presences key [$i]', LvsFieldType.name, '$label');
   }
 }
+
+/// A key of an `absences` fixture's `presences` that is a school year.
+final _schoolYearKey = RegExp(r'^\d{4}-\d{4}$');
 
 /// The fields of the notes of a `notes` fixture by their position, as the
 /// service reads them (the names of the elements in a note are not
@@ -1366,6 +1378,41 @@ void main() {
       expect(problems.join('\n'), contains('motivation'));
       expect(problems.join('\n'), isNot(contains('Onbekende')));
       expect(problems.join('\n'), isNot(contains('Ziek')));
+    });
+
+    test('takes a school year as a key of the absences for no label, and '
+        'checks their code key as an id (#176), without the values', () {
+      final kind = lvsFixtureKinds.singleWhere((k) => k.folder == 'absences');
+      Map<String, Object?> answer(String period, String codeKey) => {
+        'presences': {
+          period: [
+            {
+              'am': {
+                'codeKey': codeKey,
+                'code': 'TA',
+                'codeDescr': 'Testcategorie',
+                'formattedDate': 'ma 16 september 2030',
+              },
+            },
+          ],
+        },
+        'year_label': '2030-2031',
+      };
+
+      expect(jsonProblems(answer('2030-2031', '900501'), kind: kind), isEmpty);
+      expect(
+        jsonProblems(answer('2030-2031', '900502-900503'), kind: kind),
+        isEmpty,
+      );
+      final problems = [
+        ...jsonProblems(answer('2030-2031', '12345-900503'), kind: kind),
+        ...jsonProblems(answer('2030-2031 Onbekend', '900501'), kind: kind),
+      ];
+      expect(problems, hasLength(2));
+      expect(problems.join('\n'), contains('codeKey'));
+      expect(problems.join('\n'), contains('presences key [0]'));
+      expect(problems.join('\n'), isNot(contains('12345')));
+      expect(problems.join('\n'), isNot(contains('Onbekend')));
     });
 
     test('reads XML: elements, attributes, name="key", embedded JSON', () {

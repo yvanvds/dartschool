@@ -20,19 +20,27 @@
 // (the classes the account may see), a search for a text no one has, and a
 // made-up pupil ID, which the LVS answers with its school's sections and a
 // placeholder pupil (seen 2026-10-21), for its file and for the notes of a
-// category, with no data for all its notes, and with HTTP 500 for every
-// read of its results and for its absences, and with no period of support
+// category, with no data for all its notes, with an answer to every read of
+// its results since they carry the results app's headers (#175, seen
+// 2026-10-25: the configuration, and an empty list or page for the others;
+// HTTP 500 for every one of them without the headers), with HTTP 500 for
+// its absences, and with no period of support
 // plans (a made-up class has no structure of them) for the support plan
 // reads. With it, it also searches for that text and reads
-// the file and today's status of the first pupil found, the notes of the
-// first of its categories that holds notes (twice: it prints how many are
-// new before and after, for #168), all its notes, a made-up category of it,
-// its results (configuration, periods, courses, a page of two
-// evaluations and all of them, feedback, reports: counts and types only),
+// the file and today's status of the first pupil found; all its notes of the
+// current school year, then the notes of the first of its categories that
+// holds notes in that year, which must be that category's and its
+// sub-categories' in all its notes (#177; read twice: it prints how many are
+// new before and after, for #168), the notes of a category the file flags
+// with notes but that holds none in that year (an empty list), and a made-up
+// category of it (support/lvs_notes_check.dart picks and compares, tested
+// offline in lvs_notes_check_test.dart); its results (configuration,
+// periods, courses, a page of two evaluations and all of them, feedback,
+// reports: counts and types only),
 // and, when its file has a section of support plans, their periods, the
 // plan of the current period and the profile sketch (status, kinds and
-// counts only), and its absences (counts by period, part of the day and
-// code only):
+// counts only), and its absences (counts by period, a school year each,
+// part of the day and code only, and that every one has a date, #176):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
 //     dart test -P live test/live/lvs_live_test.dart
@@ -48,6 +56,11 @@
 // run, it takes the lock of the session first, logs in at most once, and
 // prints no credential, no cookie and no name.
 //
+// What the web client itself sends and gets for that pupil is the browser's
+// capture (#168): save it as a HAR file in a temp folder and reduce it to
+// shapes with `dart run tool/lvs_har_shapes.dart <file.har>` (#178;
+// doc/lvs-privacy.md, "Capturing with the browser").
+//
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
 @Tags(['live'])
@@ -60,6 +73,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/lvs_notes_check.dart';
 
 /// The environment variable with (part of) the name of a pupil the
 /// developer teaches.
@@ -70,6 +84,18 @@ const _nobody = 'qqxzdartschooltestqq';
 
 /// A pupil ID and a class ID no school has.
 const _madeUpId = 999999999;
+
+/// A school year `YYYY-YYYY`, as the LVS keys the periods of a pupil's
+/// absences (#176).
+final _schoolYear = RegExp(r'^\d{4}\s*-\s*\d{4}$');
+
+/// What a read of the results returned, by its type and count only: never a
+/// value of the answer (doc/lvs-privacy.md, rule 4).
+String _shapeOf(Object? result) => switch (result) {
+  List() => 'a list of ${result.length}',
+  LvsEvaluationPage() => 'a page of ${result.evaluations.length}',
+  _ => '${result.runtimeType}',
+};
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -158,9 +184,12 @@ void main() {
         expect(run.guard.violations, isEmpty);
       });
 
-      test("a made-up pupil's results (#162): every read of the results app "
-          'is a SmartschoolLvsError (the LVS answered them with HTTP 500, '
-          'seen 2026-10-21), never an empty list', () async {
+      test("a made-up pupil's results (#162, #175): every read of the "
+          'results app is answered or is a SmartschoolLvsError, never one '
+          'the allowlist refuses (with the app\'s headers the LVS answers all '
+          'six, the configuration and an empty list or page for the others, '
+          'none with HTTP 500, seen 2026-10-25; without them it answered '
+          'every one with HTTP 500, seen 2026-10-21)', () async {
         final reads = <String, Future<Object?> Function()>{
           'getResultsConfiguration': () => lvs.getResultsConfiguration(
             pupilId: _madeUpId,
@@ -177,31 +206,29 @@ void main() {
           'getReports': () =>
               lvs.getReports(pupilId: _madeUpId, classId: _madeUpId),
         };
+        // Every read is tried and printed before any is checked.
+        final errors = <String, Object>{};
         for (final MapEntry(key: name, value: read) in reads.entries) {
-          Object? error;
           try {
-            await read();
+            final result = await read();
+            // The type and a count only: never a value of an answer.
+            print('$name: ${_shapeOf(result)}');
           } catch (e) {
-            error = e;
+            errors[name] = e;
+            // The type and the status only: never the message of an answer.
+            print(
+              '$name: ${e.runtimeType}'
+              '${e is SmartschoolLvsError ? ' (${e.statusCode})' : ''}',
+            );
           }
-          // The type and the status only: never the message of an answer.
-          print(
-            '$name: ${error.runtimeType}'
-            '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}',
-          );
+        }
+        for (final MapEntry(key: name, value: error) in errors.entries) {
           expect(error, isA<SmartschoolLvsError>(), reason: name);
           expect(
             error,
             isNot(isA<SmartschoolLvsRequestNotAllowedError>()),
             reason: name,
           );
-          if (access) {
-            expect(
-              error,
-              isNot(isA<SmartschoolLvsAccessDeniedError>()),
-              reason: name,
-            );
-          }
         }
         expect(run.guard.violations, isEmpty);
       });
@@ -229,8 +256,8 @@ void main() {
       });
 
       test(
-        'a pupil the developer teaches (#164): the absences of the file, by '
-        'period, part of the day and code',
+        'a pupil the developer teaches (#164, #176): the absences of the '
+        'file, by school year, part of the day and code, each with a date',
         skip: pupil == null || pupil.isEmpty
             ? 'set $_pupilVariable to (part of) the name of a pupil you '
                   'teach to read their absences'
@@ -257,10 +284,17 @@ void main() {
           );
           final all = absences.absences;
           final totals = absences.totalsByCode;
+          final schoolYears = absences.periods
+              .where((p) => _schoolYear.hasMatch(p.label))
+              .length;
           print(
             'absences: $absences, with a year label: '
             '${absences.yearLabel.isNotEmpty}, periods with a label: '
             '${absences.periods.where((p) => p.label.isNotEmpty).length}, '
+            'periods that are a school year: $schoolYears, '
+            'absences with a day key: '
+            '${all.where((a) => a.dateKey.isNotEmpty).length}, with a code '
+            'key: ${all.where((a) => a.codeKey.isNotEmpty).length}, '
             'whole days: ${all.where((a) => a.isFullDay).length}, mornings: '
             '${all.where((a) => a.dayPart == DayPart.morning).length}, '
             'afternoons: '
@@ -273,8 +307,9 @@ void main() {
             'motivation: ${all.where((a) => a.motivation.isNotEmpty).length}, '
             'codes: ${totals.length}',
           );
-          // The day keys are taken for `YYYY-MM-DD` (the class view's), and
-          // every absence has a code: shapes, not values.
+          // Every absence has a day, read from the text the LVS shows
+          // (`formattedDate`, #176: the days of a school year come as a
+          // list, without a day key), and a code: shapes, not values.
           expect(all.every((a) => a.date != null), isTrue);
           expect(all.every((a) => a.code.isNotEmpty), isTrue);
           expect(
@@ -530,9 +565,12 @@ void main() {
       );
 
       test(
-        'a pupil the developer teaches (#161): the notes of a category with '
-        'notes, each with a date and fields, all of them in the "all items" '
-        'view; a made-up category is SmartschoolLvsCategoryNotFoundError',
+        'a pupil the developer teaches (#161, #177): the notes of a category '
+        'with notes in the school year, not empty, each with a date and '
+        'fields, are those of the category and its sub-categories in the '
+        '"all items" view of that year; a category flagged with notes but '
+        'without any in that year is an empty list; a made-up category is '
+        'SmartschoolLvsCategoryNotFoundError',
         skip: pupil == null || pupil.isEmpty
             ? 'set $_pupilVariable to (part of) the name of a pupil you '
                   'teach to read their notes'
@@ -540,16 +578,15 @@ void main() {
         () async {
           expect(access, isTrue, reason: 'checkAccess');
           final match = (await lvs.searchPupils(pupil!)).first;
+          final ids = (pupilId: match.pupilId, classId: match.classId);
+          // One school year for every read, so that a category and the
+          // "all items" view are read for the same days (#177).
+          final year = LvsSchoolYear.current();
           final file = await lvs.getPupilFile(
-            pupilId: match.pupilId,
-            classId: match.classId,
+            pupilId: ids.pupilId,
+            classId: ids.classId,
           );
-          final categories = [
-            for (final category in file.noteCategories) ...[
-              category,
-              ...category.descendants,
-            ],
-          ];
+          final categories = flattenNoteCategories(file.noteCategories);
           print(
             'note categories: ${categories.length} '
             '(${categories.where((c) => c.hasNotes).length} with notes, '
@@ -559,25 +596,64 @@ void main() {
 
           await expectLater(
             lvs.getNotes(
-              pupilId: match.pupilId,
-              classId: match.classId,
+              pupilId: ids.pupilId,
+              classId: ids.classId,
               categoryId: _madeUpId,
+              schoolYear: year,
             ),
             throwsA(isA<SmartschoolLvsCategoryNotFoundError>()),
           );
 
-          final category = categories
-              .where((c) => c.hasNotes && !c.isTitle)
-              .firstOrNull;
+          // The "all items" view first, and the category from it: the file
+          // flags a category that holds notes in any school year, so the
+          // first one flagged can hold older notes only, and its notes were
+          // an empty list on which every check held (#177).
+          final all = await lvs.getAllNotes(
+            pupilId: ids.pupilId,
+            classId: ids.classId,
+            schoolYear: year,
+          );
+          final allIds = {for (final note in all) note.id};
+          final picks = LvsNotePicks.of(file.noteCategories, all);
+          print(
+            'all notes in the school year: ${all.length} '
+            '(${allIds.length} distinct); $picks',
+          );
+          expect(allIds.length, all.length);
+          expect(all.every((n) => n.id > 0), isTrue);
+
+          // A category flagged with notes, older ones only: no error, none.
+          final older = picks.flaggedWithoutNotes;
+          if (older == null) {
+            print(
+              'no category flagged with notes but without any in the school '
+              'year: its empty list is not read',
+            );
+          } else {
+            final none = await lvs.getNotes(
+              pupilId: ids.pupilId,
+              classId: ids.classId,
+              categoryId: older.id,
+              schoolYear: year,
+            );
+            print('a category with older notes only: ${none.length} notes');
+            expect(none.length, 0);
+          }
+
+          final category = picks.withNotes;
           if (category == null) {
-            print('no category with notes: nothing more to read');
+            expect(run.guard.violations, isEmpty);
+            markTestSkipped(
+              'no category holds notes in the school year: nothing to '
+              'compare with the "all items" view (#177)',
+            );
             return;
           }
-          final ids = {category.id, ...category.descendants.map((c) => c.id)};
           final notes = await lvs.getNotes(
-            pupilId: match.pupilId,
-            classId: match.classId,
+            pupilId: ids.pupilId,
+            classId: ids.classId,
             categoryId: category.id,
+            schoolYear: year,
           );
           final fields = [for (final note in notes) ...note.fields];
           print(
@@ -587,32 +663,58 @@ void main() {
             'fields: ${fields.length}, by type: '
             '${{for (final type in LvsNoteFieldType.values) type.name: fields.where((f) => f.type == type).length}}',
           );
+          // By the IDs, as counts: an ID is never printed, nor quoted by a
+          // failing expect (doc/lvs-privacy.md, rule 4).
+          final comparison = LvsNotesComparison.of(
+            category: category,
+            all: all,
+            read: notes,
+          );
+          print('the category against the "all items" view: $comparison');
+          expect(notes.length, greaterThan(0));
+          expect(
+            comparison.missing,
+            0,
+            reason:
+                'notes of the category in the "all items" view of the same '
+                'school year that getNotes did not read: a bug of getNotes, '
+                'to file (#177)',
+          );
+          expect(
+            comparison.extra,
+            0,
+            reason:
+                'notes getNotes read that the "all items" view does not have '
+                'for the category',
+          );
+          expect(
+            comparison.outside,
+            0,
+            reason: 'notes of neither the category nor a sub-category of it',
+          );
+          expect(comparison.duplicates, 0, reason: 'notes read twice');
           expect(notes.every((n) => n.id > 0), isTrue);
-          expect(notes.every((n) => ids.contains(n.categoryId)), isTrue);
           expect(notes.every((n) => n.date.year >= 2000), isTrue);
           expect(notes.every((n) => n.fields.isNotEmpty), isTrue);
           expect(fields.every((f) => f.paramId >= 0), isTrue);
 
           // Whether reading the notes takes them as seen (#168): counts only.
+          // The "all items" view was read first: its count of the
+          // category's new notes is the one before any read of the category.
+          final notesIds = {for (final note in notes) note.id};
           final again = await lvs.getNotes(
-            pupilId: match.pupilId,
-            classId: match.classId,
+            pupilId: ids.pupilId,
+            classId: ids.classId,
             categoryId: category.id,
+            schoolYear: year,
           );
           print(
             'new before and after a read: '
             '${notes.where((n) => n.isNew).length} -> '
-            '${again.where((n) => n.isNew).length}',
+            '${again.where((n) => n.isNew).length} (in the "all items" view, '
+            'read before: '
+            '${all.where((n) => n.isNew && notesIds.contains(n.id)).length})',
           );
-
-          final all = await lvs.getAllNotes(
-            pupilId: match.pupilId,
-            classId: match.classId,
-          );
-          final allIds = {for (final note in all) note.id};
-          print('all notes: ${all.length} (${allIds.length} distinct)');
-          expect(allIds.length, all.length);
-          expect(notes.every((n) => allIds.contains(n.id)), isTrue);
           expect(run.guard.violations, isEmpty);
         },
       );

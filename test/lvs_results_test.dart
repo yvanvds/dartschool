@@ -10,9 +10,10 @@
 // (doc/lvs-privacy.md: never trimmed from a live answer), in the shapes the
 // results app's JavaScript reads (2026-10-21); a real pupil's answers are
 // the developer's capture step (#168). The 500 with Smartschool's error page
-// is what the LVS answered every one of these reads with for a made-up pupil
-// ID (seen live). Smaller variants (an unknown shape, a refusal) are inline
-// below.
+// is what the LVS answered every one of these reads with, for a made-up pupil
+// ID and for a real pupil, when they went out without the results app's
+// headers (seen live; the headers are tested on the wire, #175). Smaller
+// variants (an unknown shape, a refusal) are inline below.
 //
 // The fake Smartschool fails the test on any request that is not one of the
 // service's results reads.
@@ -72,7 +73,7 @@ ResponseBody Function(Uri) _pages(Map<int, String> pages) => (uri) {
 };
 
 /// Smartschool's generic error page, as the LVS answered every results read
-/// of a made-up pupil ID with it (HTTP 500, seen live).
+/// without the results app's headers with it (HTTP 500, seen live, #175).
 const _errorPage = '''
 <!DOCTYPE html>
 <html><head><title></title></head>
@@ -147,6 +148,75 @@ Future<(_Lvs, LvsService)> _serve(
   client.dio.httpClientAdapter = server;
   return (server, LvsService(client));
 }
+
+/// A request that a server of the test got over the wire: `METHOD path`, its
+/// query, and the two headers the results app sends (#175) as they came.
+typedef _WireRequest = ({
+  String request,
+  Map<String, String> query,
+  String? requestedWith,
+  String? contentType,
+});
+
+/// An answer of a server of the test: its status, `Content-Type` and body.
+typedef _WireAnswer = ({int status, String contentType, String body});
+
+/// A Smartschool on loopback whose LVS answers each request of the results
+/// reads with [answer], by its read (a value of [_reads]) and query, and a
+/// `404` to any other. The client sends to it with its real adapter, as to
+/// Smartschool, so the requests it keeps are what went out on the wire.
+Future<(List<_WireRequest>, LvsService)> _serveOnLoopback(
+  _WireAnswer Function(String read, Map<String, String> query) answer,
+) async {
+  final requests = <_WireRequest>[];
+  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  server.listen((request) async {
+    await request.drain<void>();
+    final uri = request.uri;
+    requests.add((
+      request: '${request.method} ${uri.path}',
+      query: uri.queryParameters,
+      requestedWith: request.headers.value(kXRequestedWith),
+      contentType: request.headers.value(HttpHeaders.contentTypeHeader),
+    ));
+    final read = request.method == 'GET' ? _reads[uri.path] : null;
+    final (:status, :contentType, :body) = read == null
+        ? (status: 404, contentType: 'text/html', body: _errorPage)
+        : answer(read, uri.queryParameters);
+    request.response
+      ..statusCode = status
+      ..headers.set(HttpHeaders.contentTypeHeader, contentType)
+      ..write(body);
+    await request.response.close();
+  });
+  final client = await SmartschoolClient.create(
+    _Credentials(),
+    cacheDir: tempCacheDir(),
+  );
+  client.dio.options.baseUrl = 'http://127.0.0.1:${server.port}';
+  addTearDown(() async {
+    await client.dispose();
+    await server.close(force: true);
+  });
+  return (requests, LvsService(client));
+}
+
+/// The fixture each results read is answered with on loopback.
+const _fixtures = {
+  'configuration': 'configuration.json',
+  'periods': 'periods.json',
+  'courses': 'courses.json',
+  'evaluations': 'evaluations_page1.json',
+  'feedback': 'feedback.json',
+  'reports': 'reports.json',
+};
+
+/// A request of the results app as it sends them (#175): with
+/// `X-Requested-With: XMLHttpRequest` and `Content-Type: application/json`.
+Matcher _withResultsHeaders(String request) => isA<_WireRequest>()
+    .having((r) => r.request, 'request', request)
+    .having((r) => r.requestedWith, 'X-Requested-With', 'XMLHttpRequest')
+    .having((r) => r.contentType, 'Content-Type', 'application/json');
 
 /// The fake people, labels, texts and IDs of the fixtures: an error message
 /// and a model's `toString()` hold none of them.
@@ -839,8 +909,9 @@ void main() {
       }
     });
 
-    test("the 500 with Smartschool's error page, as the LVS answers a "
-        'made-up pupil, is a SmartschoolLvsError with the status', () async {
+    test("the 500 with Smartschool's error page, as the LVS answered the "
+        "reads without the results app's headers, is a SmartschoolLvsError "
+        'with the status', () async {
       for (final MapEntry(key: read, value: (_, call)) in _calls.entries) {
         final (_, lvs) = await _serve({
           read: (_) =>
@@ -1131,6 +1202,92 @@ void main() {
           'LvsEvaluationPage(pageNumber: 1, evaluations: 2)',
         ]),
       );
+    });
+  });
+
+  // The LVS answered a real pupil's results reads with HTTP 500 when they
+  // went out without the results app's headers (#175, seen live). These
+  // tests send them to a server of the test with the client's real adapter.
+  group("the results app's headers, on the wire (#175)", () {
+    test('every results read goes out with X-Requested-With: XMLHttpRequest '
+        'and Content-Type: application/json, as the results app sends '
+        'them; its answer is read', () async {
+      final (requests, lvs) = await _serveOnLoopback(
+        (read, _) => (
+          status: 200,
+          contentType: 'application/json',
+          body: _fixture(_fixtures[read]!),
+        ),
+      );
+
+      for (final MapEntry(key: read, value: (_, call)) in _calls.entries) {
+        await expectLater(call(lvs), completion(isNotNull), reason: read);
+      }
+
+      expect(requests, [
+        for (final path in _reads.keys) _withResultsHeaders('GET $path'),
+      ]);
+      // The query is the library's, as before: the pupil, the class and,
+      // but for the configuration, the school year.
+      expect(requests.first.query, {'pupilId': '900001', 'groupId': '900101'});
+      for (final request in requests.skip(1)) {
+        expect(
+          request.query,
+          allOf(
+            containsPair('pupilId', '900001'),
+            containsPair('groupId', '900101'),
+            contains('startDate'),
+            contains('endDate'),
+          ),
+          reason: request.request,
+        );
+      }
+    });
+
+    test('getAllEvaluations sends them with every page', () async {
+      final pages = {1: 'evaluations_page1.json', 2: 'evaluations_page2.json'};
+      final (requests, lvs) = await _serveOnLoopback((_, query) {
+        final page = pages[int.parse(query['pageNumber']!)];
+        return (
+          status: 200,
+          contentType: 'application/json',
+          body: page == null ? '[]' : _fixture(page),
+        );
+      });
+
+      final all = await lvs.getAllEvaluations(
+        pupilId: 900001,
+        classId: 900101,
+        itemsOnPage: 2,
+        schoolYear: _year,
+      );
+
+      expect(all.pagesRead, 2);
+      expect(all.evaluations, hasLength(3));
+      expect(requests, [
+        _withResultsHeaders('GET /LVS/Results/getevaluationsofuser'),
+        _withResultsHeaders('GET /LVS/Results/getevaluationsofuser'),
+      ]);
+      expect(requests.map((r) => r.query['pageNumber']), ['1', '2']);
+    });
+
+    test("the 500 with Smartschool's error page is still a "
+        'SmartschoolLvsError with the status, the headers sent', () async {
+      final (requests, lvs) = await _serveOnLoopback(
+        (_, _) => (status: 500, contentType: 'text/html', body: _errorPage),
+      );
+
+      for (final MapEntry(key: read, value: (_, call)) in _calls.entries) {
+        await expectLater(
+          call(lvs),
+          throwsA(_unreadable(statusCode: 500)),
+          reason: read,
+        );
+      }
+
+      expect(requests, [
+        for (final path in _reads.keys) _withResultsHeaders('GET $path'),
+      ]);
     });
   });
 

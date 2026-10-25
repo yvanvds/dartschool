@@ -1,15 +1,20 @@
-// Tests for issue #164: a pupil's absences in the LVS, read as the logged-in
-// teacher through LvsService.getAbsences: the half-days with an absence code
-// in a school year, grouped by period, with the code's description and
-// colour and the motivation (HTML as plain text), and the totals per code;
-// no absences; the shapes the web client takes (a period as a list, keys it
+// Tests for issues #164 and #176: a pupil's absences in the LVS, read as the
+// logged-in teacher through LvsService.getAbsences: the half-days with an
+// absence code, grouped by school year (the periods of the answer), each
+// dated by its shown day (`formattedDate`: `vr 23 oktober 2030`, the month
+// by the answer's `lng_months` or its Dutch name, the year from the school
+// year when the text has none; no date when it does not parse), with the
+// code, its key, its description and colour and the motivation (plain text
+// or HTML, as plain text), and the totals per code; no absences; the shapes
+// the web client takes (the class view's days keyed `YYYY-MM-DD`, keys it
 // leaves out); refusals and unknown shapes as errors that carry no value;
 // the allowlist that keeps the section's other calls out.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/absences/
-// (doc/lvs-privacy.md: never trimmed from a live answer), in the shape the
-// LVS's JavaScript reads (2026-10-21); a real pupil's answer is the
-// developer's capture step (#168). Smaller variants are inline below.
+// (doc/lvs-privacy.md: never trimmed from a live answer), in the shape of a
+// real pupil's answer as the developer captured it in a browser (#176,
+// shapes only): per school year a list of days. Smaller variants are inline
+// below.
 //
 // The fake Smartschool fails the test on any request that is not the
 // service's read of the absences.
@@ -125,9 +130,14 @@ const _answerValues = [
   'yellow',
   '2030',
   '2031',
+  '2032',
+  'september',
+  'oktober',
+  'januari',
   'Volledige',
   'middag',
   '9001',
+  '9005',
 ];
 
 /// A text that quotes nothing of the answers.
@@ -167,21 +177,53 @@ Matcher get _refused => isA<SmartschoolLvsAccessDeniedError>()
     )
     .having((e) => e.message, 'message', _quotesNothing);
 
-/// A half-day of an inline answer, with code [code].
-Map<String, Object?> _halfDay([String code = 'TA']) => {
-  'formattedDate': 'ma 16/09/2030',
+/// A half-day of an inline answer, with code [code], shown on the day
+/// [shown] (`formattedDate`).
+Map<String, Object?> _halfDay([
+  String code = 'TA',
+  String shown = 'ma 16 september 2030',
+]) => {
   'partOfDay': 'Volledige dag',
+  'codeKey': '900501',
   'code': code,
   'codeColor': 'red',
   'codeDescr': 'Testcode',
   'motivation': 'Testmotivatie.',
+  'formattedDate': shown,
 };
 
-/// An answer with [presences], as the LVS sends it.
-Map<String, Object?> _withPresences(Object? presences) => {
-  'presences': presences,
+/// A school year's list of days of an inline answer: a whole day for each
+/// shown day of [shown].
+List<Object?> _days(List<String> shown) => [
+  for (final day in shown) {'full': _halfDay('TA', day)},
+];
+
+/// The Dutch names of the months, as the LVS gives them (`lng_months`).
+const _dutchMonths = [
+  'januari',
+  'februari',
+  'maart',
+  'april',
+  'mei',
+  'juni',
+  'juli',
+  'augustus',
+  'september',
+  'oktober',
+  'november',
+  'december',
+];
+
+/// An answer with [presences], as the LVS sends it, with the month names
+/// [months] (`lng_months`; left out when `null`).
+Map<String, Object?> _withPresences(
+  Object? presences, {
+  Object? months = _dutchMonths,
+}) => {
   'lng_noresults': 'Geen resultaten',
-  'year_label': '2030 - 2031',
+  'lng_months': ?months,
+  'presences': presences,
+  'year_label': '2030-2031',
 };
 
 void main() {
@@ -198,19 +240,17 @@ void main() {
       expect(server.forms.single, {'pupilID': '900001', 'groupID': '900101'});
     });
 
-    test("the periods in the LVS's order, each with its absences day after "
-        'day: a whole day or a half-day, with the code, its description and '
-        'colour, as the LVS gives them', () async {
+    test("the school years in the LVS's order (the periods), each with its "
+        'days as a list: a whole day or a half-day, dated by the day the LVS '
+        'shows (formattedDate), with the code, its key, its description and '
+        'colour, as the LVS gives them (#176)', () async {
       final (_, lvs) = await _serve(_file('absences.json'));
 
       final absences = await _read(lvs);
 
-      expect(absences.yearLabel, '2030 - 2031');
+      expect(absences.yearLabel, '2031-2032');
       expect(absences.isEmpty, isFalse);
-      expect(absences.periods.map((p) => p.label), [
-        'Testperiode',
-        'Testperiode 2',
-      ]);
+      expect(absences.periods.map((p) => p.label), ['2030-2031', '2031-2032']);
       expect(absences.periods.map((p) => p.absences.length), [3, 2]);
 
       final all = absences.absences;
@@ -218,16 +258,18 @@ void main() {
         DateTime.utc(2030, 9, 16),
         DateTime.utc(2030, 10, 2),
         DateTime.utc(2030, 10, 2),
-        DateTime.utc(2031, 1, 13),
-        DateTime.utc(2031, 2, 3),
+        DateTime.utc(2031, 9, 18),
+        DateTime.utc(2032, 1, 20),
       ]);
-      expect(all.map((a) => a.dateKey), [
-        '2030-09-16',
-        '2030-10-02',
-        '2030-10-02',
-        '2031-01-13',
-        '2031-02-03',
+      expect(all.map((a) => a.formattedDate), [
+        'ma 16 september 2030',
+        'wo 2 oktober 2030',
+        'wo 2 oktober 2030',
+        'do 18 september 2031',
+        'di 20 januari 2032',
       ]);
+      // The days come as a list: no day keys.
+      expect(all.map((a) => a.dateKey), everyElement(isEmpty));
       expect(all.map((a) => a.dayPart), [
         null,
         DayPart.morning,
@@ -238,6 +280,13 @@ void main() {
       expect(all.map((a) => a.isFullDay), [true, false, false, false, true]);
       expect(all.map((a) => a.halfDays), [2, 1, 1, 1, 2]);
       expect(all.map((a) => a.code), ['TA', 'TB', 'TA', 'TB', 'TA']);
+      expect(all.map((a) => a.codeKey), [
+        '900501',
+        '900502-900503',
+        '900501',
+        '900502-900503',
+        '900501',
+      ]);
       expect(all.map((a) => a.codeDescription), [
         'Testcode',
         'Testcode 2',
@@ -252,7 +301,6 @@ void main() {
         'yellow',
         'red',
       ]);
-      expect(all.first.formattedDate, 'ma 16/09/2030');
       expect(all.map((a) => a.partOfDayLabel), [
         'Volledige dag',
         'Voormiddag',
@@ -260,6 +308,127 @@ void main() {
         'Namiddag',
         'Volledige dag',
       ]);
+    });
+
+    test('a shown day without a year takes it from the school year: '
+        'September to December its first year, January to August its second '
+        '(#176)', () async {
+      final (_, lvs) = await _serve(_file('absences_no_year.json'));
+
+      final absences = await _read(lvs);
+
+      expect(absences.periods.single.label, '2030-2031');
+      expect(absences.absences.map((a) => a.date), [
+        DateTime.utc(2030, 9, 2),
+        DateTime.utc(2030, 10, 23),
+        DateTime.utc(2030, 12, 3),
+        DateTime.utc(2031, 2, 3),
+        DateTime.utc(2031, 8, 29),
+      ]);
+      expect(absences.absences.map((a) => a.formattedDate), [
+        'ma 2 september',
+        'wo 23 oktober',
+        'di 3 december',
+        'ma 3 februari',
+        'vr 29 augustus',
+      ]);
+    });
+
+    test("the month by the answer's names (lng_months), in any case; the "
+        'Dutch name when they lack it or when the answer gives none, or none '
+        'that the service can use (#176)', () async {
+      const french = [
+        'janvier',
+        'février',
+        'mars',
+        'avril',
+        'mai',
+        'juin',
+        'juillet',
+        'août',
+        'septembre',
+        'octobre',
+        'novembre',
+        'décembre',
+      ];
+      final (_, lvs) = await _serve(
+        _of(
+          _withPresences({
+            '2030-2031': _days([
+              'me 23 octobre 2030',
+              'LU 3 FÉVRIER 2031',
+              've 29 Août',
+              'wo 23 Oktober 2030',
+              'MA 2 SEPTEMBER',
+            ]),
+          }, months: french),
+        ),
+      );
+
+      expect((await _read(lvs)).absences.map((a) => a.date), [
+        DateTime.utc(2030, 10, 23),
+        DateTime.utc(2031, 2, 3),
+        DateTime.utc(2031, 8, 29),
+        DateTime.utc(2030, 10, 23),
+        DateTime.utc(2030, 9, 2),
+      ]);
+
+      // No names, or names the service cannot use: the Dutch ones, never an
+      // error.
+      for (final months in <Object?>[
+        null,
+        'Testmaanden',
+        {'1': 'janvier'},
+        french.sublist(0, 11),
+        [for (var i = 0; i < 12; i++) i],
+      ]) {
+        final (_, lvs) = await _serve(
+          _of(
+            _withPresences({
+              '2030-2031': _days(['wo 23 oktober 2030', 'me 23 octobre 2030']),
+            }, months: months),
+          ),
+        );
+        expect((await _read(lvs)).absences.map((a) => a.date), [
+          DateTime.utc(2030, 10, 23),
+          null,
+        ], reason: '$months');
+      }
+    });
+
+    test('a shown day that does not parse, or a day without a year in a '
+        'period that is no school year, has no date: the absence is kept, '
+        'never an error (#176)', () async {
+      final (_, lvs) = await _serve(
+        _of(
+          _withPresences({
+            '2030-2031': [
+              ..._days([
+                'ma 16/09/2030',
+                '16 september 2030',
+                'Testdatum',
+                '',
+                'vr 30 februari 2031',
+                'vr 32 oktober 2030',
+                'vr 0 oktober 2030',
+                'vr 23 testmaand 2030',
+                'vr 23 oktober 2030 VM',
+                'vr 23 oktober 20301',
+              ]),
+              {
+                'full': {..._halfDay(), 'formattedDate': null},
+              },
+            ],
+            'Testperiode': _days(['wo 23 oktober']),
+          }),
+        ),
+      );
+
+      final absences = await _read(lvs);
+
+      expect(absences.periods.map((p) => p.absences.length), [11, 1]);
+      expect(absences.absences.map((a) => a.date), everyElement(isNull));
+      expect(absences.absences.map((a) => a.code), everyElement('TA'));
     });
 
     test('the motivation as plain text, its HTML kept; empty when there is '
@@ -327,7 +496,7 @@ void main() {
       expect(absences.isEmpty, isTrue);
       expect(absences.totalsByCode, isEmpty);
       expect(absences.halfDays, 0);
-      expect(absences.yearLabel, '2030 - 2031');
+      expect(absences.yearLabel, '2030-2031');
     });
 
     test('presences that the web client takes for none (null, false, an '
@@ -336,26 +505,28 @@ void main() {
         _withPresences(null),
         _withPresences(false),
         _withPresences(<String, Object?>{}),
-        {'year_label': '2030 - 2031', 'lng_noresults': 'Geen resultaten'},
+        {'year_label': '2030-2031', 'lng_noresults': 'Geen resultaten'},
       ];
       for (final answer in answers) {
         final (_, lvs) = await _serve(_of(answer));
         final absences = await _read(lvs);
         expect(absences.periods, isEmpty, reason: '$answer');
-        expect(absences.yearLabel, '2030 - 2031', reason: '$answer');
+        expect(absences.yearLabel, '2030-2031', reason: '$answer');
       }
     });
 
-    test('a period without days is kept, empty; a period whose days come as '
-        'a list has no day keys', () async {
+    test('a school year without days is kept, empty; a day that is an empty '
+        'list is left out', () async {
       final (_, lvs) = await _serve(
         _of(
           _withPresences({
-            'Testperiode': <String, Object?>{},
-            'Testperiode 2': [
-              {'am': _halfDay('TA')},
-              {'pm': _halfDay('TB')},
+            '2030-2031': <String, Object?>{},
+            '2031-2032': [
+              {'am': _halfDay('TA', 'do 18 september 2031')},
+              <Object?>[],
+              {'pm': _halfDay('TB', 'di 20 januari')},
             ],
+            '2032-2033': <Object?>[],
           }),
         ),
       );
@@ -363,25 +534,31 @@ void main() {
       final absences = await _read(lvs);
 
       expect(absences.periods.map((p) => p.label), [
-        'Testperiode',
-        'Testperiode 2',
+        '2030-2031',
+        '2031-2032',
+        '2032-2033',
       ]);
-      expect(absences.periods.first.absences, isEmpty);
-      final listed = absences.periods.last.absences;
+      expect(absences.periods.map((p) => p.absences.length), [0, 2, 0]);
+      final listed = absences.periods[1].absences;
       expect(listed.map((a) => a.code), ['TA', 'TB']);
       expect(listed.map((a) => a.dateKey), ['', '']);
-      expect(listed.map((a) => a.date), [null, null]);
+      expect(listed.map((a) => a.date), [
+        DateTime.utc(2031, 9, 18),
+        DateTime.utc(2032, 1, 20),
+      ]);
     });
 
-    test('a day key that is not a day YYYY-MM-DD is kept, without a date; '
-        'the keys of a day other than full, am and pm are left out, as the '
-        'web client leaves them out', () async {
+    test('days keyed YYYY-MM-DD, as the class view keys them, still work: '
+        'the key dates the day, before the shown day; a key that is not a '
+        'day leaves the date to the shown day; the keys of a day other than '
+        'full, am and pm are left out, as the web client leaves them '
+        'out', () async {
       final (_, lvs) = await _serve(
         _of(
           _withPresences({
             'Testperiode': {
               'Testdag': {'full': _halfDay()},
-              '2030-02-30': {'am': _halfDay()},
+              '2030-02-30': {'am': _halfDay('TA', '')},
               '2030-09-17': {
                 'none': _halfDay('TB'),
                 'pm': _halfDay('TA'),
@@ -389,23 +566,33 @@ void main() {
               },
               '2030-09-18': <Object?>[],
             },
+            '2030-2031': {
+              '2030-10-02': {'full': _halfDay('TA', 'Testdatum')},
+            },
           }),
         ),
       );
 
-      final all = (await _read(lvs)).absences;
+      final absences = await _read(lvs);
+      final all = absences.absences;
 
+      expect(absences.periods.map((p) => p.label), [
+        'Testperiode',
+        '2030-2031',
+      ]);
       expect(all.map((a) => a.dateKey), [
         'Testdag',
         '2030-02-30',
         '2030-09-17',
         '2030-09-17',
+        '2030-10-02',
       ]);
       expect(all.map((a) => a.date), [
-        null,
+        DateTime.utc(2030, 9, 16),
         null,
         DateTime.utc(2030, 9, 17),
         DateTime.utc(2030, 9, 17),
+        DateTime.utc(2030, 10, 2),
       ]);
       // In the answer's order, as the web client shows them.
       expect(all.map((a) => a.dayPart), [
@@ -413,21 +600,23 @@ void main() {
         DayPart.morning,
         DayPart.afternoon,
         DayPart.morning,
+        null,
       ]);
-      expect(all.map((a) => a.code), ['TA', 'TA', 'TA', 'TB']);
+      expect(all.map((a) => a.code), ['TA', 'TA', 'TA', 'TB', 'TA']);
     });
 
-    test('a half-day with only its code: the rest empty, no colour; a code '
-        'that is a number is taken as its text', () async {
+    test('a half-day with only its code: the rest empty, no colour, no '
+        'date; a code or a code key that is a number is taken as its '
+        'text', () async {
       final (_, lvs) = await _serve(
         _of(
           _withPresences({
-            'Testperiode': {
-              '2030-09-16': {
+            '2030-2031': [
+              {
                 'full': {'code': 'TA'},
-                'pm': {'code': 7, 'codeColor': ''},
+                'pm': {'code': 7, 'codeKey': 900501, 'codeColor': ''},
               },
-            },
+            ],
           }),
         ),
       );
@@ -435,10 +624,12 @@ void main() {
       final all = (await _read(lvs)).absences;
 
       expect(all.map((a) => a.code), ['TA', '7']);
+      expect(all.map((a) => a.codeKey), ['', '900501']);
       expect(all.map((a) => a.color), [null, null]);
       expect(all.map((a) => a.codeDescription), ['', '']);
       expect(all.map((a) => a.motivation), ['', '']);
       expect(all.map((a) => a.formattedDate), ['', '']);
+      expect(all.map((a) => a.date), [null, null]);
       expect(all.map((a) => a.partOfDayLabel), ['', '']);
     });
 
@@ -487,6 +678,29 @@ void main() {
               },
             },
           },
+        }),
+        _withPresences({
+          '2030-2031': [
+            {
+              'pm': {
+                ..._halfDay(),
+                'codeKey': ['900501'],
+              },
+            },
+          ],
+        }),
+        _withPresences({
+          '2030-2031': [
+            {
+              'full': {
+                ..._halfDay(),
+                'formattedDate': {'Test': 2030},
+              },
+            },
+          ],
+        }),
+        _withPresences({
+          '2030-2031': ['Testdag'],
         }),
         {
           ..._withPresences(<Object?>[]),

@@ -1,58 +1,86 @@
 {
+  "lng_noresults": "Geen resultaten",
+  "lng_months": [
+    "januari",
+    "februari",
+    "maart",
+    "april",
+    "mei",
+    "juni",
+    "juli",
+    "augustus",
+    "september",
+    "oktober",
+    "november",
+    "december"
+  ],
+  "lng_days": [
+    "zondag",
+    "maandag",
+    "dinsdag",
+    "woensdag",
+    "donderdag",
+    "vrijdag",
+    "zaterdag"
+  ],
   "presences": {
-    "Testperiode": {
-      "2030-09-16": {
+    "2030-2031": [
+      {
         "full": {
-          "formattedDate": "ma 16/09/2030",
           "partOfDay": "Volledige dag",
+          "codeKey": "900501",
           "code": "TA",
           "codeColor": "red",
           "codeDescr": "Testcode",
-          "motivation": "<p>Testmotivatie: <b>thuis</b> gebleven.</p>"
+          "motivation": "<p>Testmotivatie: <b>thuis</b> gebleven.</p>",
+          "formattedDate": "ma 16 september 2030"
         }
       },
-      "2030-10-02": {
+      {
         "am": {
-          "formattedDate": "wo 02/10/2030",
           "partOfDay": "Voormiddag",
+          "codeKey": "900502-900503",
           "code": "TB",
           "codeColor": "yellow",
           "codeDescr": "Testcode 2",
-          "motivation": ""
+          "motivation": "",
+          "formattedDate": "wo 2 oktober 2030"
         },
         "pm": {
-          "formattedDate": "wo 02/10/2030",
           "partOfDay": "Namiddag",
+          "codeKey": "900501",
           "code": "TA",
           "codeColor": "red",
           "codeDescr": "Testcode",
-          "motivation": "Testmotivatie in platte tekst."
+          "motivation": "Testmotivatie in platte tekst.",
+          "formattedDate": "wo 2 oktober 2030"
         }
       }
-    },
-    "Testperiode 2": {
-      "2031-01-13": {
+    ],
+    "2031-2032": [
+      {
         "pm": {
-          "formattedDate": "ma 13/01/2031",
           "partOfDay": "Namiddag",
+          "codeKey": "900502-900503",
           "code": "TB",
           "codeColor": "yellow",
           "codeDescr": "Testcode 2",
-          "motivation": "<p>Testmotivatie met <i>opmaak</i> &amp; een teken.</p>"
+          "motivation": "<p>Testmotivatie met <i>opmaak</i> &amp; een teken.</p>",
+          "formattedDate": "do 18 september 2031"
         }
       },
-      "2031-02-03": {
+      {
         "full": {
-          "formattedDate": "ma 03/02/2031",
           "partOfDay": "Volledige dag",
+          "codeKey": "900501",
           "code": "TA",
           "codeColor": "red",
           "codeDescr": "Testcode",
-          "motivation": null
+          "motivation": null,
+          "formattedDate": "di 20 januari 2032"
         }
       }
-    }
+    ]
   },
-  "lng_noresults": "Geen resultaten",
-  "year_label": "2030 - 2031"
+  "year_label": "2031-2032"
 }

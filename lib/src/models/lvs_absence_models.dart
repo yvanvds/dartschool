@@ -1,7 +1,8 @@
 /// Models for the absences of a pupil's file in Smartschool's pupil tracking
-/// system (LVS, `/?module=LVS`, #164): the half-days with an absence code in
-/// a school year, grouped by period, as the file's absences section
-/// ([LvsSectionType.absences], "Afwezigheden") lists them for a teacher.
+/// system (LVS, `/?module=LVS`, #164): the half-days with an absence code,
+/// grouped by school year (the periods of the LVS's answer), as the file's
+/// absences section ([LvsSectionType.absences], "Afwezigheden") lists them
+/// for a teacher.
 ///
 /// The codes are the school's own, those of the Presence module
 /// (`PresenceService`, for absence administrators): the LVS gives each with
@@ -9,27 +10,27 @@
 /// in, kept as they come. A half-day is a [DayPart] of the Presence models;
 /// an absence for the whole day has none ([LvsAbsence.isFullDay]).
 ///
-/// The shapes are those the LVS's web client reads (its JavaScript,
-/// 2026-10-21); a real pupil's answer is the developer's capture step (#168).
-/// Like the other LVS models, these never print their values: their
-/// `toString()` shows counts only (`doc/lvs-privacy.md`, rule 6). A
-/// motivation can hold health information: the library returns it, the app
-/// decides whether to show it.
+/// The shape is that of a real pupil's answer, as the developer captured it
+/// in a browser (#176, shapes only). Like the other LVS models, these never
+/// print their values: their `toString()` shows counts only
+/// (`doc/lvs-privacy.md`, rule 6). A motivation can hold health
+/// information: the library returns it, the app decides whether to show it.
 library;
 
 import 'lvs_models.dart' show LvsSectionType;
 import 'presence_models.dart' show DayPart;
 
-/// The absences of a pupil in one school year (`LvsService.getAbsences`),
-/// grouped by period, in the LVS's order.
+/// The absences of a pupil (`LvsService.getAbsences`), grouped by period:
+/// the school years the LVS gives, several, in its order.
 class LvsAbsences {
-  /// The LVS's label of the school year the absences are of (`year_label`),
-  /// such as `2030 - 2031`; empty when it gives none. The LVS picks the year:
-  /// its web client sends none.
+  /// The school year the LVS names in its answer (`year_label`, such as
+  /// `2030-2031`), the one its web client shows when there are no absences;
+  /// empty when it gives none. The LVS picks it: its web client sends no
+  /// school year.
   final String yearLabel;
 
-  /// The periods (`presences`), in the LVS's order, each with its absences;
-  /// empty when the pupil has none in the year.
+  /// The periods (`presences`), in the LVS's order, each a school year with
+  /// its absences; empty when the pupil has none.
   final List<LvsAbsencePeriod> periods;
 
   const LvsAbsences({this.yearLabel = '', required this.periods});
@@ -39,7 +40,7 @@ class LvsAbsences {
     for (final period in periods) ...period.absences,
   ];
 
-  /// Whether the pupil has no absence in the year.
+  /// Whether the pupil has no absence in any period.
   bool get isEmpty => periods.every((period) => period.absences.isEmpty);
 
   /// The number of half-days of all absences: a full day counts two.
@@ -78,10 +79,11 @@ class LvsAbsences {
       'absences: ${absences.length}, halfDays: $halfDays)';
 }
 
-/// A period of [LvsAbsences.periods]: a key of the LVS's `presences`, with
-/// the absences in it.
+/// A period of [LvsAbsences.periods]: a key of the LVS's `presences`, a
+/// school year for a pupil's file, with the absences in it.
 class LvsAbsencePeriod {
-  /// The period's label as the LVS gives it (the key of `presences`).
+  /// The period's label as the LVS gives it (the key of `presences`): the
+  /// school year as `YYYY-YYYY` (`2030-2031`) for a pupil's file.
   final String label;
 
   /// The absences in the period, day after day, in the LVS's order; each
@@ -100,19 +102,27 @@ class LvsAbsencePeriod {
 }
 
 /// An absence of a pupil: a whole day or a half-day with an absence code
-/// (`{formattedDate, partOfDay, code, codeColor, codeDescr, motivation}`).
+/// (`{partOfDay, codeKey, code, codeColor, codeDescr, motivation,
+/// formattedDate}`).
 class LvsAbsence {
   /// The day, at midnight UTC (its year, month and day are the Belgian
-  /// day), from [dateKey]; `null` when that is not a day `YYYY-MM-DD`.
+  /// day): from [dateKey] when that is a day `YYYY-MM-DD`, else from
+  /// [formattedDate] (#176), `<day name> <day> <month name> <year>` as in
+  /// `vr 23 oktober 2030`, the month by the answer's names of the months
+  /// (`lng_months`, in any case) or its Dutch name. A shown day without a
+  /// year takes it from the period's school year: September to December its
+  /// first year, January to August its second. `null` when neither gives a
+  /// day.
   final DateTime? date;
 
   /// The key of the day in the LVS's answer, as it comes: the day as
   /// `YYYY-MM-DD` (as the LVS keys the days of its class view); empty when
-  /// the LVS gives the days of a period as a list.
+  /// the LVS gives the days of a period as a list, as it does for a pupil's
+  /// file (#176).
   final String dateKey;
 
-  /// The day as the LVS shows it (`formattedDate`); empty when it gives
-  /// none.
+  /// The day as the LVS shows it (`formattedDate`, such as
+  /// `vr 23 oktober 2030`); empty when it gives none.
   final String formattedDate;
 
   /// The half-day of the absence (the LVS's key `am` or `pm`); `null` for a
@@ -126,6 +136,10 @@ class LvsAbsence {
   /// The short code (`code`), as the school's Presence codes name it.
   final String code;
 
+  /// The key of the code as the LVS gives it (`codeKey`: a number, or two
+  /// joined by a dash, `<n>-<n>`); empty when it gives none.
+  final String codeKey;
+
   /// The code's description (`codeDescr`); empty when the LVS gives none.
   final String codeDescription;
 
@@ -133,13 +147,14 @@ class LvsAbsence {
   /// web client such as `red`), or `null` when it gives none.
   final String? color;
 
-  /// The motivation (`motivation`) as plain text: the LVS's HTML left out,
-  /// with a line for each line break and block of it (see `LvsService`).
-  /// Empty when there is none. It can hold health information.
+  /// The motivation (`motivation`) as plain text: the LVS gives it as plain
+  /// text or as HTML; HTML is left out, with a line for each line break and
+  /// block of it (see `LvsService`). Empty when there is none. It can hold
+  /// health information.
   final String motivation;
 
-  /// The motivation as HTML, as the LVS gives it (trimmed); empty when there
-  /// is none.
+  /// The motivation as the LVS gives it (trimmed), plain text or HTML;
+  /// empty when there is none.
   final String motivationHtml;
 
   const LvsAbsence({
@@ -149,6 +164,7 @@ class LvsAbsence {
     this.dayPart,
     this.partOfDayLabel = '',
     required this.code,
+    this.codeKey = '',
     this.codeDescription = '',
     this.color,
     this.motivation = '',

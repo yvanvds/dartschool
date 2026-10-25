@@ -1,0 +1,86 @@
+{
+  "lng_noresults": "Geen resultaten",
+  "lng_months": [
+    "januari",
+    "februari",
+    "maart",
+    "april",
+    "mei",
+    "juni",
+    "juli",
+    "augustus",
+    "september",
+    "oktober",
+    "november",
+    "december"
+  ],
+  "lng_days": [
+    "zondag",
+    "maandag",
+    "dinsdag",
+    "woensdag",
+    "donderdag",
+    "vrijdag",
+    "zaterdag"
+  ],
+  "presences": {
+    "2030-2031": [
+      {
+        "full": {
+          "partOfDay": "Volledige dag",
+          "codeKey": "900501",
+          "code": "TA",
+          "codeColor": "red",
+          "codeDescr": "Testcode",
+          "motivation": "",
+          "formattedDate": "ma 2 september"
+        }
+      },
+      {
+        "am": {
+          "partOfDay": "Voormiddag",
+          "codeKey": "900501",
+          "code": "TA",
+          "codeColor": "red",
+          "codeDescr": "Testcode",
+          "motivation": "Testmotivatie.",
+          "formattedDate": "wo 23 oktober"
+        }
+      },
+      {
+        "pm": {
+          "partOfDay": "Namiddag",
+          "codeKey": "900502-900503",
+          "code": "TB",
+          "codeColor": "yellow",
+          "codeDescr": "Testcode 2",
+          "motivation": "",
+          "formattedDate": "di 3 december"
+        }
+      },
+      {
+        "full": {
+          "partOfDay": "Volledige dag",
+          "codeKey": "900501",
+          "code": "TA",
+          "codeColor": "red",
+          "codeDescr": "Testcode",
+          "motivation": "",
+          "formattedDate": "ma 3 februari"
+        }
+      },
+      {
+        "am": {
+          "partOfDay": "Voormiddag",
+          "codeKey": "900502-900503",
+          "code": "TB",
+          "codeColor": "yellow",
+          "codeDescr": "Testcode 2",
+          "motivation": "",
+          "formattedDate": "vr 29 augustus"
+        }
+      }
+    ]
+  },
+  "year_label": "2030-2031"
+}

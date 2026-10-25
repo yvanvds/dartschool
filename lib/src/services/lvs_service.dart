@@ -86,7 +86,7 @@ export '../models/lvs_results_models.dart';
 ///   `jqDispatcher_settings&function=getLVSspecificTitles` (the periods),
 ///   form-encoded, answered with JSON as text;
 /// - [getAbsences] (#164): `POST /LVS/Pupilpresences` with `pupilID` and
-///   `groupID`, answered with JSON.
+///   `groupID`, answered with JSON: per school year, a list of days (#176).
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -732,25 +732,29 @@ class LvsService {
   // ---------------------------------------------------------------------------
 
   /// The absences of pupil [pupilId] in class [classId] (#164): the
-  /// half-days with an absence code in a school year, grouped by period,
-  /// each with its code, the code's description and colour, and the
-  /// motivation; [LvsAbsences.totalsByCode] counts them per code. What the
-  /// file's absences section ([LvsSectionType.absences]) shows a teacher;
-  /// the Presence module's own reads (`PresenceService`) are for absence
+  /// half-days with an absence code, grouped by school year (the periods,
+  /// several), each with its day, its code, the code's key, description and
+  /// colour, and the motivation (plain text or HTML);
+  /// [LvsAbsences.totalsByCode] counts them per code. What the file's
+  /// absences section ([LvsSectionType.absences]) shows a teacher; the
+  /// Presence module's own reads (`PresenceService`) are for absence
   /// administrators.
   ///
   /// One request: `POST /LVS/Pupilpresences` with `pupilID` and `groupID`
   /// (the class), as the web client opens the section. It sends no school
-  /// year: the LVS picks it ([LvsAbsences.yearLabel] names it), and the
-  /// library cannot ask for another. The section's charts
-  /// (`/LVS/Pupilpresencesgraphs`) are not read. A motivation can hold
-  /// health information: the library returns it, the app decides whether to
-  /// show it.
+  /// year: the LVS picks the school years it answers with
+  /// ([LvsAbsences.yearLabel] names one), and the library cannot ask for
+  /// another. The section's charts (`/LVS/Pupilpresencesgraphs`) are not
+  /// read. A motivation can hold health information: the library returns
+  /// it, the app decides whether to show it.
   ///
-  /// The LVS answered a made-up pupil ID in a made-up class with HTTP 500
-  /// and Smartschool's error page (seen live, 2026-10-21): a plain
-  /// [SmartschoolLvsError], never an empty list. A real pupil's answer was
-  /// not captured (#168): its shape comes from the LVS's JavaScript.
+  /// The days of a school year come as a list, dated only by the day the
+  /// LVS shows (`formattedDate`, `vr 23 oktober 2030`): [LvsAbsence.date]
+  /// is read from that text, and is `null` when it does not parse (#176).
+  /// That shape is a real pupil's answer, as the developer captured it in a
+  /// browser (shapes only). The LVS answered a made-up pupil ID in a made-up
+  /// class with HTTP 500 and Smartschool's error page (seen live,
+  /// 2026-10-21): a plain [SmartschoolLvsError], never an empty list.
   ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.

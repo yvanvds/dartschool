@@ -34,8 +34,8 @@
 // evaluations and all of them, feedback, reports: counts and types only),
 // and, when its file has a section of support plans, their periods, the
 // plan of the current period and the profile sketch (status, kinds and
-// counts only), and its absences (counts by period, part of the day and
-// code only):
+// counts only), and its absences (counts by period, a school year each,
+// part of the day and code only, and that every one has a date, #176):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
 //     dart test -P live test/live/lvs_live_test.dart
@@ -73,6 +73,10 @@ const _nobody = 'qqxzdartschooltestqq';
 
 /// A pupil ID and a class ID no school has.
 const _madeUpId = 999999999;
+
+/// A school year `YYYY-YYYY`, as the LVS keys the periods of a pupil's
+/// absences (#176).
+final _schoolYear = RegExp(r'^\d{4}\s*-\s*\d{4}$');
 
 /// What a read of the results returned, by its type and count only: never a
 /// value of the answer (doc/lvs-privacy.md, rule 4).
@@ -241,8 +245,8 @@ void main() {
       });
 
       test(
-        'a pupil the developer teaches (#164): the absences of the file, by '
-        'period, part of the day and code',
+        'a pupil the developer teaches (#164, #176): the absences of the '
+        'file, by school year, part of the day and code, each with a date',
         skip: pupil == null || pupil.isEmpty
             ? 'set $_pupilVariable to (part of) the name of a pupil you '
                   'teach to read their absences'
@@ -269,10 +273,17 @@ void main() {
           );
           final all = absences.absences;
           final totals = absences.totalsByCode;
+          final schoolYears = absences.periods
+              .where((p) => _schoolYear.hasMatch(p.label))
+              .length;
           print(
             'absences: $absences, with a year label: '
             '${absences.yearLabel.isNotEmpty}, periods with a label: '
             '${absences.periods.where((p) => p.label.isNotEmpty).length}, '
+            'periods that are a school year: $schoolYears, '
+            'absences with a day key: '
+            '${all.where((a) => a.dateKey.isNotEmpty).length}, with a code '
+            'key: ${all.where((a) => a.codeKey.isNotEmpty).length}, '
             'whole days: ${all.where((a) => a.isFullDay).length}, mornings: '
             '${all.where((a) => a.dayPart == DayPart.morning).length}, '
             'afternoons: '
@@ -285,8 +296,9 @@ void main() {
             'motivation: ${all.where((a) => a.motivation.isNotEmpty).length}, '
             'codes: ${totals.length}',
           );
-          // The day keys are taken for `YYYY-MM-DD` (the class view's), and
-          // every absence has a code: shapes, not values.
+          // Every absence has a day, read from the text the LVS shows
+          // (`formattedDate`, #176: the days of a school year come as a
+          // list, without a day key), and a code: shapes, not values.
           expect(all.every((a) => a.date != null), isTrue);
           expect(all.every((a) => a.code.isNotEmpty), isTrue);
           expect(

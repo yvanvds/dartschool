@@ -29,18 +29,16 @@
 // reads. With it, it also searches for that text and reads
 // the file and today's status of the first pupil found; all its notes of the
 // current school year, then the notes of the first of its categories that
-// holds notes in that year, which must be that category's and its
-// sub-categories' in all its notes (#177; read twice: it prints how many are
-// new before and after, for #168), with counts of where the notes it misses
-// are (#180): how many notes of all its notes are dated or labelled outside
-// the school year, how many missing ones are of the category itself or of a
-// sub-category (and how many sub-categories it has), and whether the
-// sub-category of the first missing one of a sub-category, read on its own,
-// returns it (all printed before the first check that can fail), the notes
-// of a category the file flags with notes but that holds none in that year
-// (an empty list), and a made-up category of it
-// (support/lvs_notes_check.dart picks and compares, tested offline in
-// lvs_notes_check_test.dart); its results (configuration,
+// holds notes of its own in that year, which must be that category's own in
+// all its notes (#177, #180: a category's notes are never its
+// sub-categories'; read twice: it prints how many are new before and after,
+// for #168), every note of both reads of that school year (#180: the LVS
+// answers notes of other school years too, which the library leaves out;
+// the counts by date and by label are printed before the first check that
+// can fail), the notes of a category the file flags with notes but that
+// holds none of its own in that year (an empty list), and a made-up
+// category of it (support/lvs_notes_check.dart picks and compares, tested
+// offline in lvs_notes_check_test.dart); its results (configuration,
 // periods, courses, a page of two evaluations and all of them, feedback,
 // reports: counts and types only),
 // and, when its file has a section of support plans, their periods, the
@@ -571,12 +569,12 @@ void main() {
       );
 
       test(
-        'a pupil the developer teaches (#161, #177): the notes of a category '
-        'with notes in the school year, not empty, each with a date and '
-        'fields, are those of the category and its sub-categories in the '
-        '"all items" view of that year; a category flagged with notes but '
-        'without any in that year is an empty list; a made-up category is '
-        'SmartschoolLvsCategoryNotFoundError',
+        'a pupil the developer teaches (#161, #177, #180): the notes of a '
+        'category with notes of its own in the school year, not empty, each '
+        'with a date and fields, are its own in the "all items" view of that '
+        'year; every note of both reads is of that year; a category flagged '
+        'with notes but without any of its own in that year is an empty '
+        'list; a made-up category is SmartschoolLvsCategoryNotFoundError',
         skip: pupil == null || pupil.isEmpty
             ? 'set $_pupilVariable to (part of) the name of a pupil you '
                   'teach to read their notes'
@@ -613,7 +611,9 @@ void main() {
           // The "all items" view first, and the category from it: the file
           // flags a category that holds notes in any school year, so the
           // first one flagged can hold older notes only, and its notes were
-          // an empty list on which every check held (#177).
+          // an empty list on which every check held (#177). A category is
+          // picked by its own notes: getNotes never reads a sub-category's
+          // (#180).
           final all = await lvs.getAllNotes(
             pupilId: ids.pupilId,
             classId: ids.classId,
@@ -625,21 +625,30 @@ void main() {
             'all notes in the school year: ${all.length} '
             '(${allIds.length} distinct); $picks',
           );
-          // Whether the "all items" view keeps to the school year (#180):
-          // counts only.
-          print(
-            'all notes against the school year: '
-            '${LvsNotesInYear.of(all, year)}',
-          );
+          // Whether the library kept the "all items" view to the school year
+          // (#180: the LVS answers other years too): counts only.
+          final allInYear = LvsNotesInYear.of(all, year);
+          print('all notes against the school year: $allInYear');
           expect(allIds.length, all.length);
           expect(all.every((n) => n.id > 0), isTrue);
+          expect(
+            allInYear.outside,
+            0,
+            reason: 'notes of the "all items" view not of the school year',
+          );
+          expect(
+            allInYear.labelledOutside,
+            0,
+            reason: 'notes of the "all items" view labelled with another year',
+          );
 
-          // A category flagged with notes, older ones only: no error, none.
+          // A category flagged with notes, none of its own in the school
+          // year: no error, none.
           final older = picks.flaggedWithoutNotes;
           if (older == null) {
             print(
-              'no category flagged with notes but without any in the school '
-              'year: its empty list is not read',
+              'no category flagged with notes but without any of its own in '
+              'the school year: its empty list is not read',
             );
           } else {
             final none = await lvs.getNotes(
@@ -648,7 +657,10 @@ void main() {
               categoryId: older.id,
               schoolYear: year,
             );
-            print('a category with older notes only: ${none.length} notes');
+            print(
+              'a category without notes of its own in the school year: '
+              '${none.length} notes',
+            );
             expect(none.length, 0);
           }
 
@@ -656,8 +668,8 @@ void main() {
           if (category == null) {
             expect(run.guard.violations, isEmpty);
             markTestSkipped(
-              'no category holds notes in the school year: nothing to '
-              'compare with the "all items" view (#177)',
+              'no category holds notes of its own in the school year: '
+              'nothing to compare with the "all items" view (#177)',
             );
             return;
           }
@@ -676,44 +688,16 @@ void main() {
             '${{for (final type in LvsNoteFieldType.values) type.name: fields.where((f) => f.type == type).length}}',
           );
           // By the IDs, as counts: an ID is never printed, nor quoted by a
-          // failing expect (doc/lvs-privacy.md, rule 4).
+          // failing expect (doc/lvs-privacy.md, rule 4). Printed before the
+          // first check that can fail, so that one run gives them all.
           final comparison = LvsNotesComparison.of(
             category: category,
-            schoolYear: year,
             all: all,
             read: notes,
           );
+          final notesInYear = LvsNotesInYear.of(notes, year);
           print('the category against the "all items" view: $comparison');
-          // Whether getNotes reads a sub-category's notes when asked for the
-          // sub-category itself (#180): a yes or no, printed with the counts
-          // above before the first check that can fail, so that one run
-          // gives them all. An error of the LVS is printed by its type only.
-          final missingInSub = comparison.firstMissingInSubcategory;
-          if (missingInSub == null) {
-            print(
-              'no missing note of a sub-category: no sub-category read on '
-              'its own',
-            );
-          } else {
-            String returned;
-            try {
-              final ofSub = await lvs.getNotes(
-                pupilId: ids.pupilId,
-                classId: ids.classId,
-                categoryId: missingInSub.categoryId,
-                schoolYear: year,
-              );
-              returned =
-                  '${comparison.holdsFirstMissingInSubcategory(ofSub)} '
-                  '(${ofSub.length} notes)';
-            } on SmartschoolLvsError catch (e) {
-              returned = 'an error, ${e.runtimeType}';
-            }
-            print(
-              'getNotes for the sub-category of the first missing note of a '
-              'sub-category returns it: $returned',
-            );
-          }
+          print('the category against the school year: $notesInYear');
           expect(notes.length, greaterThan(0));
           expect(
             comparison.missing,
@@ -733,9 +717,19 @@ void main() {
           expect(
             comparison.outside,
             0,
-            reason: 'notes of neither the category nor a sub-category of it',
+            reason: 'notes of another category than the one read (#180)',
           );
           expect(comparison.duplicates, 0, reason: 'notes read twice');
+          expect(
+            notesInYear.outside,
+            0,
+            reason: 'notes of the category not of the school year (#180)',
+          );
+          expect(
+            notesInYear.labelledOutside,
+            0,
+            reason: 'notes of the category labelled with another year (#180)',
+          );
           expect(notes.every((n) => n.id > 0), isTrue);
           expect(notes.every((n) => n.date.year >= 2000), isTrue);
           expect(notes.every((n) => n.fields.isNotEmpty), isTrue);

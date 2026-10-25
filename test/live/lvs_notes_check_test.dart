@@ -1,8 +1,9 @@
 // Tests for support/lvs_notes_check.dart (#177, #180): which category the
-// live notes case of lvs_live_test.dart reads with getNotes, picked by the
-// "all items" view of the school year, how it compares the two answers, and
-// where the notes getNotes misses are: of the category itself or of a
-// sub-category, dated or labelled outside the school year read.
+// live notes case of lvs_live_test.dart reads with getNotes, picked by its
+// own notes in the "all items" view of the school year (a category's notes
+// are never its sub-categories', #180), how it compares the two answers, and
+// how it counts the notes of an answer that are not of the school year read:
+// by the library's rule, by their date and by their label.
 //
 // The case runs against a real pupil only on the developer's machine
 // (doc/lvs-privacy.md: a coding agent does not read a pupil's data), so its
@@ -35,13 +36,13 @@ LvsCategory _category(
 final _year = LvsSchoolYear.starting(2030);
 
 /// A note [id] of category [categoryId], made of the fakes: of 1 October
-/// 2030 and labelled 2030 (as test/fixtures/lvs/notes/ label it), unless
-/// [date] or [schoolYear] say otherwise.
+/// 2030 and labelled 2030-2031 (as test/fixtures/lvs/notes/ label it),
+/// unless [date] or [schoolYear] say otherwise.
 LvsNote _note(
   int id,
   int categoryId, {
   DateTime? date,
-  String schoolYear = '2030',
+  String schoolYear = '2030-2031',
 }) => LvsNote(
   id: id,
   categoryId: categoryId,
@@ -76,11 +77,26 @@ void main() {
       expect(picks.notesOfUnlistedCategories, 0);
     });
 
-    test('a category whose notes are in a sub-category holds notes; one '
-        'flagged whose sub-category holds them is not "without notes"', () {
+    test('a category is picked by its own notes (#180): a parent whose notes '
+        'are all in a sub-category is not, the sub-category is; the parent, '
+        'flagged, is "without notes" of its own', () {
       final sub = _category(900112);
       final parent = _category(900111, subcategories: [sub]);
       final picks = LvsNotePicks.of([parent], [_note(900211, 900112)]);
+      expect(picks.withNotes, same(sub));
+      expect(picks.flaggedWithoutNotes, same(parent));
+      expect(picks.categoriesWithNotes, 1);
+      expect(picks.categoriesFlaggedWithoutNotes, 1);
+    });
+
+    test('a parent with notes of its own is picked before its '
+        'sub-category', () {
+      final sub = _category(900114);
+      final parent = _category(900113, subcategories: [sub]);
+      final picks = LvsNotePicks.of(
+        [parent],
+        [_note(900213, 900114), _note(900214, 900113)],
+      );
       expect(picks.withNotes, same(parent));
       expect(picks.flaggedWithoutNotes, isNull);
       expect(picks.categoriesWithNotes, 2);
@@ -127,6 +143,7 @@ void main() {
         [_category(900161)],
         [_note(900261, 900161)],
       ).toString();
+      expect(text, contains('categories with notes of their own'));
       expect(text, isNot(contains('9001')));
       expect(text, isNot(contains('9002')));
       expect(text, isNot(contains('Test')));
@@ -140,236 +157,78 @@ void main() {
       _note(900401, 900301),
       _note(900402, 900302),
       _note(900403, 900309),
+      _note(900404, 900301),
     ];
 
-    test('the notes of the category and its sub-categories, in any order: '
-        'the same', () {
-      final comparison = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: [_note(900402, 900302), _note(900401, 900301)],
-      );
+    LvsNotesComparison compare(List<LvsNote> read) =>
+        LvsNotesComparison.of(category: category, all: all, read: read);
+
+    test("the category's own notes, in any order: the same", () {
+      final comparison = compare([
+        _note(900404, 900301),
+        _note(900401, 900301),
+      ]);
       expect(comparison.isSame, isTrue);
       expect(comparison.expected, 2);
       expect(comparison.read, 2);
     });
 
-    test('an empty list, as the case once passed on (#177): every note of '
-        'the view missing', () {
-      final comparison = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: const [],
-      );
+    test('an empty list, as the case once passed on (#177): every own note '
+        'of the view missing', () {
+      final comparison = compare(const []);
       expect(comparison.isSame, isFalse);
       expect(comparison.missing, 2);
     });
 
-    test("a note of a sub-category left out: missing", () {
-      final comparison = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: [_note(900401, 900301)],
-      );
+    test('a note of a sub-category is not expected (#180): read, it is of '
+        'another category, and extra', () {
+      final comparison = compare([
+        _note(900401, 900301),
+        _note(900404, 900301),
+        _note(900402, 900302),
+      ]);
+      expect(comparison.isSame, isFalse);
+      expect(comparison.expected, 2);
+      expect(comparison.outside, 1);
+      expect(comparison.extra, 1);
+      expect(comparison.missing, 0);
+    });
+
+    test('an own note left out: missing', () {
+      final comparison = compare([_note(900401, 900301)]);
       expect(comparison.isSame, isFalse);
       expect(comparison.missing, 1);
       expect(comparison.extra, 0);
     });
 
-    test('a note the view does not have: extra', () {
-      final comparison = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: [
-          _note(900401, 900301),
-          _note(900402, 900302),
-          _note(900404, 900302),
-        ],
-      );
+    test('an own note the view does not have: extra, not outside', () {
+      final comparison = compare([
+        _note(900401, 900301),
+        _note(900404, 900301),
+        _note(900405, 900301),
+      ]);
       expect(comparison.isSame, isFalse);
       expect(comparison.extra, 1);
+      expect(comparison.outside, 0);
       expect(comparison.missing, 0);
     });
 
-    test('a note of another category: outside, and extra', () {
-      final comparison = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: [
-          _note(900401, 900301),
-          _note(900402, 900302),
-          _note(900403, 900309),
-        ],
-      );
-      expect(comparison.isSame, isFalse);
-      expect(comparison.outside, 1);
-      expect(comparison.extra, 1);
-    });
-
     test('a note read twice: a duplicate', () {
-      final comparison = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: [
-          _note(900401, 900301),
-          _note(900402, 900302),
-          _note(900402, 900302),
-        ],
-      );
+      final comparison = compare([
+        _note(900401, 900301),
+        _note(900404, 900301),
+        _note(900404, 900301),
+      ]);
       expect(comparison.isSame, isFalse);
       expect(comparison.duplicates, 1);
       expect(comparison.missing, 0);
     });
 
     test('toString says counts only, no ID', () {
-      final text = LvsNotesComparison.of(
-        category: category,
-        schoolYear: _year,
-        all: all,
-        read: [_note(900401, 900301)],
-      ).toString();
+      final text = compare([_note(900401, 900301)]).toString();
+      expect(text, contains('missing: 1'));
       expect(text, isNot(contains('9003')));
       expect(text, isNot(contains('9004')));
-      expect(text, isNot(contains('2030')));
-    });
-  });
-
-  group('LvsNotesComparison, where the missing notes are (#180)', () {
-    final subsub = _category(900503);
-    final sub = _category(900502, subcategories: [subsub]);
-    final category = _category(900501, subcategories: [sub]);
-    final all = [
-      _note(900601, 900501),
-      _note(900602, 900502),
-      _note(900603, 900503),
-      _note(900604, 900509),
-    ];
-
-    LvsNotesComparison compare(List<LvsNote> read, {List<LvsNote>? view}) =>
-        LvsNotesComparison.of(
-          category: category,
-          schoolYear: _year,
-          all: view ?? all,
-          read: read,
-        );
-
-    test('an empty list: the missing notes split into the category\'s own '
-        'and those of its sub-categories, at any depth', () {
-      final comparison = compare(const []);
-      expect(comparison.missing, 3);
-      expect(comparison.missingOwn, 1);
-      expect(comparison.missingInSubcategories, 2);
-      expect(comparison.missingDatedOutside, 0);
-    });
-
-    test('only the category\'s own note read: the notes of its '
-        'sub-categories missing', () {
-      final comparison = compare([_note(900601, 900501)]);
-      expect(comparison.missingOwn, 0);
-      expect(comparison.missingInSubcategories, 2);
-    });
-
-    test('only the notes of the sub-categories read: the own note '
-        'missing, no missing note of a sub-category', () {
-      final comparison = compare([
-        _note(900602, 900502),
-        _note(900603, 900503),
-      ]);
-      expect(comparison.missingOwn, 1);
-      expect(comparison.missingInSubcategories, 0);
-      expect(comparison.firstMissingInSubcategory, isNull);
-    });
-
-    test('the first missing note of a sub-category, in the view\'s order, '
-        'even after a missing own note', () {
-      final comparison = compare(const []);
-      expect(comparison.firstMissingInSubcategory?.id, 900602);
-      expect(comparison.firstMissingInSubcategory?.categoryId, 900502);
-    });
-
-    test('a note the view lists twice is missing once', () {
-      final comparison = compare(
-        const [],
-        view: [...all, _note(900602, 900502)],
-      );
-      expect(comparison.missing, 3);
-      expect(comparison.missingInSubcategories, 2);
-    });
-
-    test('nothing missing: no missing note of a sub-category', () {
-      final comparison = compare(all.take(3).toList());
-      expect(comparison.isSame, isTrue);
-      expect(comparison.missingOwn, 0);
-      expect(comparison.missingInSubcategories, 0);
-      expect(comparison.firstMissingInSubcategory, isNull);
-    });
-
-    test('whether the sub-category read on its own returns the first '
-        'missing note of a sub-category: yes, no, or nothing to ask', () {
-      final comparison = compare(const []);
-      expect(
-        comparison.holdsFirstMissingInSubcategory([_note(900602, 900502)]),
-        isTrue,
-      );
-      expect(comparison.holdsFirstMissingInSubcategory(const []), isFalse);
-      expect(
-        comparison.holdsFirstMissingInSubcategory([_note(900603, 900503)]),
-        isFalse,
-      );
-      expect(
-        compare(all.take(3).toList()).holdsFirstMissingInSubcategory(const []),
-        isNull,
-      );
-    });
-
-    test('a missing note dated outside the school year is counted', () {
-      final comparison = compare(
-        const [],
-        view: [
-          _note(900611, 900501, date: DateTime.utc(2029, 10, 1)),
-          _note(900612, 900502),
-        ],
-      );
-      expect(comparison.missing, 2);
-      expect(comparison.missingDatedOutside, 1);
-    });
-
-    test('the sub-categories of the category, at any depth', () {
-      expect(compare(const []).subcategories, 2);
-      expect(
-        LvsNotesComparison.of(
-          category: sub,
-          schoolYear: _year,
-          all: all,
-          read: const [],
-        ).subcategories,
-        1,
-      );
-      expect(
-        LvsNotesComparison.of(
-          category: _category(900504),
-          schoolYear: _year,
-          all: all,
-          read: const [],
-        ).subcategories,
-        0,
-      );
-    });
-
-    test('toString gives the new counts, and no ID and no date', () {
-      final text = compare(const []).toString();
-      expect(text, contains('of the category itself: 1'));
-      expect(text, contains('of a sub-category: 2'));
-      expect(text, contains('dated outside the school year: 0'));
-      expect(text, contains('sub-categories of the category: 2'));
-      expect(text, isNot(contains('9005')));
-      expect(text, isNot(contains('9006')));
       expect(text, isNot(contains('2030')));
     });
   });
@@ -378,45 +237,52 @@ void main() {
     test('notes dated and labelled in the school year: none outside', () {
       final inYear = LvsNotesInYear.of([
         _note(900701, 900501),
-        _note(900702, 900501, schoolYear: '2030-2031'),
-        _note(900703, 900501, schoolYear: ' 2030 - 2031 '),
+        _note(900702, 900501, schoolYear: ' 2030 - 2031 '),
       ], _year);
+      expect(inYear.outside, 0);
       expect(inYear.datedOutside, 0);
       expect(inYear.labelledOutside, 0);
       expect(inYear.unlabelled, 0);
     });
 
-    test('dated before the first day or after the last: outside by the '
-        'date, and not by a label of the year (the two can disagree)', () {
+    test('labelled with the year, dated outside it: of the year by the '
+        "library's rule, outside by the date", () {
       final inYear = LvsNotesInYear.of([
         _note(900711, 900501, date: DateTime.utc(2030, 8, 15)),
         _note(900712, 900501, date: DateTime.utc(2031, 9, 15)),
         _note(900713, 900501, date: DateTime.utc(2031, 3, 1)),
       ], _year);
+      expect(inYear.outside, 0);
       expect(inYear.datedOutside, 2);
       expect(inYear.labelledOutside, 0);
     });
 
-    test('labelled with another school year: outside by the label, and '
-        'not by a date in the year', () {
+    test('labelled with another school year: outside by the label and by '
+        "the library's rule, though dated in the year", () {
       final inYear = LvsNotesInYear.of([
-        _note(900721, 900501, schoolYear: '2029'),
-        _note(900722, 900501, schoolYear: '2029-2030'),
-        _note(900723, 900501, schoolYear: '2030-2032'),
-        _note(900724, 900501, schoolYear: '2031'),
+        _note(900721, 900501, schoolYear: '2029-2030'),
+        _note(900722, 900501, schoolYear: '2031-2032'),
       ], _year);
-      expect(inYear.labelledOutside, 4);
+      expect(inYear.outside, 2);
+      expect(inYear.labelledOutside, 2);
       expect(inYear.datedOutside, 0);
+      expect(inYear.unlabelled, 0);
     });
 
-    test('a label that is empty or not a year: neither in nor outside', () {
+    test('a label that is empty or names no school year (one year alone, '
+        "two that do not follow): unlabelled, and by the library's rule of "
+        'the year by its date', () {
       final inYear = LvsNotesInYear.of([
         _note(900731, 900501, schoolYear: ''),
         _note(900732, 900501, schoolYear: 'Testjaar'),
-        _note(900733, 900501, schoolYear: '30'),
+        _note(900733, 900501, schoolYear: '2029'),
+        _note(900734, 900501, schoolYear: '2030-2032'),
+        _note(900735, 900501, schoolYear: '', date: DateTime.utc(2029, 10, 1)),
       ], _year);
-      expect(inYear.unlabelled, 3);
+      expect(inYear.unlabelled, 5);
       expect(inYear.labelledOutside, 0);
+      expect(inYear.datedOutside, 1);
+      expect(inYear.outside, 1);
     });
 
     test('dated by the Belgian day, as the LVS reads its days: late on 31 '
@@ -434,6 +300,7 @@ void main() {
 
     test('no notes: nothing outside', () {
       final inYear = LvsNotesInYear.of(const [], _year);
+      expect(inYear.outside, 0);
       expect(inYear.datedOutside, 0);
       expect(inYear.labelledOutside, 0);
       expect(inYear.unlabelled, 0);
@@ -442,10 +309,11 @@ void main() {
     test('toString says counts only, no ID, no date and no label', () {
       final text = LvsNotesInYear.of([
         _note(900751, 900501, date: DateTime.utc(2029, 10, 1)),
-        _note(900752, 900501, schoolYear: '2029'),
+        _note(900752, 900501, schoolYear: '2029-2030'),
         _note(900753, 900501, schoolYear: 'Testjaar'),
       ], _year).toString();
-      expect(text, contains('dated outside the school year read: 1'));
+      expect(text, contains('not of the school year read: 1'));
+      expect(text, contains('dated outside it: 1'));
       expect(text, contains('labelled with another school year: 1'));
       expect(text, contains('with no school year label read: 1'));
       expect(text, isNot(contains('9007')));

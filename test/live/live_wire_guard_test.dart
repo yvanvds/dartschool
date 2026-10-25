@@ -1323,12 +1323,20 @@ void main() {
       final (client, guard) = await _guardedClient(server);
       final lvs = LvsService(client);
 
+      // The school year of the fixtures' notes (#180: only its notes come
+      // back).
+      final year = LvsSchoolYear.starting(2030);
       final notes = await lvs.getNotes(
         pupilId: 900001,
         classId: 900101,
         categoryId: 900401,
+        schoolYear: year,
       );
-      final all = await lvs.getAllNotes(pupilId: 900001, classId: 900101);
+      final all = await lvs.getAllNotes(
+        pupilId: 900001,
+        classId: 900101,
+        schoolYear: year,
+      );
 
       expect(notes, hasLength(3));
       expect(all, hasLength(3));

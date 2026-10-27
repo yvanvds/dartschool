@@ -1,4 +1,11 @@
-## Unreleased
+## 0.4.0 - 2026-10-27
+
+### Breaking changes
+This release changes what a few calls return and what a login with 2FA sends. It is 0.4.0 rather than 0.3.10, so that a `^0.3.x` constraint does not pick it up unnoticed. The entries below give the details. When upgrading, check:
+- **`LvsFeedback.text` is plain text** with its lines. It used to be the feedback's HTML, which is now in `LvsFeedback.html` (#187).
+- **`SkoreGradebookService.getEvaluations` reads a period around an evaluation it cannot read** instead of refusing the whole period. Check the new `SkoreEvaluation.isReadable` first. The `results` of an unreadable evaluation, and `getResults`, throw `SmartschoolSkoreEvaluationUnreadableError` (#193).
+- **A login with 2FA sends one more request**, `GET /`, after the 2FA step, as a browser does (#192). A test that fakes Smartschool's login must answer it.
+- **The reference moved from `README.md` to `doc/`** (#199): a link to a section of the README's reference now has to point to its file in `doc/`.
 
 ### Added
 - LVS: `LvsService.checkAccessDetails()` (`Future<LvsAccess>`) tells how many classes the account may see in the LVS, besides whether it may use it (#184). It sends the read of `checkAccess()` (the root of the LVS's class tree, `POST /?module=LVS&file=treeBuilder`, `id` `0`; no pupil) and counts the root's `children` of type `class` (`attributes.rel`), not the LVS's other nodes there. The new `LvsAccess` has `granted` and `classCount` (`0` when not granted; `LvsAccess.denied()` for a refusal), is compared by value, and prints the flag and the count only: no class name, no ID. An account the LVS answers with a root that lists no class is granted with `0` classes: it sees no pupil. `checkAccess()` is unchanged (`true` for any root it can read); a root whose `children` holds something other than an object is now an unknown shape (`SmartschoolLvsError`) for both. `test/live/lvs_live_test.dart` checks that it agrees with `checkAccess()`, printing the count only; tested offline on hand-written fixtures of the root (`test/fixtures/lvs/tree`: two classes, none, one class among other nodes).

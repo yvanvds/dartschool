@@ -27,6 +27,11 @@
 // on a real report, and its live write waits for the developer's go-ahead.
 // It prints counts only: no comment text and no result.
 //
+// For #193 it reads the scale of the evaluations on a scale (getScale: the
+// GETs of the gradebook's page and of its frame, as Skore's web client
+// loads them), and checks that every evaluation it reads is one the
+// library can read. It prints counts and thresholds only: no level's name.
+//
 // For #192 it reads a gradebook without evaluation periods (the developer's
 // behaviour gradebook, 35158, which has only a report period; skipped when
 // the account has no such gradebook), and, last, a gradebook in a session
@@ -62,7 +67,8 @@
 // grading and has no test instance: getNavigation, init,
 // getGradebookContext, getEvaluations, getNewEvalDialogBox,
 // getPosComponents, accessableList and getReportsResults of Skore's
-// gradebook RPC service, and the GET of a pupil's feedback of its REST API;
+// gradebook RPC service, the GET of a pupil's feedback of its REST API, and
+// the GETs of the gradebook's page and frame (#193);
 // never saveEvaluation, saveGrade or saveType (#195), nor a POST of a
 // feedback (#152) to that API. The service refuses any other
 // method of that service itself (SkoreGradebookService.rpcMethods), and the
@@ -498,6 +504,14 @@ void main() {
 
         final pupilIds = sheet.pupils.map((p) => p.id).toSet();
         for (final evaluation in evaluations) {
+          // #193: every evaluation seen live is one the library reads.
+          expect(
+            evaluation.isReadable,
+            isTrue,
+            reason:
+                'evaluation ${evaluation.id} (evaltype '
+                '${evaluation.typeCode}): ${evaluation.unreadableReason}',
+          );
           final grades = evaluation.results.grades;
           final publication = evaluation.publication;
           print(
@@ -662,6 +676,37 @@ void main() {
       // it reads, and never sends its save (the wire guard refuses
       // saveEvaluation as well, and would list it as a violation). The live
       // write itself is the developer's, with the example, on their go-ahead.
+      test("getScale reads the school's scale, as the gradebook's frame "
+          'gives it (#193)', () async {
+        final scale = await gradebooks.getScale();
+        print(
+          'scale: ${scale.levels.length} levels, thresholds '
+          '${[for (final l in scale.levels) l.lowerThreshold]}, values '
+          '${[for (final l in scale.levels) l.value]}, '
+          '${scale.levels.where((l) => l.graphic != null).length} with a '
+          'graphic',
+        );
+        expect(scale.id, isNotEmpty);
+        expect(scale.name, isNotEmpty);
+        expect(scale.levels, isNotEmpty);
+        final ids = scale.levels.map((l) => l.id).toList();
+        expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+        for (final level in scale.levels) {
+          expect(level.description, isNotEmpty);
+          expect(level.abbreviation, isNotEmpty);
+          expect(level.lowerThreshold, inInclusiveRange(0, 100));
+          expect(level.value, inInclusiveRange(0, 100));
+        }
+        // Every percentage has a level when the lowest starts at 0, as seen
+        // live; and the highest percentage has the last level's.
+        if (scale.levels.any((l) => l.lowerThreshold == 0)) {
+          for (var percentage = 0; percentage <= 100; percentage++) {
+            expect(scale.levelForPercentage(percentage), isNotNull);
+          }
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
       group('createEvaluation refuses before its save (#150):', () {
         Matcher refused(String reason) =>
             isA<SmartschoolSkoreChangeRefusedError>().having(

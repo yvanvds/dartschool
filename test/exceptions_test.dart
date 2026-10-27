@@ -480,6 +480,28 @@ void main() {
       expect(error.toString(), 'SmartschoolSkoreMyGroupsError: groups');
     });
 
+    test(
+      'SmartschoolSkoreEvaluationUnreadableError is a SmartschoolSkoreError, '
+      'not a refused change, and names the evaluation (#193)',
+      () {
+        const error = SmartschoolSkoreEvaluationUnreadableError(
+          'unreadable',
+          evaluationId: 500013,
+          typeCode: 3,
+          reason: 'its type, evaltype 3, is not one the library reads',
+        );
+        expect(error, isA<SmartschoolSkoreError>());
+        expect(error, isNot(isA<SmartschoolSkoreChangeRefusedError>()));
+        expect(error.evaluationId, 500013);
+        expect(error.typeCode, 3);
+        expect(error.reason, startsWith('its type'));
+        expect(
+          error.toString(),
+          'SmartschoolSkoreEvaluationUnreadableError: unreadable',
+        );
+      },
+    );
+
     test('SmartschoolSkoreMyGroupsError is a refused change (#83)', () {
       const error = SmartschoolSkoreMyGroupsError(
         'groups',

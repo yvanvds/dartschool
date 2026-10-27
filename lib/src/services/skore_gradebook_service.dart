@@ -18,7 +18,8 @@ export '../models/skore_gradebook_models.dart';
 /// change it ([getGradebook]), and the evaluations of a period with whether
 /// and when they are published and the pupils' grades ([getEvaluations],
 /// [getResults]) and feedback ([getFeedback], #149), and a report period
-/// with each pupil's results so far and course comment ([getReport], #195).
+/// with each pupil's results so far and course comment ([getReport], #195),
+/// and the scale of the evaluations on a scale ([getScale], #193).
 /// And creates an evaluation in a period, never published
 /// ([createEvaluation], #150), saves the pupils' grades in it ([saveGrade],
 /// [saveGrades], #151), gives a pupil feedback on it ([saveFeedback], #152),
@@ -100,7 +101,9 @@ export '../models/skore_gradebook_models.dart';
 /// REST API instead (`GET /skore/api/v1/gradebook/feedback/...`), as the
 /// feedback panel of
 /// Skore's gradebook reads it ([getFeedback]), and goes there with a `POST`
-/// ([saveFeedback]); the service sends no other request to that API.
+/// ([saveFeedback]); the service sends no other request to that API. The
+/// scale ([getScale]) comes from the `GET`s of the gradebook's page and of
+/// its frame, as Skore's web client loads them.
 ///
 /// ### Errors
 /// - [SmartschoolSkoreError]: Skore answered with something the service
@@ -108,10 +111,14 @@ export '../models/skore_gradebook_models.dart';
 ///   target the message names by its path and `module` only, #192), an HTML
 ///   page instead of data, invalid JSON, an RPC answer without its `result`,
 ///   or data in a shape it does not recognise (such as a tree without its
-///   lists, a non-numeric ID, a grade cell without its `raw`, or an answer
-///   about another gradebook, period, school year or pupil). Never an empty
-///   list instead. For the feedback, its message names the `title` and
-///   `detail` of Skore's error answer, when it has them. The session was
+///   lists, a non-numeric ID, or an answer about another gradebook, period,
+///   school year or pupil). Never an empty list instead. An evaluation of a
+///   type the library does not know, or with a grade cell without its
+///   `raw`, does not make its period unreadable: it comes back not
+///   readable ([SkoreEvaluation.isReadable], #193), and its grades throw a
+///   [SmartschoolSkoreEvaluationUnreadableError] (a subtype). For the
+///   feedback, its message names the `title` and `detail` of Skore's error
+///   answer, when it has them. The session was
 ///   accepted: signing in again does not help.
 ///   Its message may quote the answer, which can hold names: keep it in a
 ///   log. What Skore answers an account without a gradebook of its own (a
@@ -477,6 +484,15 @@ class SkoreGradebookService {
   /// A grade is the value Skore stores (`"16.7"`), not the text it shows
   /// (`16,7`).
   ///
+  /// An evaluation the library cannot read, of a type it does not know or
+  /// with cells in a shape it does not recognise, does not make the period
+  /// unreadable (#193): it comes back with [SkoreEvaluation.isReadable]
+  /// `false` and the reason, and its [SkoreEvaluation.results] throw a
+  /// [SmartschoolSkoreEvaluationUnreadableError]; the others are read. An
+  /// evaluation on a scale ([SkoreEvaluationType.scale]) is read as Skore's
+  /// web client reads it: [getScale] and [SkoreScale.levelOf] give the level
+  /// of its grades (not seen live).
+  ///
   /// A [periodId] that is not positive is refused with an [ArgumentError]
   /// before anything is sent; an answer about another period with a
   /// [SmartschoolSkoreError].
@@ -521,7 +537,9 @@ class SkoreGradebookService {
   ///
   /// An evaluation of another gradebook is refused with an [ArgumentError]
   /// before anything is sent; an evaluation Skore no longer lists in its
-  /// period (moved to the trash, say) with a [SmartschoolSkoreError].
+  /// period (moved to the trash, say) with a [SmartschoolSkoreError], and
+  /// one the library cannot read ([SkoreEvaluation.isReadable], #193) with
+  /// a [SmartschoolSkoreEvaluationUnreadableError].
   Future<SkoreEvaluationResults> getResults(
     SkoreGradebook gradebook,
     SkoreEvaluation evaluation,
@@ -745,6 +763,64 @@ class SkoreGradebookService {
       gradebook,
       reportId,
     );
+  }
+
+  /// The page of Skore's gradebook, which hands its frame the start-up
+  /// secret.
+  static const _gradebookPage = '/SkoreGradebook';
+
+  /// The frame of Skore's gradebook, which holds the scale.
+  static const _gradebookFrame = '/modules/Skore/gradebook.php';
+
+  /// Returns the scale of the evaluations on a scale
+  /// ([SkoreEvaluationType.scale], "Waarderingen"): its levels, with the
+  /// label Skore shows for each, from low to high (#193).
+  /// [SkoreScale.levelOf] gives the level of a grade of such an evaluation.
+  /// One scale for every gradebook: read it once.
+  ///
+  /// Skore's web client has it from its gradebook frame: the page
+  /// `/SkoreGradebook` hands the frame a start-up secret
+  /// (`startUpSecret`, with `fcm`), and the frame
+  /// (`GET /modules/Skore/gradebook.php?fcm=1&initcontrol=<secret>&teacher=`)
+  /// gives the scale as `defaultScale` of its `djConfig`, which the web
+  /// client finds the level of a grade in and offers in its feedback panel
+  /// (seen live, 2026-10-27, for the developer's account: one scale of two
+  /// levels). Two `GET`s, of HTML pages; no RPC call. Skore answers the
+  /// frame `not good` for a secret of another session: then the two are
+  /// sent once more, in the session the client has then.
+  ///
+  /// A page without the secret, a frame without the scale, or a scale in
+  /// another shape is refused with a [SmartschoolSkoreError]; so is another
+  /// HTTP status than `200`.
+  Future<SkoreScale> getScale() async {
+    for (var attempt = 1; ; attempt++) {
+      final page = await _client.getResponse(_gradebookPage);
+      final (:secret, :fcm) = parseStartUp(
+        _pageBody(page, 'the page of Skore\'s gradebook ($_gradebookPage)'),
+      );
+      final frame = _pageBody(
+        await _client.getResponse(
+          _gradebookFrame,
+          query: {'fcm': fcm, 'initcontrol': secret, 'teacher': ''},
+        ),
+        'the frame of Skore\'s gradebook ($_gradebookFrame)',
+      );
+      if (frame.trim() == 'not good' && attempt < 2) continue;
+      return parseScale(frame);
+    }
+  }
+
+  /// The body of [response], the answer to the `GET` of [what]; another
+  /// status than `200` is a [SmartschoolSkoreError].
+  static String _pageBody(Response<String> response, String what) {
+    final status = response.statusCode;
+    if (status != 200) {
+      throw SmartschoolSkoreError(
+        'Skore answered $what with HTTP $status'
+        '${SkoreRpc.redirectNote(response)}.',
+      );
+    }
+    return response.data ?? '';
   }
 
   // ---------------------------------------------------------------------------
@@ -1047,7 +1123,8 @@ class SkoreGradebookService {
   ///   ([getSharedGradebooks], read again) no longer holds for the current
   ///   school year, or holds as shared to read only now (that error too);
   /// - an evaluation of another gradebook, or one Skore no longer lists in
-  ///   its period;
+  ///   its period, or one the library cannot read
+  ///   ([SkoreEvaluation.isReadable], #193);
   /// - an evaluation from the planner ([SkoreEvaluation.isPlannerEvaluation]:
   ///   Skore's web client leaves those to the planner), one that is not in
   ///   points ([SkoreEvaluationType.points]), or one without a highest
@@ -1238,12 +1315,16 @@ class SkoreGradebookService {
     }
     final confirmed = <int, SkoreGrade>{};
     final unconfirmed = <int, String>{};
+    final unreadable = after?.unreadableReason;
     for (final MapEntry(key: pupilId, value: value) in entries) {
-      final cell = after?.results.gradeOf(pupilId);
+      final cell = unreadable == null ? after?.results.gradeOf(pupilId) : null;
       final shows = readFailure != null
           ? 'reading the period again to check it failed ($readFailure)'
           : after == null
           ? 'reading the period again does not list the evaluation'
+          : unreadable != null
+          ? 'reading the period again, the library cannot read the '
+                'evaluation ($unreadable)'
           : cell == null
           ? 'reading the period again shows no cell for the pupil'
           : 'reading the period again shows '
@@ -1366,10 +1447,13 @@ class SkoreGradebookService {
   ///   school year (nor one shared with them to write, #191; one shared to
   ///   read only with a [SmartschoolSkoreGradebookReadOnlyError], before
   ///   anything is sent), a period that is closed or read-only, an
-  ///   evaluation of another gradebook, no longer listed, or from the
+  ///   evaluation of another gradebook, no longer listed, that the library
+  ///   cannot read ([SkoreEvaluation.isReadable], #193), or from the
   ///   planner, and one
   ///   that is published or scheduled, without [allowPublished] (any type
-  ///   of evaluation: feedback is not a grade);
+  ///   of evaluation: feedback is not a grade; for one on a scale, the
+  ///   feedback goes to the same REST API, as the web client's code sends
+  ///   it, which was not tried live);
   /// - a pupil without a cell in the evaluation's rows of the gradebook's
   ///   class;
   /// - the user's own feedback for the pupil that Skore does not let them
@@ -2075,6 +2159,7 @@ class SkoreGradebookService {
   ///   sent);
   /// - [_checkWritable] lets a write in its period;
   /// - Skore still lists it in that period ([getEvaluations]);
+  /// - the library could read it ([SkoreEvaluation.isReadable], #193);
   /// - it does not come from the planner (`isPlannerEval` 1: Skore's web
   ///   client leaves those to the planner);
   /// - it is not published or scheduled, unless [allowPublished]
@@ -2115,6 +2200,10 @@ class SkoreGradebookService {
       );
     }
     final where = 'evaluation ${current.id} ("${current.title}") in $inPeriod';
+    final unreadable = current.unreadableReason;
+    if (unreadable != null) {
+      _refuse(operation, 'the library cannot read $where: $unreadable');
+    }
     if (current.isPlannerEvaluation) {
       _refuse(
         operation,
@@ -3434,7 +3523,22 @@ class SkoreGradebookService {
   ///   without evaluations, Skore gives an empty `head` and the stream `1`
   ///   (seen live): no evaluations.
   ///
-  /// Anything not in this shape is refused with a [SmartschoolSkoreError].
+  /// An evaluation the library cannot read does not make the rest of the
+  /// period unreadable (#193): one of a type it does not know (an
+  /// `evaltype` other than `1`, points, and `2`, a scale), whose cells it
+  /// does not read, and one with a cell not in this shape (a pupil cell
+  /// without its `p`, a cell without the `raw` of its `div.gbc`, a pupil row
+  /// in another form) come back with [SkoreEvaluation.isReadable] `false`
+  /// and the reason ([SkoreEvaluation.unreadableReason]); their
+  /// [SkoreEvaluation.results] throw a
+  /// [SmartschoolSkoreEvaluationUnreadableError]. The cells of an evaluation
+  /// on a scale are read as those of one in points, as Skore's web client
+  /// reads them (not seen live).
+  ///
+  /// Anything else not in this shape is refused with a
+  /// [SmartschoolSkoreError]: the answer, an evaluation's entry in `head`
+  /// (its IDs, title, date, highest grade, type and publication), a cell
+  /// that is not an object.
   static List<SkoreEvaluation> parseEvaluations(
     dynamic result,
     SkoreGradebook gradebook,
@@ -3467,8 +3571,10 @@ class SkoreGradebookService {
       );
     }
 
-    // The gradebook's evaluations, in Skore's order, each once.
+    // The gradebook's evaluations, in Skore's order, each once, with their
+    // type.
     final entries = <int, Map<dynamic, dynamic>>{};
+    final types = <int, int>{};
     for (final entry in head) {
       if (entry is! Map) {
         throw SmartschoolSkoreError(
@@ -3491,23 +3597,51 @@ class SkoreGradebookService {
           'Skore answered $what with evaluation $id of period $period.',
         );
       }
-      entries.putIfAbsent(id, () => entry);
+      if (entries.containsKey(id)) continue;
+      entries[id] = entry;
+      types[id] = SkoreRpc.id(entry['evaltype'], 'the type of evaluation $id');
     }
-    final results = _results(stream, gradebook, entries.keys.toSet());
+    // The cells of the evaluations of a type the library knows; the others
+    // are not read.
+    final (:results, :unreadable) = _results(stream, gradebook, {
+      for (final MapEntry(key: id, value: type) in types.entries)
+        if (_typeOf(type) != SkoreEvaluationType.unknown) id,
+    });
     return [
       for (final MapEntry(key: id, value: entry) in entries.entries)
-        _evaluation(id, entry, gradebook, periodId, results[id]!, now),
+        _evaluation(
+          id,
+          entry,
+          gradebook,
+          periodId,
+          types[id]!,
+          results[id] ?? SkoreEvaluationResults(evaluationId: id),
+          now,
+          unreadableReason: _typeOf(types[id]!) == SkoreEvaluationType.unknown
+              ? 'its type, evaltype ${types[id]}, is not one the library '
+                    'reads (1, points, or 2, a scale)'
+              : unreadable[id],
+        ),
     ];
   }
+
+  /// The type of Skore's `evaltype` [typeCode].
+  static SkoreEvaluationType _typeOf(int typeCode) => switch (typeCode) {
+    1 => SkoreEvaluationType.points,
+    2 => SkoreEvaluationType.scale,
+    _ => SkoreEvaluationType.unknown,
+  };
 
   static SkoreEvaluation _evaluation(
     int id,
     Map<dynamic, dynamic> entry,
     SkoreGradebook gradebook,
     int periodId,
+    int typeCode,
     SkoreEvaluationResults results,
-    DateTime now,
-  ) {
+    DateTime now, {
+    String? unreadableReason,
+  }) {
     final title = entry['title'];
     if (title is! String) {
       throw SmartschoolSkoreError(
@@ -3523,10 +3657,6 @@ class SkoreGradebookService {
     }
     final shortName = (short as String?)?.trim() ?? '';
     final component = entry['component'];
-    final typeCode = SkoreRpc.id(
-      entry['evaltype'],
-      'the type of evaluation $id',
-    );
     return SkoreEvaluation(
       id: id,
       evaluationId: SkoreRpc.id(
@@ -3547,11 +3677,7 @@ class SkoreGradebookService {
               'the component of evaluation $id',
             ),
       componentName: component is String ? component.trim() : '',
-      type: switch (typeCode) {
-        1 => SkoreEvaluationType.points,
-        2 => SkoreEvaluationType.scale,
-        _ => SkoreEvaluationType.unknown,
-      },
+      type: _typeOf(typeCode),
       typeCode: typeCode,
       courseId: SkoreRpc.id(entry['courseID'], 'the course of evaluation $id'),
       courseName: '${entry['coursename'] ?? ''}'.trim(),
@@ -3562,6 +3688,7 @@ class SkoreGradebookService {
         now: now,
       ),
       results: results,
+      unreadableReason: unreadableReason,
     );
   }
 
@@ -3606,8 +3733,14 @@ class SkoreGradebookService {
 
   /// The grades of the evaluations [evaluationIds] of [gradebook] in
   /// [stream] (the `details.stream` of `getEvaluations`), by evaluation; see
-  /// [parseEvaluations].
-  static Map<int, SkoreEvaluationResults> _results(
+  /// [parseEvaluations]. An evaluation with a cell the library cannot read is
+  /// in `unreadable`, with the reason, instead (#193): its other cells are
+  /// not read.
+  static ({
+    Map<int, SkoreEvaluationResults> results,
+    Map<int, String> unreadable,
+  })
+  _results(
     List<dynamic> stream,
     SkoreGradebook gradebook,
     Set<int> evaluationIds,
@@ -3615,6 +3748,7 @@ class SkoreGradebookService {
     final grades = {for (final id in evaluationIds) id: <int, SkoreGrade>{}};
     final classAverages = <int, String?>{};
     final groupAverages = <int, String?>{};
+    final unreadable = <int, String>{};
     for (final cell in stream) {
       if (cell is! Map) {
         throw SmartschoolSkoreError(
@@ -3623,78 +3757,99 @@ class SkoreGradebookService {
         );
       }
       final evaluationId = SkoreRpc.tryId(cell['c']);
-      if (evaluationId == null || !evaluationIds.contains(evaluationId)) {
+      if (evaluationId == null ||
+          !evaluationIds.contains(evaluationId) ||
+          unreadable.containsKey(evaluationId)) {
         continue;
       }
       final key = '${cell['r'] ?? ''}';
       final parts = key.split('_');
+      final String? problem;
       switch (parts.first) {
         case 'pupil':
-          if (parts.length != 3) {
-            throw SmartschoolSkoreError(
-              'Skore gave gradebook ${gradebook.gradebookId} the grade row '
-              '"$key".',
-            );
+          final pupilId = parts.length == 3 ? SkoreRpc.tryId(parts[1]) : null;
+          final classId = parts.length == 3 ? SkoreRpc.tryId(parts[2]) : null;
+          if (pupilId == null || classId == null) {
+            problem = 'a pupil row "$key" not in the form pupil_<id>_<classId>';
+            break;
           }
-          final pupilId = SkoreRpc.id(parts[1], 'the pupil of row "$key"');
-          final classId = SkoreRpc.id(parts[2], 'the class of row "$key"');
           if (classId != gradebook.classId) continue;
           final p = cell['p'];
           if (p is! List || p.length < 4) {
-            throw SmartschoolSkoreError(
-              'Skore gave the cell of row "$key" in evaluation $evaluationId '
-              'the parameters ${SkoreRpc.jsonPreview(p)}.',
-            );
+            problem = 'the cell of row "$key" has no parameters (its p)';
+            break;
           }
           if (SkoreRpc.tryId(p[3]) != gradebook.gradebookId) continue;
           final cells = grades[evaluationId]!;
           if (cells.containsKey(pupilId)) continue;
-          final (raw, feedback) = _cell(cell['v'], key, evaluationId);
-          cells[pupilId] = SkoreGrade(
-            pupilId: pupilId,
-            classId: classId,
-            grade: raw,
-            hasFeedback: feedback,
-            categoryType: SkoreRpc.id(p[1], 'the category of row "$key"'),
-            cellEvaluationId: SkoreRpc.id(p[2], 'the evaluation of row "$key"'),
-          );
+          final categoryType = SkoreRpc.tryId(p[1]);
+          final cellEvaluationId = SkoreRpc.tryId(p[2]);
+          final value = _cell(cell['v']);
+          if (categoryType == null || cellEvaluationId == null) {
+            problem =
+                'the cell of row "$key" has no category or evaluation in its '
+                'parameters (its p)';
+          } else if (value == null) {
+            problem = _noValue(key);
+          } else {
+            problem = null;
+            cells[pupilId] = SkoreGrade(
+              pupilId: pupilId,
+              classId: classId,
+              grade: value.raw,
+              hasFeedback: value.hasFeedback,
+              categoryType: categoryType,
+              cellEvaluationId: cellEvaluationId,
+            );
+          }
         case 'clavg' when parts.length == 2:
           if (SkoreRpc.tryId(parts[1]) != gradebook.classId) continue;
           if (classAverages.containsKey(evaluationId)) continue;
-          classAverages[evaluationId] = _cell(cell['v'], key, evaluationId).$1;
+          final value = _cell(cell['v']);
+          problem = value == null ? _noValue(key) : null;
+          classAverages[evaluationId] = value?.raw;
         case 'gravg' when parts.length == 2:
           if (SkoreRpc.tryId(parts[1]) != gradebook.groupId) continue;
           if (groupAverages.containsKey(evaluationId)) continue;
-          groupAverages[evaluationId] = _cell(cell['v'], key, evaluationId).$1;
+          final value = _cell(cell['v']);
+          problem = value == null ? _noValue(key) : null;
+          groupAverages[evaluationId] = value?.raw;
+        default:
+          problem = null;
       }
+      if (problem != null) unreadable[evaluationId] = problem;
     }
-    return {
-      for (final id in evaluationIds)
-        id: SkoreEvaluationResults(
-          evaluationId: id,
-          grades: [...grades[id]!.values],
-          classAverage: classAverages[id],
-          groupAverage: groupAverages[id],
-        ),
-    };
+    return (
+      results: {
+        for (final id in evaluationIds)
+          if (!unreadable.containsKey(id))
+            id: SkoreEvaluationResults(
+              evaluationId: id,
+              grades: [...grades[id]!.values],
+              classAverage: classAverages[id],
+              groupAverage: groupAverages[id],
+            ),
+      },
+      unreadable: unreadable,
+    );
   }
 
-  /// The value of a grade cell [html] of row [key] (the `raw` of its
-  /// `div.gbc`, `null` for `""`) and whether it is marked with feedback.
-  static (String?, bool) _cell(Object? html, String key, int evaluationId) {
-    final fragment = html is String ? html_parser.parseFragment(html) : null;
-    final raw = fragment?.querySelector('div.gbc')?.attributes['raw'];
-    if (fragment == null || raw == null) {
-      throw SmartschoolSkoreError(
-        'Skore gave the cell of row "$key" in evaluation $evaluationId no '
-        'value (a div.gbc with its raw): '
-        '${html is String ? SkoreRpc.preview(html) : SkoreRpc.jsonPreview(html)}',
-      );
-    }
+  /// Why a cell of row [key] cannot be read: it has no value.
+  static String _noValue(String key) =>
+      'the cell of row "$key" has no value (a div.gbc with its raw)';
+
+  /// The value of a grade cell [html] (the `raw` of its `div.gbc`, `null`
+  /// for `""`) and whether it is marked with feedback; `null` for a cell
+  /// without a `div.gbc` with its `raw`.
+  static ({String? raw, bool hasFeedback})? _cell(Object? html) {
+    if (html is! String) return null;
+    final fragment = html_parser.parseFragment(html);
+    final raw = fragment.querySelector('div.gbc')?.attributes['raw'];
+    if (raw == null) return null;
     final value = raw.trim();
     return (
-      value.isEmpty ? null : value,
-      fragment.querySelector('span.gbc_message') != null,
+      raw: value.isEmpty ? null : value,
+      hasFeedback: fragment.querySelector('span.gbc_message') != null,
     );
   }
 
@@ -3780,6 +3935,152 @@ class SkoreGradebookService {
             '${SkoreRpc.jsonPreview(entry)} instead of [id, name].',
           ),
     ];
+  }
+
+  static final _startUpSecret = RegExp(r'"startUpSecret"\s*:\s*"([^"\\]+)"');
+  static final _fcm = RegExp(r'"fcm"\s*:\s*"?(\d+)"?');
+
+  /// Reads what the page of Skore's gradebook ([html], `/SkoreGradebook`)
+  /// hands its frame (#193): the start-up secret and `fcm`, from its
+  /// `"startUpSecret":"<secret>","fcm":1` (seen live). Exposed for testing.
+  ///
+  /// A page without them is refused with a [SmartschoolSkoreError], which
+  /// quotes nothing of the page.
+  static ({String secret, String fcm}) parseStartUp(String html) {
+    final secret = _startUpSecret.firstMatch(html)?.group(1);
+    final fcm = _fcm.firstMatch(html)?.group(1);
+    if (secret == null || fcm == null) {
+      throw SmartschoolSkoreError(
+        'The page of Skore\'s gradebook ($_gradebookPage) holds no '
+        '${secret == null ? 'start-up secret (startUpSecret)' : 'fcm'} for '
+        'its frame, so the scale cannot be read.',
+      );
+    }
+    return (secret: secret, fcm: fcm);
+  }
+
+  static final _defaultScale = RegExp(r'\bdefaultScale\s*:\s*');
+
+  /// Parses the scale in the frame of Skore's gradebook ([html],
+  /// `/modules/Skore/gradebook.php`) (#193): the `defaultScale` of its
+  /// `djConfig`, a JSON object with its `id` (a UUID), `name` and `levels`,
+  /// seen live; a level is `{"id": 901, "description": "Zwak", "range":
+  /// {"lowerThreshold": 0, "value": 0}, "graphic": null, "abbreviation":
+  /// "Z", "color": "red"}` (in that shape). A level's `graphic` is an object
+  /// in the web client's code (`type`, `value`, `url`, `color`), and `null`
+  /// or `""` for none. Exposed for testing.
+  ///
+  /// Skore answers the frame `not good` when the start-up secret is not one
+  /// of the session. That, a frame without the scale, and a scale not in
+  /// this shape are refused with a [SmartschoolSkoreError], which names the
+  /// field and quotes nothing of the frame.
+  static SkoreScale parseScale(String html) {
+    const what = 'the scale of Skore\'s gradebook (its defaultScale)';
+    if (html.trim() == 'not good') {
+      throw SmartschoolSkoreError(
+        'Skore answered the frame of its gradebook ($_gradebookFrame) with '
+        '"not good": it did not take the start-up secret of its page, so '
+        '$what cannot be read.',
+      );
+    }
+    final match = _defaultScale.firstMatch(html);
+    final json = match == null ? null : _jsonObjectAt(html, match.end);
+    Object? scale;
+    if (json != null) {
+      try {
+        scale = jsonDecode(json);
+      } on FormatException {
+        scale = null;
+      }
+    }
+    if (scale is! Map) {
+      throw SmartschoolSkoreError(
+        'The frame of Skore\'s gradebook ($_gradebookFrame) holds no '
+        '${match == null ? '' : 'readable '}defaultScale, so $what cannot be '
+        'read.',
+      );
+    }
+    final id = scale['id'];
+    final name = scale['name'];
+    final levels = scale['levels'];
+    if (id is! String || name is! String || levels is! List) {
+      throw SmartschoolSkoreError(
+        'Skore gave $what without its '
+        '${id is! String
+            ? 'id'
+            : name is! String
+            ? 'name'
+            : 'levels'}.',
+      );
+    }
+    return SkoreScale(
+      id: id.trim(),
+      name: name.trim(),
+      levels: [for (final level in levels) _scaleLevel(level, what)],
+    );
+  }
+
+  static SkoreScaleLevel _scaleLevel(Object? level, String what) {
+    Never refuse(String field) => throw SmartschoolSkoreError(
+      'Skore gave a level of $what without its $field.',
+    );
+    num? number(Object? value) => switch (value) {
+      num() => value,
+      String() => num.tryParse(value.trim()),
+      _ => null,
+    };
+    if (level is! Map) refuse('object');
+    final id = SkoreRpc.tryId(level['id']);
+    final description = level['description'];
+    final abbreviation = level['abbreviation'];
+    final color = level['color'];
+    final range = level['range'];
+    final graphic = level['graphic'];
+    if (id == null) refuse('id');
+    if (description is! String) refuse('description');
+    if (abbreviation is! String) refuse('abbreviation');
+    if (color != null && color is! String) refuse('color');
+    if (range is! Map) refuse('range');
+    final lowerThreshold = number(range['lowerThreshold']);
+    final value = number(range['value']);
+    if (lowerThreshold == null) refuse('range.lowerThreshold');
+    if (value == null) refuse('range.value');
+    if (graphic != null && graphic != '' && graphic is! Map) refuse('graphic');
+    return SkoreScaleLevel(
+      id: id,
+      description: description.trim(),
+      abbreviation: abbreviation.trim(),
+      color: (color as String?)?.trim() ?? '',
+      lowerThreshold: lowerThreshold,
+      value: value,
+      graphic: graphic is Map ? Map<String, dynamic>.from(graphic) : null,
+    );
+  }
+
+  /// The JSON object that starts at [start] of [text] (at its `{`), up to
+  /// its closing `}`, or `null` when there is none: braces in strings do not
+  /// count.
+  static String? _jsonObjectAt(String text, int start) {
+    if (start >= text.length || text[start] != '{') return null;
+    var depth = 0;
+    var inString = false;
+    for (var i = start; i < text.length; i++) {
+      final char = text[i];
+      if (inString) {
+        if (char == r'\') {
+          i++;
+        } else if (char == '"') {
+          inString = false;
+        }
+      } else if (char == '"') {
+        inString = true;
+      } else if (char == '{') {
+        depth++;
+      } else if (char == '}' && --depth == 0) {
+        return text.substring(start, i + 1);
+      }
+    }
+    return null;
   }
 
   static final _wallClock = RegExp(

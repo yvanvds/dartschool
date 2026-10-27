@@ -1095,6 +1095,21 @@ void main() {
         ),
       );
       expect(server.rest, isEmpty);
+
+      // #193: one of a type the library does not know, which it cannot read.
+      server = _Skore(evaluations: [_Evaluation(_toets, evaltype: 3)]);
+      (gradebooks, evaluation) = await ready(server);
+      expect(evaluation.isReadable, isFalse);
+      await expectLater(
+        gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
+        throwsA(
+          _refused(
+            'the library cannot read evaluation $_toets ("Toets 1") in period '
+            'DW1 (1704) of gradebook 32508: its type, evaltype 3',
+          ),
+        ),
+      );
+      expect(server.rest, isEmpty);
     });
 
     test('a closed period, or one Skore shows read-only', () async {

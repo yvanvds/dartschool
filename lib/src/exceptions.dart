@@ -1552,6 +1552,39 @@ class SmartschoolSkoreChangeRefusedError extends SmartschoolSkoreError {
   const SmartschoolSkoreChangeRefusedError(super.message);
 }
 
+/// Thrown when the grades of an evaluation that `SkoreGradebookService`
+/// could not read are asked for (`SkoreEvaluation.results`, and so
+/// `SkoreGradebookService.getResults`) (#193): an evaluation of a type the
+/// library does not know (Skore's `evaltype`, in [typeCode]), or one whose
+/// cells are in a shape it does not recognise.
+///
+/// `getEvaluations` reads the rest of the period: such an evaluation comes
+/// back with `SkoreEvaluation.isReadable` `false` and its
+/// `unreadableReason`, so that it is never read as one without grades. An
+/// app can tell the user "this evaluation cannot be read yet" ([reason]),
+/// apart from an answer the service cannot use at all.
+///
+/// A [SmartschoolSkoreError], so `catch` clauses for that type keep catching
+/// it. Its message names the evaluation, its period and gradebook by their
+/// IDs, its title and the reason, and quotes nothing of Skore's answer.
+class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
+  /// The evaluation (`SkoreEvaluation.id`, Skore's `refID`).
+  final int evaluationId;
+
+  /// Skore's `evaltype` of the evaluation (`1` points, `2` a scale).
+  final int typeCode;
+
+  /// Why the library could not read it (`SkoreEvaluation.unreadableReason`).
+  final String reason;
+
+  const SmartschoolSkoreEvaluationUnreadableError(
+    super.message, {
+    required this.evaluationId,
+    required this.typeCode,
+    required this.reason,
+  });
+}
+
 /// Thrown by `SkoreService.replaceTeacher` when the current teacher of the
 /// assignment works with "Mijn lesgroepen" (their own groups of pupils) for
 /// the course (#71). Nothing was saved.

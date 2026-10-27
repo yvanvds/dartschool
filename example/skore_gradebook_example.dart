@@ -181,6 +181,12 @@ Future<void> main(List<String> args) async {
         '${publication.state.name}'
         '${publication.at == null ? '' : ' ${publication.at!.toLocal()}'}',
       );
+      // An evaluation the library cannot read (of a type it does not know,
+      // #193) has no grades to show: its `results` would throw.
+      if (!evaluation.isReadable) {
+        print('    cannot be read: ${evaluation.unreadableReason}');
+        continue;
+      }
       for (final grade in evaluation.results.grades) {
         print(
           '    ${(names[grade.pupilId] ?? '${grade.pupilId}').padRight(28)} '

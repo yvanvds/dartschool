@@ -5,7 +5,8 @@
 /// gradebook, and the evaluations of a period with their publication, grades
 /// and feedback, and the components a new evaluation can count for; and the
 /// report periods of a gradebook, with each pupil's results so far and the
-/// course comment that goes on the report (#195).
+/// course comment that goes on the report (#195); and the scale of the
+/// evaluations on a scale (#193).
 ///
 /// This is the teacher's side of Skore, which any teacher reaches with their
 /// own login. The admin side (report models, assignments, sharing) is
@@ -17,6 +18,8 @@
 /// model and course IDs are Skore's. A teacher ID and a pupil ID are
 /// Smartschool user IDs (the middle part of `4069_146_0`).
 library;
+
+import '../exceptions.dart' show SmartschoolSkoreEvaluationUnreadableError;
 
 /// A school year of Skore (a "werkjaar"), as Skore's gradebook lists them:
 /// `["24", "2026-2027"]`.
@@ -442,10 +445,16 @@ enum SkoreEvaluationType {
   /// [SkoreEvaluation.max].
   points,
 
-  /// Grades on a scale (`evaltype` 2, "Waarderingen"). Not seen live.
+  /// Grades on a scale (`evaltype` 2, "Waarderingen"), read as Skore's web
+  /// client reads them (#193): a grade is still a value out of
+  /// [SkoreEvaluation.max], and its level is the one of the school's scale
+  /// that [SkoreScale.levelOf] finds for it. Not seen live: none of the
+  /// developer's gradebooks, own or shared, of 2023-2024 to 2026-2027 had
+  /// one (2026-10-27).
   scale,
 
-  /// Another `evaltype` (kept in [SkoreEvaluation.typeCode]).
+  /// Another `evaltype` (kept in [SkoreEvaluation.typeCode]). Its cells are
+  /// not read: such an evaluation is not [SkoreEvaluation.isReadable].
   unknown,
 }
 
@@ -582,9 +591,19 @@ class SkoreEvaluation {
   /// Whether, and from when, the pupils see it.
   final SkorePublication publication;
 
-  /// The grades of the gradebook's pupils, as Skore gave them with the
-  /// evaluation.
-  final SkoreEvaluationResults results;
+  final SkoreEvaluationResults _results;
+
+  /// Why the library could not read the grades of the evaluation, or `null`
+  /// when it could ([isReadable]) (#193): its type is not one it knows
+  /// ([SkoreEvaluationType.unknown], with its [typeCode]), or a cell of it
+  /// is in a shape it does not recognise (such as a cell without its `raw`).
+  /// Names the cell by its row (`pupil_<id>_<classId>`), and quotes nothing
+  /// of Skore's answer.
+  ///
+  /// `SkoreGradebookService.getEvaluations` reads the rest of the period
+  /// then: the other evaluations, with their grades and feedback markers,
+  /// and this one's title, date, type and publication.
+  final String? unreadableReason;
 
   const SkoreEvaluation({
     required this.id,
@@ -604,15 +623,39 @@ class SkoreEvaluation {
     required this.courseName,
     required this.isPlannerEvaluation,
     required this.publication,
-    required this.results,
-  });
+    required SkoreEvaluationResults results,
+    this.unreadableReason,
+  }) : _results = results;
+
+  /// Whether the library could read the grades of the evaluation
+  /// ([unreadableReason] is `null`), so that [results] gives them.
+  bool get isReadable => unreadableReason == null;
+
+  /// The grades of the gradebook's pupils, as Skore gave them with the
+  /// evaluation.
+  ///
+  /// For an evaluation the library could not read (not [isReadable]), it
+  /// throws a [SmartschoolSkoreEvaluationUnreadableError] that names the
+  /// evaluation and [unreadableReason], rather than give no grades: check
+  /// [isReadable] first.
+  SkoreEvaluationResults get results {
+    final reason = unreadableReason;
+    if (reason == null) return _results;
+    throw SmartschoolSkoreEvaluationUnreadableError(
+      'Evaluation $id ("$title") of period $periodId of gradebook '
+      '$gradebookId (evaltype $typeCode) cannot be read: $reason.',
+      evaluationId: id,
+      typeCode: typeCode,
+      reason: reason,
+    );
+  }
 
   @override
   String toString() =>
       'SkoreEvaluation(id: $id, column: $column, date: '
       '${date.toIso8601String().substring(0, 10)}, max: $max, component: '
       '$componentName, type: ${type.name}, publication: $publication, '
-      'grades: ${results.grades.length})';
+      '${isReadable ? 'grades: ${_results.grades.length}' : 'unreadable'})';
 }
 
 /// A component an evaluation in a period can count for, as the "new
@@ -685,6 +728,11 @@ class SkoreGrade {
   /// The grade as Skore stores it (the cell's `raw`: `"79"`, `"16.7"`, with
   /// a decimal point, unlike the text Skore shows), or `null` for no grade.
   /// A string: Skore can hold other values than numbers.
+  ///
+  /// For an evaluation on a scale ([SkoreEvaluationType.scale]), also a
+  /// value out of [SkoreEvaluation.max], as Skore's web client reads it
+  /// (#193; not seen live): [SkoreScale.levelOf] gives its level, with the
+  /// label Skore shows for it.
   final String? grade;
 
   /// Whether the pupil has feedback on the evaluation (the cell's marker,
@@ -719,6 +767,128 @@ class SkoreGrade {
   String toString() =>
       'SkoreGrade(pupilId: $pupilId, grade: $grade, hasFeedback: '
       '$hasFeedback)';
+}
+
+/// The scale of the evaluations on a scale ("Waarderingen",
+/// [SkoreEvaluationType.scale]) of Skore's gradebook: its levels, from low
+/// to high (`SkoreGradebookService.getScale`, #193).
+///
+/// Skore's web client has one, the school's (its `defaultScale`), for every
+/// evaluation on a scale of every gradebook: it finds the level of a grade
+/// in it ([levelOf]) and offers its levels in the feedback panel. Seen live
+/// (2026-10-27): a scale of two levels, each with a description, an
+/// abbreviation, a colour, a lower threshold and a value, without a
+/// graphic. Whether a school can have more than one scale was not found
+/// out.
+class SkoreScale {
+  /// The scale's ID (a UUID).
+  final String id;
+
+  /// The scale's name, as the school named it.
+  final String name;
+
+  /// Its levels, in Skore's order: from the lowest threshold to the highest
+  /// in what was seen live.
+  final List<SkoreScaleLevel> levels;
+
+  const SkoreScale({
+    required this.id,
+    required this.name,
+    this.levels = const [],
+  });
+
+  /// The level of [grade], a grade of [evaluation], an evaluation on a scale
+  /// ([SkoreEvaluationType.scale]), as Skore's web client finds it: its
+  /// [SkoreGrade.grade] as a percentage of [SkoreEvaluation.max] (the
+  /// highest grade cut to a whole number, the percentage rounded to one
+  /// decimal), and the level for that percentage ([levelForPercentage]).
+  ///
+  /// `null` when the pupil has no grade, a grade that is not a number, or
+  /// when the evaluation has no highest grade of 1 or more, or when no level
+  /// covers the percentage. An [ArgumentError] for an evaluation that is
+  /// not on a scale.
+  ///
+  /// From the code of Skore's web client: no evaluation on a scale was seen
+  /// live, so how Skore stores a level in a cell was not seen either.
+  SkoreScaleLevel? levelOf(SkoreEvaluation evaluation, SkoreGrade grade) {
+    if (evaluation.type != SkoreEvaluationType.scale) {
+      throw ArgumentError.value(
+        evaluation.id,
+        'evaluation',
+        'not an evaluation on a scale (evaltype ${evaluation.typeCode})',
+      );
+    }
+    final value = grade.value;
+    final max = evaluation.max?.truncate();
+    if (value == null || max == null || max <= 0) return null;
+    // The web client's Math.round(grade / max * 100 * 10) / 10.
+    final percentage = (value / max * 100 * 10 + 0.5).floor() / 10;
+    return levelForPercentage(percentage);
+  }
+
+  /// The level for [percentage] (`0` to `100`), as Skore's web client finds
+  /// it: the percentage cut to a whole number, and of the levels whose
+  /// [SkoreScaleLevel.lowerThreshold] is at most that, the last in
+  /// [levels]. `null` for a percentage that, cut, is below `0` or above
+  /// `100`, or one no level covers.
+  SkoreScaleLevel? levelForPercentage(num percentage) {
+    if (!percentage.isFinite) return null;
+    final whole = percentage.truncate();
+    if (whole < 0 || whole > 100) return null;
+    return levels.where((l) => l.lowerThreshold <= whole).lastOrNull;
+  }
+
+  @override
+  String toString() => 'SkoreScale(id: $id, levels: ${levels.length})';
+}
+
+/// A level of a [SkoreScale]: what a grade on a scale means, with the label
+/// Skore shows for it (#193). Skore's `{"id": 901, "description": "Goed",
+/// "range": {"lowerThreshold": 50, "value": 100}, "graphic": null,
+/// "abbreviation": "G", "color": "green"}` (in the shape seen live).
+class SkoreScaleLevel {
+  /// The level's ID (e.g. `901`).
+  final int id;
+
+  /// Its description, the label (e.g. `"Goed"`).
+  final String description;
+
+  /// Its abbreviation, the short label Skore shows in a cell without a
+  /// graphic (e.g. `"G"`).
+  final String abbreviation;
+
+  /// Its colour, by Skore's name (e.g. `"green"`), or `""` when it has none.
+  final String color;
+
+  /// The lowest percentage of the highest grade that has this level
+  /// (Skore's `range.lowerThreshold`, e.g. `50`).
+  final num lowerThreshold;
+
+  /// Skore's `range.value` of the level (e.g. `100`; `0` for the lowest
+  /// level seen live): presumably the percentage a grade of this level is
+  /// stored as, which was not seen live.
+  final num value;
+
+  /// Skore's `graphic` of the level, an icon or an image the web client
+  /// shows instead of the abbreviation, as Skore gives it (in the web
+  /// client's code: `type` `"icon"` or `"image"`, `value`, `url`, `color`),
+  /// or `null` for none (as seen live).
+  final Map<String, dynamic>? graphic;
+
+  const SkoreScaleLevel({
+    required this.id,
+    required this.description,
+    required this.abbreviation,
+    this.color = '',
+    required this.lowerThreshold,
+    required this.value,
+    this.graphic,
+  });
+
+  @override
+  String toString() =>
+      'SkoreScaleLevel(id: $id, abbreviation: $abbreviation, '
+      'lowerThreshold: $lowerThreshold)';
 }
 
 /// A feedback text of a teacher for a pupil on an evaluation, as the

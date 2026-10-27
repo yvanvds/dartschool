@@ -21,6 +21,7 @@ import 'package:flutter_smartschool/src/models/skore_gradebook_models.dart'
         SkoreEvaluation,
         SkoreEvaluationResults,
         SkoreEvaluationType,
+        SkoreFeedback,
         SkoreGrade,
         SkorePublication,
         SkorePublicationState;
@@ -694,6 +695,130 @@ void main() {
       expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
       expect(error.evaluation, same(evaluation));
       expect(error.toString(), 'SmartschoolSkoreEvaluationPublicError: public');
+    });
+
+    test('SmartschoolSkoreEvaluationPublishedError is a refused change, and '
+        'so a SmartschoolSkoreError: nothing was saved (#157)', () {
+      final evaluation = SkoreEvaluation(
+        id: 500003,
+        evaluationId: 500003,
+        gradebookId: 32508,
+        periodId: 1704,
+        column: 'A',
+        title: 'Toets 1',
+        shortName: null,
+        date: DateTime(2026, 10, 8),
+        max: 20,
+        componentId: 2,
+        componentName: 'DW',
+        type: SkoreEvaluationType.points,
+        typeCode: 1,
+        courseId: 2264,
+        courseName: 'Informaticawetenschappen (2 uur)',
+        isPlannerEvaluation: false,
+        publication: SkorePublication(
+          state: SkorePublicationState.scheduled,
+          at: DateTime.utc(2026, 10, 9, 6),
+          rawPublic: '1',
+          rawPublicDateTime: '2026-10-09T08:00:00',
+        ),
+        results: const SkoreEvaluationResults(evaluationId: 500003),
+      );
+      final error = SmartschoolSkoreEvaluationPublishedError(
+        'published',
+        evaluation: evaluation,
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreAccessDeniedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreGradebookReadOnlyError>()));
+      expect(error.evaluation, same(evaluation));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreEvaluationPublishedError: published',
+      );
+    });
+
+    test('SmartschoolSkoreFeedbackAmbiguousError is a refused change, and so '
+        "a SmartschoolSkoreError, with the user's own feedback: nothing was "
+        'saved (#158)', () {
+      const first = SkoreFeedback(
+        id: '00000000-0000-4000-8000-000000000001',
+        text: 'Eerste opmerking.',
+        pupilId: 1201,
+        teacherId: 1005,
+        canEdit: true,
+      );
+      const second = SkoreFeedback(
+        id: '00000000-0000-4000-8000-000000000003',
+        text: 'Tweede opmerking.',
+        pupilId: 1201,
+        teacherId: 1005,
+      );
+      const error = SmartschoolSkoreFeedbackAmbiguousError(
+        'ambiguous',
+        feedbacks: [first, second],
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreFeedbackNotEditableError>()));
+      expect(error, isNot(isA<SmartschoolSkoreEvaluationPublishedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.feedbacks, hasLength(2));
+      expect(error.feedbacks.first, same(first));
+      expect(error.feedbacks.last, same(second));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreFeedbackAmbiguousError: ambiguous',
+      );
+    });
+
+    test('SmartschoolSkoreFeedbackNotEditableError is a refused change, and '
+        "so a SmartschoolSkoreError, with the user's feedback: nothing was "
+        'saved (#158)', () {
+      const feedback = SkoreFeedback(
+        id: '00000000-0000-4000-8000-000000000001',
+        text: 'Eerste opmerking.',
+        pupilId: 1201,
+        teacherId: 1005,
+      );
+      const error = SmartschoolSkoreFeedbackNotEditableError(
+        'not editable',
+        feedback: feedback,
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreFeedbackAmbiguousError>()));
+      expect(error, isNot(isA<SmartschoolSkoreEvaluationPublishedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.feedback, same(feedback));
+      expect(error.feedback.canEdit, isFalse);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreFeedbackNotEditableError: not editable',
+      );
+    });
+
+    test('SmartschoolSkoreCourseNotOnReportError is a SmartschoolSkoreError, '
+        'not a refused change, with the IDs of the report read (#204)', () {
+      const error = SmartschoolSkoreCourseNotOnReportError(
+        'not on the report',
+        gradebookId: 34826,
+        reportId: 2762,
+        courseId: 1588,
+      );
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreChangeRefusedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreAccessDeniedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreEvaluationUnreadableError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.gradebookId, 34826);
+      expect(error.reportId, 2762);
+      expect(error.courseId, 1588);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreCourseNotOnReportError: not on the report',
+      );
     });
 
     test('SmartschoolSkoreGradeSaveUnconfirmedError is a '

@@ -1,6 +1,7 @@
 // Tests for issue #150: creating an evaluation in a period of the teacher's
 // own gradebook (`SkoreGradebookService.createEvaluation`), always
-// unpublished, and the components it can count for (`getComponents`).
+// unpublished, and the components it can count for (`getComponents`), with
+// the one it takes without a component (`defaultComponent`, #156).
 //
 // What the web client's "new evaluation" dialog sends, on Skore's gradebook
 // RPC service (/modules/Skore/backend/gradebook/rpc.php):
@@ -767,6 +768,73 @@ void main() {
       }
     });
 
+    test(
+      'without a component, the one defaultComponent picks of the '
+      'components Skore offers, or a refusal when it picks none (#156)',
+      () async {
+        // Lists of every shape the rule tells apart, also ones Skore was not
+        // seen to offer: what createEvaluation saves is defaultComponent's
+        // pick, so an app that shows it shows what is saved.
+        final offered = <List<List<Object>>>[
+          [
+            [0, 'geen'],
+            ['2', 'DW'],
+          ],
+          [
+            [0, 'geen'],
+          ],
+          [
+            [0, 'geen'],
+            ['2', 'DW'],
+            ['4', 'PW'],
+          ],
+          [
+            ['2', 'DW'],
+            [0, 'geen'],
+            ['4', 'PW'],
+          ],
+          [
+            ['2', 'DW'],
+            ['4', 'PW'],
+          ],
+          [
+            ['2', 'DW'],
+          ],
+          [],
+        ];
+        var refused = 0;
+        for (final components in offered) {
+          final picked = SkoreGradebookService.defaultComponent(
+            SkoreGradebookService.parseComponents(components),
+          );
+          final server = _Skore(
+            answers: {
+              'getPosComponents': _ok(_answer('getPosComponents', components)),
+            },
+          );
+          if (picked == null) {
+            refused++;
+            await expectLater(
+              create(await serve(server)),
+              throwsA(_refused('Skore offers no "geen" component')),
+              reason: '$components',
+            );
+            expect(server.methods.last, 'getPosComponents');
+            continue;
+          }
+          final created = await create(await serve(server));
+          expect(server.saved[10], picked.name, reason: '$components');
+          expect(
+            server.saved[11],
+            picked.isNone ? 0 : '${picked.id}',
+            reason: '$components',
+          );
+          expect(created.componentId, picked.id, reason: '$components');
+        }
+        expect(refused, 2, reason: 'one DW alone, and none');
+      },
+    );
+
     test('an explicit component of the period', () async {
       final server = _Skore(
         answers: {
@@ -1306,6 +1374,32 @@ void main() {
         expect(server.requests, isEmpty);
       },
     );
+
+    test('defaultComponent picks as Skore\'s dialog: the second of exactly '
+        'two, else "geen", else none (#156)', () {
+      const geen = SkoreEvaluationComponent(id: 0, name: 'geen');
+      const dw = SkoreEvaluationComponent(id: 2, name: 'DW');
+      const pw = SkoreEvaluationComponent(id: 4, name: 'PW');
+      const ex = SkoreEvaluationComponent(id: 5, name: 'EX');
+      final cases = <List<SkoreEvaluationComponent>, SkoreEvaluationComponent?>{
+        [geen, dw]: dw, // as seen live for 6EWI's DW1
+        [geen]: geen,
+        [geen, dw, pw]: geen,
+        [dw, geen, pw]: geen,
+        [dw, pw]: pw, // the second of two, "geen" or not
+        [dw, geen]: geen,
+        [dw]: null,
+        [dw, pw, ex]: null,
+        []: null,
+      };
+      for (final MapEntry(key: components, value: expected) in cases.entries) {
+        expect(
+          SkoreGradebookService.defaultComponent(components),
+          same(expected),
+          reason: '$components',
+        );
+      }
+    });
 
     test('parseComponents refuses another shape', () {
       expect(

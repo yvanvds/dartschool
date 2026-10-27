@@ -28,7 +28,7 @@ import 'models/presence_models.dart'
         PresenceSaveError,
         PresenceUnreadableAnswerKind;
 import 'models/skore_gradebook_models.dart'
-    show SkoreEvaluation, SkoreGrade, SkoreGradebook;
+    show SkoreEvaluation, SkoreFeedback, SkoreGrade, SkoreGradebook;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1440,12 +1440,20 @@ class SmartschoolPresenceUnreadableAnswerError
 /// than `200`, an HTML page, invalid JSON, a missing RPC `result`, data in
 /// a shape it does not recognise, or an answer about another gradebook).
 ///
-/// Three cases, which a caller handles differently, have a type each (#83):
+/// These cases, which a caller handles differently, have a type each (#83):
 /// - [SmartschoolSkoreAccessDeniedError]: Skore refused the request to the
 ///   account, which lacks the rights for that part of Skore (its `area`).
 /// - [SmartschoolSkoreChangeRefusedError]: a check before a save refused the
-///   change (its subtype [SmartschoolSkoreMyGroupsError] too). Its message
-///   says why, so the call can be corrected.
+///   change (its subtypes [SmartschoolSkoreMyGroupsError],
+///   [SmartschoolSkoreGradebookReadOnlyError],
+///   [SmartschoolSkoreEvaluationPublishedError],
+///   [SmartschoolSkoreFeedbackAmbiguousError] and
+///   [SmartschoolSkoreFeedbackNotEditableError] too). Its message says why,
+///   so the call can be corrected.
+/// - [SmartschoolSkoreCourseNotOnReportError]: the gradebook's course is not
+///   on the report `SkoreGradebookService.getReport` was asked for (Skore's
+///   HTTP 404 "Course not found in source!", #204). Reading it again does
+///   not help.
 /// - This type itself (none of its subtypes): Skore answered with something
 ///   the service cannot use: another HTTP status than `200`, an HTML page
 ///   instead of data, an answer that is not valid JSON, an RPC answer without
@@ -1530,14 +1538,17 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// more (before anything is sent); the gradebook and period checks of
 /// `createEvaluation`; an evaluation of another gradebook, no longer listed,
 /// from the planner, not in points, or without a highest grade; an
-/// evaluation that is published or scheduled, unless `allowPublished`; a
+/// evaluation that is published or scheduled, unless `allowPublished`
+/// ([SmartschoolSkoreEvaluationPublishedError], a subtype, #157); a
 /// pupil without a cell in the gradebook's class; a grade above the highest
 /// grade. The checks of `SkoreGradebookService.saveFeedback` (#152): a pupil
 /// ID that is not positive or a blank text (before anything is sent); the
 /// gradebook, period, evaluation and pupil checks of `saveGrade` (not the
 /// points); the user's own feedback for the pupil that Skore does not let
-/// them change (`can_edit`), or more than one of it. For a gradebook a
-/// colleague shared with the user (#191): one shared to read only
+/// them change (`can_edit`; [SmartschoolSkoreFeedbackNotEditableError], a
+/// subtype, #158), or more than one of it
+/// ([SmartschoolSkoreFeedbackAmbiguousError], a subtype, #158). For a
+/// gradebook a colleague shared with the user (#191): one shared to read only
 /// ([SmartschoolSkoreGradebookReadOnlyError], a subtype), one no longer
 /// shared with them, and, for `createEvaluation`, any shared gradebook.
 ///
@@ -1582,6 +1593,50 @@ class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
     required this.evaluationId,
     required this.typeCode,
     required this.reason,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.getReport` when the gradebook's course
+/// is not on the report (#204): Skore answers its `getReportsResults` with
+/// HTTP 404 and `{"message": "Course not found in source!"}`. Seen live
+/// (2026-10-27, #195, #204) for gradebooks whose report Skore lists
+/// (`SkoreGradebookSheet.reports`), open: one of them a course that is on
+/// the report through a project ("Projecten"), not through evaluation
+/// results, which the library does not read. Skore's web client shows the
+/// answer as an error too.
+///
+/// It is not an answer the library cannot use, and not an empty report
+/// either (which would read as a report without pupils or comments): an app
+/// that walks the reports of its gradebooks can tell this one apart and go
+/// on with the next. Reading it again does not help. Only that answer is
+/// this error: a `404` whose `message` holds "Course not found" (in any
+/// case); any other status, or a `404` with another message or none, stays
+/// a plain [SmartschoolSkoreError].
+///
+/// `saveReportComment` and `clearReportComment` refuse such a report before
+/// anything is sent, with a [SmartschoolSkoreChangeRefusedError] that says
+/// the course is not on the report, not with this error.
+///
+/// A [SmartschoolSkoreError], so `catch` clauses for that type keep catching
+/// it. Its message names the course, the gradebook and the report by their
+/// IDs, and Skore's status and `message`, as the plain error did, and
+/// nothing else of the answer.
+class SmartschoolSkoreCourseNotOnReportError extends SmartschoolSkoreError {
+  /// The gradebook (`SkoreGradebook.gradebookId`).
+  final int gradebookId;
+
+  /// The report that was asked for (`SkoreReportPeriod.id`).
+  final int reportId;
+
+  /// The gradebook's course (`SkoreGradebook.courseId`), which is not on
+  /// the report.
+  final int courseId;
+
+  const SmartschoolSkoreCourseNotOnReportError(
+    super.message, {
+    required this.gradebookId,
+    required this.reportId,
+    required this.courseId,
   });
 }
 
@@ -1647,6 +1702,97 @@ class SmartschoolSkoreGradebookReadOnlyError
   const SmartschoolSkoreGradebookReadOnlyError(
     super.message, {
     required this.gradebook,
+  });
+}
+
+/// Thrown by the writes of `SkoreGradebookService` into an evaluation
+/// (`saveGrade`, `saveGrades`, `saveFeedback`) when it is published or
+/// scheduled to be (Skore's `public` `"1"`: `SkorePublication.isPublic`, as
+/// Skore lists the evaluation right before the save) and `allowPublished`
+/// is `false` (#157). **Nothing was saved.**
+///
+/// What is written into a published evaluation is visible to its pupils at
+/// once, and the school sends them a notification; in a scheduled one, from
+/// its publication on. So an app can tell the user what the pupils would
+/// see ([evaluation]'s `publication`: its `state` and `at`), apart from the
+/// other refusals, and ask for their yes before it passes `allowPublished:
+/// true`.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the evaluation (its ID and title), its
+/// period and gradebook, and Skore's `public` and `publicdatetime`, worded
+/// for the caller of the library (`allowPublished`). Not the
+/// [SmartschoolSkoreEvaluationPublicError] of `createEvaluation`, which
+/// means that an evaluation was created and came back public.
+class SmartschoolSkoreEvaluationPublishedError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The evaluation as Skore listed it right before the save (read again
+  /// with `getEvaluations`, not the one passed), with its `publication`: its
+  /// `state`, `published` or `scheduled` by the service's clock at that
+  /// read, and `at`.
+  final SkoreEvaluation evaluation;
+
+  const SmartschoolSkoreEvaluationPublishedError(
+    super.message, {
+    required this.evaluation,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.saveFeedback` when the user has more
+/// than one feedback of their own for the pupil on the evaluation, as Skore
+/// lists it right before the save (#158): it changes none of them, as it
+/// cannot tell which one is meant, and creates no other. **Nothing was
+/// saved.**
+///
+/// A second create makes such feedback: Skore's create adds a feedback, it
+/// does not replace the user's. Keep one in Smartschool: [feedbacks] are
+/// the ones to choose from, so an app can show them, apart from the other
+/// refusals. This check comes before the one of
+/// [SmartschoolSkoreFeedbackNotEditableError]: with two or more, this error
+/// is thrown, also when Skore does not let the user change some of them.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the pupil, the evaluation (its ID and
+/// title), its period and gradebook, and the IDs of the feedback, not their
+/// texts.
+class SmartschoolSkoreFeedbackAmbiguousError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The user's own feedback for the pupil on the evaluation (two or more),
+  /// as Skore listed it right before the save, in Skore's order (the order
+  /// they were written in, seen live). A colleague's feedback is not in it.
+  final List<SkoreFeedback> feedbacks;
+
+  const SmartschoolSkoreFeedbackAmbiguousError(
+    super.message, {
+    required this.feedbacks,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.saveFeedback` when the user's own
+/// feedback for the pupil on the evaluation is one Skore does not let them
+/// change (`capabilities.can_edit` `false`: `SkoreFeedback.canEdit`), as
+/// Skore lists it right before the save (#158). **Nothing was saved**: the
+/// library neither changes it nor creates a second one.
+///
+/// So an app can tell the user "Skore does not let you change this
+/// feedback" ([feedback]), apart from the other refusals.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the feedback by its ID, the pupil, the
+/// evaluation (its ID and title), its period and gradebook, and not the
+/// text.
+class SmartschoolSkoreFeedbackNotEditableError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The user's feedback, as Skore listed it right before the save, with
+  /// `SkoreFeedback.canEdit` `false`.
+  final SkoreFeedback feedback;
+
+  const SmartschoolSkoreFeedbackNotEditableError(
+    super.message, {
+    required this.feedback,
   });
 }
 

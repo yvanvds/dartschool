@@ -80,17 +80,27 @@ Future<void> main(List<String> args) async {
         '${book.courseName}  (${book.teacherNames.join(', ')})',
       );
     }
-    print(
-      '\nShared with you in ${year.workyear.name}: '
-      '${year.sharedGradebooks.length}\n',
-    );
-    for (final book in year.sharedGradebooks) {
+    // A shared list Skore answered in a way the library cannot read keeps
+    // the own gradebooks (#207): sharedGradebooks would throw sharedError.
+    final sharedError = year.sharedError;
+    final shared = sharedError == null
+        ? year.sharedGradebooks
+        : const <SkoreGradebook>[];
+    if (sharedError != null) {
+      stderr.writeln(
+        '\nThe gradebooks shared with you in ${year.workyear.name} could not '
+        'be read: ${sharedError.message}',
+      );
+    } else {
+      print('\nShared with you in ${year.workyear.name}: ${shared.length}\n');
+    }
+    for (final book in shared) {
       print(
         '  ${book.gradebookId}  ${book.className.padRight(8)} '
         '${book.courseName}  (${book.ownerName}, to ${book.access.name})',
       );
     }
-    final all = [...year.gradebooks, ...year.sharedGradebooks];
+    final all = [...year.gradebooks, ...shared];
     if (all.isEmpty) return;
 
     // ── 3. One gradebook ──────────────────────────────────────────────────
@@ -144,8 +154,11 @@ Future<void> main(List<String> args) async {
       final SkoreReport read;
       try {
         read = await gradebooks.getReport(book, report.id);
+      } on SmartschoolSkoreCourseNotOnReportError {
+        // Skore's 404 "Course not found in source!" (#204): nothing to read.
+        print('  course ${book.courseId} is not on this report');
+        continue;
       } on SmartschoolSkoreError catch (e) {
-        // Such as a course that is not on the report (Skore's 404).
         print('  not read: ${e.message}');
         continue;
       }

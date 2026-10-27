@@ -862,25 +862,103 @@ void main() {
       expect(report.pupil(_an)!.comment!.text, 'Vlot.');
     });
 
-    test('a course that is not on the report: Skore\'s 404 with its message, '
-        'a SmartschoolSkoreError', () async {
-      final server = _Skore(reportAnswer: (_) => _notInSource);
-      final gradebooks = await serve(server);
+    test(
+      'a course that is not on the report: Skore\'s 404 with its message, '
+      'a SmartschoolSkoreCourseNotOnReportError with the IDs (#204)',
+      () async {
+        final server = _Skore(reportAnswer: (_) => _notInSource);
+        final gradebooks = await serve(server);
 
-      await expectLater(
-        gradebooks.getReport(_ewi, _r1),
-        throwsA(
-          isA<SmartschoolSkoreError>().having(
-            (e) => e.message,
-            'message',
+        for (final book in [_ewi, _shared]) {
+          await expectLater(
+            gradebooks.getReport(book, _r1),
+            throwsA(
+              allOf(
+                isA<SmartschoolSkoreError>(),
+                isNot(isA<SmartschoolSkoreChangeRefusedError>()),
+                isA<SmartschoolSkoreCourseNotOnReportError>()
+                    .having(
+                      (e) => e.gradebookId,
+                      'gradebookId',
+                      book.gradebookId,
+                    )
+                    .having((e) => e.reportId, 'reportId', _r1)
+                    .having((e) => e.courseId, 'courseId', book.courseId)
+                    .having(
+                      (e) => e.message,
+                      'message',
+                      'Course ${book.courseId} of gradebook ${book.gradebookId} '
+                          'is not on report $_r1: Skore answered the RPC call '
+                          'getReportsResults of its gradebook with HTTP 404: '
+                          '"Course not found in source!".',
+                    ),
+              ),
+            ),
+          );
+        }
+        expect(server.methods, ['getReportsResults', 'getReportsResults']);
+      },
+    );
+
+    test('only that answer (#204): another status, or a 404 with another '
+        'message or none, stays a plain SmartschoolSkoreError, with the same '
+        'message as before', () async {
+      const plain = <(_Answer, String)>[
+        (
+          (status: 500, body: '{"message":"Course not found in source!"}'),
+          'HTTP 500: "Course not found in source!".',
+        ),
+        (
+          (status: 403, body: '{"message":"Course not found in source!"}'),
+          'HTTP 403: "Course not found in source!".',
+        ),
+        (
+          (status: 404, body: '{"message":"Report not found"}'),
+          'HTTP 404: "Report not found".',
+        ),
+        ((status: 404, body: '{}'), 'HTTP 404.'),
+        (
+          (status: 404, body: '<html><body>Not Found</body></html>'),
+          'HTTP 404.',
+        ),
+        ((status: 404, body: ''), 'HTTP 404.'),
+      ];
+      for (final (answer, message) in plain) {
+        final server = _Skore(reportAnswer: (_) => answer);
+        final gradebooks = await serve(server);
+        await expectLater(
+          gradebooks.getReport(_ewi, _r1),
+          throwsA(
             allOf(
-              contains('getReportsResults'),
-              contains('HTTP 404'),
-              contains('"Course not found in source!"'),
+              isA<SmartschoolSkoreError>().having(
+                (e) => e.message,
+                'message',
+                'Skore answered the RPC call getReportsResults of its '
+                    'gradebook with $message',
+              ),
+              isNot(isA<SmartschoolSkoreCourseNotOnReportError>()),
             ),
           ),
-        ),
-      );
+          reason: '${answer.status} ${answer.body}',
+        );
+      }
+
+      // Its message in another case, or with another ending: the same answer.
+      for (final message in [
+        'course NOT found in source',
+        '  Course not found!  ',
+      ]) {
+        final server = _Skore(
+          reportAnswer: (_) =>
+              (status: 404, body: jsonEncode({'message': message})),
+        );
+        final gradebooks = await serve(server);
+        await expectLater(
+          gradebooks.getReport(_ewi, _r1),
+          throwsA(isA<SmartschoolSkoreCourseNotOnReportError>()),
+          reason: message,
+        );
+      }
     });
 
     test(
@@ -1280,6 +1358,73 @@ void main() {
       expect(server.methods, isNot(contains('saveType')));
     });
 
+    test('a report the course is not on: Skore\'s 404 to the read before the '
+        'save (#204)', () async {
+      final server = _Skore(reportAnswer: (_) => _notInSource);
+      final gradebooks = await serve(server);
+
+      for (final replacing in [null, 'Goed.']) {
+        await expectLater(
+          gradebooks.saveReportComment(
+            _ewi,
+            _r1,
+            _an,
+            'Goed.',
+            replacing: replacing,
+          ),
+          throwsA(
+            allOf(
+              _refused(
+                'course 2264 is not on report R1D (2762) of gradebook 32508 '
+                '(Skore answers getReportsResults for it with HTTP 404), so '
+                'the report has no course comment of it',
+              ),
+              isNot(isA<SmartschoolSkoreCourseNotOnReportError>()),
+            ),
+          ),
+        );
+      }
+      expect(server.methods, [
+        for (var i = 0; i < 2; i++) ...[
+          'getNavigation',
+          'init',
+          'getReportsResults',
+        ],
+      ]);
+      expect(server.comments[2264], isEmpty);
+    });
+
+    test('another status to the read before the save is still a plain '
+        'SmartschoolSkoreError, not a refusal (#204)', () async {
+      for (final answer in <_Answer>[
+        (status: 500, body: '{"message":"Course not found in source!"}'),
+        (status: 404, body: '{"message":"Report not found"}'),
+      ]) {
+        final server = _Skore(reportAnswer: (_) => answer);
+        final gradebooks = await serve(server);
+
+        await expectLater(
+          gradebooks.saveReportComment(_ewi, _r1, _an, 'Goed.'),
+          throwsA(
+            allOf(
+              isA<SmartschoolSkoreError>().having(
+                (e) => e.message,
+                'message',
+                startsWith(
+                  'Skore answered the RPC call getReportsResults of its '
+                  'gradebook with HTTP ${answer.status}',
+                ),
+              ),
+              isNot(isA<SmartschoolSkoreChangeRefusedError>()),
+              isNot(isA<SmartschoolSkoreCourseNotOnReportError>()),
+            ),
+          ),
+          reason: '${answer.status} ${answer.body}',
+        );
+        expect(server.methods, isNot(contains('saveType')));
+      }
+    });
+
     test('a text longer than the report allows', () async {
       final server = _Skore(length: '20');
       final gradebooks = await serve(server);
@@ -1661,6 +1806,31 @@ void main() {
         throwsA(_clearRefused('it is closed for the pupil')),
       );
       expect(server.methods, isNot(contains('saveType')));
+    });
+
+    test('a report the course is not on: Skore\'s 404 to the read before the '
+        'clear (#204)', () async {
+      final server = _Skore(
+        comments: {_an: 'Goed.'},
+        reportAnswer: (_) => _notInSource,
+      );
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, _r1, _an, replacing: 'Goed.'),
+        throwsA(
+          allOf(
+            _clearRefused(
+              'course 2264 is not on report R1D (2762) of gradebook 32508 '
+              '(Skore answers getReportsResults for it with HTTP 404), so the '
+              'report has no course comment of it',
+            ),
+            isNot(isA<SmartschoolSkoreCourseNotOnReportError>()),
+          ),
+        ),
+      );
+      expect(server.methods, ['getNavigation', 'init', 'getReportsResults']);
+      expect(server.comments[2264], {_an: 'Goed.'});
     });
 
     test('a pupil without a comment in the class', () async {

@@ -15,13 +15,16 @@
 // Skore's web client opens it, in the name of its teacher and restricted to
 // it; and checks that the writes refuse one shared to read only, and
 // createEvaluation any shared one, before anything is sent. Skipped when no
-// gradebook is shared with the account.
+// gradebook is shared with the account. For #207 it reads that list again
+// with getSharedGradebooks(workyear: ...), accessableList alone, for the
+// school year getGradebookYear read.
 //
 // For #195 it reads the report periods of a gradebook and its report, with
 // each pupil's results and course comment (getReport, Skore's
 // getReportsResults), of an own gradebook, of the behaviour gradebook and of
 // gradebooks shared with the account, and a course that is not on the report
-// (Skore's 404); and checks that saveReportComment refuses before its save
+// (Skore's 404, a SmartschoolSkoreCourseNotOnReportError since #204); and
+// checks that saveReportComment refuses before its save
 // (a comment other than the one passed as replacing, a text too long, an
 // earlier school year), and so does clearReportComment (#203; or, for a
 // comment that is empty already, sends nothing), so that their saveType
@@ -1040,6 +1043,39 @@ void main() {
             expect(book.className, isNotEmpty);
             expect(book.ownerName, isNotEmpty);
           }
+          expect(withShared.sharedError, isNull, reason: 'the list was read');
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('getSharedGradebooks(workyear: ...) sends accessableList alone, '
+            'for that school year, and gives the same list (#207)', () async {
+          final answers = _RpcAnswers();
+          run.client.dio.interceptors.insert(0, answers);
+          addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+          final again = await gradebooks.getSharedGradebooks(
+            workyear: withShared.workyear,
+          );
+
+          print(
+            '${again.length} gradebooks shared with the account, read with '
+            'accessableList alone (wy ${withShared.workyear.id})',
+          );
+          expect(answers.answers.map((a) => (a.$1, a.$2)), [
+            ('accessableList', 200),
+          ]);
+          // Sent with the current school year's wy, where getGradebookYear
+          // sends none: Skore answers the same list.
+          expect(
+            again.map((b) => (b.gradebookId, b.teacherId, b.access)),
+            withShared.sharedGradebooks.map(
+              (b) => (b.gradebookId, b.teacherId, b.access),
+            ),
+          );
+          expect(
+            again.map((b) => b.workyearId),
+            everyElement(year.workyear.id),
+          );
           expect(run.guard.violations, isEmpty);
         });
 
@@ -1330,9 +1366,11 @@ void main() {
                 final report = await gradebooks.getReport(book, period.id);
                 expectReport(book, sheet, report);
                 read++;
-              } on SmartschoolSkoreError catch (e) {
-                // A course the report model has no place for (seen live).
-                expect(e.message, contains('Course not found in source!'));
+              } on SmartschoolSkoreCourseNotOnReportError catch (e) {
+                // A course that is not on the report (seen live, #204).
+                expect(e.gradebookId, book.gradebookId);
+                expect(e.reportId, period.id);
+                expect(e.courseId, book.courseId);
                 notOnReport++;
               }
             }
@@ -1346,7 +1384,7 @@ void main() {
         });
 
         test('a course that is not on the report: Skore\'s 404, a '
-            'SmartschoolSkoreError', () async {
+            'SmartschoolSkoreCourseNotOnReportError (#204)', () async {
           final book = year.gradebooks
               .where((g) => g.gradebookId == _notOnReportGradebookId)
               .firstOrNull;
@@ -1364,14 +1402,18 @@ void main() {
           await expectLater(
             gradebooks.getReport(book, report.id),
             throwsA(
-              isA<SmartschoolSkoreError>().having(
-                (e) => e.message,
-                'message',
-                allOf(
-                  contains('HTTP 404'),
-                  contains('"Course not found in source!"'),
-                ),
-              ),
+              isA<SmartschoolSkoreCourseNotOnReportError>()
+                  .having((e) => e.gradebookId, 'gradebookId', book.gradebookId)
+                  .having((e) => e.reportId, 'reportId', report.id)
+                  .having((e) => e.courseId, 'courseId', book.courseId)
+                  .having(
+                    (e) => e.message,
+                    'message',
+                    allOf(
+                      contains('HTTP 404'),
+                      contains('"Course not found in source!"'),
+                    ),
+                  ),
             ),
           );
           expect(run.guard.violations, isEmpty);

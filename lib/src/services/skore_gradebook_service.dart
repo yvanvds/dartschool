@@ -113,7 +113,11 @@ export '../models/skore_gradebook_models.dart';
 ///   page instead of data, invalid JSON, an RPC answer without its `result`,
 ///   or data in a shape it does not recognise (such as a tree without its
 ///   lists, a non-numeric ID, or an answer about another gradebook, period,
-///   school year or pupil). Never an empty list instead. An evaluation of a
+///   school year or pupil). Never an empty list instead. One about the list
+///   of shared gradebooks of [getGradebookYear] with `includeShared` does
+///   not lose the own gradebooks: it comes back in
+///   [SkoreGradebookYear.sharedError] (#207), and
+///   [SkoreGradebookYear.sharedGradebooks] throws it. An evaluation of a
 ///   type the library does not know, or with a grade cell without its
 ///   `raw`, does not make its period unreadable: it comes back not
 ///   readable ([SkoreEvaluation.isReadable], #193), and its grades throw a
@@ -129,15 +133,25 @@ export '../models/skore_gradebook_models.dart';
 ///   nothing was saved; from
 ///   [saveFeedback] also when Skore refused the save with a `4xx` status.
 ///   An answer of Skore with another status than `200` and a JSON
-///   `message` names it: `getReportsResults` for a course that is not on
-///   the report is answered with HTTP 404 and "Course not found in
-///   source!" (seen live, #195).
+///   `message` names it. One about a course that is not on the report,
+///   `getReportsResults` answered with HTTP 404 and "Course not found in
+///   source!" (seen live, #195), is a
+///   [SmartschoolSkoreCourseNotOnReportError] (a subtype) from [getReport]
+///   (#204), and refused by [saveReportComment] and [clearReportComment]
+///   before anything is sent.
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
 ///   check of [createEvaluation], [saveGrade], [saveGrades],
 ///   [saveFeedback], [saveReportComment] or [clearReportComment] refused
 ///   the change before the save. Nothing was saved; its message says why. A
 ///   [SmartschoolSkoreGradebookReadOnlyError] (a subtype) for a gradebook
-///   shared with the user to read only (#191).
+///   shared with the user to read only (#191); a
+///   [SmartschoolSkoreEvaluationPublishedError] (another subtype) from
+///   [saveGrade], [saveGrades] and [saveFeedback] for an evaluation that is
+///   published or scheduled, without `allowPublished` (#157); from
+///   [saveFeedback], a [SmartschoolSkoreFeedbackAmbiguousError] for more
+///   than one feedback of the user's own for the pupil, and a
+///   [SmartschoolSkoreFeedbackNotEditableError] for the user's feedback
+///   that Skore does not let them change (two more subtypes, #158).
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
@@ -157,9 +171,10 @@ export '../models/skore_gradebook_models.dart';
 ///   check its publication in Smartschool.
 /// - [ArgumentError]: a school year ID that is not positive (before
 ///   anything is sent), or one Skore does not offer (Skore answers it with
-///   no gradebooks; seen live); a period, report ([getReport]) or pupil ID
-///   that is not positive, or an evaluation of another gradebook (before
-///   anything is sent).
+///   no gradebooks; seen live); a `workyearId` and a `workyear` both given
+///   to [getSharedGradebooks] (before anything is sent); a period, report
+///   ([getReport]) or pupil ID that is not positive, or an evaluation of
+///   another gradebook (before anything is sent).
 /// - [SmartschoolParsingError]: the session's user ID
 ///   (`authenticatedUser.id`) is not in the form `4069_146_0`, which
 ///   [getFeedback] and [saveFeedback] build Skore's IDs from.
@@ -290,6 +305,19 @@ class SkoreGradebookService {
   /// #191): a second request, Skore's `accessableList(userID)`, for the same
   /// school year, read by [parseSharedGradebooks]. Without it, that list is
   /// empty and not asked for.
+  ///
+  /// When Skore answers that second request with something the library
+  /// cannot use (an entry [parseSharedGradebooks] refuses, another HTTP
+  /// status than `200`, a redirect included, an HTML page, ...), the own
+  /// gradebooks are returned all the same, with that [SmartschoolSkoreError]
+  /// in [SkoreGradebookYear.sharedError], and
+  /// [SkoreGradebookYear.sharedGradebooks] throws it (#207). The request was
+  /// accepted for the own gradebooks, so such an answer is about the shared
+  /// list only. [getSharedGradebooks] with `workyear` reads it again, without
+  /// `getNavigation`. A session Smartschool does not accept (also after
+  /// logging in again, or Skore answering without a session), a failed login
+  /// and no connection still throw, as for `getNavigation`: they are not
+  /// about that list, and the next call would fail the same way.
   Future<SkoreGradebookYear> getGradebookYear({
     int? workyearId,
     bool includeShared = false,
@@ -310,20 +338,19 @@ class SkoreGradebookService {
     );
     final year = parseNavigation(result, workyearId: workyearId);
     if (!includeShared) return year;
-    final shared = await _rpc(
-      'accessableList',
-      [userId],
-      scope: _ownScope(userId),
-      workyearId: workyearId,
-    );
+    var shared = const <SkoreGradebook>[];
+    SmartschoolSkoreError? sharedError;
+    try {
+      shared = await _readShared(userId, year.workyear, wy: workyearId);
+    } on SmartschoolSkoreError catch (error) {
+      sharedError = error;
+    }
     return SkoreGradebookYear(
       workyear: year.workyear,
       workyears: year.workyears,
       gradebooks: year.gradebooks,
-      sharedGradebooks: parseSharedGradebooks(
-        shared,
-        workyearId: year.workyear.id,
-      ),
+      sharedGradebooks: shared,
+      sharedError: sharedError,
     );
   }
 
@@ -344,16 +371,67 @@ class SkoreGradebookService {
   /// name of one form teacher and shared with the co-titularis, who writes
   /// their feedback in it.
   ///
-  /// The [SkoreGradebookYear.sharedGradebooks] of
+  /// Without [workyear], the [SkoreGradebookYear.sharedGradebooks] of
   /// `getGradebookYear(workyearId: workyearId, includeShared: true)`: two
   /// requests, `getNavigation` (which tells the school year, and is big; see
   /// [getGradebookYear]) and `accessableList`. Pass a gradebook of it to the
   /// other methods as any other: they open it as Skore's web client does.
-  Future<List<SkoreGradebook>> getSharedGradebooks({int? workyearId}) async =>
-      (await getGradebookYear(
+  ///
+  /// With [workyear], a school year the caller read already
+  /// ([SkoreGradebookYear.workyear], or one of its
+  /// [SkoreGradebookYear.workyears]), one request: `accessableList`, for
+  /// that school year (`wy`), without `getNavigation` (#207). So the shared
+  /// list can be read again after [SkoreGradebookYear.sharedError], or later
+  /// than the own gradebooks. [workyearId] and [workyear] together, or a
+  /// [workyear] whose ID is not positive, are refused with an
+  /// [ArgumentError] before anything is sent.
+  ///
+  /// An answer it cannot use is a [SmartschoolSkoreError] (with or without
+  /// [workyear]): never an empty list instead.
+  Future<List<SkoreGradebook>> getSharedGradebooks({
+    int? workyearId,
+    SkoreWorkyear? workyear,
+  }) async {
+    if (workyear == null) {
+      return (await getGradebookYear(
         workyearId: workyearId,
         includeShared: true,
       )).sharedGradebooks;
+    }
+    if (workyearId != null) {
+      throw ArgumentError(
+        'workyearId $workyearId and workyear ${workyear.id} both given: pass '
+        'one; nothing was sent',
+      );
+    }
+    if (workyear.id <= 0) {
+      throw ArgumentError.value(
+        workyear.id,
+        'workyear',
+        'not a school year ID; nothing was sent',
+      );
+    }
+    final userId = (await _client.getCurrentUser()).id;
+    return _readShared(userId, workyear, wy: workyear.id);
+  }
+
+  /// The gradebooks of school year [workyear] shared with user [userId]:
+  /// Skore's `accessableList(userID)` in the user's own scope, for school
+  /// year [wy] (`null`: Skore's current one, which [workyear] is then), read
+  /// by [parseSharedGradebooks].
+  Future<List<SkoreGradebook>> _readShared(
+    int userId,
+    SkoreWorkyear workyear, {
+    required int? wy,
+  }) async => parseSharedGradebooks(
+    await _rpc(
+      'accessableList',
+      [userId],
+      scope: _ownScope(userId),
+      workyearId: wy,
+    ),
+    workyearId: workyear.id,
+  );
 
   /// Returns [gradebook] (from [getGradebooks]) with its periods, its report
   /// periods ([SkoreGradebookSheet.reports], #195), its pupils and whether
@@ -667,7 +745,8 @@ class SkoreGradebookService {
   /// [gradebook] can count for, as the "new evaluation" dialog of Skore's
   /// gradebook offers them (#150), in Skore's order: `geen` (none, ID `0`)
   /// and the period's components (seen live for 6EWI's DW1: `geen` and
-  /// `DW`). [createEvaluation] takes one of their IDs.
+  /// `DW`). [createEvaluation] takes one of their IDs; [defaultComponent]
+  /// tells which one it takes without.
   ///
   /// One request, for the gradebook's school year: Skore's
   /// `getPosComponents(0, periodID, groupID, courseID, pathIds)`, as the
@@ -686,6 +765,26 @@ class SkoreGradebookService {
     }
     final userId = (await _client.getCurrentUser()).id;
     return _readComponents(gradebook, periodId, userId);
+  }
+
+  /// The component of [components] (a period's, from [getComponents]) that
+  /// [createEvaluation] gives a new evaluation without a `componentId`, the
+  /// one Skore's "new evaluation" dialog picks (#156): the second when there
+  /// are exactly two (Skore's `geen` and the period's component, as `geen`
+  /// and `DW` for 6EWI's DW1), else `geen` ([SkoreEvaluationComponent.isNone]).
+  /// `null` when there are not exactly two and none is `geen`:
+  /// [createEvaluation] then refuses to create one without a `componentId`.
+  ///
+  /// [createEvaluation] picks with this function, so an app can show the
+  /// component a create without `componentId` saves before it calls it. It
+  /// sends no request. [createEvaluation] reads the components again right
+  /// before its save and picks from that list: one Skore changed in between
+  /// can make another pick.
+  static SkoreEvaluationComponent? defaultComponent(
+    List<SkoreEvaluationComponent> components,
+  ) {
+    if (components.length == 2) return components[1];
+    return components.where((c) => c.isNone).firstOrNull;
   }
 
   Future<List<SkoreEvaluationComponent>> _readComponents(
@@ -725,13 +824,19 @@ class SkoreGradebookService {
   /// Skore keeps one course comment per pupil, course and report, and does
   /// not say who wrote it: the teachers of a course share it.
   ///
-  /// A course that is not on the report is a [SmartschoolSkoreError]:
-  /// Skore answers it with HTTP 404 and "Course not found in source!" (seen
-  /// live, for a course the report model has no place for), which its web
-  /// client shows as an error too. A [reportId] that is not positive is
-  /// refused with an [ArgumentError] before anything is sent; an answer
-  /// about another report or without the gradebook's course with a
-  /// [SmartschoolSkoreError].
+  /// A course that is not on the report is a
+  /// [SmartschoolSkoreCourseNotOnReportError] (#204), a
+  /// [SmartschoolSkoreError]: Skore answers it with HTTP 404 and "Course not
+  /// found in source!" (seen live, also for an open report Skore lists for
+  /// the gradebook, whose course is on it through a project), which its web
+  /// client shows as an error too. Not an empty report, which would
+  /// read as one without pupils: an app that walks the reports of its
+  /// gradebooks catches it and goes on. Only a `404` whose `message` holds
+  /// "Course not found" (in any case) is that error; another status, or a
+  /// `404` with another message or none, is a plain [SmartschoolSkoreError].
+  /// A [reportId] that is not positive is refused with an [ArgumentError]
+  /// before anything is sent; an answer about another report or without the
+  /// gradebook's course with a [SmartschoolSkoreError].
   Future<SkoreReport> getReport(SkoreGradebook gradebook, int reportId) async {
     if (reportId <= 0) {
       throw ArgumentError.value(
@@ -745,7 +850,9 @@ class SkoreGradebookService {
   }
 
   /// Report [reportId] of [gradebook] as user [userId] opens it ([_scope]):
-  /// Skore's `getReportsResults(pathIds, courses, reportID, userID)`.
+  /// Skore's `getReportsResults(pathIds, courses, reportID, userID)`. Its
+  /// answer for a course that is not on the report is a
+  /// [SmartschoolSkoreCourseNotOnReportError] ([_isCourseNotOnReport]).
   Future<SkoreReport> _readReport(
     SkoreGradebook gradebook,
     int reportId,
@@ -763,11 +870,33 @@ class SkoreGradebookService {
         ],
         scope: scope,
         workyearId: gradebook.workyearId,
+        statusError: (status, message, error) =>
+            _isCourseNotOnReport(status, message)
+            ? SmartschoolSkoreCourseNotOnReportError(
+                'Course ${gradebook.courseId} of gradebook '
+                '${gradebook.gradebookId} is not on report $reportId: $error',
+                gradebookId: gradebook.gradebookId,
+                reportId: reportId,
+                courseId: gradebook.courseId,
+              )
+            : null,
       ),
       gradebook,
       reportId,
     );
   }
+
+  /// Whether Skore's answer to `getReportsResults` with HTTP [status] and
+  /// the JSON `message` [message] says that the course is not on the
+  /// report: `404` and "Course not found in source!" (seen live, #195,
+  /// #204). The message is matched on "Course not found", in any case, so
+  /// that a change of its ending or punctuation keeps it apart; a `404`
+  /// with another message or none is not this answer (what Skore answers
+  /// for a report it does not know was not seen).
+  static bool _isCourseNotOnReport(int? status, String? message) =>
+      status == 404 &&
+      message != null &&
+      message.toLowerCase().contains('course not found');
 
   /// The page of Skore's gradebook, which hands its frame the start-up
   /// secret.
@@ -849,9 +978,10 @@ class SkoreGradebookService {
   ///   does not count), in the school year: from 1 September to 31 August,
   ///   as Skore's dialog allows (seen live: 2026-09-01 to 2027-08-31).
   /// - [max]: the highest grade, a positive whole number.
-  /// - [componentId]: one of [getComponents] (`0` for none). Without it, the
-  ///   one Skore's dialog picks: the second when Skore offers exactly two
-  ///   (`geen` and the period's component), else `geen`.
+  /// - [componentId]: one of [getComponents] (`0` for none). Without it,
+  ///   [defaultComponent] of the components Skore offers, the one Skore's
+  ///   dialog picks: the second when Skore offers exactly two (`geen` and the
+  ///   period's component), else `geen`.
   ///
   /// The evaluation counts in points ("Cijfers"), without cumulation, type
   /// or import.
@@ -876,7 +1006,8 @@ class SkoreGradebookService {
   ///   mode);
   /// - a [date] outside the school year;
   /// - a course Skore does not offer for a new evaluation in the period
-  ///   (`getNewEvalDialogBox`), or a [componentId] it does not offer.
+  ///   (`getNewEvalDialogBox`), a [componentId] it does not offer, or, without
+  ///   a [componentId], components of which [defaultComponent] picks none.
   ///
   /// A read before the save that fails throws as the reads do (a
   /// [SmartschoolSkoreError]): nothing was saved either.
@@ -1110,7 +1241,10 @@ class SkoreGradebookService {
   /// notification; in a scheduled one, from its publication on. So an
   /// evaluation that is published or scheduled ([SkorePublication.isPublic],
   /// as Skore lists it right before the save) is refused unless
-  /// [allowPublished] is `true`.
+  /// [allowPublished] is `true`, with a
+  /// [SmartschoolSkoreEvaluationPublishedError] that carries the evaluation
+  /// as listed then (#157): an app can tell the user what the pupils would
+  /// see, and ask for their yes.
   ///
   /// Before the first save, it reads Skore again and refuses with a
   /// [SmartschoolSkoreChangeRefusedError], saving nothing:
@@ -1133,7 +1267,8 @@ class SkoreGradebookService {
   ///   Skore's web client leaves those to the planner), one that is not in
   ///   points ([SkoreEvaluationType.points]), or one without a highest
   ///   grade;
-  /// - a published or scheduled evaluation, without [allowPublished];
+  /// - a published or scheduled evaluation, without [allowPublished], with
+  ///   a [SmartschoolSkoreEvaluationPublishedError];
   /// - a pupil without a cell in the evaluation's rows of the gradebook's
   ///   class (a pupil of another class, say), or whose cell has no
   ///   evaluation ID;
@@ -1406,7 +1541,10 @@ class SkoreGradebookService {
   /// Gives pupil [pupilId] written feedback on [evaluation] (from
   /// [getEvaluations]) of [gradebook], or changes the feedback the user gave
   /// them there before, and returns it as Skore lists it right after the
-  /// save (#152).
+  /// save (#152): a [SkoreSavedFeedback], which says whether the save
+  /// created the feedback or changed it ([SkoreSavedFeedback.isUpdate]), and
+  /// for a change the feedback as it was right before the save
+  /// ([SkoreSavedFeedback.before]) (#158).
   ///
   /// [text]: not blank; sent trimmed. An evaluation that is published or
   /// scheduled is refused unless [allowPublished] is `true`: feedback on a
@@ -1454,16 +1592,20 @@ class SkoreGradebookService {
   ///   evaluation of another gradebook, no longer listed, that the library
   ///   cannot read ([SkoreEvaluation.isReadable], #193), or from the
   ///   planner, and one
-  ///   that is published or scheduled, without [allowPublished] (any type
+  ///   that is published or scheduled, without [allowPublished], with a
+  ///   [SmartschoolSkoreEvaluationPublishedError] (#157; any type
   ///   of evaluation: feedback is not a grade; for one on a scale, the
   ///   feedback goes to the same REST API, as the web client's code sends
   ///   it, which was not tried live);
   /// - a pupil without a cell in the evaluation's rows of the gradebook's
   ///   class;
+  /// - **more than one** feedback of the user's own for the pupil (a second
+  ///   create makes that), with a [SmartschoolSkoreFeedbackAmbiguousError]
+  ///   that carries them (#158): it changes none of them, as it cannot tell
+  ///   which one is meant. Keep one in Smartschool;
   /// - the user's own feedback for the pupil that Skore does not let them
-  ///   change (`capabilities.can_edit` `false`), or **more than one** of it
-  ///   (a second create makes that): it changes none of them, as it cannot
-  ///   tell which one is meant. Keep one in Smartschool.
+  ///   change (`capabilities.can_edit` `false`), with a
+  ///   [SmartschoolSkoreFeedbackNotEditableError] that carries it (#158).
   ///
   /// Skore answering the save with `400` to `499` is a
   /// [SmartschoolSkoreError] with the `title` and `detail` of its answer:
@@ -1482,7 +1624,7 @@ class SkoreGradebookService {
   ///
   /// The checks and the save are separate requests: do not change the same
   /// feedback from two places at once.
-  Future<SkoreFeedback> saveFeedback(
+  Future<SkoreSavedFeedback> saveFeedback(
     SkoreGradebook gradebook,
     SkoreEvaluation evaluation,
     int pupilId,
@@ -1535,6 +1677,10 @@ class SkoreGradebookService {
         'you gave pupil $pupilId ${own.length} feedbacks on $where already '
         '(${own.map((f) => f.id).join(', ')}): the library changes none of '
         'them, as it cannot tell which one is meant. Keep one in Smartschool',
+        error: (message) => SmartschoolSkoreFeedbackAmbiguousError(
+          message,
+          feedbacks: List.unmodifiable(own),
+        ),
       );
     }
     final existing = own.firstOrNull;
@@ -1543,6 +1689,10 @@ class SkoreGradebookService {
         operation,
         'Skore does not let you change your feedback ${existing.id} for pupil '
         '$pupilId on $where (can_edit false)',
+        error: (message) => SmartschoolSkoreFeedbackNotEditableError(
+          message,
+          feedback: existing,
+        ),
       );
     }
 
@@ -1704,7 +1854,20 @@ class SkoreGradebookService {
         feedbackId: answer.id,
       );
     }
-    return saved;
+    // What the save did (#158): the feedback as read again, with the one it
+    // changed as read before the save (none for a create).
+    return SkoreSavedFeedback(
+      id: saved.id,
+      text: saved.text,
+      pupilId: saved.pupilId,
+      teacherId: saved.teacherId,
+      teacherName: saved.teacherName,
+      createdAt: saved.createdAt,
+      changedAt: saved.changedAt,
+      attachments: saved.attachments,
+      canEdit: saved.canEdit,
+      before: existing,
+    );
   }
 
   /// The feedback of pupil [pupilId] on evaluation [evaluationId], read
@@ -1754,6 +1917,8 @@ class SkoreGradebookService {
   /// - a report that is not one of the gradebook's ([getGradebook]'s
   ///   [SkoreGradebookSheet.reports]), or that is closed
   ///   ([SkoreReportPeriod.isOpen]);
+  /// - a report the gradebook's course is not on (where [getReport] throws
+  ///   a [SmartschoolSkoreCourseNotOnReportError], #204);
   /// - a report without course comments for the course, or a pupil without
   ///   a comment on it in the gradebook's class;
   /// - a comment Skore does not let the user change
@@ -1831,6 +1996,7 @@ class SkoreGradebookService {
   /// - a gradebook that is not one of the user's own gradebooks of Skore's
   ///   current school year, nor one shared with them to write;
   /// - a report that is not one of the gradebook's, or that is closed;
+  /// - a report the gradebook's course is not on (#204);
   /// - a report without course comments for the course, or a pupil without
   ///   a comment on it in the gradebook's class;
   /// - a comment Skore does not let the user change
@@ -1887,7 +2053,19 @@ class SkoreGradebookService {
     final report = target.report;
     final where =
         'report ${report.name} ($reportId) of gradebook ${book.gradebookId}';
-    final before = await _readReport(book, reportId, target.userId);
+    final SkoreReport before;
+    try {
+      before = await _readReport(book, reportId, target.userId);
+    } on SmartschoolSkoreCourseNotOnReportError {
+      // #204: Skore lists the report for the gradebook, but its course is
+      // not on it; the report holds no course comment of it to write.
+      _refuse(
+        operation,
+        'course ${book.courseId} is not on $where (Skore answers '
+        'getReportsResults for it with HTTP 404), so the report has no course '
+        'comment of it',
+      );
+    }
     if (!before.hasComments) {
       _refuse(
         operation,
@@ -2167,6 +2345,9 @@ class SkoreGradebookService {
     final shared = gradebook.isShared;
     final userId = (await _client.getCurrentUser()).id;
     final year = await getGradebookYear(includeShared: shared);
+    // A shared list Skore answered with something the library cannot use
+    // throws its SmartschoolSkoreError here (#207): nothing is saved.
+    final listed = shared ? year.sharedGradebooks : year.gradebooks;
     final current = year.workyear;
     if (gradebook.workyearId != current.id) {
       _refuse(
@@ -2176,7 +2357,6 @@ class SkoreGradebookService {
         'library writes in the current school year only',
       );
     }
-    final listed = shared ? year.sharedGradebooks : year.gradebooks;
     final book = listed.where((g) => g.gradebookId == gradebookId).firstOrNull;
     if (book == null) {
       _refuse(
@@ -2261,7 +2441,7 @@ class SkoreGradebookService {
   /// - it does not come from the planner (`isPlannerEval` 1: Skore's web
   ///   client leaves those to the planner);
   /// - it is not published or scheduled, unless [allowPublished]
-  ///   ([_checkPublication]).
+  ///   ([_checkPublication]: a [SmartschoolSkoreEvaluationPublishedError]).
   ///
   /// The checks every write into an evaluation makes first: the grades of
   /// #151, and the feedback of #152. Returns what they read: the target of
@@ -2319,8 +2499,9 @@ class SkoreGradebookService {
   }
 
   /// Refuses a write into [evaluation], as Skore lists it right before the
-  /// write ([where] names it), with a [SmartschoolSkoreChangeRefusedError]
-  /// when its pupils see it or will: Skore's `public` `"1"`, published or
+  /// write ([where] names it), with a
+  /// [SmartschoolSkoreEvaluationPublishedError] that carries it (#157) when
+  /// its pupils see it or will: Skore's `public` `"1"`, published or
   /// scheduled ([SkorePublication.isPublic], whatever the time), unless
   /// [allowPublished].
   ///
@@ -2343,6 +2524,10 @@ class SkoreGradebookService {
       '(public "1", publicdatetime "${publication.rawPublicDateTime}"): its '
       'pupils see what is written in it ${scheduled ? 'from then on' : 'at once'}. '
       'Pass allowPublished: true to write in it anyway',
+      error: (message) => SmartschoolSkoreEvaluationPublishedError(
+        message,
+        evaluation: evaluation,
+      ),
     );
   }
 
@@ -2439,9 +2624,9 @@ class SkoreGradebookService {
   }
 
   /// The component of a new evaluation in [where]: the one of [components]
-  /// with ID [componentId], or, without it, the one Skore's dialog picks
-  /// (the second when there are exactly two, else `geen`). Refuses one
-  /// Skore does not offer.
+  /// with ID [componentId], or, without it, [defaultComponent]. Refuses one
+  /// Skore does not offer, and, without [componentId], components of which
+  /// [defaultComponent] picks none.
   static SkoreEvaluationComponent _component(
     String operation,
     List<SkoreEvaluationComponent> components,
@@ -2462,24 +2647,29 @@ class SkoreGradebookService {
       }
       return chosen;
     }
-    if (components.length == 2) return components[1];
-    final none = components.where((c) => c.isNone).firstOrNull;
-    if (none == null) {
+    final picked = defaultComponent(components);
+    if (picked == null) {
       _refuse(
         operation,
         'Skore offers no "geen" component for $where to pick by default (it '
         'offers $offered): pass a componentId',
       );
     }
-    return none;
+    return picked;
   }
 
   /// Refuses a write: a [SmartschoolSkoreChangeRefusedError] that names
-  /// [operation] and says [why].
-  static Never _refuse(String operation, String why) =>
-      throw SmartschoolSkoreChangeRefusedError(
-        '$operation: $why. Nothing was saved.',
-      );
+  /// [operation] and says [why]. A check that a caller tells apart passes
+  /// [error], which makes its subtype of that message (as
+  /// [SmartschoolSkoreEvaluationPublishedError] for [_checkPublication],
+  /// #157, and the feedback checks of [saveFeedback], #158), in the same
+  /// words as without it.
+  static Never _refuse(
+    String operation,
+    String why, {
+    SmartschoolSkoreChangeRefusedError Function(String message) error =
+        SmartschoolSkoreChangeRefusedError.new,
+  }) => throw error('$operation: $why. Nothing was saved.');
 
   /// Refuses a write in [gradebook] with a
   /// [SmartschoolSkoreGradebookReadOnlyError] that names [operation] when it
@@ -2546,12 +2736,18 @@ class SkoreGradebookService {
   /// (a create): when Smartschool refuses the session for it, it fails at
   /// once with a [SmartschoolSessionExpiredError], instead of being sent
   /// again after logging in (see [SmartschoolClient.postFormResponse]).
+  ///
+  /// An answer with another HTTP status than `200` is a
+  /// [SmartschoolSkoreError] ([_body]); [statusError] may make a subtype of
+  /// it for an answer a caller tells apart (as [getReport] for a course
+  /// that is not on the report, #204).
   Future<dynamic> _rpc(
     String method,
     List<Object?> params, {
     required _Scope scope,
     required int? workyearId,
     bool retryAfterLogin = true,
+    _StatusError? statusError,
   }) async {
     checkRpcCall(method, params);
     final response = await _client.postFormResponse(
@@ -2567,7 +2763,10 @@ class SkoreGradebookService {
       ),
       retryAfterLogin: retryAfterLogin,
     );
-    return SkoreRpc.result(_body(response, method), method);
+    return SkoreRpc.result(
+      _body(response, method, statusError: statusError),
+      method,
+    );
   }
 
   /// The body of [response], the answer to RPC call [method]; any other
@@ -2580,15 +2779,24 @@ class SkoreGradebookService {
   /// Skore's answer to a call in a session Smartschool does not accept, a
   /// redirect to `/` (seen live, #192), never comes here: the client takes
   /// it for a refused session, logs in and sends the call again.
-  static String _body(Response<String> response, String method) {
+  ///
+  /// [statusError] makes the error of such an answer instead, when it
+  /// returns one: it is given the status, the answer's `message`
+  /// ([_message]) and the message of the plain error.
+  static String _body(
+    Response<String> response,
+    String method, {
+    _StatusError? statusError,
+  }) {
     final status = response.statusCode;
     if (status != 200) {
       final message = _message(response.data);
-      throw SmartschoolSkoreError(
-        'Skore answered the RPC call $method of its gradebook with HTTP '
-        '$status${SkoreRpc.redirectNote(response)}'
-        '${message == null ? '' : ': "$message"'}.',
-      );
+      final error =
+          'Skore answered the RPC call $method of its gradebook with HTTP '
+          '$status${SkoreRpc.redirectNote(response)}'
+          '${message == null ? '' : ': "$message"'}.';
+      throw statusError?.call(status, message, error) ??
+          SmartschoolSkoreError(error);
     }
     return response.data ?? '';
   }
@@ -4426,6 +4634,13 @@ class _ReportTarget {
 /// `userID`, [restriction] the session's `restriction` and the calls'
 /// `ownerRestriction` (`0`, or the ID of a gradebook shared with the user).
 typedef _Scope = ({int teacher, int restriction});
+
+/// Makes the error of an answer of Skore's RPC with another HTTP status
+/// than `200` ([SkoreGradebookService._body]) from its [status], its
+/// `message` (`null` when it has none) and the message of the plain
+/// [SmartschoolSkoreError] ([error]); `null` for that plain error.
+typedef _StatusError =
+    SmartschoolSkoreError? Function(int? status, String? message, String error);
 
 /// A grade as `SkoreGradebookService.saveGrades` sends it (#151): [text] is
 /// what goes out (`"15.5"`, `""` to clear), [number] its value (`null` to

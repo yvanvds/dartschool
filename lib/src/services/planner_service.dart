@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:html/parser.dart' as html_parser;
 
 import '../exceptions.dart';
 import '../models/planner_models.dart';
@@ -904,13 +905,22 @@ class PlannerService {
   /// that value, it sends nothing and returns the element as read.
   ///
   /// Sends `POST {plannedElementType}/{platformId}/{id}/change-public-info`
-  /// with `{"newInfo": newInfo}` (tried live on a lesson, 2026-10-02: the
-  /// planner kept the HTML as given). The change sets a value, so sending it
-  /// again does not change the outcome: it is retried once after logging in
-  /// again, as a read is. When the planner's answer is not the element with
-  /// that value (or no usable answer comes in), this throws a
-  /// [SmartschoolPlannerSaveUnconfirmedError]: read the element again before
-  /// trying again.
+  /// with `{"newInfo": newInfo}` (tried live on a lesson, 2026-10-02). The
+  /// change sets a value, so sending it again does not change the outcome:
+  /// it is retried once after logging in again, as a read is. When the
+  /// planner's answer is not the element with that value (or no usable
+  /// answer comes in), this throws a [SmartschoolPlannerSaveUnconfirmedError]:
+  /// read the element again before trying again.
+  ///
+  /// The planner keeps an info in its own form, which need not be [newInfo]
+  /// character for character: it answers `&quot;`, `&#39;` and `&eacute;`
+  /// as `"`, `'` and `é`, and keeps `&amp;`, `&lt;` and `&gt;` (seen live,
+  /// 2026-10-27). So an info is compared as HTML, in the check before the
+  /// write and in the answer (#155): the same text and markup, with its
+  /// character references decoded, is the same value (`&quot;` and `"`,
+  /// `&#233;` and `é`, `<BR/>` and `<br>`), and the element returned holds
+  /// the info in the planner's form. A name ([renameElement]) is compared as
+  /// it is.
   Future<PlannedElementDetail> changePublicInfo(
     PlannedElement element,
     String newInfo,
@@ -923,6 +933,7 @@ class PlannerService {
     body: {'newInfo': newInfo},
     valueOf: (detail) => detail.publicInfo,
     value: newInfo,
+    same: _sameHtml,
   );
 
   /// Sets the info that pupils do not see of [element], an element of the
@@ -950,6 +961,7 @@ class PlannerService {
     body: {'newInfo': newInfo},
     valueOf: (detail) => detail.privateInfo,
     value: newInfo,
+    same: _sameHtml,
   );
 
   /// Clears [lesson], a lesson in a lesson hour of the authenticated user's
@@ -1467,7 +1479,9 @@ class PlannerService {
   /// reading the element again and checking that it is the authenticated
   /// user's own and that its capabilities hold `canUserEdit` and
   /// [capability]. Sends nothing when [valueOf] the element read is [value]
-  /// already. Retried once after logging in again: the change sets a value.
+  /// already, and confirms the change by [valueOf] the answer, both as
+  /// [same] compares them (`==` by default; [_sameHtml] for an info). Retried
+  /// once after logging in again: the change sets a value.
   Future<PlannedElementDetail> _edit(
     String operation,
     PlannedElement element, {
@@ -1477,6 +1491,7 @@ class PlannerService {
     required Map<String, Object?> body,
     required String Function(PlannedElementDetail detail) valueOf,
     required String value,
+    bool Function(String held, String wanted) same = _sameText,
   }) async {
     final me = await _ownUserId();
     final current = await _detail(
@@ -1486,7 +1501,7 @@ class PlannerService {
     );
     _refuseUnlessOwn(operation, current, me);
     _refuseUnlessCapable(operation, current, ['canUserEdit', capability]);
-    if (valueOf(current) == value) return current;
+    if (same(valueOf(current), value)) return current;
     final what = _describe(current);
     return _write(
       operation,
@@ -1503,7 +1518,7 @@ class PlannerService {
         if (answer.id.toLowerCase() != current.id.toLowerCase()) {
           return 'element ${answer.id}';
         }
-        if (valueOf(answer) != value) {
+        if (!same(valueOf(answer), value)) {
           return 'the $field "${_preview(valueOf(answer), max: 80)}"';
         }
         return null;
@@ -1666,6 +1681,25 @@ class PlannerService {
       a.from.isAtSameMomentAs(b.from) &&
       a.to.isAtSameMomentAs(b.to) &&
       a.wholeDay == b.wholeDay;
+
+  /// Whether [a] and [b] are the same text, character for character.
+  static bool _sameText(String a, String b) => a == b;
+
+  /// Whether [a] and [b] are the same HTML: the same text, or the same once
+  /// each is parsed as an HTML fragment and written out again (#155).
+  ///
+  /// The planner keeps an info in its own form: it answers `&quot;`, `&#39;`
+  /// and `&eacute;` as `"`, `'` and `é`, and keeps `&amp;`, `&lt;` and
+  /// `&gt;` (seen live, 2026-10-27). Written out again, a character
+  /// reference that text does not need is its character (`&quot;`, `&#39;`,
+  /// `&eacute;`, `&#233;`), `&`, `<` and `>` in text are `&amp;`, `&lt;` and
+  /// `&gt;`, and tags and attributes are written one way (`<BR/>` is
+  /// `<br>`), on both sides alike. Other text, or other markup, is not the
+  /// same: `&lt;b&gt;` is text, `<b>` a tag.
+  static bool _sameHtml(String a, String b) =>
+      a == b ||
+      html_parser.parseFragment(a).outerHtml ==
+          html_parser.parseFragment(b).outerHtml;
 
   /// Whether [value] is a list or a map with something in it.
   static bool _isFilled(Object? value) =>

@@ -34,6 +34,10 @@ checks them.
 - Prefer small, focused services with a single responsibility.
 - When generating Dart code, prefer clear naming and null-safe patterns.
 
+### CHANGELOG
+- A change that exports a new top-level name (a class, enum, typedef, extension, top-level function or constant of `lib/flutter_smartschool.dart`) adds it to `### Can break a build` under `## Unreleased` (in a breaking release: `### Breaking changes`), as every entry from 0.3.6 on lists them (#147). An app that imports the library without a prefix and declares the same name itself no longer compiles. New members of an existing class are not top-level names.
+- Before tagging, check that list against `git diff <previous tag> -- lib/`, and give it in the release notes too.
+
 ### NEVER EVER
 - Hardcode credentials or sensitive data in the codebase
 - Commit real credentials to GitHub

@@ -24,7 +24,8 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 /// - `TITLE`, the day, and the highest grade `MAX` (a positive whole
 ///   number); `--short` a short name.
 /// - `--component=ID`: one of the components the example prints (`0` for
-///   none); without it, the one Skore's dialog picks.
+///   none); without it, the one Skore's dialog picks
+///   (`SkoreGradebookService.defaultComponent`).
 ///
 /// The flow:
 ///   1. Authenticate.
@@ -115,19 +116,21 @@ Future<void> main(List<String> args) async {
 
     // ── 3. The evaluation, and confirmation ───────────────────────────────
 
-    // The one createEvaluation takes without --component, as Skore's dialog.
+    // Without --component, the one createEvaluation takes: Skore's dialog's.
     final component = componentId != null
         ? components.where((c) => c.id == componentId).firstOrNull
-        : components.length == 2
-        ? components[1]
-        : components.where((c) => c.isNone).firstOrNull;
+        : SkoreGradebookService.defaultComponent(components);
+    final shown = component != null
+        ? '${component.name} (${component.id})'
+              '${componentId == null ? ', as Skore\'s dialog picks it' : ''}'
+        : componentId != null
+        ? '$componentId (not offered)'
+        : 'none to pick (pass --component)';
     final day = date.toIso8601String().substring(0, 10);
     print(
       '\nCreate:    "${title.trim()}"'
       '${shortName == null || shortName.trim().isEmpty ? '' : ' (${shortName.trim()})'}'
-      ', $day, max $max, component '
-      '${component == null ? '$componentId (not offered)' : '${component.name} (${component.id})'}'
-      '${componentId == null ? ', as Skore\'s dialog picks it' : ''}',
+      ', $day, max $max, component $shown',
     );
     print(
       '           NOT published: check it in Smartschool and publish it '

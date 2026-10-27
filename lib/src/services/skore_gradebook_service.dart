@@ -667,7 +667,8 @@ class SkoreGradebookService {
   /// [gradebook] can count for, as the "new evaluation" dialog of Skore's
   /// gradebook offers them (#150), in Skore's order: `geen` (none, ID `0`)
   /// and the period's components (seen live for 6EWI's DW1: `geen` and
-  /// `DW`). [createEvaluation] takes one of their IDs.
+  /// `DW`). [createEvaluation] takes one of their IDs; [defaultComponent]
+  /// tells which one it takes without.
   ///
   /// One request, for the gradebook's school year: Skore's
   /// `getPosComponents(0, periodID, groupID, courseID, pathIds)`, as the
@@ -686,6 +687,26 @@ class SkoreGradebookService {
     }
     final userId = (await _client.getCurrentUser()).id;
     return _readComponents(gradebook, periodId, userId);
+  }
+
+  /// The component of [components] (a period's, from [getComponents]) that
+  /// [createEvaluation] gives a new evaluation without a `componentId`, the
+  /// one Skore's "new evaluation" dialog picks (#156): the second when there
+  /// are exactly two (Skore's `geen` and the period's component, as `geen`
+  /// and `DW` for 6EWI's DW1), else `geen` ([SkoreEvaluationComponent.isNone]).
+  /// `null` when there are not exactly two and none is `geen`:
+  /// [createEvaluation] then refuses to create one without a `componentId`.
+  ///
+  /// [createEvaluation] picks with this function, so an app can show the
+  /// component a create without `componentId` saves before it calls it. It
+  /// sends no request. [createEvaluation] reads the components again right
+  /// before its save and picks from that list: one Skore changed in between
+  /// can make another pick.
+  static SkoreEvaluationComponent? defaultComponent(
+    List<SkoreEvaluationComponent> components,
+  ) {
+    if (components.length == 2) return components[1];
+    return components.where((c) => c.isNone).firstOrNull;
   }
 
   Future<List<SkoreEvaluationComponent>> _readComponents(
@@ -849,9 +870,10 @@ class SkoreGradebookService {
   ///   does not count), in the school year: from 1 September to 31 August,
   ///   as Skore's dialog allows (seen live: 2026-09-01 to 2027-08-31).
   /// - [max]: the highest grade, a positive whole number.
-  /// - [componentId]: one of [getComponents] (`0` for none). Without it, the
-  ///   one Skore's dialog picks: the second when Skore offers exactly two
-  ///   (`geen` and the period's component), else `geen`.
+  /// - [componentId]: one of [getComponents] (`0` for none). Without it,
+  ///   [defaultComponent] of the components Skore offers, the one Skore's
+  ///   dialog picks: the second when Skore offers exactly two (`geen` and the
+  ///   period's component), else `geen`.
   ///
   /// The evaluation counts in points ("Cijfers"), without cumulation, type
   /// or import.
@@ -876,7 +898,8 @@ class SkoreGradebookService {
   ///   mode);
   /// - a [date] outside the school year;
   /// - a course Skore does not offer for a new evaluation in the period
-  ///   (`getNewEvalDialogBox`), or a [componentId] it does not offer.
+  ///   (`getNewEvalDialogBox`), a [componentId] it does not offer, or, without
+  ///   a [componentId], components of which [defaultComponent] picks none.
   ///
   /// A read before the save that fails throws as the reads do (a
   /// [SmartschoolSkoreError]): nothing was saved either.
@@ -2439,9 +2462,9 @@ class SkoreGradebookService {
   }
 
   /// The component of a new evaluation in [where]: the one of [components]
-  /// with ID [componentId], or, without it, the one Skore's dialog picks
-  /// (the second when there are exactly two, else `geen`). Refuses one
-  /// Skore does not offer.
+  /// with ID [componentId], or, without it, [defaultComponent]. Refuses one
+  /// Skore does not offer, and, without [componentId], components of which
+  /// [defaultComponent] picks none.
   static SkoreEvaluationComponent _component(
     String operation,
     List<SkoreEvaluationComponent> components,
@@ -2462,16 +2485,15 @@ class SkoreGradebookService {
       }
       return chosen;
     }
-    if (components.length == 2) return components[1];
-    final none = components.where((c) => c.isNone).firstOrNull;
-    if (none == null) {
+    final picked = defaultComponent(components);
+    if (picked == null) {
       _refuse(
         operation,
         'Skore offers no "geen" component for $where to pick by default (it '
         'offers $offered): pass a componentId',
       );
     }
-    return none;
+    return picked;
   }
 
   /// Refuses a write: a [SmartschoolSkoreChangeRefusedError] that names

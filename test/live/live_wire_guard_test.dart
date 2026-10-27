@@ -1603,6 +1603,45 @@ void main() {
       ]);
     });
 
+    test('the reads of clearReportComment, never its clear (#203)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+
+      // Every check of the service passes: only the guard stops the clear,
+      // its saveType with an empty text.
+      await expectLater(
+        gradebooks.clearReportComment(
+          book,
+          2762,
+          1201,
+          replacing: 'Goed gewerkt.',
+        ),
+        throwsA(
+          isA<SmartschoolSkoreReportCommentSaveUnconfirmedError>().having(
+            (e) => e.text,
+            'text',
+            '',
+          ),
+        ),
+      );
+
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getReportsResults',
+        // saveType: refused by the guard
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST $_skoreGradebook was not sent'),
+          contains('no saveEvaluation, saveGrade or saveType'),
+        ),
+      ]);
+    });
+
     test('the planner\'s lookup of a calendar by ID (#127)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);

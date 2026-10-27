@@ -4,19 +4,21 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 
 /// Example: write a pupil's course comment ("vakcommentaar") on a report
 /// period of one of your Skore gradebooks, as the logged-in teacher (#195),
-/// after showing the plan and asking for confirmation. The comment is read
-/// again afterwards.
+/// or clear it (#203), after showing the plan and asking for confirmation.
+/// The comment is read again afterwards.
 ///
 /// Skore keeps one course comment per pupil, course and report, and does
 /// not say who wrote it: the save replaces it. So the example passes the
 /// comment it read as `replacing`: when Skore holds another one by the time
-/// of the save, nothing is saved.
+/// of the save, nothing is saved (nor cleared).
 ///
 /// WARNING: this changes the live Skore of the school of `credentials.yml`,
-/// and there is no test instance: **the comment goes on a real report**. It
-/// was not tried live when the example was written: run it on purpose, for
-/// a pupil whose comment you mean to write, while the report is open. The
-/// library never closes, unlocks or publishes a report.
+/// and there is no test instance: **the comment goes on a real report**.
+/// The save and the clear were checked live (2026-10-27, #201): Skore
+/// answered both with `savedState` 1, and the report read again showed the
+/// text, then the comment empty. Run it on purpose, for a pupil whose
+/// comment you mean to write, while the report is open. The library never
+/// closes, unlocks or publishes a report.
 ///
 /// Run with:
 ///   dart run example/skore_save_report_comment_example.dart \
@@ -27,7 +29,7 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///   shared with you to write (#191); `REPORT_ID`: an open report of it (a
 ///   `SkoreReportPeriod.id`); `PUPIL_ID`: a pupil of the gradebook.
 /// - `TEXT`: the comment, quoted when it has spaces; `\n` in it starts a
-///   new line.
+///   new line. `-` clears the comment (`clearReportComment`).
 ///
 /// The flow:
 ///   1. Authenticate.
@@ -36,9 +38,10 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///      text).
 ///   3. Print the plan, and ask for confirmation (y/N; anything but "y" or
 ///      "yes", or no answer, saves nothing).
-///   4. Save it (`SkoreGradebookService.saveReportComment`): the service
-///      checks it all again first, saves it, and reads the report again to
-///      check it. A refused or unconfirmed save is printed.
+///   4. Save it (`SkoreGradebookService.saveReportComment`), or clear it
+///      (`clearReportComment`): the service checks it all again first,
+///      saves it, and reads the report again to check it. A refused or
+///      unconfirmed save is printed.
 ///
 /// Credentials are read from `credentials.yml` next to the workspace root
 /// (see [PathCredentials]).
@@ -50,9 +53,13 @@ Future<void> main(List<String> args) async {
   if (gradebookId == null || reportId == null || pupilId == null) {
     return _usage();
   }
-  final text = args[3].replaceAll(r'\n', '\n');
+  final clear = args[3] == '-';
+  final text = clear ? '' : args[3].replaceAll(r'\n', '\n');
 
-  print('WARNING: this writes a course comment on a real report.\n');
+  print(
+    'WARNING: this ${clear ? 'clears' : 'writes'} a course comment on a '
+    'real report.\n',
+  );
 
   // ── 1. Authenticate ─────────────────────────────────────────────────────
 
@@ -119,12 +126,19 @@ Future<void> main(List<String> args) async {
 
     // ── 3. The plan, and confirmation ─────────────────────────────────────
 
-    print(
-      '\n${comment.isEmpty ? 'Write' : 'Replace it with'} this comment '
-      '(${text.length} characters, at most '
-      '${report.commentMaxLength ?? '?'}):\n$text',
+    if (clear) {
+      print('\nClear this comment.');
+    } else {
+      print(
+        '\n${comment.isEmpty ? 'Write' : 'Replace it with'} this comment '
+        '(${text.length} characters, at most '
+        '${report.commentMaxLength ?? '?'}):\n$text',
+      );
+    }
+    stdout.write(
+      '\n${clear ? 'Clear the comment' : 'Save this comment'} on the report? '
+      '[y/N] ',
     );
-    stdout.write('\nSave this comment on the report? [y/N] ');
     String? answer;
     try {
       answer = stdin.readLineSync()?.trim().toLowerCase();
@@ -139,6 +153,20 @@ Future<void> main(List<String> args) async {
     // ── 4. Save ───────────────────────────────────────────────────────────
 
     try {
+      if (clear) {
+        // A comment that is empty already: nothing is sent.
+        final cleared = await gradebooks.clearReportComment(
+          book,
+          reportId,
+          pupilId,
+          replacing: comment.text,
+        );
+        print(
+          '✓ Cleared and read again: '
+          '${cleared.isEmpty ? 'no comment' : '${cleared.text.length} characters'}.',
+        );
+        return;
+      }
       final saved = await gradebooks.saveReportComment(
         book,
         reportId,

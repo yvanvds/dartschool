@@ -81,8 +81,9 @@
 //   `getReportsResults` of `gradebook/rpc.php` (SkoreGradebookService, the
 //   teacher's own gradebooks, #148, #149, those shared with them, #191, a
 //   report period, #195, and the reads of createEvaluation, #150, of
-//   saveGrade and saveGrades, #151, and of saveReportComment, #195, whose
-//   saves `saveEvaluation`, `saveGrade` and `saveType` never go out); and
+//   saveGrade and saveGrades, #151, and of saveReportComment, #195, and
+//   clearReportComment, #203, whose saves `saveEvaluation`, `saveGrade` and
+//   `saveType` never go out); and
 //   any POST to Skore's REST API (`/skore/`,
 //   whose GET of a pupil's feedback SkoreGradebookService.getFeedback sends,
 //   #149, and whose POSTs write feedback, as saveFeedback does, #152): the
@@ -612,8 +613,9 @@ class LiveWireGuard extends Interceptor {
   /// service the live suite calls (#91, #148, #149, #150, #151, #191, #195).
   /// Skore's REST API (`/skore/`) has none: its reads are GETs. Not
   /// `saveEvaluation`, `saveGrade` nor `saveType`: the live suite tries
-  /// createEvaluation, saveGrade and saveReportComment only where their
-  /// checks refuse them.
+  /// createEvaluation, saveGrade, saveReportComment and clearReportComment
+  /// only where their checks refuse them (or, for clearReportComment, where
+  /// the comment is empty already, and nothing is sent).
   static const _skoreReads = {
     '/modules/Skore/backend/models/owners.php': {'getTeachers'},
     '/modules/Skore/modules/rapportbeheer/rpc/data.php': {'getCourses'},

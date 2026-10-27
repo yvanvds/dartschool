@@ -23,9 +23,12 @@
 // gradebooks shared with the account, and a course that is not on the report
 // (Skore's 404); and checks that saveReportComment refuses before its save
 // (a comment other than the one passed as replacing, a text too long, an
-// earlier school year), so that its saveType never goes out: a comment goes
-// on a real report, and its live write waits for the developer's go-ahead.
-// It prints counts only: no comment text and no result.
+// earlier school year), and so does clearReportComment (#203; or, for a
+// comment that is empty already, sends nothing), so that their saveType
+// never goes out: a comment goes on a real report. The save and the clear
+// were checked live once, by hand, on the developer's go-ahead (2026-10-27,
+// #201); this suite never writes. It prints counts only: no comment text
+// and no result.
 //
 // For #193 it reads the scale of the evaluations on a scale (getScale: the
 // GETs of the gradebook's page and of its frame, as Skore's web client
@@ -1166,10 +1169,11 @@ void main() {
       });
 
       // The report periods of a gradebook and their course comments (#195),
-      // read as Skore's web client opens a report. saveReportComment is tried
-      // only where one of its checks refuses it, before its save: it never
-      // sends saveType (the wire guard refuses it as well, and would list it
-      // as a violation). A comment goes on a real report: its live write is
+      // read as Skore's web client opens a report. saveReportComment and
+      // clearReportComment (#203) are tried only where one of their checks
+      // refuses them, before the save, or where nothing is to be cleared:
+      // they never send saveType (the wire guard refuses it as well, and
+      // would list it as a violation). A comment goes on a real report: its live write is
       // the developer's, on their go-ahead. Counts only: no comment text, no
       // result.
       group('report periods and course comments (#195):', () {
@@ -1493,6 +1497,117 @@ void main() {
                 reportId,
                 pupilId,
                 'dartschool test (mag weg)',
+              ),
+              throwsA(refused('writes in the current school year only')),
+            );
+            expect(run.guard.violations, isEmpty);
+          });
+        });
+
+        // #203: the clear, read-only. Its replacing is never the comment
+        // Skore holds, so it is refused before its save, or, for a comment
+        // that is empty already, sends nothing.
+        group('clearReportComment refuses before its clear, or sends '
+            'nothing:', () {
+          Matcher refused(Object reason) =>
+              isA<SmartschoolSkoreChangeRefusedError>().having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  startsWith('clearReportComment: '),
+                  contains(reason),
+                  endsWith('Nothing was saved.'),
+                ),
+              );
+
+          test('another comment than the one passed as replacing; or, once '
+              'closed, the report or the comment; an empty comment: nothing '
+              'sent', () async {
+            final book = year.gradebooks
+                .where((g) => g.gradebookId == _testGradebookId)
+                .firstOrNull;
+            final sheet = book == null
+                ? null
+                : await gradebooks.getGradebook(book);
+            final period = sheet?.reports.firstOrNull;
+            if (book == null || period == null) {
+              markTestSkipped(
+                'no gradebook $_testGradebookId with a report in this account',
+              );
+              return;
+            }
+            final report = await gradebooks.getReport(book, period.id);
+            final pupil = report.pupils.firstOrNull;
+            final comment = pupil?.comment;
+            if (pupil == null || comment == null) {
+              markTestSkipped('no pupil with a comment on report ${period.id}');
+              return;
+            }
+            final answers = _RpcAnswers();
+            run.client.dio.interceptors.insert(0, answers);
+            addTearDown(() => run.client.dio.interceptors.remove(answers));
+            print(
+              'report ${period.id} ${period.isOpen ? 'open' : 'closed'}, the '
+              "first pupil's comment ${comment.isEditable ? 'editable' : 'closed'}, "
+              '${comment.isEmpty ? 'empty' : 'written'}',
+            );
+
+            // Never the comment Skore holds: the marker of the live suite.
+            final clear = gradebooks.clearReportComment(
+              book,
+              period.id,
+              pupil.pupilId,
+              replacing: 'dartschool test: not the comment Skore holds',
+            );
+            if (!period.isOpen) {
+              await expectLater(clear, throwsA(refused('is closed')));
+            } else if (!comment.isEditable) {
+              await expectLater(
+                clear,
+                throwsA(refused('it is closed for the pupil')),
+              );
+            } else if (comment.isEmpty) {
+              final cleared = await clear;
+              expect(cleared.isEmpty, isTrue);
+              expect(cleared.pupilId, pupil.pupilId);
+            } else {
+              await expectLater(
+                clear,
+                throwsA(refused('has another course comment on')),
+              );
+            }
+            expect(
+              answers.answers.map((a) => a.$1),
+              isNot(contains('saveType')),
+              reason: 'the clear never went out',
+            );
+            expect(run.guard.violations, isEmpty);
+          });
+
+          test('a gradebook of an earlier school year', () async {
+            final earlier = year.workyears
+                .where((y) => y.id != year.workyear.id)
+                .firstOrNull;
+            final older = earlier == null
+                ? const <SkoreGradebook>[]
+                : await gradebooks.getGradebooks(workyearId: earlier.id);
+            final book =
+                older
+                    .where((g) => g.gradebookId == _earlierGradebookId)
+                    .firstOrNull ??
+                older.firstOrNull;
+            if (book == null) {
+              markTestSkipped('no gradebooks of an earlier school year');
+              return;
+            }
+            final sheet = await gradebooks.getGradebook(book);
+
+            await expectLater(
+              gradebooks.clearReportComment(
+                book,
+                sheet.reports.firstOrNull?.id ?? 1,
+                sheet.pupils.firstOrNull?.id ?? 1,
+                replacing: 'dartschool test: not the comment Skore holds',
               ),
               throwsA(refused('writes in the current school year only')),
             );

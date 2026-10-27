@@ -463,6 +463,9 @@ for (final pupil in report.pupils) {
 final current = report.pupil(sheet.pupils.first.id)!.comment!;
 final comment = await gradebooks.saveReportComment(books.first, r1.id,
     sheet.pupils.first.id, 'Goed gewerkt.', replacing: current.isEmpty ? null : current.text);
+// Clears it again (#203), only while it is the comment just written.
+await gradebooks.clearReportComment(books.first, r1.id, sheet.pupils.first.id,
+    replacing: comment.text);
 ```
 
 The rest of its reference is in [`doc/skore.md`](doc/skore.md#skoregradebookservice): [Methods](doc/skore.md#methods-1), [Errors](doc/skore.md#errors-1).

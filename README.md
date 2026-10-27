@@ -1441,6 +1441,8 @@ if (await lvs.checkAccess()) {
       categoryId: category.id,
     );
     print('${notes.length} notes');
+    // A note's date is in UTC; the LVS shows it on its day in Belgian time:
+    // lvsDayOf(note.date), 'YYYY-MM-DD' (#185).
   }
 
   // The results, in every course: evaluations page by page, up to a cap.
@@ -1734,8 +1736,11 @@ From `LvsPupilFile.noteCategories` (#161): a category of notes, a section of typ
 ### `LvsSchoolYear`
 The period of `getNotes`, `getAllNotes` and the results reads (sent as `startDate` / `endDate`): `from` and `until` (days), `firstDay` / `lastDay` (`YYYY-MM-DD`), `isEmpty`. `LvsSchoolYear.starting(2030)` is 1 September 2030 to 31 August 2031; `containing(day)`; `current({now})` the one of today in Belgian time. Any other range of days can be given. `tryParse(label)` reads a note's `schoolYear`; `includesDay(instant)`, `includesNote(note)` (#180).
 
+### `lvsDayOf`
+`lvsDayOf(instant)` (`String`, `YYYY-MM-DD`): the day of a moment in Belgian time (Europe/Brussels), the day the LVS shows it on (#185). The LVS models give their dates in UTC (`LvsNote.date`, `LvsNoteField.date`, `LvsEvaluation.date`, `LvsFeedbackEvaluation.date`, `LvsReport.date`): a note made at 00:30 in Brussels is dated 22:30 UTC the day before, and `toLocal()` gives the day of the computer's own time zone. It is the day `LvsSchoolYear.includesDay` and `includesNote` keep a note by, and the `value` of a date field.
+
 ### `LvsNote`
-From `getNotes` and `getAllNotes` (#161): `id`, `categoryId` (for `getNotes`, the category read), `categoryName` (`""` when the answer names none), `title`, `date` (UTC), `author`, `isConfidential`, `isNew`, `viewed`, `schoolYear` (as the LVS gives it, `YYYY-YYYY`), `fields`. Prints the count of fields only.
+From `getNotes` and `getAllNotes` (#161): `id`, `categoryId` (for `getNotes`, the category read), `categoryName` (`""` when the answer names none), `title`, `date` (UTC; its Belgian day: `lvsDayOf(note.date)`), `author`, `isConfidential`, `isNew`, `viewed`, `schoolYear` (as the LVS gives it, `YYYY-YYYY`), `fields`. Prints the count of fields only.
 
 ### `LvsNoteField` / `LvsNoteFieldType` / `LvsAttachment`
 A field of a note: `paramId`, `typeCode` (the LVS's number) and `type` (`LvsNoteFieldType`: `text` 1, `richText` 2, `radio` 3, `checkbox` 4, `select` 5, `attachment` 6, `date` 7, `heading` 8, `unknown`), `label`, `value` (the text to show; empty for a heading and an empty field), `html` (rich text), `optionIds` (a choice's option IDs; their texts are in `value`), `date` (UTC; `null` for none or the LVS's `current`), `attachments` (`LvsAttachment`: `id`, `name`, `mimeType`; metadata only), `rawValue` / `rawOptionValue` (as sent), and `hasValue`. A field prints its type only, an attachment nothing.

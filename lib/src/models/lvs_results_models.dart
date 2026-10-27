@@ -237,7 +237,7 @@ class LvsEvaluation {
   final String name;
 
   /// When the evaluation took place (`date`), in UTC; `null` when the LVS
-  /// gives none.
+  /// gives none. Its day in Belgian time: `lvsDayOf` (#185).
   final DateTime? date;
 
   /// The score ([LvsScore.none] when the LVS gives none).
@@ -444,7 +444,8 @@ class LvsFeedbackEvaluation {
   /// The evaluation's name.
   final String name;
 
-  /// When it took place (`date`), in UTC; `null` when none.
+  /// When it took place (`date`), in UTC; `null` when none. Its day in
+  /// Belgian time: `lvsDayOf` (#185).
   final DateTime? date;
 
   /// Its courses (`{id, name, class: {id}}`); empty when none.
@@ -484,7 +485,8 @@ class LvsReport {
   /// The name of the icon the web client shows it with; empty when none.
   final String icon;
 
-  /// The report's date (`date`), in UTC; `null` when none.
+  /// The report's date (`date`), in UTC; `null` when none. Its day in
+  /// Belgian time: `lvsDayOf` (#185).
   final DateTime? date;
 
   /// The ID of the class or group of the report (`class.id`); `null` when

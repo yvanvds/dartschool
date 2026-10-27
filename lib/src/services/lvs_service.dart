@@ -16,6 +16,7 @@ export '../models/lvs_absence_models.dart';
 export '../models/lvs_models.dart';
 export '../models/lvs_plan_models.dart';
 export '../models/lvs_results_models.dart';
+export '../models/lvs_time.dart' show lvsDayOf;
 
 /// Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem",
 /// `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by

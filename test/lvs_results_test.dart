@@ -1205,6 +1205,56 @@ void main() {
     });
   });
 
+  // An app shows a result on its day as the LVS does: in Belgian time,
+  // whatever the time zone of the computer (#185). The dates of the results
+  // come in UTC; the fixtures' are at midnight in Brussels, the UTC day
+  // before, or at noon. Sent to a server of the test with the client's real
+  // adapter, read through the library as an app reads them.
+  group('the Belgian day of the results (lvsDayOf, #185)', () {
+    test('of an evaluation, the evaluation of a feedback and a report: the '
+        "LVS's day, not the UTC day of the date", () async {
+      final (_, lvs) = await _serveOnLoopback(
+        (read, _) => (
+          status: 200,
+          contentType: 'application/json',
+          body: _fixture(_fixtures[read]!),
+        ),
+      );
+
+      final evaluations = await lvs.getEvaluations(
+        pupilId: 900001,
+        classId: 900101,
+        schoolYear: _year,
+      );
+      final feedback = await lvs.getFeedback(
+        pupilId: 900001,
+        classId: 900101,
+        schoolYear: _year,
+      );
+      final reports = await lvs.getReports(
+        pupilId: 900001,
+        classId: 900101,
+        schoolYear: _year,
+      );
+
+      // Midnight in Brussels: CEST (22:00 UTC) and CET (23:00 UTC).
+      final dates = [for (final e in evaluations.evaluations) e.date!];
+      expect(dates.map((d) => d.day), [14, 4]);
+      expect(dates.map(lvsDayOf), ['2030-10-15', '2030-11-05']);
+      final evaluation = feedback
+          .map((f) => f.evaluation)
+          .whereType<LvsFeedbackEvaluation>()
+          .first;
+      expect(evaluation.date!.day, 14);
+      expect(lvsDayOf(evaluation.date!), '2030-10-15');
+      // Noon: the same day in UTC and in Brussels.
+      expect(reports.map((r) => lvsDayOf(r.date!)), [
+        '2030-12-20',
+        '2031-06-30',
+      ]);
+    });
+  });
+
   // The LVS answered a real pupil's results reads with HTTP 500 when they
   // went out without the results app's headers (#175, seen live). These
   // tests send them to a server of the test with the client's real adapter.

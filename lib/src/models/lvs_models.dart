@@ -497,10 +497,10 @@ class LvsSchoolYear {
 
   static final _label = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
 
-  /// Whether the day of [instant] in Belgian time, the LVS's, is one of the
-  /// days [from] to [until], both included.
+  /// Whether the day of [instant] in Belgian time, the LVS's ([lvsDayOf]),
+  /// is one of the days [from] to [until], both included.
   bool includesDay(DateTime instant) {
-    final day = isoDay(brusselsWallTime(instant));
+    final day = lvsDayOf(instant);
     return day.compareTo(firstDay) >= 0 && day.compareTo(lastDay) <= 0;
   }
 
@@ -559,7 +559,8 @@ class LvsNote {
   /// The note's title; empty when it has none.
   final String title;
 
-  /// When the note was made, as the LVS dates it (a Unix time), in UTC.
+  /// When the note was made, as the LVS dates it (a Unix time), in UTC. The
+  /// day the LVS shows it on is its day in Belgian time: [lvsDayOf] (#185).
   final DateTime date;
 
   /// The name of who wrote the note, as the LVS shows it.
@@ -687,7 +688,8 @@ class LvsNoteField {
 
   /// The moment of a date field, in UTC (`val`, a Unix time); `null` for the
   /// other types, and when the field holds no time (empty, or the LVS's
-  /// `current`, kept in [value]).
+  /// `current`, kept in [value]). Its day in Belgian time ([lvsDayOf]) is
+  /// the [value].
   final DateTime? date;
 
   /// The attachments of an attachment field: their metadata only; empty for

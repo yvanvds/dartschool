@@ -1,6 +1,7 @@
 // What the pupil tracking system (LVS) answers the account of
 // credentials.yml through LvsService (#160, #161, #162, #163, #164): the
-// root of its class tree (checkAccess), a pupil search, the placeholder
+// root of its class tree (checkAccess, and checkAccessDetails with the
+// number of its classes, #184), a pupil search, the placeholder
 // pupil of a made-up ID (its file and its notes), the results app's, the
 // support plans' and the absences' answers for that ID, and, when the
 // developer names one, the file, the notes, the results, the support plan
@@ -127,6 +128,17 @@ void main() {
 
       tearDownAll(() async {
         await started?.close();
+      });
+
+      test('checkAccessDetails (#184): the access checkAccess saw, with the '
+          'number of classes of the class tree (0 when refused)', () async {
+        final details = await lvs.checkAccessDetails();
+        // The flag and a count only: no class name, no ID.
+        print('checkAccessDetails: $details');
+        expect(details.granted, access);
+        expect(details.classCount, greaterThanOrEqualTo(0));
+        if (!details.granted) expect(details.classCount, 0);
+        expect(run.guard.violations, isEmpty);
       });
 
       test('a search for a text no one has: an empty list, or the refusal '

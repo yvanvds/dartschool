@@ -1,3 +1,8 @@
+## Unreleased
+
+### Added
+- LVS: `LvsService.checkAccessDetails()` (`Future<LvsAccess>`) tells how many classes the account may see in the LVS, besides whether it may use it (#184). It sends the read of `checkAccess()` (the root of the LVS's class tree, `POST /?module=LVS&file=treeBuilder`, `id` `0`; no pupil) and counts the root's `children` of type `class` (`attributes.rel`), not the LVS's other nodes there. The new `LvsAccess` has `granted` and `classCount` (`0` when not granted; `LvsAccess.denied()` for a refusal), is compared by value, and prints the flag and the count only: no class name, no ID. An account the LVS answers with a root that lists no class is granted with `0` classes: it sees no pupil. `checkAccess()` is unchanged (`true` for any root it can read); a root whose `children` holds something other than an object is now an unknown shape (`SmartschoolLvsError`) for both. `test/live/lvs_live_test.dart` checks that it agrees with `checkAccess()`, printing the count only; tested offline on hand-written fixtures of the root (`test/fixtures/lvs/tree`: two classes, none, one class among other nodes).
+
 ## 0.3.9 - 2026-10-25
 
 ### Added

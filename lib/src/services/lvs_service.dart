@@ -27,7 +27,8 @@ export '../models/lvs_results_models.dart';
 /// [getReports], #162); and the pupil's support plan ([getSupportPlan],
 /// [getSupportPlanPeriods], [getProfileSketch], #163); and the pupil's
 /// absences ([getAbsences], #164). [checkAccess] tells whether the account
-/// may use the LVS.
+/// may use the LVS, and [checkAccessDetails] how many classes it may see
+/// there (#184).
 ///
 /// ```dart
 /// final lvs = LvsService(client);
@@ -70,8 +71,9 @@ export '../models/lvs_results_models.dart';
 ///   answered with `{categories, pupil}`, then
 ///   `POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`, answered with a list
 ///   of `{partOfDay, code: {name, code, color}}`;
-/// - [checkAccess]: `POST /?module=LVS&file=treeBuilder` with `id` `0`, the
-///   root of the LVS's left tree: the classes the account may see, no pupil;
+/// - [checkAccess] and [checkAccessDetails]:
+///   `POST /?module=LVS&file=treeBuilder` with `id` `0`, the root of the LVS's
+///   left tree: the classes the account may see, no pupil;
 /// - [getNotes]: the LVS's XML dispatcher, `POST /?module=LVS&file=dispatcher`
 ///   with the command `lvs_cats/getUserCatItems`, answered with the action
 ///   `renderPupilNotes` (#161);
@@ -153,9 +155,25 @@ class LvsService {
   /// it refuses it to the account ([SmartschoolLvsAccessDeniedError]). Reads
   /// no pupil; for a status check, before the other reads.
   ///
+  /// `true` also for a root that lists no class: [checkAccessDetails] tells
+  /// how many it lists.
+  ///
   /// Any other failure is thrown: an answer the service cannot read (a
   /// plain [SmartschoolLvsError]) is not taken for missing rights.
-  Future<bool> checkAccess() async {
+  Future<bool> checkAccess() async => (await checkAccessDetails()).granted;
+
+  /// Whether the account may use the LVS, as [checkAccess], with the number
+  /// of classes the root of the LVS's left tree lists (#184): its nodes of
+  /// type `class` (`attributes.rel`), not the LVS's other nodes there. One
+  /// read, the same as [checkAccess]'s; no pupil.
+  ///
+  /// [LvsAccess.granted] with a [LvsAccess.classCount] of `0`: the LVS
+  /// answers the account, but lists no class, so the account sees no pupil.
+  /// A refusal ([SmartschoolLvsAccessDeniedError]) is [LvsAccess.denied].
+  /// The result holds counts only: no class name and no ID.
+  ///
+  /// Any other failure is thrown, as for [checkAccess].
+  Future<LvsAccess> checkAccessDetails() async {
     const read = LvsWire.tree;
     try {
       final response = await _wire.post(
@@ -163,10 +181,10 @@ class LvsService {
         query: read.fixedQuery,
         form: const {'id': '0'},
       );
-      _parseTreeRoot(LvsWire.json(response, read));
-      return true;
+      final classCount = _parseTreeRoot(LvsWire.json(response, read));
+      return LvsAccess(granted: true, classCount: classCount);
     } on SmartschoolLvsAccessDeniedError {
-      return false;
+      return const LvsAccess.denied();
     }
   }
 
@@ -844,9 +862,11 @@ class LvsService {
   // Answers
   // ---------------------------------------------------------------------------
 
-  /// Checks the root of the left tree: a list whose first node is the LVS's
-  /// root (`attributes.rel` `lvs`) with a list of `children` (the classes).
-  static void _parseTreeRoot(Object? json) {
+  /// The number of classes of the root of the left tree: a list whose first
+  /// node is the LVS's root (`attributes.rel` `lvs`) with a list of
+  /// `children` (objects), of which the classes have `attributes.rel`
+  /// `class`. No `children` is no class.
+  static int _parseTreeRoot(Object? json) {
     const read = LvsWire.tree;
     if (json is! List || json.isEmpty || json.first is! Map) {
       throw LvsWire.unknownShape(read, 'not a list of tree nodes');
@@ -857,9 +877,21 @@ class LvsService {
       throw LvsWire.unknownShape(read, 'no root node (attributes.rel "lvs")');
     }
     final children = root['children'];
-    if (children != null && children is! List) {
+    if (children == null) return 0;
+    if (children is! List) {
       throw LvsWire.unknownShape(read, 'children is not a list');
     }
+    var classes = 0;
+    for (final (i, child) in children.indexed) {
+      if (child is! Map) {
+        throw LvsWire.unknownShape(read, 'children[$i]: no object');
+      }
+      final childAttributes = child['attributes'];
+      if (childAttributes is Map && childAttributes['rel'] == 'class') {
+        classes++;
+      }
+    }
+    return classes;
   }
 
   /// The pupils of a search answer: `{pupils: [{userID, classID, className,

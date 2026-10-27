@@ -73,6 +73,7 @@ school), it goes here too.
 - `Testschooljaar` — a heading of the menu of periods of the support plans (#163)
 - `Testcode 2` — a second absence code of a pupil's absences (#164)
 - `Testvak 2` — a second course of a pupil's results, a part of `Testvak` (smartschool-mcp#155)
+- `Testknoop` — a node of the root of the LVS's class tree that is not a class (#184)
 
 ## The rest, in short
 

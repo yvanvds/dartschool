@@ -1,7 +1,8 @@
 // Tests for issue #160: LvsService, the pupil tracking system (LVS) read as
 // the logged-in teacher: find a pupil by name (searchPupils), read the
 // overview of the pupil's file (getPupilFile: the file and today's status),
-// and checkAccess (the root of the LVS's left tree); the allowlist of its
+// and checkAccess (the root of the LVS's left tree), with checkAccessDetails,
+// the number of classes that root lists (#184); the allowlist of its
 // requests, and errors that carry no name.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/ (spotlight,
@@ -177,8 +178,10 @@ const _answerValues = [
   'Testrichting',
   'Testcode',
   'Niet beschikbaar',
+  'Testknoop',
   '1A',
   '2B',
+  '3C',
   '9000',
   '9001',
   '9002',
@@ -705,6 +708,93 @@ void main() {
         final (_, lvs) = await _serve({'tree': answer});
         await expectLater(lvs.checkAccess(), throwsA(_unreadable()));
       }
+    });
+  });
+
+  // The number of classes of the root of the class tree (#184), for an
+  // access check that grants the LVS only to an account that sees a class.
+  group('checkAccessDetails (#184)', () {
+    ResponseBody Function() tree(String fixture) =>
+        () => _answer(
+          _fixture('tree/$fixture'),
+          contentType: 'text/json; charset=utf-8',
+        );
+
+    test('the classes the root of the class tree lists, with the one read of '
+        'checkAccess', () async {
+      final (server, lvs) = await _serve({'tree': tree('root.json')});
+
+      final access = await lvs.checkAccessDetails();
+
+      expect(access, const LvsAccess(granted: true, classCount: 2));
+      expect(access.granted, isTrue);
+      expect(access.classCount, 2);
+      expect(server.requests, ['POST /?module=LVS&file=treeBuilder id=0']);
+    });
+
+    test('a root that lists no class is told apart from one that does: '
+        'granted, with 0 classes (checkAccess is true for both)', () async {
+      for (final answer in [
+        tree('root_no_classes.json'),
+        () => _answer('[{"attributes":{"id":"lvs_0","rel":"lvs"}}]'),
+      ]) {
+        final (_, lvs) = await _serve({'tree': answer});
+        expect(
+          await lvs.checkAccessDetails(),
+          const LvsAccess(granted: true, classCount: 0),
+        );
+        expect(await lvs.checkAccess(), isTrue);
+      }
+    });
+
+    test("only the nodes of type class count, not the LVS's other nodes of "
+        'the root (new pupils, pupils who left school)', () async {
+      final (_, lvs) = await _serve({'tree': tree('root_other_nodes.json')});
+
+      expect((await lvs.checkAccessDetails()).classCount, 1);
+    });
+
+    test('a refusal (403, or the start page) is LvsAccess.denied: not '
+        'granted, 0 classes', () async {
+      for (final answer in [
+        () => _answer('', status: 403, contentType: 'text/html'),
+        _redirectToStartPage,
+      ]) {
+        final (_, lvs) = await _serve({'tree': answer});
+        final access = await lvs.checkAccessDetails();
+        expect(access, const LvsAccess.denied());
+        expect(access.granted, isFalse);
+        expect(access.classCount, 0);
+      }
+    });
+
+    test('an answer it cannot read is thrown, by checkAccess too, not '
+        'counted as no class', () async {
+      for (final answer in [
+        _html('<html><body>Klassen</body></html>'),
+        () => _answer('[]'),
+        () => _answer('[{"attributes":{"rel":"class"}}]'),
+        () => _answer('[{"attributes":{"rel":"lvs"},"children":{}}]'),
+        () => _answer('[{"attributes":{"rel":"lvs"},"children":["1A"]}]'),
+        _html(_errorPage, status: 500),
+      ]) {
+        final (_, lvs) = await _serve({'tree': answer});
+        await expectLater(lvs.checkAccessDetails(), throwsA(_unreadable()));
+        await expectLater(lvs.checkAccess(), throwsA(_unreadable()));
+      }
+    });
+
+    test('prints the flag and the count only: no class name, no ID', () async {
+      final (_, lvs) = await _serve({'tree': tree('root_other_nodes.json')});
+
+      final printed = '${await lvs.checkAccessDetails()}';
+
+      expect(printed, 'LvsAccess(granted: true, classCount: 1)');
+      expect(printed, _quotesNothing);
+      expect(
+        '${const LvsAccess.denied()}',
+        'LvsAccess(granted: false, classCount: 0)',
+      );
     });
   });
 

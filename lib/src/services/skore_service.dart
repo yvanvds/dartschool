@@ -68,8 +68,11 @@ export '../models/skore_models.dart';
 ///   with something the service cannot use (another HTTP status than `200`,
 ///   an HTML page instead of data, invalid JSON, a missing RPC `result`, or
 ///   data in an unknown shape). The session was accepted: signing in again
-///   does not help. Its message may quote the answer, which can hold names.
-///   From a write, nothing was saved.
+///   does not help. Its message may quote the answer, which can hold names;
+///   an HTML page instead of the list of report models it names instead,
+///   by where it ended and the redirects that led there, by path and
+///   `module` only ([SkoreRpc.pageOf], #194). From a write, nothing was
+///   saved.
 /// - [SmartschoolSkoreSaveUnconfirmedError]: a write sent the save, but
 ///   Skore's answer (or, for [shareGradebook] and [unshareGradebook], reading
 ///   the gradebooks again) does not confirm it. It may or may not have been
@@ -80,8 +83,10 @@ export '../models/skore_models.dart';
 ///   [shareGradebook] and [unshareGradebook].
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
-///   once; or Skore answered an RPC without a session. Sign in again and
-///   retry. The save of [addTeacher] and [replaceTeacher] is never retried:
+///   once; or Skore answered an RPC without a session; or Skore sent a
+///   read of [getClasses] or [getCourses] on to the root of the site (`/`)
+///   twice, its answer to a session it does not accept (#194). Sign in again
+///   and retry. The save of [addTeacher] and [replaceTeacher] is never retried:
 ///   when the session is refused for it, it fails at once, and the client
 ///   logs in before its next request (#134), so calling the method again is
 ///   enough.
@@ -131,14 +136,12 @@ class SkoreService {
   /// per group of classes under its members ("Leden").
   Future<List<SkoreClass>> getClasses() async {
     const what = 'the list of report models';
-    final response = await _client.getResponse(
-      _modelsPath,
-      query: _modelsQuery,
-    );
+    final response = await _get(_modelsPath, _modelsQuery);
     return parseClasses(
       _decodeJson(
         _body(response, what, SkoreAccessArea.reportManagement),
         what,
+        page: SkoreRpc.pageOf(response),
       ),
     );
   }
@@ -151,10 +154,7 @@ class SkoreService {
   /// way, so both give an empty list. Check the ID against [getClasses] to
   /// tell them apart.
   Future<List<SkoreCourse>> getCourses(int classId) async {
-    final response = await _client.getResponse(
-      _ownersPagePath,
-      query: {'classID': '$classId'},
-    );
+    final response = await _get(_ownersPagePath, {'classID': '$classId'});
     return parseCourses(
       _body(
         response,
@@ -1115,6 +1115,24 @@ class SkoreService {
   // Internals
   // ---------------------------------------------------------------------------
 
+  /// GETs [path] with [query], a read of Skore, and asks once more when
+  /// Skore sent it on to the root of the site ([_sentToSiteRoot]) (#194).
+  ///
+  /// Skore answers a request in a session it does not accept with a redirect
+  /// to `/` (seen live for its RPC calls, #192), and the client follows that
+  /// of a GET. Without a session, `/` sends it on to the login chain, where
+  /// the client logs in and sends the GET again. In a session Smartschool
+  /// accepts, `/` is its start page: so it was, once, for the list of report
+  /// models sent again right after a login with 2FA (#194), a session that
+  /// Skore refused until the start page was loaded once in it (seen live,
+  /// #192). Following the redirect loaded the start page, so the GET is sent
+  /// once more; an answer sent on to `/` again is refused by [_body].
+  Future<Response<String>> _get(String path, Map<String, dynamic> query) async {
+    final response = await _client.getResponse(path, query: query);
+    if (!_sentToSiteRoot(response)) return response;
+    return _client.getResponse(path, query: query);
+  }
+
   /// The body of [response], an answer to [what], a request in [area] of
   /// Skore; throws when Skore did not answer with `200`, or sent the request
   /// on to Smartschool's start page.
@@ -1125,6 +1143,10 @@ class SkoreService {
   ///   without the rights (seen live, #91);
   /// - an answer with `403` (Forbidden): HTTP's answer for a request the
   ///   server refuses to the account (#83; not seen from Skore).
+  ///
+  /// A [SmartschoolSessionExpiredError]: a read that Skore sent on to the
+  /// root of the site ([_sentToSiteRoot]) also when [_get] asked once more,
+  /// after the start page was loaded (#194).
   static String _body(
     Response<String> response,
     String what,
@@ -1144,6 +1166,13 @@ class SkoreService {
         "Smartschool's start page): it lacks the rights for "
         '${_areaName(area)}.',
         area: area,
+      );
+    }
+    if (_sentToSiteRoot(response)) {
+      throw SmartschoolSessionExpiredError(
+        "Skore sent $what on to Smartschool's start page again, also after "
+        'it was loaded (${SkoreRpc.pageOf(response)}): its answer to a '
+        'session it does not accept.',
       );
     }
     if (status != 200) {
@@ -1183,6 +1212,23 @@ class SkoreService {
         target.queryParameters['module'] == 'Homepage';
   }
 
+  /// Whether [response] is the answer to a GET that the client followed to
+  /// the root of the site, `/` on the same host without a query, where
+  /// Smartschool serves its start page (seen live, #194): Skore's redirect
+  /// for a session it does not accept (#192).
+  ///
+  /// Skore's refusal to a teacher without the rights sends the request on to
+  /// the start page with a query (`/?module=Homepage`, [_sentToStartPage]),
+  /// so it is not one.
+  static bool _sentToSiteRoot(Response<String> response) {
+    if (response.redirects.isEmpty) return false;
+    final request = response.requestOptions.uri;
+    final target = request.resolveUri(response.realUri);
+    return target.host == request.host &&
+        (target.path == '/' || target.path.isEmpty) &&
+        !target.hasQuery;
+  }
+
   /// [area] as Skore's menus name it, for a message.
   static String _areaName(SkoreAccessArea area) => switch (area) {
     SkoreAccessArea.reportManagement =>
@@ -1191,9 +1237,10 @@ class SkoreService {
       "Skore's gradebook management (Puntenboeken)",
   };
 
-  /// Decodes [body], the JSON answer to [what].
-  static dynamic _decodeJson(String body, String what) =>
-      SkoreRpc.decodeJson(body, what);
+  /// Decodes [body], the JSON answer to [what], at [page] (see
+  /// [SkoreRpc.decodeJson]).
+  static dynamic _decodeJson(String body, String what, {String? page}) =>
+      SkoreRpc.decodeJson(body, what, page: page);
 
   /// A Skore ID: an int, or a string of digits as Skore mostly sends them.
   static int _id(Object? value, String what) => SkoreRpc.id(value, what);

@@ -94,13 +94,14 @@ const _submit = 'POST /?file=composeMessage';
 
 /// The login chain that a GET redirected to `/login` runs: the login loads the
 /// login page itself, in a new session (#45), and goes from the password to
-/// the 2FA answer.
+/// the 2FA answer, and then opens the start page, as a browser does (#192).
 const _login = [
   'GET /login',
   'POST /login',
   'GET /',
   'GET /2fa/api/v1/config',
   'POST /2fa/api/v1/google-authenticator',
+  'GET /',
 ];
 
 /// A Smartschool that refuses the session as the live platform does (a GET

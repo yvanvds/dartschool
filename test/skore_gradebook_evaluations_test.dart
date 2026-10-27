@@ -30,6 +30,12 @@
 //   - the REST feedback list keeps them apart, in the order they were
 //     written.
 //
+// For #193: an evaluation of a type the library does not know, or with a
+// cell in a shape it does not recognise, comes back not readable, and the
+// rest of the period is read; a period that mixes an evaluation in points,
+// one on a scale and one of an unknown type is hand-written (_mixedAnswer),
+// as no evaluation on a scale was seen live.
+//
 // Nothing here reaches Skore: the fake Smartschool fails the test on any
 // other RPC method than getEvaluations, and on any other request than the
 // reads of the current user and the feedback GET.
@@ -95,6 +101,39 @@ const _evaluationsAnswer = r'''
 /// live, 2025-2026): an empty `head`, and the stream `1`.
 const _emptyPeriodAnswer = r'''
 {"result":{"head":[],"max":{"orientation":"byColumn","rowHeader":{"sort":[0],"styles":["background:#eeeeee;"]},"colHeader":{"sort":[]},"stream":1},"details":{"orientation":"byColumn","rowHeader":{"sort":[]},"colHeader":{"sort":[]},"stream":1},"periodStatus":1,"evalType":1,"archive":[]},"session":1,"method":"getEvaluations","timelimit":0,"limitInfo":null}''';
+
+/// The evaluations of [_mixedAnswer] (#193): one in points, one on a scale
+/// ("Waarderingen", `evaltype` 2) and one of a type the library does not
+/// know (`evaltype` 3).
+const _pointsId = 500011;
+const _scaleId = 500012;
+const _unknownId = 500013;
+
+/// A hand-written answer to getEvaluations for a period that mixes an
+/// evaluation in points, one on a scale and one of an unknown type (#193).
+/// No evaluation on a scale was seen live (none in the developer's
+/// gradebooks, own or shared, of 2023-2024 to 2026-2027): its cells are in
+/// the shape Skore's web client reads them in (the gradebook frame's
+/// `sendCellActive`): a `div.gbc` whose `raw` is the value out of `max`
+/// (`10` and `0` of 10 here), with the level's abbreviation as its text.
+/// The cells of the unknown type are in a shape of their own (no
+/// `div.gbc`). Names, titles and IDs are fakes.
+const _mixedAnswer = r'''
+{"result":{"head":[
+ {"title":"Toets 2","short":null,"date":"2026-10-05","componentID":2,"component":"DW","periodID":1704,"courseID":"2264","coursename":"Informaticawetenschappen (2 uur)","public":"0","publicdatetime":"","max":20,"refID":"500011","colID":"A","evaltype":1,"evaluationID":"500011","ownerID":"32508","isPlannerEval":0},
+ {"title":"Inzet","short":"inzet","date":"2026-10-06","componentID":0,"component":"geen","periodID":1704,"courseID":"2264","coursename":"Informaticawetenschappen (2 uur)","public":"0","publicdatetime":"","max":10,"refID":"500012","colID":"B","evaltype":2,"evaluationID":"500012","ownerID":"32508","isPlannerEval":0},
+ {"title":"Attitudes","short":null,"date":"2026-10-07","componentID":0,"component":"geen","periodID":1704,"courseID":"2264","coursename":"Informaticawetenschappen (2 uur)","public":"0","publicdatetime":"","max":null,"refID":"500013","colID":"C","evaltype":3,"evaluationID":"500013","ownerID":"32508","isPlannerEval":0}
+],"details":{"orientation":"byColumn","stream":[
+ {"c":"500011","r":"pupil_1201_2440","v":"<div class=\"gbc\" raw=\"14\">14</div><div class=\"gbc_cell_header\"><span class=\"gbc_message_place\">&nbsp;&nbsp;</span></div>","p":[1,0,"500011","32508",500011]},
+ {"c":"500011","r":"pupil_1202_2440","v":"<div class=\"gbc\" raw=\"9.5\">9,5</div><div class=\"gbc_cell_header\"><span class=\"gbc_message_place\">&nbsp;&nbsp;</span></div>","p":[1,0,"500011","32508",500011]},
+ {"c":"500011","r":"pupil_1203_2440","v":"<div class=\"gbc\" raw=\"\"></div><div class=\"gbc_cell_header\"><span class=\"gbc_message_place\">&nbsp;&nbsp;</span></div>","p":[1,0,"500011","32508",500011]},
+ {"c":"500012","r":"pupil_1201_2440","v":"<div class=\"gbc\" raw=\"10\">G</div><div class=\"gbc_cell_header\"><span class=\"gbc_message_place gbc_message\" skoretooltip=\"true\" tooltip=\"\" encoding=\"base64\">&nbsp;&nbsp;</span></div>","p":[1,0,"500012","32508",500012]},
+ {"c":"500012","r":"pupil_1202_2440","v":"<div class=\"gbc\" raw=\"0\">Z</div><div class=\"gbc_cell_header\"><span class=\"gbc_message_place\">&nbsp;&nbsp;</span></div>","p":[1,0,"500012","32508",500012]},
+ {"c":"500012","r":"pupil_1203_2440","v":"<div class=\"gbc\" raw=\"\"></div><div class=\"gbc_cell_header\"><span class=\"gbc_message_place gbc_message\" skoretooltip=\"true\" tooltip=\"\" encoding=\"base64\">&nbsp;&nbsp;</span></div>","p":[1,0,"500012","32508",500012]},
+ {"c":"500012","r":"clavg_2440","v":"<div class=\"gbc\" raw=\"5\">5</div>","p":[0]},
+ {"c":"500013","r":"pupil_1201_2440","v":"<div class=\"gbc_attitude\">+</div>","p":[1,3,"500013","32508",500013]},
+ {"c":"500013","r":"pupil_1202_2440","v":"<div class=\"gbc_attitude\">-</div>","p":[1,3,"500013","32508",500013]}
+]},"periodStatus":1,"evalType":1,"archive":[]},"session":1,"method":"getEvaluations","timelimit":0,"limitInfo":null}''';
 
 /// The REST feedback of pupil 1202 on the scheduled evaluation: two, from
 /// two teachers, in the order they were written.
@@ -603,39 +642,207 @@ void main() {
           (e) => e['publicdatetime'] = 'morgen',
         ),
         'a cell that is not an object': _withCells(['79']),
-        'a pupil row in another form': _withCells([
-          {...pupilCell, 'r': 'pupil_1201'},
-        ]),
-        'a pupil cell without its p': _withCells([
-          {...pupilCell}..remove('p'),
-        ]),
-        'a pupil cell with a short p': _withCells([
-          {
-            ...pupilCell,
-            'p': [1, 0],
-          },
-        ]),
-        'a pupil cell without its value': _withCells([
-          {...pupilCell, 'v': null},
-        ]),
-        'a pupil cell without its raw': _withCells([
-          {...pupilCell, 'v': '<div class="gbc" >79</div>'},
-        ]),
-        'a pupil cell without its div.gbc': _withCells([
-          {...pupilCell, 'v': '<span raw="79">79</span>'},
-        ]),
-        'a class average without its raw': _withCells([
-          {
-            'c': '$_scheduledId',
-            'r': 'clavg_2440',
-            'v': '<div class="gbc">81</div>',
-            'p': [0],
-          },
-        ]),
+        // An evaluation's entry in head, in a shape the library does not
+        // know, still refuses the period (only its cells do not, #193).
+        'a type that is not a number': _withHead(
+          0,
+          (e) => e['evaltype'] = 'waardering',
+        ),
       };
       for (final MapEntry(key: name, value: result) in cases.entries) {
         expect(() => _parse(result), throwsA(_skoreError()), reason: name);
       }
+      // The pupil cell above, as it is, is read.
+      expect(
+        _parse(_withCells([pupilCell])).last.results.gradeOf(1201)?.grade,
+        '79',
+      );
+    });
+
+    test('a cell in a shape the library does not recognise makes its '
+        'evaluation unreadable, not the period: never read as no grades '
+        '(#193)', () {
+      final pupilCell = {
+        'c': '$_scheduledId',
+        'r': 'pupil_1201_2440',
+        'v': '<div class="gbc" raw="79">79</div>',
+        'p': [1, 0, '$_scheduledId', '32508', _scheduledId],
+      };
+      final cases = <String, (Map<String, dynamic>, String)>{
+        'a pupil row in another form': (
+          _withCells([
+            {...pupilCell, 'r': 'pupil_1201'},
+          ]),
+          'a pupil row "pupil_1201" not in the form pupil_<id>_<classId>',
+        ),
+        'a pupil row with an ID that is not a number': (
+          _withCells([
+            {...pupilCell, 'r': 'pupil_x_2440'},
+          ]),
+          'a pupil row "pupil_x_2440" not in the form pupil_<id>_<classId>',
+        ),
+        'a pupil cell without its p': (
+          _withCells([
+            {...pupilCell}..remove('p'),
+          ]),
+          'the cell of row "pupil_1201_2440" has no parameters (its p)',
+        ),
+        'a pupil cell with a short p': (
+          _withCells([
+            {
+              ...pupilCell,
+              'p': [1, 0],
+            },
+          ]),
+          'the cell of row "pupil_1201_2440" has no parameters (its p)',
+        ),
+        'a pupil cell without its category': (
+          _withCells([
+            {
+              ...pupilCell,
+              'p': [1, null, '$_scheduledId', '32508', _scheduledId],
+            },
+          ]),
+          'the cell of row "pupil_1201_2440" has no category or evaluation '
+              'in its parameters (its p)',
+        ),
+        'a pupil cell without its value': (
+          _withCells([
+            {...pupilCell, 'v': null},
+          ]),
+          'the cell of row "pupil_1201_2440" has no value (a div.gbc with its '
+              'raw)',
+        ),
+        'a pupil cell without its raw': (
+          _withCells([
+            {...pupilCell, 'v': '<div class="gbc" >79</div>'},
+          ]),
+          'the cell of row "pupil_1201_2440" has no value (a div.gbc with its '
+              'raw)',
+        ),
+        'a pupil cell without its div.gbc': (
+          _withCells([
+            {...pupilCell, 'v': '<span raw="79">79</span>'},
+          ]),
+          'the cell of row "pupil_1201_2440" has no value (a div.gbc with its '
+              'raw)',
+        ),
+        'a class average without its raw': (
+          _withCells([
+            {
+              'c': '$_scheduledId',
+              'r': 'clavg_2440',
+              'v': '<div class="gbc">81</div>',
+              'p': [0],
+            },
+          ]),
+          'the cell of row "clavg_2440" has no value (a div.gbc with its raw)',
+        ),
+        'a group average without its raw': (
+          _withCells([
+            {
+              'c': '$_scheduledId',
+              'r': 'gravg_472',
+              'v': '<div class="gbc">81</div>',
+              'p': [0],
+            },
+          ]),
+          'the cell of row "gravg_472" has no value (a div.gbc with its raw)',
+        ),
+      };
+      for (final MapEntry(key: name, value: (result, reason))
+          in cases.entries) {
+        final evaluations = _parse(result);
+        // Both evaluations, in Skore's order, with what their head says.
+        expect(evaluations.map((e) => e.id), [_newId, _scheduledId]);
+        final unreadable = evaluations.last;
+        expect(unreadable.isReadable, isFalse, reason: name);
+        expect(unreadable.unreadableReason, reason, reason: name);
+        expect(unreadable.title, 'Python scripts schrijven');
+        expect(unreadable.type, SkoreEvaluationType.points);
+        expect(unreadable.publication.state, SkorePublicationState.scheduled);
+        expect('$unreadable', contains('unreadable'));
+        // Its grades are never read as none.
+        expect(
+          () => unreadable.results,
+          throwsA(
+            isA<SmartschoolSkoreEvaluationUnreadableError>()
+                .having((e) => e.evaluationId, 'evaluationId', _scheduledId)
+                .having((e) => e.typeCode, 'typeCode', 1)
+                .having((e) => e.reason, 'reason', reason)
+                .having(
+                  (e) => e.message,
+                  'message',
+                  'Evaluation $_scheduledId ("Python scripts schrijven") of '
+                      'period 1704 of gradebook 32508 (evaltype 1) cannot be '
+                      'read: $reason.',
+                ),
+          ),
+          reason: name,
+        );
+        // The other evaluation of the period is read, with its grades and
+        // feedback markers.
+        final other = evaluations.first;
+        expect(other.isReadable, isTrue, reason: name);
+        expect(other.unreadableReason, isNull);
+        expect(other.results.grades.map((g) => g.hasFeedback), [
+          false,
+          true,
+          false,
+        ], reason: name);
+      }
+    });
+
+    test('a period that mixes evaluations in points, on a scale and of an '
+        'unknown type: the scale read as points are, the unknown one '
+        'unreadable, the rest read (#193)', () {
+      final evaluations = _parse(_result(_mixedAnswer));
+      expect(evaluations.map((e) => e.id), [_pointsId, _scaleId, _unknownId]);
+      expect(evaluations.map((e) => e.type), [
+        SkoreEvaluationType.points,
+        SkoreEvaluationType.scale,
+        SkoreEvaluationType.unknown,
+      ]);
+      expect(evaluations.map((e) => e.typeCode), [1, 2, 3]);
+
+      final points = evaluations[0];
+      expect(points.isReadable, isTrue);
+      expect(points.results.grades.map((g) => g.grade), ['14', '9.5', null]);
+
+      // On a scale: the value Skore stores, out of max, with and without a
+      // value, and with feedback (with and without a value).
+      final scale = evaluations[1];
+      expect(scale.isReadable, isTrue);
+      expect(scale.max, 10);
+      expect(scale.results.grades.map((g) => g.pupilId), [1201, 1202, 1203]);
+      expect(scale.results.grades.map((g) => g.grade), ['10', '0', null]);
+      expect(scale.results.grades.map((g) => g.value), [10.0, 0.0, null]);
+      expect(scale.results.grades.map((g) => g.hasFeedback), [
+        true,
+        false,
+        true,
+      ]);
+      expect(scale.results.classAverage, '5');
+
+      // Of a type the library does not know: its cells are not read (they
+      // have no div.gbc here), and it is not read as one without grades.
+      final unknown = evaluations[2];
+      expect(unknown.isReadable, isFalse);
+      expect(
+        unknown.unreadableReason,
+        'its type, evaltype 3, is not one the library reads (1, points, or '
+        '2, a scale)',
+      );
+      expect(unknown.title, 'Attitudes');
+      expect(unknown.publication.state, SkorePublicationState.notPublished);
+      expect(
+        () => unknown.results,
+        throwsA(
+          isA<SmartschoolSkoreEvaluationUnreadableError>()
+              .having((e) => e.evaluationId, 'evaluationId', _unknownId)
+              .having((e) => e.typeCode, 'typeCode', 3),
+        ),
+      );
     });
   });
 
@@ -889,6 +1096,40 @@ void main() {
         gradebooks.getResults(_ewi, fresh),
         throwsA(_skoreError(contains('no longer lists evaluation $_newId'))),
       );
+    });
+
+    test('an evaluation the library cannot read now: its unreadable error, '
+        'not an empty list of grades (#193)', () async {
+      final (server, gradebooks) = await serve();
+      final scheduled = (await gradebooks.getEvaluations(_ewi, 1704)).last;
+      // Skore now gives a cell of it in a shape the library does not know.
+      server.evaluations
+        ..clear()
+        ..add(
+          _ok(
+            _evaluationsAnswer.replaceFirst(
+              r'<div class=\"gbc\" raw=\"79\">79</div>',
+              r'<div class=\"gbc_scale\">G</div>',
+            ),
+          ),
+        );
+
+      await expectLater(
+        gradebooks.getResults(_ewi, scheduled),
+        throwsA(
+          isA<SmartschoolSkoreEvaluationUnreadableError>()
+              .having((e) => e.evaluationId, 'evaluationId', _scheduledId)
+              .having(
+                (e) => e.reason,
+                'reason',
+                'the cell of row "pupil_1201_2440" has no value (a div.gbc '
+                    'with its raw)',
+              ),
+        ),
+      );
+      // The period itself is still read.
+      final evaluations = await gradebooks.getEvaluations(_ewi, 1704);
+      expect(evaluations.map((e) => e.isReadable), [true, false]);
     });
 
     test('an evaluation of another gradebook is refused before anything is '

@@ -102,6 +102,9 @@ const _skoreResults = {
   'init':
       '{"periods":[{"id":"1704","name":"DW1","open":1,'
       '"timestamp":"2026-12-18T20:00:00+0100"}],"activePeriodE":0,'
+      '"reports":[{"id":"2762","name":"R1D","fullname":"Rapport 1",'
+      '"open":1,"type":"a","rating":0,'
+      '"timestamp":"2026-10-30T23:00:00+0100"}],'
       '"ownerMap":[{"ownerID":"32508","classID":"2440",'
       '"coursename":"Informatica"}],"left_0":{"stream":[{"c":0,'
       '"r":"pupil_1201_2440","v":"<span>1.  Aerts, An</span>"}]}}',
@@ -117,8 +120,27 @@ const _skoreResults = {
       r'"v":"<div class=\"gbc\" raw=\"15\">15</div><span '
       r'class=\"gbc_message_place gbc_message\"></span>",'
       '"p":[1,0,"500001","32508",500001]}]}}',
+  // #195: report R1D of 6EWI, with An's result and course comment.
+  'getReportsResults':
+      '{"courses":{"colHeader":{"sort":[2264]},"stream":[{"c":2264,"r":0,'
+      r'"v":"<div class=\"gbcourse\">Informatica</div>"}]},'
+      '"comps":{"colHeader":{"sort":["2264_1","2264_info"]},"stream":['
+      r'{"c":"2264_1","r":0,"v":"<div class=\"gbcomps\">DW</div>"},'
+      r'{"c":"2264_info","r":0,"v":"<div class=\"gbcomps\">Vakcommentaar'
+      r'</div>"}]},"results":{"stream":[{"c":"2264_1","r":"pupil_1201_2440",'
+      r'"v":"<div class=\"gbc\">75</div>"},{"c":"2264_info",'
+      r'"r":"pupil_1201_2440","v":"<div class=\"gbinfo readonly '
+      r'extern-editor\">Goed gewerkt.</div>","p":[1,2762]}]},'
+      '"length":"1600"}',
   'getNewEvalDialogBox': '[["2264","Informatica"]]',
   'getPosComponents': '[[0,"geen"],["2","DW"]]',
+  // #191: a gradebook a colleague (888) shared with the user to write.
+  'accessableList':
+      '[{"id":"888_34980","userId":"888","ownerId":"34980","courseId":"1588",'
+      '"writable":1,"username":"Piet Peeters","classcourse":'
+      '"6EWI/Digitale vaardigheden","navigation":{"pathIds":["176","472",'
+      '"2440"],"data":{"classID":"2440","courseID":"1588","groupID":"472",'
+      '"modelID":"176","ownerID":"34980","userID":"888"}}}]',
 };
 
 /// The start page, where the client reads the own user (777, #148).
@@ -1428,6 +1450,22 @@ void main() {
       expect(guard.violations, isEmpty);
     });
 
+    test('the read of the gradebooks shared with the user (#191)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+
+      final shared = await gradebooks.getSharedGradebooks();
+
+      expect(shared.single.gradebookId, 34980);
+      expect(shared.single.access, SkoreGradebookAccess.write);
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook accessableList',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
     test("the reads of a gradebook's evaluations, grades and feedback "
         '(#149)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
@@ -1522,7 +1560,45 @@ void main() {
       expect(_violations(guard), [
         allOf(
           contains('POST $_skoreGradebook was not sent'),
-          contains('no saveEvaluation or saveGrade'),
+          contains('no saveEvaluation, saveGrade or saveType'),
+        ),
+      ]);
+    });
+
+    test('the read of a report, and the reads of saveReportComment, never '
+        'its save (#195)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+      final book = (await gradebooks.getGradebooks()).single;
+
+      final report = await gradebooks.getReport(book, 2762);
+      // Every check of the service passes: only the guard stops the save.
+      await expectLater(
+        gradebooks.saveReportComment(
+          book,
+          2762,
+          1201,
+          'Zeer goed gewerkt.',
+          replacing: 'Goed gewerkt.',
+        ),
+        throwsA(isA<SmartschoolSkoreReportCommentSaveUnconfirmedError>()),
+      );
+
+      expect(report.pupils.single.comment!.text, 'Goed gewerkt.');
+      expect(report.pupils.single.results.single.value, '75');
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook getReportsResults',
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook init',
+        '$_skoreGradebook getReportsResults',
+        // saveType: refused by the guard
+      ]);
+      expect(_violations(guard), [
+        allOf(
+          contains('POST $_skoreGradebook was not sent'),
+          contains('no saveEvaluation, saveGrade or saveType'),
         ),
       ]);
     });
@@ -3175,7 +3251,7 @@ void main() {
     });
 
     test('a save in Skore, and any other Skore POST but its reads, its REST '
-        'API included (#91, #148-#152)', () async {
+        'API included (#91, #148-#152, #195)', () async {
       final server = _Smartschool(replyForm: _replyFormFromOwn);
       final (client, guard) = await _guardedClient(server);
       final dio = _dio(server, guard);
@@ -3198,6 +3274,7 @@ void main() {
         (_skoreGradebooks, 'deleteTeacher'),
         (_skoreGradebooks, 'getTeachers'),
         (_skoreGradebook, 'gradebooksToAccess'),
+        (_skoreGradebook, 'usersThatCanAccess'), // shares a gradebook
         // The gradebook's writes, its publishing above all (#148), and its
         // reads on the other services.
         (_skoreGradebook, 'setPublicProp'),
@@ -3208,6 +3285,14 @@ void main() {
         (_skoreGradebook, 'saveGrade'),
         (_skoreGradebook, 'saveGradeColumn'),
         (_skoreGradebook, 'saveGradeInfo'),
+        // A report's writes (#195): its course comment, the calculation of
+        // a report; and the comment editor's own service.
+        (_skoreGradebook, 'saveType'),
+        (_skoreGradebook, 'calculateGrowReport'),
+        (
+          '/modules/Skore/backend/gradebook/commenteditorRpc.php',
+          'saveComment',
+        ),
         (_skoreGradebooks, 'getNavigation'),
         (_skoreOwners, 'init'),
         (_skoreOwners, 'getEvaluations'),

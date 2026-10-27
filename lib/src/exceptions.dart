@@ -27,7 +27,8 @@ import 'models/presence_models.dart'
         PresenceHalfDay,
         PresenceSaveError,
         PresenceUnreadableAnswerKind;
-import 'models/skore_gradebook_models.dart' show SkoreEvaluation, SkoreGrade;
+import 'models/skore_gradebook_models.dart'
+    show SkoreEvaluation, SkoreGrade, SkoreGradebook;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1535,7 +1536,10 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// ID that is not positive or a blank text (before anything is sent); the
 /// gradebook, period, evaluation and pupil checks of `saveGrade` (not the
 /// points); the user's own feedback for the pupil that Skore does not let
-/// them change (`can_edit`), or more than one of it.
+/// them change (`can_edit`), or more than one of it. For a gradebook a
+/// colleague shared with the user (#191): one shared to read only
+/// ([SmartschoolSkoreGradebookReadOnlyError], a subtype), one no longer
+/// shared with them, and, for `createEvaluation`, any shared gradebook.
 ///
 /// Its message says which check refused and why, with the IDs (and the
 /// course label, evaluation title or teacher name it read), and quotes
@@ -1546,6 +1550,39 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// refused change but a plain [SmartschoolSkoreError] (nothing saved either).
 class SmartschoolSkoreChangeRefusedError extends SmartschoolSkoreError {
   const SmartschoolSkoreChangeRefusedError(super.message);
+}
+
+/// Thrown when the grades of an evaluation that `SkoreGradebookService`
+/// could not read are asked for (`SkoreEvaluation.results`, and so
+/// `SkoreGradebookService.getResults`) (#193): an evaluation of a type the
+/// library does not know (Skore's `evaltype`, in [typeCode]), or one whose
+/// cells are in a shape it does not recognise.
+///
+/// `getEvaluations` reads the rest of the period: such an evaluation comes
+/// back with `SkoreEvaluation.isReadable` `false` and its
+/// `unreadableReason`, so that it is never read as one without grades. An
+/// app can tell the user "this evaluation cannot be read yet" ([reason]),
+/// apart from an answer the service cannot use at all.
+///
+/// A [SmartschoolSkoreError], so `catch` clauses for that type keep catching
+/// it. Its message names the evaluation, its period and gradebook by their
+/// IDs, its title and the reason, and quotes nothing of Skore's answer.
+class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
+  /// The evaluation (`SkoreEvaluation.id`, Skore's `refID`).
+  final int evaluationId;
+
+  /// Skore's `evaltype` of the evaluation (`1` points, `2` a scale).
+  final int typeCode;
+
+  /// Why the library could not read it (`SkoreEvaluation.unreadableReason`).
+  final String reason;
+
+  const SmartschoolSkoreEvaluationUnreadableError(
+    super.message, {
+    required this.evaluationId,
+    required this.typeCode,
+    required this.reason,
+  });
 }
 
 /// Thrown by `SkoreService.replaceTeacher` when the current teacher of the
@@ -1580,6 +1617,36 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreChangeRefusedError {
     required this.courseId,
     required this.teacherId,
     this.teacherName,
+  });
+}
+
+/// Thrown by the writes of `SkoreGradebookService` (`saveGrade`,
+/// `saveGrades`, `saveFeedback`, `createEvaluation`) for a gradebook a
+/// colleague shared with the user **to read only**
+/// (`SkoreGradebookAccess.read`, #191): the user may read it, not change it.
+/// **Nothing was saved.**
+///
+/// Thrown before anything is sent when the gradebook passed is one shared
+/// to read only; and, for one passed as shared to write, when Skore's list
+/// of the gradebooks shared with the user, read again right before the
+/// save, shows it shared to read only now. So an app can tell the user "you
+/// may only read this gradebook", apart from the other refusals.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the gradebook and its teacher by their
+/// IDs, and no name.
+class SmartschoolSkoreGradebookReadOnlyError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The gradebook as the check read it: the one passed, or as Skore's list
+  /// of shared gradebooks gives it right before the save. Its `access` is
+  /// `SkoreGradebookAccess.read`, its `teacherId` the colleague who shared
+  /// it.
+  final SkoreGradebook gradebook;
+
+  const SmartschoolSkoreGradebookReadOnlyError(
+    super.message, {
+    required this.gradebook,
   });
 }
 
@@ -2409,6 +2476,47 @@ class SmartschoolSkoreFeedbackSaveUnconfirmedError
     required this.text,
     required this.isUpdate,
     this.feedbackId,
+  });
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreGradebookService.saveReportComment` (#195): the course comment
+/// went out to Skore (its gradebook's `saveType`), but Skore's answer, or
+/// reading the report again afterwards, does not confirm it. Its message
+/// says what went wrong.
+///
+/// **It may or may not have been saved.** Saving it again is harmless: the
+/// save sends the whole text, and replaces the pupil's comment. Read the
+/// report again (`SkoreGradebookService.getReport`): pass the comment it
+/// shows as `replacing` to save it again.
+///
+/// Thrown when Skore answers the save with another result than `savedState`
+/// 1, with another status than `200` (such as a `500`) or with an answer
+/// that is not JSON; when no answer came in ([cause] holds the failure,
+/// typically a [SmartschoolConnectionError]); and when reading the report
+/// again fails ([cause]), shows no comment for the pupil, or shows another
+/// text.
+class SmartschoolSkoreReportCommentSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook of the report (its `gradebookId`).
+  final int gradebookId;
+
+  /// The report (its `SkoreReportPeriod.id`).
+  final int reportId;
+
+  /// The pupil the comment is for (their Smartschool user ID).
+  final int pupilId;
+
+  /// The text sent, as the service sends it (trimmed, each line trimmed).
+  final String text;
+
+  const SmartschoolSkoreReportCommentSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.gradebookId,
+    required this.reportId,
+    required this.pupilId,
+    required this.text,
   });
 }
 

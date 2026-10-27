@@ -645,10 +645,20 @@ void main() {
   test('saveGrade joins the allowlist; saveGradeColumn, saveGradeInfo and '
       'the publishing calls do not', () {
     expect(SkoreGradebookService.rpcMethods, contains('saveGrade'));
+    // saveType joined it for the course comment of a report (#195), with
+    // the type info only: never the symbols of a grade.
+    expect(
+      () => SkoreGradebookService.checkRpcCall('saveType', [
+        'sym',
+        '500003',
+        'pupil_1201_2440',
+        'A',
+      ]),
+      throwsA(isA<ArgumentError>()),
+    );
     for (final method in [
       'saveGradeColumn',
       'saveGradeInfo',
-      'saveType',
       'getEvaluationIDByOwnerID',
       'setPublicProp',
       'saveEvalProperties',
@@ -990,6 +1000,15 @@ void main() {
           'comes from the planner (isPlannerEval 1)',
         ),
         'on a scale': (_dw1(), _scale, 'is not in points (evaltype 2)'),
+        // #193: one of a type the library does not know, which it cannot
+        // read.
+        'of an unknown type': (
+          [_Evaluation(_toets, evaltype: 3)],
+          _toets,
+          'the library cannot read evaluation $_toets ("Toets 1") in period '
+              'DW1 (1704) of gradebook 32508: its type, evaltype 3, is not one '
+              'the library reads (1, points, or 2, a scale)',
+        ),
         'without a highest grade': (
           [_Evaluation(_toets, max: null)],
           _toets,
@@ -1267,6 +1286,35 @@ void main() {
           ),
         ),
       );
+
+      // #193: the read afterwards gives a cell of it in a shape the library
+      // does not know. Unconfirmed, not a refusal: the save went out.
+      var reads = 0;
+      server = _Skore(
+        listAs: (result) {
+          if (reads++ != 2) return;
+          final details = result['details']! as Map<String, Object?>;
+          for (final cell in details['stream']! as List) {
+            if ((cell as Map)['c'] == '$_toets') cell['v'] = '<div>G</div>';
+          }
+        },
+      );
+      (gradebooks, evaluation) = await ready(server);
+      await expectLater(
+        gradebooks.saveGrade(_ewi, evaluation, _an, '15'),
+        throwsA(
+          _unconfirmed(
+            grades: {_an: '15'},
+            unconfirmed: {
+              _an:
+                  'reading the period again, the library cannot read the '
+                  'evaluation (the cell of row "pupil_${_an}_2440" has no '
+                  'value (a div.gbc with its raw))',
+            },
+          ),
+        ),
+      );
+      expect(server.saves, hasLength(1));
     });
 
     test('Skore answers the first save without a session: the session '

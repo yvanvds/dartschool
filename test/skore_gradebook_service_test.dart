@@ -259,21 +259,59 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('the methods of the gradebook RPC service', () {
-    test('are the reads, the save of a new evaluation and the save of a '
-        'grade, nothing else', () {
+    test('are the reads, the save of a new evaluation, the save of a grade '
+        'and the save of a course comment, nothing else', () {
       expect(SkoreGradebookService.rpcMethods, {
         'getNavigation',
         'init',
         'getGradebookContext',
         'getEvaluations', // #149
+        'accessableList', // #191, the gradebooks shared with the user
         'getNewEvalDialogBox', // #150
         'getPosComponents', // #150
         'saveEvaluation', // #150, always unpublished
         'saveGrade', // #151, the grade of one pupil
+        'getReportsResults', // #195, a report period
+        'saveType', // #195, with the type info only: a course comment
       });
       for (final method in SkoreGradebookService.rpcMethods) {
         SkoreGradebookService.checkRpcMethod(method); // does not throw
       }
+    });
+
+    test('saveType goes out with the type info only (#195): never the '
+        'symbols of a grade, nor any other type', () {
+      SkoreGradebookService.checkRpcCall('saveType', [
+        'info',
+        '2264_info',
+        'pupil_1201_2440',
+        'Goed gewerkt.',
+        ['1', '2762'],
+        ['176', '472', '2440'],
+      ]); // does not throw
+      for (final params in [
+        <Object?>['sym', '2264_sym', 'pupil_1201_2440', 'A'],
+        <Object?>['INFO'],
+        <Object?>[null],
+        <Object?>[],
+      ]) {
+        expect(
+          () => SkoreGradebookService.checkRpcCall('saveType', params),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              contains('nothing was sent'),
+            ),
+          ),
+          reason: '$params',
+        );
+      }
+      // The other checks hold for checkRpcCall too.
+      expect(
+        () => SkoreGradebookService.checkRpcCall('setPublicProp', ['info']),
+        throwsA(isA<ArgumentError>()),
+      );
     });
 
     test('any other is refused, the publishing and deleting ones too', () {
@@ -292,10 +330,16 @@ void main() {
         'getAllComponents', // not needed: getPosComponents names them
         'getMyUsedTypesAndSystemTypes',
         'saveGradeColumn', // one grade on several rows (#151)
-        'saveType', // symbols instead of a grade (#151)
         'getEvaluationIDByOwnerID',
+        // A report's other calls (#195): its calculation, and the comment
+        // editor's archive.
+        'calculateGrowReport',
+        'checkProcess',
+        'peek',
+        'saveTextToArchive',
+        'unlockReport', // the admin side's: never sent
         'saveGradeInfo',
-        'usersThatCanAccess',
+        'usersThatCanAccess', // shares a gradebook (#191: never sent)
         'gradebooksToAccess',
         'getGradeInfo',
         '',

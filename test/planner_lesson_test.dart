@@ -84,6 +84,7 @@ const _login = [
   'GET /',
   'GET /2fa/api/v1/config',
   'POST /2fa/api/v1/google-authenticator',
+  'GET /',
 ];
 
 /// An empty lesson hour of the own planner on Friday 20 November 2026 (winter

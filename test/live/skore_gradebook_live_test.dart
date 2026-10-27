@@ -10,6 +10,42 @@
 // (#151) and saveFeedback (#152): a published or scheduled evaluation, an
 // earlier school year (and, for saveFeedback, a blank text).
 //
+// For #191 it reads the gradebooks colleagues shared with the account
+// (getGradebookYear with includeShared, accessableList), and one of them as
+// Skore's web client opens it, in the name of its teacher and restricted to
+// it; and checks that the writes refuse one shared to read only, and
+// createEvaluation any shared one, before anything is sent. Skipped when no
+// gradebook is shared with the account.
+//
+// For #195 it reads the report periods of a gradebook and its report, with
+// each pupil's results and course comment (getReport, Skore's
+// getReportsResults), of an own gradebook, of the behaviour gradebook and of
+// gradebooks shared with the account, and a course that is not on the report
+// (Skore's 404); and checks that saveReportComment refuses before its save
+// (a comment other than the one passed as replacing, a text too long, an
+// earlier school year), so that its saveType never goes out: a comment goes
+// on a real report, and its live write waits for the developer's go-ahead.
+// It prints counts only: no comment text and no result.
+//
+// For #193 it reads the scale of the evaluations on a scale (getScale: the
+// GETs of the gradebook's page and of its frame, as Skore's web client
+// loads them), and checks that every evaluation it reads is one the
+// library can read. It prints counts and thresholds only: no level's name.
+//
+// For #192 it reads a gradebook without evaluation periods (the developer's
+// behaviour gradebook, 35158, which has only a report period; skipped when
+// the account has no such gradebook), and, last, a gradebook in a session
+// that expired: it clears the client's cookies, so that `init` goes out
+// without a session, which Skore answers with a redirect to `/`; the client
+// logs in, sends it again and reads the gradebook (with 2FA, as on the
+// developer's account, only because the login opens the start page after
+// the 2FA step: Skore refuses the new session the same way until then).
+// That needs the one login
+// a live run may make (LiveWireGuard refuses a second): when the run logged
+// in already, because the session it found in the live cache had expired,
+// that test skips; run the file again, and it starts in the session that
+// login saved.
+//
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
 // files, `dart test -P live test/live/skore_gradebook_live_test.dart` alone.
@@ -20,12 +56,21 @@
 // grades and feedback, to be published on 2026-10-09 08:00), and skips those
 // checks when the account has no such gradebook.
 //
+// When a period closes is the school's to set, and it moves it (#198: DW1's
+// closing time moved after #148). So no test expects a closing time, or
+// that a period is open: each checks a period's closing time against the
+// rest of Skore's answer (its info, whether it is open, the school year),
+// and expects of a period, open or closed, what Skore does for that state
+// (the refusals of saveGrade and saveFeedback, the rights).
+//
 // It only reads, and changes nothing in Skore, which drives the school's
 // grading and has no test instance: getNavigation, init,
-// getGradebookContext, getEvaluations, getNewEvalDialogBox and
-// getPosComponents of Skore's gradebook RPC service, and the GET of a
-// pupil's feedback of its REST API; never saveEvaluation or saveGrade, nor
-// a POST of a feedback (#152) to that API. The service refuses any other
+// getGradebookContext, getEvaluations, getNewEvalDialogBox,
+// getPosComponents, accessableList and getReportsResults of Skore's
+// gradebook RPC service, the GET of a pupil's feedback of its REST API, and
+// the GETs of the gradebook's page and frame (#193);
+// never saveEvaluation, saveGrade or saveType (#195), nor a POST of a
+// feedback (#152) to that API. The service refuses any other
 // method of that service itself (SkoreGradebookService.rpcMethods), and the
 // wire guard (support/live_wire_guard.dart) refuses every Skore POST but
 // those reads (and the two reads of the admin side), its REST API included.
@@ -38,7 +83,9 @@
 @Tags(['live'])
 library;
 
+import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
+import 'package:flutter_smartschool/src/models/lvs_time.dart';
 import 'package:test/test.dart';
 
 import 'support/live_client.dart';
@@ -49,13 +96,77 @@ const _testGradebookId = 32508;
 
 /// 6EWI's period DW1, and its evaluation with grades and feedback (#149),
 /// which is published from 2026-10-09 08:00 (CEST). Read only: never
-/// written to.
+/// written to. The school sets when DW1 closes, and moves it (#198): the
+/// tests read that, and whether DW1 is open, from Skore.
 const _testPeriodId = 1704;
 const _testEvaluationId = 395742;
 
 /// The developer's gradebook of 5BW in 2025-2026, whose evaluations are
 /// published (#149); read only.
 const _earlierGradebookId = 28998;
+
+/// The developer's behaviour gradebook of 2026-2027 (#192): no evaluation
+/// periods, only a report period. Read only.
+const _behaviourGradebookId = 35158;
+
+/// The developer's gradebook of 5WW1, Digitale vaardigheden (the live test
+/// spot of #70), whose course is not on the report of 2026-2027: Skore
+/// answers its report with HTTP 404 (seen live, #195). Read only.
+const _notOnReportGradebookId = 34826;
+
+/// The closing time in the info of an open report, in Belgian time: "Open
+/// tot 2026-10-30 23:00" (#195).
+final _reportInfoCloses = RegExp(r'Open tot\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})');
+
+/// The opening and closing time in the info of an open period, in Belgian
+/// time: "Open van 2026-09-18 15:30<br/> tot en met 2026-12-18 20:00"
+/// (#198). A closed period's info says "Gesloten!" instead.
+final _infoOpens = RegExp(r'Open van\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})');
+final _infoCloses = RegExp(r'tot en met\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})');
+
+/// A school year's name, "2026-2027".
+final _schoolYearName = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
+
+/// [instant] in Belgian time to the minute, as a period's info gives it:
+/// `2026-12-18 20:00`.
+String _belgianMinute(DateTime instant) {
+  final wall = brusselsWallTime(instant);
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${isoDay(wall)} ${two(wall.hour)}:${two(wall.minute)}';
+}
+
+/// Records Skore's answer to every call of its gradebook RPC service, as
+/// (method, status, `Location`), as it comes in: the first interceptor, so
+/// that it sees an answer that the client's login handles too (#192).
+class _RpcAnswers extends Interceptor {
+  final List<(String, int?, String?)> answers = [];
+
+  @override
+  void onResponse(Response<dynamic> response, ResponseInterceptorHandler h) {
+    final options = response.requestOptions;
+    final data = options.data;
+    if (options.uri.path == '/modules/Skore/backend/gradebook/rpc.php' &&
+        data is Map) {
+      answers.add((
+        '${data['rpc_method']}',
+        response.statusCode,
+        response.headers.value('location'),
+      ));
+    }
+    h.next(response);
+  }
+}
+
+/// Records every request the client sends, as `METHOD path`.
+class _Sent extends Interceptor {
+  final List<String> requests = [];
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler h) {
+    requests.add('${options.method} ${options.uri.path}');
+    h.next(options);
+  }
+}
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -100,9 +211,57 @@ void main() {
         }
       }
 
-      /// Checks [sheet], [book] as getGradebook reads it, and prints it
-      /// without names.
-      void expectSheet(SkoreGradebook book, SkoreGradebookSheet sheet) {
+      /// Checks the closing time of [period], of a gradebook of school year
+      /// [workyear] read from [readFrom] on, against the rest of Skore's
+      /// answer, never against a date: the school sets it and moves it
+      /// (#198). A period may have none.
+      void expectClosingTime(
+        SkoreGradebookPeriod period,
+        SkoreWorkyear workyear,
+        DateTime readFrom,
+      ) {
+        final closesAt = period.closesAt;
+        if (closesAt == null) return;
+        final where = 'period ${period.name} (${period.id})';
+        expect(closesAt.isUtc, isTrue, reason: where);
+        final years = _schoolYearName.firstMatch(workyear.name.trim());
+        if (years != null) {
+          expect(
+            brusselsWallTime(closesAt).year,
+            anyOf(int.parse(years[1]!), int.parse(years[2]!)),
+            reason: '$where closes in school year ${workyear.name}',
+          );
+        }
+        // Skore closes a period at its closing time.
+        if (period.isOpen) {
+          expect(
+            closesAt.isAfter(readFrom),
+            isTrue,
+            reason: '$where is open: it closes later',
+          );
+        }
+        final closes = _infoCloses.firstMatch(period.info)?[1];
+        if (closes != null) {
+          expect(_belgianMinute(closesAt), closes, reason: '$where: its info');
+          final opens = _infoOpens.firstMatch(period.info)?[1];
+          if (opens != null) {
+            expect(
+              opens.compareTo(closes),
+              isNegative,
+              reason: '$where opens before it closes',
+            );
+          }
+        }
+      }
+
+      /// Checks [sheet], [book] of school year [workyear] as getGradebook
+      /// reads it from [readFrom] on, and prints it without names.
+      void expectSheet(
+        SkoreGradebook book,
+        SkoreGradebookSheet sheet,
+        SkoreWorkyear workyear,
+        DateTime readFrom,
+      ) {
         print(
           'gradebook ${book.gradebookId} (class ${book.classId}, course '
           '${book.courseId}, school year ${book.workyearId}): periods '
@@ -117,6 +276,9 @@ void main() {
         expect(sheet.courseName, isNotEmpty);
         expect(sheet.periods, isNotEmpty);
         expect(sheet.periods, contains(sheet.activePeriod));
+        for (final period in sheet.periods) {
+          expectClosingTime(period, workyear, readFrom);
+        }
         expect(sheet.pupils, isNotEmpty);
         final pupilIds = sheet.pupils.map((p) => p.id).toList();
         expect(pupilIds.toSet(), hasLength(pupilIds.length));
@@ -164,17 +326,62 @@ void main() {
                 .firstOrNull ??
             year.gradebooks.first;
 
+        final readFrom = DateTime.now();
         final sheet = await gradebooks.getGradebook(book);
 
-        expectSheet(book, sheet);
+        expectSheet(book, sheet, year.workyear, readFrom);
         if (book.gradebookId == _testGradebookId) {
           expect(sheet.courseName, 'Informaticawetenschappen (2 uur)');
-          final dw1 = sheet.periods.where((p) => p.id == 1704).single;
+          final dw1 = sheet.periods.where((p) => p.id == _testPeriodId).single;
           expect(dw1.name, 'DW1');
-          expect(dw1.closesAt, DateTime.utc(2026, 12, 18, 19));
-          expect(sheet.writable, isTrue);
+          // Set, and checked by expectSheet against the info, which gives it
+          // while DW1 is open: the school moves it (#198).
+          expect(dw1.closesAt, isNotNull);
+          if (dw1.isOpen) expect(dw1.info, matches(_infoCloses));
+          // The own gradebook takes grades in an open period. In a closed
+          // one Skore may answer either: writable 1 was seen for a closed
+          // period of an earlier school year (#148).
+          if (sheet.activePeriod!.isOpen) {
+            expect(sheet.writable, isTrue, reason: 'an open period');
+          }
           expect(sheet.pupils.map((p) => p.number), everyElement(isNotNull));
         }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test('getGradebook reads a gradebook without evaluation periods: the '
+          'behaviour gradebook $_behaviourGradebookId (#192)', () async {
+        final book = year.gradebooks
+            .where((g) => g.gradebookId == _behaviourGradebookId)
+            .firstOrNull;
+        if (book == null) {
+          markTestSkipped(
+            'no gradebook $_behaviourGradebookId in this account',
+          );
+          return;
+        }
+        final answers = _RpcAnswers();
+        run.client.dio.interceptors.insert(0, answers);
+        addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+        final sheet = await gradebooks.getGradebook(book);
+
+        print(
+          'gradebook ${book.gradebookId} (class ${book.classId}, course '
+          '${book.courseId}): ${sheet.periods.length} periods, '
+          '${sheet.pupils.length} pupils, writable ${sheet.writable}',
+        );
+        expect(sheet.gradebook, same(book));
+        expect(sheet.periods, isEmpty);
+        expect(sheet.activePeriod, isNull);
+        expect(sheet.writable, isFalse);
+        expect(sheet.pupils, isNotEmpty);
+        for (final pupil in sheet.pupils) {
+          expect(pupil.classId, book.classId);
+          expect(pupil.name, contains(','));
+        }
+        // Without periods, getGradebookContext is not asked.
+        expect(answers.answers, [('init', 200, null)]);
         expect(run.guard.violations, isEmpty);
       });
 
@@ -204,8 +411,21 @@ void main() {
                 .where((g) => g.gradebookId == _earlierGradebookId)
                 .firstOrNull ??
             older.gradebooks.first;
+        final readFrom = DateTime.now();
         final sheet = await gradebooks.getGradebook(book);
-        expectSheet(book, sheet);
+        expectSheet(book, sheet, older.workyear, readFrom);
+
+        // The components of a closed period, as DW1 of 6EWI is once its
+        // closing time has passed (#198): read as those of an open one.
+        final closed = sheet.periods.where((p) => !p.isOpen).firstOrNull;
+        if (closed != null) {
+          final components = await gradebooks.getComponents(book, closed.id);
+          print(
+            'gradebook ${book.gradebookId}, closed period ${closed.name}: '
+            '${components.length} components',
+          );
+          expect(components.where((c) => c.isNone), hasLength(1));
+        }
 
         // Its evaluations (#149), of the first period that has any:
         // published long ago, as far as they are public.
@@ -249,6 +469,28 @@ void main() {
         return (book, sheet, periodId);
       }
 
+      /// What a write into [evaluation], a published or scheduled one of
+      /// [sheet], without allowPublished, is refused for: its period first,
+      /// when Skore gives that closed (as DW1 of 6EWI once its closing time,
+      /// which the school sets, has passed: #198) or read-only; else its
+      /// publication.
+      String publicRefusal(
+        SkoreGradebookSheet sheet,
+        SkoreEvaluation evaluation,
+      ) {
+        final period = sheet.periods
+            .where((p) => p.id == evaluation.periodId)
+            .single;
+        if (!period.isOpen) return 'is closed';
+        if (period.id == sheet.activePeriod?.id &&
+            (!sheet.writable || sheet.isCoordinator)) {
+          return 'read-only to you';
+        }
+        return evaluation.publication.state == SkorePublicationState.scheduled
+            ? 'is scheduled to be published'
+            : 'is published';
+      }
+
       test('getEvaluations reads the evaluations of a period with their '
           'publication and grades (#149)', () async {
         final (book, sheet, periodId) = await evaluationSpot();
@@ -262,6 +504,14 @@ void main() {
 
         final pupilIds = sheet.pupils.map((p) => p.id).toSet();
         for (final evaluation in evaluations) {
+          // #193: every evaluation seen live is one the library reads.
+          expect(
+            evaluation.isReadable,
+            isTrue,
+            reason:
+                'evaluation ${evaluation.id} (evaltype '
+                '${evaluation.typeCode}): ${evaluation.unreadableReason}',
+          );
           final grades = evaluation.results.grades;
           final publication = evaluation.publication;
           print(
@@ -426,6 +676,37 @@ void main() {
       // it reads, and never sends its save (the wire guard refuses
       // saveEvaluation as well, and would list it as a violation). The live
       // write itself is the developer's, with the example, on their go-ahead.
+      test("getScale reads the school's scale, as the gradebook's frame "
+          'gives it (#193)', () async {
+        final scale = await gradebooks.getScale();
+        print(
+          'scale: ${scale.levels.length} levels, thresholds '
+          '${[for (final l in scale.levels) l.lowerThreshold]}, values '
+          '${[for (final l in scale.levels) l.value]}, '
+          '${scale.levels.where((l) => l.graphic != null).length} with a '
+          'graphic',
+        );
+        expect(scale.id, isNotEmpty);
+        expect(scale.name, isNotEmpty);
+        expect(scale.levels, isNotEmpty);
+        final ids = scale.levels.map((l) => l.id).toList();
+        expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+        for (final level in scale.levels) {
+          expect(level.description, isNotEmpty);
+          expect(level.abbreviation, isNotEmpty);
+          expect(level.lowerThreshold, inInclusiveRange(0, 100));
+          expect(level.value, inInclusiveRange(0, 100));
+        }
+        // Every percentage has a level when the lowest starts at 0, as seen
+        // live; and the highest percentage has the last level's.
+        if (scale.levels.any((l) => l.lowerThreshold == 0)) {
+          for (var percentage = 0; percentage <= 100; percentage++) {
+            expect(scale.levelForPercentage(percentage), isNotNull);
+          }
+        }
+        expect(run.guard.violations, isEmpty);
+      });
+
       group('createEvaluation refuses before its save (#150):', () {
         Matcher refused(String reason) =>
             isA<SmartschoolSkoreChangeRefusedError>().having(
@@ -468,10 +749,14 @@ void main() {
         test('a date outside the school year, and a component Skore does not '
             'offer, in an open period of the own gradebook', () async {
           final (book, sheet, periodId) = await evaluationSpot();
-          final period = sheet.periods
-              .where((p) => p.id == periodId)
-              .firstOrNull;
-          if (period == null || !period.isOpen || !sheet.writable) {
+          // DW1 of 6EWI while it is open, else the period Skore opens the
+          // gradebook on, while that is open: the school sets when a period
+          // closes (#198).
+          final period = [
+            ...sheet.periods.where((p) => p.id == periodId),
+            ?sheet.activePeriod,
+          ].where((p) => p.isOpen).firstOrNull;
+          if (period == null || !sheet.writable) {
             markTestSkipped(
               'no open period in gradebook ${book.gradebookId} to try it in',
             );
@@ -523,7 +808,7 @@ void main() {
         test(
           'a published or scheduled evaluation, without allowPublished',
           () async {
-            final (book, _, periodId) = await evaluationSpot();
+            final (book, sheet, periodId) = await evaluationSpot();
             final evaluations = periodId == null
                 ? const <SkoreEvaluation>[]
                 : await gradebooks.getEvaluations(book, periodId);
@@ -547,13 +832,7 @@ void main() {
 
             await expectLater(
               gradebooks.saveGrade(book, public, pupil.pupilId, '1'),
-              throwsA(
-                refused(
-                  public.publication.state == SkorePublicationState.scheduled
-                      ? 'is scheduled to be published'
-                      : 'is published',
-                ),
-              ),
+              throwsA(refused(publicRefusal(sheet, public))),
             );
             expect(run.guard.violations, isEmpty);
           },
@@ -622,7 +901,7 @@ void main() {
 
         test('a published or scheduled evaluation, without allowPublished; a '
             'blank text, before anything is sent', () async {
-          final (book, _, periodId) = await evaluationSpot();
+          final (book, sheet, periodId) = await evaluationSpot();
           final evaluations = periodId == null
               ? const <SkoreEvaluation>[]
               : await gradebooks.getEvaluations(book, periodId);
@@ -644,13 +923,7 @@ void main() {
 
           await expectLater(
             gradebooks.saveFeedback(book, public, pupil.pupilId, 'Test'),
-            throwsA(
-              refused(
-                public.publication.state == SkorePublicationState.scheduled
-                    ? 'is scheduled to be published'
-                    : 'is published',
-              ),
-            ),
+            throwsA(refused(publicRefusal(sheet, public))),
           );
           await expectLater(
             gradebooks.saveFeedback(
@@ -709,6 +982,525 @@ void main() {
         );
       });
 
+      // The gradebooks colleagues shared with the account (#191), read as
+      // Skore's web client opens them; skipped when none is shared with it.
+      // Every gradebook shared with the developer's account was shared to
+      // write, and had no evaluation (2026-10-27). No write goes out: the
+      // writes are tried only where they refuse before anything is sent.
+      group('gradebooks shared with the user (#191):', () {
+        late SkoreGradebookYear withShared;
+
+        setUpAll(() async {
+          withShared = await gradebooks.getGradebookYear(includeShared: true);
+        });
+
+        /// The shared gradebook to read: one with periods, if any.
+        Future<(SkoreGradebook, SkoreGradebookSheet)?> sharedSpot() async {
+          SkoreGradebookSheet? first;
+          for (final book in withShared.sharedGradebooks) {
+            final sheet = await gradebooks.getGradebook(book);
+            first ??= sheet;
+            if (sheet.periods.isNotEmpty) return (book, sheet);
+          }
+          return first == null ? null : (first.gradebook, first);
+        }
+
+        test('getGradebookYear(includeShared: true) lists them, each once, '
+            'with their teacher and the access, apart from the own', () {
+          final shared = withShared.sharedGradebooks;
+          final toWrite = shared
+              .where((b) => b.access == SkoreGradebookAccess.write)
+              .length;
+          final toRead = shared
+              .where((b) => b.access == SkoreGradebookAccess.read)
+              .length;
+          print(
+            '${shared.length} gradebooks shared with the account in '
+            '${withShared.workyear.name}: $toWrite to write, $toRead to read '
+            'only; ${withShared.gradebooks.length} own',
+          );
+          expect(withShared.workyear.id, year.workyear.id);
+          expect(
+            withShared.gradebooks.map((g) => g.gradebookId),
+            year.gradebooks.map((g) => g.gradebookId),
+          );
+          final ids = shared.map((g) => g.gradebookId).toList();
+          expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+          final own = year.gradebooks.map((g) => g.gradebookId).toSet();
+          for (final book in shared) {
+            expect(book.isShared, isTrue);
+            expect(own, isNot(contains(book.gradebookId)));
+            expect(book.teacherId, isNot(me), reason: "a colleague's");
+            expect(book.workyearId, year.workyear.id);
+            expect(book.pathIds, everyElement(greaterThan(0)));
+            expect(book.courseId, greaterThan(0));
+            expect(book.className, isNotEmpty);
+            expect(book.ownerName, isNotEmpty);
+          }
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('getGradebook and getEvaluations read one as the web client '
+            'opens it: its pupils, periods and rights', () async {
+          final spot = await sharedSpot();
+          if (spot == null) {
+            markTestSkipped('no gradebook is shared with this account');
+            return;
+          }
+          final (book, sheet) = spot;
+          print(
+            'shared gradebook ${book.gradebookId} (class ${book.classId}, '
+            'course ${book.courseId}, teacher ${book.teacherId}, '
+            '${book.access.name}): ${sheet.periods.length} periods, '
+            '${sheet.pupils.length} pupils, writable ${sheet.writable}',
+          );
+          expect(sheet.gradebook, same(book));
+          expect(sheet.pupils, isNotEmpty, reason: 'opened in its scope');
+          for (final pupil in sheet.pupils) {
+            expect(pupil.classId, book.classId);
+          }
+          final active = sheet.activePeriod;
+          if (active != null) {
+            if (book.access == SkoreGradebookAccess.write && active.isOpen) {
+              expect(sheet.writable, isTrue, reason: 'shared to write');
+            }
+            final evaluations = await gradebooks.getEvaluations(
+              book,
+              active.id,
+            );
+            print(
+              'shared gradebook ${book.gradebookId}, period ${active.name}: '
+              '${evaluations.length} evaluations',
+            );
+            for (final evaluation in evaluations) {
+              expect(evaluation.gradebookId, book.gradebookId);
+              for (final grade in evaluation.results.grades) {
+                expect(grade.classId, book.classId);
+              }
+            }
+          }
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('the writes refuse one shared to read only, and createEvaluation '
+            'any shared one, before anything is sent', () async {
+          final book = withShared.sharedGradebooks.firstOrNull;
+          if (book == null) {
+            markTestSkipped('no gradebook is shared with this account');
+            return;
+          }
+          // The gradebook as one shared to read only would be listed.
+          final readOnly = SkoreGradebook(
+            gradebookId: book.gradebookId,
+            teacherId: book.teacherId,
+            modelId: book.modelId,
+            modelName: book.modelName,
+            groupId: book.groupId,
+            groupName: book.groupName,
+            classId: book.classId,
+            className: book.className,
+            courseId: book.courseId,
+            courseName: book.courseName,
+            workyearId: book.workyearId,
+            access: SkoreGradebookAccess.read,
+            ownerName: book.ownerName,
+          );
+          final evaluation = SkoreEvaluation(
+            id: 1,
+            evaluationId: 1,
+            gradebookId: book.gradebookId,
+            periodId: 1,
+            column: 'A',
+            title: 'dartschool test (mag weg)',
+            shortName: null,
+            date: DateTime.now(),
+            max: 20,
+            componentId: 0,
+            componentName: 'geen',
+            type: SkoreEvaluationType.points,
+            typeCode: 1,
+            courseId: book.courseId,
+            courseName: book.courseName,
+            isPlannerEvaluation: false,
+            publication: const SkorePublication(
+              state: SkorePublicationState.notPublished,
+              at: null,
+              rawPublic: '0',
+              rawPublicDateTime: '',
+            ),
+            results: const SkoreEvaluationResults(evaluationId: 1),
+          );
+          final sent = _Sent();
+          run.client.dio.interceptors.insert(0, sent);
+          addTearDown(() => run.client.dio.interceptors.remove(sent));
+          final readOnlyError = isA<SmartschoolSkoreGradebookReadOnlyError>()
+              .having((e) => e.gradebook, 'gradebook', same(readOnly));
+
+          await expectLater(
+            gradebooks.saveGrades(readOnly, evaluation, {1: '15'}),
+            throwsA(readOnlyError),
+          );
+          await expectLater(
+            gradebooks.saveFeedback(readOnly, evaluation, 1, 'x'),
+            throwsA(readOnlyError),
+          );
+          await expectLater(
+            gradebooks.createEvaluation(
+              book,
+              1,
+              title: 'dartschool test (mag weg)',
+              date: DateTime.now(),
+              max: 20,
+            ),
+            throwsA(
+              isA<SmartschoolSkoreChangeRefusedError>().having(
+                (e) => e.message,
+                'message',
+                contains('creates evaluations in your own gradebooks only'),
+              ),
+            ),
+          );
+          expect(sent.requests, isEmpty, reason: 'nothing sent');
+          expect(run.guard.violations, isEmpty);
+        });
+      });
+
+      // The report periods of a gradebook and their course comments (#195),
+      // read as Skore's web client opens a report. saveReportComment is tried
+      // only where one of its checks refuses it, before its save: it never
+      // sends saveType (the wire guard refuses it as well, and would list it
+      // as a violation). A comment goes on a real report: its live write is
+      // the developer's, on their go-ahead. Counts only: no comment text, no
+      // result.
+      group('report periods and course comments (#195):', () {
+        /// Checks the report periods of [sheet], read from [readFrom] on,
+        /// against the rest of Skore's answer, never against a date.
+        void expectReportPeriods(SkoreGradebookSheet sheet, DateTime readFrom) {
+          final ids = sheet.reports.map((r) => r.id).toList();
+          expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+          for (final report in sheet.reports) {
+            final where = 'report ${report.name} (${report.id})';
+            expect(report.id, greaterThan(0));
+            expect(report.name, isNotEmpty);
+            expect(report.fullName, isNotEmpty);
+            final closesAt = report.closesAt;
+            if (closesAt == null) continue;
+            expect(closesAt.isUtc, isTrue, reason: where);
+            if (report.isOpen) {
+              expect(closesAt.isAfter(readFrom), isTrue, reason: where);
+            }
+            final closes = _reportInfoCloses.firstMatch(report.info)?[1];
+            if (closes != null) {
+              expect(_belgianMinute(closesAt), closes, reason: '$where: info');
+            }
+          }
+        }
+
+        /// Checks [report], [book]'s report as getReport reads it, against
+        /// [sheet], and prints it in counts.
+        void expectReport(
+          SkoreGradebook book,
+          SkoreGradebookSheet sheet,
+          SkoreReport report,
+        ) {
+          final comments = [
+            for (final p in report.pupils)
+              if (p.comment != null) p.comment!,
+          ];
+          print(
+            'gradebook ${book.gradebookId} (course ${book.courseId}'
+            '${book.isShared ? ', shared' : ''}), report ${report.reportId}: '
+            '${report.components.length} components, '
+            '${report.pupils.length} pupils, ${comments.length} comments '
+            '(${comments.where((c) => !c.isEmpty).length} written, '
+            '${comments.where((c) => c.isEditable).length} editable), '
+            'max ${report.commentMaxLength} characters',
+          );
+          expect(report.gradebookId, book.gradebookId);
+          expect(report.courseId, book.courseId);
+          expect(report.courseName, isNotEmpty);
+          expect(report.hasComments, isTrue);
+          expect(report.commentMaxLength, greaterThan(0));
+          for (final component in report.components) {
+            expect(component.column, startsWith('${book.courseId}_'));
+            expect(component.name, isNotEmpty);
+          }
+          final pupilIds = sheet.pupils.map((p) => p.id).toSet();
+          final ids = report.pupils.map((p) => p.pupilId).toList();
+          expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+          for (final pupil in report.pupils) {
+            expect(pupilIds, contains(pupil.pupilId), reason: 'of the class');
+            expect(pupil.classId, book.classId);
+            expect(
+              report.components.map((c) => c.column),
+              containsAll(pupil.results.map((r) => r.column)),
+            );
+            final comment = pupil.comment;
+            expect(comment, isNotNull, reason: 'a comment for each pupil');
+            expect(comment!.reportId, report.reportId);
+            expect(comment.cellParams, [
+              comment.isEditable ? '1' : '0',
+              '${report.reportId}',
+            ]);
+            final max = report.commentMaxLength;
+            if (max != null) {
+              expect(comment.text.length, lessThanOrEqualTo(max));
+            }
+          }
+        }
+
+        test('getGradebook lists the report periods of a gradebook, and '
+            'getReport reads each', () async {
+          final book =
+              year.gradebooks
+                  .where((g) => g.gradebookId == _testGradebookId)
+                  .firstOrNull ??
+              year.gradebooks.first;
+          final answers = _RpcAnswers();
+          run.client.dio.interceptors.insert(0, answers);
+          addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+          final readFrom = DateTime.now();
+          final sheet = await gradebooks.getGradebook(book);
+          print(
+            'gradebook ${book.gradebookId}: reports '
+            '${[for (final r in sheet.reports) '${r.name} ${r.id} ${r.isOpen ? 'open' : 'closed'} until ${r.closesAt?.toIso8601String()} type ${r.typeCode} rating ${r.rating}']}',
+          );
+          expectReportPeriods(sheet, readFrom);
+          if (book.gradebookId == _testGradebookId) {
+            expect(sheet.reports, isNotEmpty);
+          }
+          for (final period in sheet.reports) {
+            final report = await gradebooks.getReport(book, period.id);
+            expectReport(book, sheet, report);
+            if (book.gradebookId == _testGradebookId) {
+              expect(report.components, isNotEmpty);
+            }
+          }
+          expect(
+            answers.answers.map((a) => a.$1),
+            everyElement(
+              isIn(['init', 'getGradebookContext', 'getReportsResults']),
+            ),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('the behaviour gradebook $_behaviourGradebookId: a report with '
+            'the comments only', () async {
+          final book = year.gradebooks
+              .where((g) => g.gradebookId == _behaviourGradebookId)
+              .firstOrNull;
+          if (book == null) {
+            markTestSkipped(
+              'no gradebook $_behaviourGradebookId in this account',
+            );
+            return;
+          }
+          final readFrom = DateTime.now();
+          final sheet = await gradebooks.getGradebook(book);
+          expectReportPeriods(sheet, readFrom);
+          expect(sheet.periods, isEmpty);
+          expect(sheet.reports, isNotEmpty, reason: 'only a report period');
+          for (final period in sheet.reports) {
+            final report = await gradebooks.getReport(book, period.id);
+            expectReport(book, sheet, report);
+            expect(report.components, isEmpty, reason: 'no components');
+          }
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('the gradebooks shared with the user: their reports, read in '
+            'their scope', () async {
+          final shared = await gradebooks.getSharedGradebooks();
+          if (shared.isEmpty) {
+            markTestSkipped('no gradebook is shared with this account');
+            return;
+          }
+          var read = 0;
+          var notOnReport = 0;
+          for (final book in shared) {
+            final sheet = await gradebooks.getGradebook(book);
+            for (final period in sheet.reports) {
+              try {
+                final report = await gradebooks.getReport(book, period.id);
+                expectReport(book, sheet, report);
+                read++;
+              } on SmartschoolSkoreError catch (e) {
+                // A course the report model has no place for (seen live).
+                expect(e.message, contains('Course not found in source!'));
+                notOnReport++;
+              }
+            }
+          }
+          print(
+            '${shared.length} shared gradebooks: $read reports read, '
+            '$notOnReport of a course not on the report',
+          );
+          expect(read + notOnReport, greaterThan(0));
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('a course that is not on the report: Skore\'s 404, a '
+            'SmartschoolSkoreError', () async {
+          final book = year.gradebooks
+              .where((g) => g.gradebookId == _notOnReportGradebookId)
+              .firstOrNull;
+          final report = book == null
+              ? null
+              : (await gradebooks.getGradebook(book)).reports.firstOrNull;
+          if (book == null || report == null) {
+            markTestSkipped(
+              'no gradebook $_notOnReportGradebookId with a report in this '
+              'account',
+            );
+            return;
+          }
+
+          await expectLater(
+            gradebooks.getReport(book, report.id),
+            throwsA(
+              isA<SmartschoolSkoreError>().having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('HTTP 404'),
+                  contains('"Course not found in source!"'),
+                ),
+              ),
+            ),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
+
+        group('saveReportComment refuses before its save:', () {
+          Matcher refused(Object reason) =>
+              isA<SmartschoolSkoreChangeRefusedError>().having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  startsWith('saveReportComment: '),
+                  contains(reason),
+                  endsWith('Nothing was saved.'),
+                ),
+              );
+
+          test('another comment than the one passed as replacing, a text too '
+              'long, a blank text; or, once closed, the report or the '
+              'comment', () async {
+            final book = year.gradebooks
+                .where((g) => g.gradebookId == _testGradebookId)
+                .firstOrNull;
+            final sheet = book == null
+                ? null
+                : await gradebooks.getGradebook(book);
+            final period = sheet?.reports.firstOrNull;
+            if (book == null || period == null) {
+              markTestSkipped(
+                'no gradebook $_testGradebookId with a report in this account',
+              );
+              return;
+            }
+            final report = await gradebooks.getReport(book, period.id);
+            final pupil = report.pupils.firstOrNull;
+            final comment = pupil?.comment;
+            if (pupil == null || comment == null) {
+              markTestSkipped('no pupil with a comment on report ${period.id}');
+              return;
+            }
+            final answers = _RpcAnswers();
+            run.client.dio.interceptors.insert(0, answers);
+            addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+            // What refuses first: a closed report (once it closes), a comment
+            // closed for the pupil, then the check of the test.
+            Object reason(Object check) => !period.isOpen
+                ? 'is closed'
+                : !comment.isEditable
+                ? 'it is closed for the pupil'
+                : check;
+            print(
+              'report ${period.id} ${period.isOpen ? 'open' : 'closed'}, the '
+              "first pupil's comment ${comment.isEditable ? 'editable' : 'closed'}, "
+              '${comment.isEmpty ? 'empty' : 'written'}',
+            );
+            // Never the comment Skore holds: the marker of the live suite.
+            const marker = 'dartschool test: not the comment Skore holds';
+            await expectLater(
+              gradebooks.saveReportComment(
+                book,
+                period.id,
+                pupil.pupilId,
+                'dartschool test (mag weg)',
+                replacing: marker,
+              ),
+              throwsA(
+                refused(
+                  reason(
+                    comment.isEmpty
+                        ? 'has no course comment on'
+                        : 'has another course comment on',
+                  ),
+                ),
+              ),
+            );
+            final max = report.commentMaxLength ?? 1600;
+            await expectLater(
+              gradebooks.saveReportComment(
+                book,
+                period.id,
+                pupil.pupilId,
+                'x' * (max + 1),
+                replacing: comment.text,
+              ),
+              throwsA(refused(reason('characters, more than the $max'))),
+            );
+            await expectLater(
+              gradebooks.saveReportComment(book, period.id, pupil.pupilId, ' '),
+              throwsA(refused('the text is blank')),
+            );
+            expect(
+              answers.answers.map((a) => a.$1),
+              isNot(contains('saveType')),
+              reason: 'the save never went out',
+            );
+            expect(run.guard.violations, isEmpty);
+          });
+
+          test('a gradebook of an earlier school year', () async {
+            final earlier = year.workyears
+                .where((y) => y.id != year.workyear.id)
+                .firstOrNull;
+            final older = earlier == null
+                ? const <SkoreGradebook>[]
+                : await gradebooks.getGradebooks(workyearId: earlier.id);
+            final book =
+                older
+                    .where((g) => g.gradebookId == _earlierGradebookId)
+                    .firstOrNull ??
+                older.firstOrNull;
+            if (book == null) {
+              markTestSkipped('no gradebooks of an earlier school year');
+              return;
+            }
+            final sheet = await gradebooks.getGradebook(book);
+            final reportId = sheet.reports.firstOrNull?.id ?? 1;
+            final pupilId = sheet.pupils.firstOrNull?.id ?? 1;
+
+            await expectLater(
+              gradebooks.saveReportComment(
+                book,
+                reportId,
+                pupilId,
+                'dartschool test (mag weg)',
+              ),
+              throwsA(refused('writes in the current school year only')),
+            );
+            expect(run.guard.violations, isEmpty);
+          });
+        });
+      });
+
       test('a school year Skore does not offer is refused', () async {
         final offered = year.workyears.map((y) => y.id).toSet();
         final unknown = [
@@ -723,6 +1515,42 @@ void main() {
             isA<ArgumentError>().having((e) => e.name, 'name', 'workyearId'),
           ),
         );
+        expect(run.guard.violations, isEmpty);
+      });
+
+      // Last: it replaces the run's session.
+      test('getGradebook in a session that expired: Skore redirects init to '
+          '/, and the client logs in, sends it again and reads the gradebook '
+          '(#192)', () async {
+        if (run.guard.loggedIn) {
+          markTestSkipped(
+            'the run logged in already (the saved session had expired), and '
+            'it may log in only once: run this file again',
+          );
+          return;
+        }
+        final book =
+            year.gradebooks
+                .where((g) => g.gradebookId == _behaviourGradebookId)
+                .firstOrNull ??
+            year.gradebooks.first;
+        final answers = _RpcAnswers();
+        run.client.dio.interceptors.insert(0, answers);
+        addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+        // As on a session that expired: init goes out without one.
+        await run.client.clearCookies();
+        final sheet = await gradebooks.getGradebook(book);
+
+        print(
+          'gradebook ${book.gradebookId}: answers ${answers.answers}; '
+          '${sheet.periods.length} periods, ${sheet.pupils.length} pupils',
+        );
+        expect(answers.answers.first, ('init', 302, '/'));
+        expect(answers.answers[1], ('init', 200, null));
+        expect(run.guard.loggedIn, isTrue);
+        expect(sheet.gradebook, same(book));
+        expect(sheet.pupils, isNotEmpty);
         expect(run.guard.violations, isEmpty);
       });
     },

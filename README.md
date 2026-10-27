@@ -969,9 +969,9 @@ dart run example/skore_save_grade_example.dart GRADEBOOK_ID PERIOD_ID EVALUATION
 
 ### Errors
 
-- `SmartschoolSkoreError` — Skore answered with something the service cannot use: another HTTP status than `200` (also a redirect), an HTML page instead of data, invalid JSON, an RPC answer without a `result`, data in an unknown shape, or an answer about another gradebook or school year. Never an empty list instead. The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log. What Skore answers an account without a gradebook of its own (a pupil, say) was not captured.
+- `SmartschoolSkoreError` — Skore answered with something the service cannot use: another HTTP status than `200` (also a redirect, whose target the message names by its path and `module` only), an HTML page instead of data, invalid JSON, an RPC answer without a `result`, data in an unknown shape, or an answer about another gradebook or school year. Never an empty list instead. The session was accepted: signing in again does not help. Its message may quote the answer, which can hold names: keep it in a log. What Skore answers an account without a gradebook of its own (a pupil, say) was not captured.
 - `ArgumentError` — a `workyearId` that is not positive, or not one Skore offers; a `periodId` or `pupilId` that is not positive, or an evaluation of another gradebook (nothing sent).
-- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered without a session. Sign in again and retry.
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; or Skore answered without a session. Sign in again and retry. Skore answers a call in a session that expired with a redirect to `/`, which the client takes for a refused session: it logs in and sends the call again, as for any other request (#192).
 
 ---
 

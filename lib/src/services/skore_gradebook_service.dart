@@ -80,7 +80,8 @@ export '../models/skore_gradebook_models.dart';
 ///
 /// ### Errors
 /// - [SmartschoolSkoreError]: Skore answered with something the service
-///   cannot use: another HTTP status than `200` (also a redirect), an HTML
+///   cannot use: another HTTP status than `200` (also a redirect, whose
+///   target the message names by its path and `module` only, #192), an HTML
 ///   page instead of data, invalid JSON, an RPC answer without its `result`,
 ///   or data in a shape it does not recognise (such as a tree without its
 ///   lists, a non-numeric ID, a grade cell without its `raw`, or an answer
@@ -121,6 +122,9 @@ export '../models/skore_gradebook_models.dart';
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; or Skore answered without a session. Sign in again and retry.
+///   Skore answers a call in a session that expired with a redirect to `/`
+///   (seen live, #192), which the client takes for a refused session: it
+///   logs in and sends the call again, as for any other request.
 ///   For the save of [createEvaluation], at once, without logging in again:
 ///   the save is never sent twice, and was not handled; so for a new
 ///   feedback of [saveFeedback]. For [saveGrade] and [saveGrades], only for
@@ -239,6 +243,12 @@ class SkoreGradebookService {
   /// ([SkoreGradebookSheet.activePeriod]; not sent for a gradebook without
   /// periods), which says whether the user may change it
   /// ([SkoreGradebookSheet.writable]).
+  ///
+  /// A gradebook can have no evaluation periods: that of a behaviour course
+  /// ("Gedrag") had none in 2026-2027, only a report period (seen live,
+  /// #192; `init` gave `periods` `[]` and `activePeriodE` `-1`). It is read
+  /// with its pupils, without periods, and not
+  /// [SkoreGradebookSheet.writable].
   ///
   /// Skore's answers must be about [gradebook]: an answer about another
   /// gradebook or class is refused with a [SmartschoolSkoreError].
@@ -1268,6 +1278,7 @@ class SkoreGradebookService {
         final problem = _problem(response.data);
         throw SmartschoolSkoreError(
           'Skore answered with HTTP $status'
+          '${SkoreRpc.redirectNote(response)}'
           '${problem == null ? '' : ': $problem'}',
         );
       }
@@ -1738,15 +1749,21 @@ class SkoreGradebookService {
   }
 
   /// The body of [response], the answer to RPC call [method]; any other
-  /// status than `200` is a [SmartschoolSkoreError]. Also a redirect: the
-  /// admin side of Skore sends a request it refuses on to the start page
-  /// (#91); what the gradebook answers an account without one was not seen.
+  /// status than `200` is a [SmartschoolSkoreError]. Also a redirect, whose
+  /// message names its target by path and `module` only
+  /// ([SkoreRpc.redirectNote], #192): the admin side of Skore sends a
+  /// request it refuses on to the start page (`/?module=Homepage`, #91);
+  /// what the gradebook answers an account without one was not seen.
+  ///
+  /// Skore's answer to a call in a session Smartschool does not accept, a
+  /// redirect to `/` (seen live, #192), never comes here: the client takes
+  /// it for a refused session, logs in and sends the call again.
   static String _body(Response<String> response, String method) {
     final status = response.statusCode;
     if (status != 200) {
       throw SmartschoolSkoreError(
         'Skore answered the RPC call $method of its gradebook with HTTP '
-        '$status.',
+        '$status${SkoreRpc.redirectNote(response)}.',
       );
     }
     return response.data ?? '';
@@ -1755,13 +1772,15 @@ class SkoreGradebookService {
   /// The decoded JSON of [response], the answer of Skore's REST API to
   /// [what]. Any other status than `200` is a [SmartschoolSkoreError] that
   /// names the `title` and `detail` of Skore's error answer, when it is JSON
-  /// with them; so is an answer that is not JSON.
+  /// with them, and the target of a redirect ([SkoreRpc.redirectNote]); so is
+  /// an answer that is not JSON.
   static dynamic _restJson(Response<String> response, String what) {
     final status = response.statusCode;
     if (status != 200) {
       final problem = _problem(response.data);
       throw SmartschoolSkoreError(
         'Skore answered $what with HTTP $status'
+        '${SkoreRpc.redirectNote(response)}'
         '${problem == null ? '' : ': $problem'}.',
       );
     }

@@ -23,6 +23,20 @@
 // so the retry of a multipart POST and of an XHR/form POST is tested on the
 // client's request methods here, as is `retryAfterLogin: false`.
 //
+// #192 adds a fourth way: Skore answers a POST (its RPC calls, with or
+// without `X-Requested-With`) in a session Smartschool does not accept with
+// `302 Location: /` and an empty body, and `/` sends a request without a
+// session on to `/login`. Measured live (read-only, 2026-10-27): `init` of
+// Skore's gradebook RPC, and `getTeachers` and `getCourses` of its admin side,
+// sent without a session cookie or with one Smartschool does not know. Before
+// the fix, the client handed the 302 to Skore's services, which threw
+// "Skore answered the RPC call init of its gradebook with HTTP 302": no login.
+//
+// Seen live too: a session that got past the 2FA step is refused by Skore
+// in the same way until the start page was loaded in it, which a browser
+// does after the 2FA answer (`redirectTo` "/"). So the login now opens it
+// after the 2FA step; the fake below refuses Skore's calls until then.
+//
 // Like the fake in session_unauthorized_test.dart, the fake Smartschool below
 // keeps the session state itself and ignores the cookies the client sends.
 import 'dart:convert';
@@ -90,13 +104,24 @@ const _postJson = 'POST /api/v1/endpoint';
 /// A POST that Smartschool redirects off the login chain.
 const _elsewhere = 'POST /?file=elsewhere';
 
+/// An RPC call of Skore's gradebook, and its path.
+const _skorePath = '/modules/Skore/backend/gradebook/rpc.php';
+const _skore = 'POST $_skorePath';
+
+/// An RPC call of Skore's admin side that Skore refuses to the account, in a
+/// session Smartschool accepts: a redirect to the start page (#91).
+const _skoreRefusedPath = '/modules/Skore/backend/models/owners.php';
+const _skoreRefused = 'POST $_skoreRefusedPath';
+
 /// The requests of the login chain after its first page, from the password
-/// to the 2FA answer.
+/// to the 2FA answer, and the start page, which the login opens after it as
+/// a browser does (#192).
 const _password = [
   'POST /login',
   'GET /',
   'GET /2fa/api/v1/config',
   'POST /2fa/api/v1/google-authenticator',
+  'GET /',
 ];
 
 /// The login chain that a refused request starts: the login loads the login
@@ -106,8 +131,10 @@ const _login = ['GET /login', ..._password];
 
 /// A Smartschool that refuses the session as the live platform does: a page
 /// request (GET) is redirected to the login chain, an XHR/form POST gets a
-/// bare `401`, and a POST without `X-Requested-With` gets a `302` to `/login`
-/// that the HTTP client does not follow.
+/// bare `401`, a POST without `X-Requested-With` gets a `302` to `/login`
+/// that the HTTP client does not follow, and a POST to Skore gets a `302` to
+/// `/` with an empty body (#192), also after a login with 2FA until the start
+/// page was loaded (seen live, #192).
 class _Smartschool implements HttpClientAdapter {
   _Smartschool({
     this.loggedIn = false,
@@ -126,6 +153,11 @@ class _Smartschool implements HttpClientAdapter {
   final bool acceptsSessionAfterLogin;
 
   bool _passwordDone = false;
+
+  /// Whether the start page was loaded since the last login: until then,
+  /// Skore refuses a session that got past the 2FA step as one without a
+  /// session (seen live, #192).
+  bool _startPageSinceLogin = true;
 
   /// Every request the client made, as `METHOD path` (see [_label]).
   final List<String> log = <String>[];
@@ -172,6 +204,7 @@ class _Smartschool implements HttpClientAdapter {
     if (path == '/2fa/api/v1/google-authenticator') {
       _passwordDone = false;
       loggedIn = acceptsSessionAfterLogin;
+      _startPageSinceLogin = false;
       return _response(
         '{"success":true,"redirectTo":"/"}',
         contentType: Headers.jsonContentType,
@@ -179,6 +212,10 @@ class _Smartschool implements HttpClientAdapter {
     }
 
     if (options.method == 'POST') {
+      if (path.startsWith('/modules/Skore/') &&
+          (!loggedIn || !_startPageSinceLogin)) {
+        return _skoreRedirect('/');
+      }
       if (!loggedIn) {
         return _sentWithXhr(options) ? _response('', status: 401) : _toLogin();
       }
@@ -194,6 +231,13 @@ class _Smartschool implements HttpClientAdapter {
           return _response('{"ok":true}', contentType: Headers.jsonContentType);
         case _elsewhere:
           return _redirect('/?module=Messages&file=index');
+        case _skore:
+          return _response(
+            '{"result":{"ok":1},"session":1}',
+            contentType: Headers.jsonContentType,
+          );
+        case _skoreRefused:
+          return _skoreRedirect('/?module=Homepage');
       }
       return _response('ok');
     }
@@ -204,6 +248,7 @@ class _Smartschool implements HttpClientAdapter {
       return _page(path, '/login', _loginPage);
     }
     if (request == _compose) return _response(_composePage);
+    if (path == '/') _startPageSinceLogin = true;
     return _response('<html><body>home</body></html>');
   }
 
@@ -245,6 +290,17 @@ ResponseBody _page(String requested, String at, String body) {
 /// Smartschool's answer to a POST without `X-Requested-With` on an expired
 /// session: a 302 to `/login`, which the HTTP client leaves unfollowed.
 ResponseBody _toLogin() => _redirect('/login');
+
+/// Skore's redirect of a POST to [location]: a `302` with an empty body,
+/// which the HTTP client leaves unfollowed (seen live, #91, #192).
+ResponseBody _skoreRedirect(String location) => ResponseBody.fromString(
+  '',
+  302,
+  headers: {
+    Headers.contentTypeHeader: ['text/html; charset=UTF-8'],
+    'location': [location],
+  },
+);
 
 /// A redirect the HTTP client leaves unfollowed, as it does after a POST,
 /// with the page Smartschool (Symfony) sends along with it.
@@ -599,6 +655,97 @@ void main() {
       expect(response.data, _sentPage);
       expect(server.log, [_send]);
       expect(server.sent, hasLength(1));
+    });
+  });
+
+  group('a Skore POST redirected to / (a session Smartschool does not '
+      'accept) logs in again and is retried once (#192)', () {
+    /// A Skore RPC call, as SkoreGradebookService sends it.
+    Future<Response<String>> rpc({bool retryAfterLogin = true}) =>
+        client.postFormResponse(_skorePath, {
+          'rpc_sessionobj': '{"requestSource":"skore-web"}',
+          'rpc_requestType': 'requestData',
+          'rpc_method': 'init',
+          'rpc_params': '[]',
+        }, retryAfterLogin: retryAfterLogin);
+
+    test('the call is sent again after logging in, and its answer '
+        'returned', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _skore),
+      );
+
+      // Before the fix: the 302 was returned, without a login, and Skore's
+      // services threw "... with HTTP 302".
+      final response = await rpc();
+
+      expect(response.statusCode, 200);
+      expect(response.data, '{"result":{"ok":1},"session":1}');
+      expect(server.logSinceExpiry, [_skore, ..._login, _skore]);
+    });
+
+    test('a retry redirected to / again is a SmartschoolSessionExpiredError '
+        'that says so, without a second login', () async {
+      final server = await serve(
+        _Smartschool(
+          loggedIn: true,
+          expiresBefore: _skore,
+          acceptsSessionAfterLogin: false,
+        ),
+      );
+
+      await expectLater(
+        rpc(),
+        throwsA(
+          isA<SmartschoolSessionExpiredError>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              contains('still answered'),
+              contains('login chain (/, on to /login)'),
+            ),
+          ),
+        ),
+      );
+      expect(server.logSinceExpiry, [_skore, ..._login, _skore]);
+    });
+
+    test('retryAfterLogin: false: neither retried nor used to log in; the '
+        'next request logs in before it is sent (#134)', () async {
+      final server = await serve(
+        _Smartschool(loggedIn: true, expiresBefore: _skore),
+      );
+
+      await expectLater(
+        rpc(retryAfterLogin: false),
+        throwsA(
+          isA<SmartschoolSessionExpiredError>().having(
+            (e) => e.message,
+            'message',
+            contains('not retried after logging in again'),
+          ),
+        ),
+      );
+      expect(server.logSinceExpiry, [_skore]);
+
+      final response = await rpc();
+
+      expect(response.statusCode, 200);
+      expect(server.logSinceExpiry, [_skore, ..._login, _skore]);
+    });
+
+    test("a redirect to the start page with a query, Skore's refusal to an "
+        'account without the rights (#91), is passed through, without a '
+        'login', () async {
+      final server = await serve(_Smartschool(loggedIn: true));
+
+      final response = await client.postFormResponse(_skoreRefusedPath, {
+        'rpc_method': 'getTeachers',
+      });
+
+      expect(response.statusCode, 302);
+      expect(response.headers.value('location'), '/?module=Homepage');
+      expect(server.log, [_skoreRefused]);
     });
   });
 }

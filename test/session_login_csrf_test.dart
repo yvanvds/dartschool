@@ -446,6 +446,7 @@ void main() {
       'GET /',
       'GET /2fa/api/v1/config',
       _twoFactorCode,
+      'GET /',
       'GET /a',
     ]);
     expect(server.cookies[1], {_pid: 'pid-cached'});

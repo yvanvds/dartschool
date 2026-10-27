@@ -367,11 +367,20 @@ void main() {
     });
 
     test('a redirect off the login chain is not a session problem', () async {
-      await serve({_getConfig: () => _redirect('/')});
+      // Not to `/` itself: Smartschool sends a request without a session
+      // from there on to `/login`, and Skore redirects a POST in such a
+      // session there, which the client takes for a refused session (#192).
+      await serve({_getConfig: () => _redirect('/?module=Homepage')});
 
       await expectLater(
         PresenceService(client).getConfig(),
-        throwsA(_unreadablePage(_getConfig, 302, title: 'Redirecting to /')),
+        throwsA(
+          _unreadablePage(
+            _getConfig,
+            302,
+            title: 'Redirecting to /?module=Homepage',
+          ),
+        ),
       );
     });
   });

@@ -76,13 +76,15 @@ const _loginPage = '''
 /// The login POST: one per login.
 const _password = 'POST /login';
 
-/// The requests of a login, from the login page to the 2FA answer.
+/// The requests of a login, from the login page to the 2FA answer, and the
+/// start page, which the login opens after it (#192).
 const _login = [
   'GET /login',
   _password,
   'GET /',
   'GET /2fa/api/v1/config',
   'POST /2fa/api/v1/google-authenticator',
+  'GET /',
 ];
 
 typedef _Answer = ({int status, String body, String contentType});

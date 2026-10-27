@@ -205,6 +205,7 @@ void main() {
         'GET /',
         'GET /2fa/api/v1/config',
         'POST /2fa/api/v1/google-authenticator',
+        'GET /',
         'POST /',
       ]);
     });

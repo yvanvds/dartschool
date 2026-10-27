@@ -1744,7 +1744,7 @@ class _SmartschoolLogInFirstInterceptor extends Interceptor {
 /// authenticated, drives the authentication flow transparently, then retries
 /// the original request once.
 ///
-/// Smartschool signals an unauthenticated session in three ways:
+/// Smartschool signals an unauthenticated session in four ways:
 /// - a page request (GET) is redirected to the login chain (`/login`, `/2fa`,
 ///   `/account-verification`), so the response lands on an auth page;
 /// - an XHR or form POST (the XML dispatcher, for instance) is answered with a
@@ -1753,7 +1753,13 @@ class _SmartschoolLogInFirstInterceptor extends Interceptor {
 /// - a POST sent without `X-Requested-With` (a multipart or JSON POST) is
 ///   answered with `302 Location: /login` and a "Redirecting to /login" page,
 ///   a redirect the HTTP client does not follow after a POST (#22). The chain
-///   is then started by fetching the `Location`, as a browser would.
+///   is then started by fetching the `Location`, as a browser would;
+/// - a POST to Skore (its RPC calls, with or without `X-Requested-With`) is
+///   answered with `302 Location: /` and an empty body, a redirect to the
+///   root of the site that sends a request without a session on to `/login`
+///   (#192). The chain is then started by fetching `/login`. A redirect to
+///   the root with a query, such as Skore's refusal to an account without
+///   the rights (`/?module=Homepage`, #91), is not one.
 ///
 /// A retry that Smartschool refuses again, in any of these ways, is not
 /// retried again: it fails with a [SmartschoolSessionExpiredError] (#22), so
@@ -1838,6 +1844,12 @@ class _SmartschoolLogInFirstInterceptor extends Interceptor {
 /// it completes, and a login that fails after Smartschool accepted it (the
 /// connection dropped on the answer to the 2FA code) leaves an authenticated
 /// new session in the jar without completing.
+///
+/// A login that goes through the 2FA step opens the start page after it, as
+/// a browser does with the `redirectTo` of the 2FA answer (#192): until the
+/// start page was loaded once in a session, Skore refuses it for its RPC
+/// calls with a redirect to `/`, as a session without a login (seen live),
+/// so the request retried after the login would be refused again.
 ///
 /// This replaces Python's `Smartschool.request()` override which called
 /// `_handle_auth_redirect()` and then re-issued the original call using
@@ -2170,7 +2182,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
         _discardStreamedBody(retried);
         throw SmartschoolSessionExpiredError(
           'Smartschool still answered $request with its login chain '
-          '(${stillOnLoginChain.path}) after logging in again',
+          '(${_chainPath(retried, stillOnLoginChain)}) after logging in '
+          'again',
         );
       }
       reset();
@@ -2324,7 +2337,8 @@ class _SmartschoolAuthInterceptor extends Interceptor {
 
   /// Whether Smartschool refused the session for the request of [response]:
   /// a regular request (or a retry) that it answered with `401` or with its
-  /// login chain, the answers that make this interceptor log in (#45). An
+  /// login chain (a redirect to the root of the site among them, #192), the
+  /// answers that make this interceptor log in (#45). An
   /// answer to a request of the login chain itself is not refused.
   bool refusedSession(Response<dynamic> response) =>
       response.requestOptions.extra[_noAuthKey] != true &&
@@ -2346,17 +2360,59 @@ class _SmartschoolAuthInterceptor extends Interceptor {
   /// `X-Requested-With` on an expired session with `302 Location: /login`, so
   /// the response keeps the requested URL and only its `Location` points at
   /// the login chain (#22).
+  ///
+  /// A redirect the HTTP client left unfollowed to the root of the site
+  /// ([_redirectsToSiteRoot]) leads to `/login`: Skore answers a POST in a
+  /// session Smartschool does not accept with `302 Location: /`, and `/`
+  /// sends a request without a session on to `/login` (#192).
   Uri? _loginChainTarget(Response<dynamic> response) {
     final realUri = response.realUri;
     if (_client.isAuthUri(realUri)) return realUri;
 
+    final target = _unfollowedRedirect(response);
+    if (target == null) return null;
+    if (_client.isAuthUri(target)) return target;
+    return _redirectsToSiteRoot(response) ? target.resolve('/login') : null;
+  }
+
+  /// Where [response] redirects to, when it is a redirect the HTTP client
+  /// left unfollowed (one after a POST): its `Location`, resolved against
+  /// the requested URL. `null` for any other answer.
+  static Uri? _unfollowedRedirect(Response<dynamic> response) {
     final status = response.statusCode ?? 0;
     if (status < 300 || status >= 400) return null;
     final location = response.headers.value(HttpHeaders.locationHeader);
-    if (location == null || location.isEmpty) return null;
-    final target = realUri.resolve(location);
-    return _client.isAuthUri(target) ? target : null;
+    if (location == null || location.trim().isEmpty) return null;
+    return response.realUri.resolve(location.trim());
   }
+
+  /// Whether [response] is a redirect the HTTP client left unfollowed to the
+  /// root of the site, `/` on the same host without a query: Skore's answer
+  /// to a POST in a session Smartschool does not accept. Seen live
+  /// (2026-10-27, #192) for the RPC calls of Skore's gradebook
+  /// (`/modules/Skore/backend/gradebook/rpc.php`) and of its admin side
+  /// (`owners.php`, `rapportbeheer/rpc/data.php`), with and without
+  /// `X-Requested-With`, sent without a session cookie or with one
+  /// Smartschool does not know: `302`, `Location: /`, an empty body. A GET
+  /// of `/` without a session is redirected to `/login`.
+  ///
+  /// Skore's refusal of a request to an account without the rights for it
+  /// is a redirect to the start page with a query (`/?module=Homepage`,
+  /// #91), so it is not one: `SkoreService` reports it.
+  static bool _redirectsToSiteRoot(Response<dynamic> response) {
+    final target = _unfollowedRedirect(response);
+    return target != null &&
+        target.host == response.realUri.host &&
+        target.path == '/' &&
+        !target.hasQuery &&
+        !target.hasFragment;
+  }
+
+  /// [chain], the page of the login chain that [response] leads to, for a
+  /// message: with the root of the site it was redirected to first, when it
+  /// was ([_redirectsToSiteRoot]).
+  static String _chainPath(Response<dynamic> response, Uri chain) =>
+      _redirectsToSiteRoot(response) ? '/, on to ${chain.path}' : chain.path;
 
   Future<void> _driveAuthChain(Uri uri, Response<dynamic> response) async {
     final path = uri.path;
@@ -2390,6 +2446,11 @@ class _SmartschoolAuthInterceptor extends Interceptor {
       if (success == true) {
         // 2FA accepted. The session cookie has already been persisted by the
         // CookieManager, so the interceptor can retry the original request.
+        // First open the start page, where the answer sends a browser
+        // (`redirectTo` "/"): until it was loaded once after the login,
+        // Skore refuses the session for its RPC calls with a redirect to `/`,
+        // as a session without a login (seen live, #192).
+        await _client._rawGet('/');
         return;
       }
       if (success == false) {

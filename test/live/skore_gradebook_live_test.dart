@@ -10,6 +10,20 @@
 // (#151) and saveFeedback (#152): a published or scheduled evaluation, an
 // earlier school year (and, for saveFeedback, a blank text).
 //
+// For #192 it reads a gradebook without evaluation periods (the developer's
+// behaviour gradebook, 35158, which has only a report period; skipped when
+// the account has no such gradebook), and, last, a gradebook in a session
+// that expired: it clears the client's cookies, so that `init` goes out
+// without a session, which Skore answers with a redirect to `/`; the client
+// logs in, sends it again and reads the gradebook (with 2FA, as on the
+// developer's account, only because the login opens the start page after
+// the 2FA step: Skore refuses the new session the same way until then).
+// That needs the one login
+// a live run may make (LiveWireGuard refuses a second): when the run logged
+// in already, because the session it found in the live cache had expired,
+// that test skips; run the file again, and it starts in the session that
+// login saved.
+//
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
 // files, `dart test -P live test/live/skore_gradebook_live_test.dart` alone.
@@ -38,6 +52,7 @@
 @Tags(['live'])
 library;
 
+import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
@@ -56,6 +71,32 @@ const _testEvaluationId = 395742;
 /// The developer's gradebook of 5BW in 2025-2026, whose evaluations are
 /// published (#149); read only.
 const _earlierGradebookId = 28998;
+
+/// The developer's behaviour gradebook of 2026-2027 (#192): no evaluation
+/// periods, only a report period. Read only.
+const _behaviourGradebookId = 35158;
+
+/// Records Skore's answer to every call of its gradebook RPC service, as
+/// (method, status, `Location`), as it comes in: the first interceptor, so
+/// that it sees an answer that the client's login handles too (#192).
+class _RpcAnswers extends Interceptor {
+  final List<(String, int?, String?)> answers = [];
+
+  @override
+  void onResponse(Response<dynamic> response, ResponseInterceptorHandler h) {
+    final options = response.requestOptions;
+    final data = options.data;
+    if (options.uri.path == '/modules/Skore/backend/gradebook/rpc.php' &&
+        data is Map) {
+      answers.add((
+        '${data['rpc_method']}',
+        response.statusCode,
+        response.headers.value('location'),
+      ));
+    }
+    h.next(response);
+  }
+}
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -175,6 +216,42 @@ void main() {
           expect(sheet.writable, isTrue);
           expect(sheet.pupils.map((p) => p.number), everyElement(isNotNull));
         }
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test('getGradebook reads a gradebook without evaluation periods: the '
+          'behaviour gradebook $_behaviourGradebookId (#192)', () async {
+        final book = year.gradebooks
+            .where((g) => g.gradebookId == _behaviourGradebookId)
+            .firstOrNull;
+        if (book == null) {
+          markTestSkipped(
+            'no gradebook $_behaviourGradebookId in this account',
+          );
+          return;
+        }
+        final answers = _RpcAnswers();
+        run.client.dio.interceptors.insert(0, answers);
+        addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+        final sheet = await gradebooks.getGradebook(book);
+
+        print(
+          'gradebook ${book.gradebookId} (class ${book.classId}, course '
+          '${book.courseId}): ${sheet.periods.length} periods, '
+          '${sheet.pupils.length} pupils, writable ${sheet.writable}',
+        );
+        expect(sheet.gradebook, same(book));
+        expect(sheet.periods, isEmpty);
+        expect(sheet.activePeriod, isNull);
+        expect(sheet.writable, isFalse);
+        expect(sheet.pupils, isNotEmpty);
+        for (final pupil in sheet.pupils) {
+          expect(pupil.classId, book.classId);
+          expect(pupil.name, contains(','));
+        }
+        // Without periods, getGradebookContext is not asked.
+        expect(answers.answers, [('init', 200, null)]);
         expect(run.guard.violations, isEmpty);
       });
 
@@ -723,6 +800,42 @@ void main() {
             isA<ArgumentError>().having((e) => e.name, 'name', 'workyearId'),
           ),
         );
+        expect(run.guard.violations, isEmpty);
+      });
+
+      // Last: it replaces the run's session.
+      test('getGradebook in a session that expired: Skore redirects init to '
+          '/, and the client logs in, sends it again and reads the gradebook '
+          '(#192)', () async {
+        if (run.guard.loggedIn) {
+          markTestSkipped(
+            'the run logged in already (the saved session had expired), and '
+            'it may log in only once: run this file again',
+          );
+          return;
+        }
+        final book =
+            year.gradebooks
+                .where((g) => g.gradebookId == _behaviourGradebookId)
+                .firstOrNull ??
+            year.gradebooks.first;
+        final answers = _RpcAnswers();
+        run.client.dio.interceptors.insert(0, answers);
+        addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+        // As on a session that expired: init goes out without one.
+        await run.client.clearCookies();
+        final sheet = await gradebooks.getGradebook(book);
+
+        print(
+          'gradebook ${book.gradebookId}: answers ${answers.answers}; '
+          '${sheet.periods.length} periods, ${sheet.pupils.length} pupils',
+        );
+        expect(answers.answers.first, ('init', 302, '/'));
+        expect(answers.answers[1], ('init', 200, null));
+        expect(run.guard.loggedIn, isTrue);
+        expect(sheet.gradebook, same(book));
+        expect(sheet.pupils, isNotEmpty);
         expect(run.guard.violations, isEmpty);
       });
     },

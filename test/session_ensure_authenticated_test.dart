@@ -69,13 +69,15 @@ const _courses = 'GET /course-list/api/v1/courses';
 /// The login POST: one per login.
 const _password = 'POST /login';
 
-/// The requests of a login, from the login page to the 2FA answer.
+/// The requests of a login, from the login page to the 2FA answer, and the
+/// start page, which the login opens after it (#192).
 const _login = [
   'GET /login',
   _password,
   'GET /',
   'GET /2fa/api/v1/config',
   'POST /2fa/api/v1/google-authenticator',
+  'GET /',
 ];
 
 enum _Stage { anonymous, passwordDone, authenticated }

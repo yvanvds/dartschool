@@ -3,6 +3,8 @@
 // #148). Not exported.
 import 'dart:convert';
 
+import 'package:dio/dio.dart' show Response;
+
 import '../exceptions.dart';
 
 /// The RPC protocol of Skore's backend services (`owners.php`,
@@ -106,6 +108,38 @@ abstract final class SkoreRpc {
   static int? tryId(Object? value) {
     if (value is int) return value;
     return value is String ? int.tryParse(value.trim()) : null;
+  }
+
+  /// What [response] redirects to, for the message of an error about it:
+  /// `, a redirect to <target>` for a redirect (`3xx`) with a `Location`,
+  /// `, a redirect without a Location` for one without, and `""` for any
+  /// other answer (#192).
+  ///
+  /// The target is the path of the `Location`, resolved against the
+  /// requested URL, with only the `module` of its query
+  /// (`/?module=Homepage`), and with its host only when it is another one
+  /// than the request's: the rest of a query can hold IDs, which a log
+  /// should not get from the message.
+  static String redirectNote(Response<dynamic> response) {
+    final status = response.statusCode ?? 0;
+    if (status < 300 || status >= 400) return '';
+    final location = response.headers.value('location')?.trim() ?? '';
+    if (location.isEmpty) return ', a redirect without a Location';
+    try {
+      final request = response.realUri;
+      final target = request.resolve(location);
+      final module = target.queryParameters['module'];
+      final host = target.host == request.host
+          ? ''
+          : '${target.scheme}://${target.host}';
+      final path = target.path.isEmpty ? '/' : target.path;
+      final query = module == null ? '' : '?module=$module';
+      return ', a redirect to $host$path$query';
+    } on FormatException {
+      return ', a redirect to a Location that is not a URL';
+    } on ArgumentError {
+      return ', a redirect to a Location that is not a URL';
+    }
   }
 
   /// [value], a decoded JSON answer, as a short JSON text for a message.

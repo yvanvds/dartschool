@@ -242,6 +242,7 @@ void main() {
         'GET /',
         'GET /2fa/api/v1/config',
         'POST /2fa/api/v1/google-authenticator',
+        'GET /',
         'GET /course-list/api/v1/courses',
       ]);
       expect(server.sessionCookies.first, [_staleSession]);
@@ -262,6 +263,7 @@ void main() {
         'GET /',
         'GET /2fa/api/v1/config',
         'POST /2fa/api/v1/google-authenticator',
+        'GET /',
         'POST /',
       ]);
       expect(server.sessionCookies.first, [_staleSession]);

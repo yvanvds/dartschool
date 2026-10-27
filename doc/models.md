@@ -191,7 +191,10 @@ The grades of an evaluation: `evaluationId`, `grades` (one per pupil of the clas
 A report period of a gradebook (`SkoreGradebookSheet.reports`, #195): `id`, `name` (`R1D`), `fullName` (`Rapport 1`), `isOpen`, `closesAt` (UTC, or `null`), `info` (Skore's HTML), and Skore's raw `typeCode` and `rating`. Returned by `SkoreGradebookService.getReport()`, a `SkoreReport`: `gradebookId`, `reportId`, `courseId` / `courseName`, `components` (`SkoreReportComponent`: `column`, `name`, `classAverage`), `hasComments`, `commentMaxLength` and `pupils` (`SkoreReportPupil`: `pupilId`, `classId`, `results`, `comment`, `rowKey`, `resultOf(column)`), and `pupil(pupilId)`. A `SkoreReportResult`: `column`, `value` (Skore's text, or `null`), `isLow`. A `SkoreReportComment` (also returned by `saveReportComment()`): `pupilId`, `reportId`, `courseId`, `text`, `isEditable`, `cellParams` and `isEmpty`. They print counts, not the comments.
 
 ### `SkoreFeedback`
-Returned by `SkoreGradebookService.getFeedback()` and `saveFeedback()`. `id` (a UUID), `text`, `pupilId`, `teacherId` / `teacherName`, `createdAt` / `changedAt` (UTC), `attachments` (`SkoreFeedbackAttachment`: `id`, `name`, `size`, and Skore's `json`) and `canEdit`.
+Returned by `SkoreGradebookService.getFeedback()` (and, as a `SkoreSavedFeedback`, by `saveFeedback()`). `id` (a UUID), `text`, `pupilId`, `teacherId` / `teacherName`, `createdAt` / `changedAt` (UTC), `attachments` (`SkoreFeedbackAttachment`: `id`, `name`, `size`, and Skore's `json`) and `canEdit`.
+
+### `SkoreSavedFeedback`
+Returned by `SkoreGradebookService.saveFeedback()`. The feedback saved, a `SkoreFeedback` (as Skore lists it right after the save), with `before` (`SkoreFeedback?`: for a change, the user's feedback as read right before the save, the same `id` with the text it had; `null` for a create) and the getter `isUpdate` (`before != null`).
 
 ### `PlannerCalendar`
 A calendar of the planner: `type` (`PlannerCalendarType`) and `id`. Made with `PlannerCalendar.user(id)`, `.group(id)` or `.location(id)` (or `PlannerCalendar(type, id)`), by `PlannerService.ownCalendar()`, or from what an element names (`PlannerUser.calendar`, `PlannerGroup.calendar`, `PlannerLocation.calendar`). Equal by type and ID.

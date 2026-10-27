@@ -21,6 +21,7 @@ import 'package:flutter_smartschool/src/models/skore_gradebook_models.dart'
         SkoreEvaluation,
         SkoreEvaluationResults,
         SkoreEvaluationType,
+        SkoreFeedback,
         SkoreGrade,
         SkorePublication,
         SkorePublicationState;
@@ -735,6 +736,66 @@ void main() {
       expect(
         error.toString(),
         'SmartschoolSkoreEvaluationPublishedError: published',
+      );
+    });
+
+    test('SmartschoolSkoreFeedbackAmbiguousError is a refused change, and so '
+        "a SmartschoolSkoreError, with the user's own feedback: nothing was "
+        'saved (#158)', () {
+      const first = SkoreFeedback(
+        id: '00000000-0000-4000-8000-000000000001',
+        text: 'Eerste opmerking.',
+        pupilId: 1201,
+        teacherId: 1005,
+        canEdit: true,
+      );
+      const second = SkoreFeedback(
+        id: '00000000-0000-4000-8000-000000000003',
+        text: 'Tweede opmerking.',
+        pupilId: 1201,
+        teacherId: 1005,
+      );
+      const error = SmartschoolSkoreFeedbackAmbiguousError(
+        'ambiguous',
+        feedbacks: [first, second],
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreFeedbackNotEditableError>()));
+      expect(error, isNot(isA<SmartschoolSkoreEvaluationPublishedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.feedbacks, hasLength(2));
+      expect(error.feedbacks.first, same(first));
+      expect(error.feedbacks.last, same(second));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreFeedbackAmbiguousError: ambiguous',
+      );
+    });
+
+    test('SmartschoolSkoreFeedbackNotEditableError is a refused change, and '
+        "so a SmartschoolSkoreError, with the user's feedback: nothing was "
+        'saved (#158)', () {
+      const feedback = SkoreFeedback(
+        id: '00000000-0000-4000-8000-000000000001',
+        text: 'Eerste opmerking.',
+        pupilId: 1201,
+        teacherId: 1005,
+      );
+      const error = SmartschoolSkoreFeedbackNotEditableError(
+        'not editable',
+        feedback: feedback,
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreFeedbackAmbiguousError>()));
+      expect(error, isNot(isA<SmartschoolSkoreEvaluationPublishedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.feedback, same(feedback));
+      expect(error.feedback.canEdit, isFalse);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreFeedbackNotEditableError: not editable',
       );
     });
 

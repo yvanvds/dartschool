@@ -28,7 +28,7 @@ import 'models/presence_models.dart'
         PresenceSaveError,
         PresenceUnreadableAnswerKind;
 import 'models/skore_gradebook_models.dart'
-    show SkoreEvaluation, SkoreGrade, SkoreGradebook;
+    show SkoreEvaluation, SkoreFeedback, SkoreGrade, SkoreGradebook;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1445,8 +1445,10 @@ class SmartschoolPresenceUnreadableAnswerError
 ///   account, which lacks the rights for that part of Skore (its `area`).
 /// - [SmartschoolSkoreChangeRefusedError]: a check before a save refused the
 ///   change (its subtypes [SmartschoolSkoreMyGroupsError],
-///   [SmartschoolSkoreGradebookReadOnlyError] and
-///   [SmartschoolSkoreEvaluationPublishedError] too). Its message says why,
+///   [SmartschoolSkoreGradebookReadOnlyError],
+///   [SmartschoolSkoreEvaluationPublishedError],
+///   [SmartschoolSkoreFeedbackAmbiguousError] and
+///   [SmartschoolSkoreFeedbackNotEditableError] too). Its message says why,
 ///   so the call can be corrected.
 /// - This type itself (none of its subtypes): Skore answered with something
 ///   the service cannot use: another HTTP status than `200`, an HTML page
@@ -1539,8 +1541,10 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// ID that is not positive or a blank text (before anything is sent); the
 /// gradebook, period, evaluation and pupil checks of `saveGrade` (not the
 /// points); the user's own feedback for the pupil that Skore does not let
-/// them change (`can_edit`), or more than one of it. For a gradebook a
-/// colleague shared with the user (#191): one shared to read only
+/// them change (`can_edit`; [SmartschoolSkoreFeedbackNotEditableError], a
+/// subtype, #158), or more than one of it
+/// ([SmartschoolSkoreFeedbackAmbiguousError], a subtype, #158). For a
+/// gradebook a colleague shared with the user (#191): one shared to read only
 /// ([SmartschoolSkoreGradebookReadOnlyError], a subtype), one no longer
 /// shared with them, and, for `createEvaluation`, any shared gradebook.
 ///
@@ -1684,6 +1688,63 @@ class SmartschoolSkoreEvaluationPublishedError
   const SmartschoolSkoreEvaluationPublishedError(
     super.message, {
     required this.evaluation,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.saveFeedback` when the user has more
+/// than one feedback of their own for the pupil on the evaluation, as Skore
+/// lists it right before the save (#158): it changes none of them, as it
+/// cannot tell which one is meant, and creates no other. **Nothing was
+/// saved.**
+///
+/// A second create makes such feedback: Skore's create adds a feedback, it
+/// does not replace the user's. Keep one in Smartschool: [feedbacks] are
+/// the ones to choose from, so an app can show them, apart from the other
+/// refusals. This check comes before the one of
+/// [SmartschoolSkoreFeedbackNotEditableError]: with two or more, this error
+/// is thrown, also when Skore does not let the user change some of them.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the pupil, the evaluation (its ID and
+/// title), its period and gradebook, and the IDs of the feedback, not their
+/// texts.
+class SmartschoolSkoreFeedbackAmbiguousError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The user's own feedback for the pupil on the evaluation (two or more),
+  /// as Skore listed it right before the save, in Skore's order (the order
+  /// they were written in, seen live). A colleague's feedback is not in it.
+  final List<SkoreFeedback> feedbacks;
+
+  const SmartschoolSkoreFeedbackAmbiguousError(
+    super.message, {
+    required this.feedbacks,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.saveFeedback` when the user's own
+/// feedback for the pupil on the evaluation is one Skore does not let them
+/// change (`capabilities.can_edit` `false`: `SkoreFeedback.canEdit`), as
+/// Skore lists it right before the save (#158). **Nothing was saved**: the
+/// library neither changes it nor creates a second one.
+///
+/// So an app can tell the user "Skore does not let you change this
+/// feedback" ([feedback]), apart from the other refusals.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the feedback by its ID, the pupil, the
+/// evaluation (its ID and title), its period and gradebook, and not the
+/// text.
+class SmartschoolSkoreFeedbackNotEditableError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The user's feedback, as Skore listed it right before the save, with
+  /// `SkoreFeedback.canEdit` `false`.
+  final SkoreFeedback feedback;
+
+  const SmartschoolSkoreFeedbackNotEditableError(
+    super.message, {
+    required this.feedback,
   });
 }
 

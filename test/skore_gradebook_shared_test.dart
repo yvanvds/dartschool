@@ -923,6 +923,9 @@ void main() {
       expect(saved.teacherId, _me);
       expect(saved.text, 'Goed gewerkt.');
       expect(server.feedback[_an]!.first, teachers);
+      // The gradebook teacher's feedback is not the user's: created (#158).
+      expect(saved.isUpdate, isFalse);
+      expect(saved.before, isNull);
     });
 
     test("saveFeedback changes the user's own feedback there", () async {
@@ -948,6 +951,11 @@ void main() {
       );
       expect(saved.id, 'f-mine');
       expect(server.feedback[_an]!.first['text'], 'Eerste opmerking.');
+      // The user's own feedback changed, as it was before (#158).
+      expect(saved.isUpdate, isTrue);
+      expect(saved.before?.id, 'f-mine');
+      expect(saved.before?.teacherId, _me);
+      expect(saved.before?.text, 'Eerste opmerking.');
     });
 
     test('saveGrades sends saveGrade in the name of the gradebook\'s teacher, '

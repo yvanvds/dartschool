@@ -170,9 +170,12 @@ Future<void> main(List<String> args) async {
           pupilId,
           text,
         );
+        // What the save did, from the result (#158): no read of our own.
+        final before = feedback.before;
         print(
-          '✓ Saved: feedback ${feedback.id}, '
-          '${feedback.text.length} characters, changed '
+          '✓ ${before == null ? 'Created' : 'Changed'}: feedback '
+          '${feedback.id}, ${feedback.text.length} characters'
+          '${before == null ? '' : ' (were ${before.text.length})'}, changed '
           '${feedback.changedAt?.toLocal()}.',
         );
       } on SmartschoolSkoreError catch (e) {

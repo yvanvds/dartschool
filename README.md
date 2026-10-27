@@ -449,7 +449,8 @@ final created = await gradebooks.createEvaluation(books.first, sheet.activePerio
 final cell = await gradebooks.saveGrade(books.first, created, sheet.pupils.first.id, '15,5'); // SkoreGrade
 
 // Feedback (#152): creates yours, or changes it; a colleague's is left alone.
-final note = await gradebooks.saveFeedback(books.first, created, sheet.pupils.first.id, 'Goed gewerkt.'); // SkoreFeedback
+final note = await gradebooks.saveFeedback(books.first, created, sheet.pupils.first.id, 'Goed gewerkt.'); // SkoreSavedFeedback
+print(note.isUpdate ? 'changed' : 'created'); // for a change, note.before is the feedback as it was (#158)
 
 // A report period ("Rapporten | Rapport 1", #195): each pupil's results so far
 // and the course comment that goes on the report.

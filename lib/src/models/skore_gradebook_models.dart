@@ -895,7 +895,7 @@ class SkoreScaleLevel {
 /// feedback panel of Skore's gradebook shows it (#149). A pupil can have
 /// several on one evaluation, from one or more teachers.
 /// `SkoreGradebookService.saveFeedback` creates or changes the user's own
-/// (#152).
+/// (#152), and returns it as a [SkoreSavedFeedback] (#158).
 class SkoreFeedback {
   /// The feedback's ID (a UUID).
   final String id;
@@ -941,6 +941,52 @@ class SkoreFeedback {
       'SkoreFeedback(id: $id, pupilId: $pupilId, teacherId: $teacherId, '
       'changedAt: ${changedAt?.toIso8601String()}, attachments: '
       '${attachments.length}, canEdit: $canEdit)';
+}
+
+/// The feedback that `SkoreGradebookService.saveFeedback` saved, in its
+/// context (#158): whether the save created it or changed the user's own
+/// feedback ([isUpdate]), and for a change the feedback as it was
+/// ([before]).
+///
+/// It is the [SkoreFeedback] saved, as Skore lists it right after the save
+/// (the read that confirmed it), so a caller that takes it as a
+/// [SkoreFeedback] needs no change. [before] is what the call read right
+/// before the save, the feedback it checked and changed: telling the user
+/// "created" or "changed" needs no read of the caller's own, which could
+/// differ from the one the call checked. The feedback's [createdAt] and
+/// [changedAt] are no reliable sign of either.
+class SkoreSavedFeedback extends SkoreFeedback {
+  /// For a change, the user's feedback as it was right before the save (as
+  /// `saveFeedback` read it to check it): the same [id], with the text,
+  /// [changedAt] and attachments it had then. `null` when the save created
+  /// the feedback: the user had no feedback of their own for the pupil on
+  /// the evaluation (a colleague's feedback is never changed).
+  final SkoreFeedback? before;
+
+  const SkoreSavedFeedback({
+    required super.id,
+    required super.text,
+    required super.pupilId,
+    required super.teacherId,
+    super.teacherName,
+    super.createdAt,
+    super.changedAt,
+    super.attachments,
+    super.canEdit,
+    this.before,
+  });
+
+  /// Whether the save changed the user's existing feedback ([before]),
+  /// rather than creating a new one: the `isUpdate` of a
+  /// `SmartschoolSkoreFeedbackSaveUnconfirmedError`, for a save that was
+  /// confirmed.
+  bool get isUpdate => before != null;
+
+  @override
+  String toString() =>
+      'SkoreSavedFeedback(id: $id, pupilId: $pupilId, teacherId: $teacherId, '
+      'changedAt: ${changedAt?.toIso8601String()}, attachments: '
+      '${attachments.length}, canEdit: $canEdit, isUpdate: $isUpdate)';
 }
 
 /// An attachment of a [SkoreFeedback]. Not seen live: the fields are those

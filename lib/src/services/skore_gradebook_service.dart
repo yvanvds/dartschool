@@ -140,7 +140,11 @@ export '../models/skore_gradebook_models.dart';
 ///   shared with the user to read only (#191); a
 ///   [SmartschoolSkoreEvaluationPublishedError] (another subtype) from
 ///   [saveGrade], [saveGrades] and [saveFeedback] for an evaluation that is
-///   published or scheduled, without `allowPublished` (#157).
+///   published or scheduled, without `allowPublished` (#157); from
+///   [saveFeedback], a [SmartschoolSkoreFeedbackAmbiguousError] for more
+///   than one feedback of the user's own for the pupil, and a
+///   [SmartschoolSkoreFeedbackNotEditableError] for the user's feedback
+///   that Skore does not let them change (two more subtypes, #158).
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
@@ -1436,7 +1440,10 @@ class SkoreGradebookService {
   /// Gives pupil [pupilId] written feedback on [evaluation] (from
   /// [getEvaluations]) of [gradebook], or changes the feedback the user gave
   /// them there before, and returns it as Skore lists it right after the
-  /// save (#152).
+  /// save (#152): a [SkoreSavedFeedback], which says whether the save
+  /// created the feedback or changed it ([SkoreSavedFeedback.isUpdate]), and
+  /// for a change the feedback as it was right before the save
+  /// ([SkoreSavedFeedback.before]) (#158).
   ///
   /// [text]: not blank; sent trimmed. An evaluation that is published or
   /// scheduled is refused unless [allowPublished] is `true`: feedback on a
@@ -1491,10 +1498,13 @@ class SkoreGradebookService {
   ///   it, which was not tried live);
   /// - a pupil without a cell in the evaluation's rows of the gradebook's
   ///   class;
+  /// - **more than one** feedback of the user's own for the pupil (a second
+  ///   create makes that), with a [SmartschoolSkoreFeedbackAmbiguousError]
+  ///   that carries them (#158): it changes none of them, as it cannot tell
+  ///   which one is meant. Keep one in Smartschool;
   /// - the user's own feedback for the pupil that Skore does not let them
-  ///   change (`capabilities.can_edit` `false`), or **more than one** of it
-  ///   (a second create makes that): it changes none of them, as it cannot
-  ///   tell which one is meant. Keep one in Smartschool.
+  ///   change (`capabilities.can_edit` `false`), with a
+  ///   [SmartschoolSkoreFeedbackNotEditableError] that carries it (#158).
   ///
   /// Skore answering the save with `400` to `499` is a
   /// [SmartschoolSkoreError] with the `title` and `detail` of its answer:
@@ -1513,7 +1523,7 @@ class SkoreGradebookService {
   ///
   /// The checks and the save are separate requests: do not change the same
   /// feedback from two places at once.
-  Future<SkoreFeedback> saveFeedback(
+  Future<SkoreSavedFeedback> saveFeedback(
     SkoreGradebook gradebook,
     SkoreEvaluation evaluation,
     int pupilId,
@@ -1566,6 +1576,10 @@ class SkoreGradebookService {
         'you gave pupil $pupilId ${own.length} feedbacks on $where already '
         '(${own.map((f) => f.id).join(', ')}): the library changes none of '
         'them, as it cannot tell which one is meant. Keep one in Smartschool',
+        error: (message) => SmartschoolSkoreFeedbackAmbiguousError(
+          message,
+          feedbacks: List.unmodifiable(own),
+        ),
       );
     }
     final existing = own.firstOrNull;
@@ -1574,6 +1588,10 @@ class SkoreGradebookService {
         operation,
         'Skore does not let you change your feedback ${existing.id} for pupil '
         '$pupilId on $where (can_edit false)',
+        error: (message) => SmartschoolSkoreFeedbackNotEditableError(
+          message,
+          feedback: existing,
+        ),
       );
     }
 
@@ -1735,7 +1753,20 @@ class SkoreGradebookService {
         feedbackId: answer.id,
       );
     }
-    return saved;
+    // What the save did (#158): the feedback as read again, with the one it
+    // changed as read before the save (none for a create).
+    return SkoreSavedFeedback(
+      id: saved.id,
+      text: saved.text,
+      pupilId: saved.pupilId,
+      teacherId: saved.teacherId,
+      teacherName: saved.teacherName,
+      createdAt: saved.createdAt,
+      changedAt: saved.changedAt,
+      attachments: saved.attachments,
+      canEdit: saved.canEdit,
+      before: existing,
+    );
   }
 
   /// The feedback of pupil [pupilId] on evaluation [evaluationId], read
@@ -2513,7 +2544,8 @@ class SkoreGradebookService {
   /// [operation] and says [why]. A check that a caller tells apart passes
   /// [error], which makes its subtype of that message (as
   /// [SmartschoolSkoreEvaluationPublishedError] for [_checkPublication],
-  /// #157), in the same words as without it.
+  /// #157, and the feedback checks of [saveFeedback], #158), in the same
+  /// words as without it.
   static Never _refuse(
     String operation,
     String why, {

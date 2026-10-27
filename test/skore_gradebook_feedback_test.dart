@@ -682,7 +682,8 @@ const _where =
 
 /// A [SmartschoolSkoreChangeRefusedError] of saveFeedback whose message
 /// holds [reason]: the type itself, none of its subtypes, such as the
-/// [SmartschoolSkoreEvaluationPublishedError] of [_refusedPublished] (#157).
+/// [SmartschoolSkoreEvaluationPublishedError] of [_refusedPublished] (#157),
+/// or those of [_refusedAmbiguous] and [_refusedNotEditable] (#158).
 Matcher _refused(Object reason) => allOf(
   _refusal(reason),
   isA<Object>().having(
@@ -721,6 +722,39 @@ Matcher _refusedPublished(
         'evaluation.publication.rawPublicDateTime',
         rawPublicDateTime,
       ),
+);
+
+/// The [SmartschoolSkoreFeedbackAmbiguousError] of saveFeedback (#158),
+/// whose message holds [reason]: it carries the user's own feedback for An
+/// as Skore listed it before the save, with the IDs [ids], in that order.
+Matcher _refusedAmbiguous(Object reason, {required List<String> ids}) => allOf(
+  _refusal(reason),
+  isNot(isA<SmartschoolSkoreFeedbackNotEditableError>()),
+  isA<SmartschoolSkoreFeedbackAmbiguousError>()
+      .having((e) => [for (final f in e.feedbacks) f.id], 'feedbacks', ids)
+      .having(
+        (e) => {for (final f in e.feedbacks) (f.pupilId, f.teacherId)},
+        'feedbacks of',
+        {(_an, _me)},
+      ),
+);
+
+/// The [SmartschoolSkoreFeedbackNotEditableError] of saveFeedback (#158),
+/// whose message holds [reason]: it carries the user's feedback [id] for An
+/// as Skore listed it before the save, with [text], not editable.
+Matcher _refusedNotEditable(
+  Object reason, {
+  required String id,
+  String text = 'Eerste opmerking.',
+}) => allOf(
+  _refusal(reason),
+  isNot(isA<SmartschoolSkoreFeedbackAmbiguousError>()),
+  isA<SmartschoolSkoreFeedbackNotEditableError>()
+      .having((e) => e.feedback.id, 'feedback.id', id)
+      .having((e) => e.feedback.pupilId, 'feedback.pupilId', _an)
+      .having((e) => e.feedback.teacherId, 'feedback.teacherId', _me)
+      .having((e) => e.feedback.text, 'feedback.text', text)
+      .having((e) => e.feedback.canEdit, 'feedback.canEdit', isFalse),
 );
 
 /// A refusal of saveFeedback whose message holds [reason]: a
@@ -835,6 +869,16 @@ void main() {
       expect(feedback.canEdit, isTrue);
       expect(feedback.createdAt, feedback.changedAt);
       expect(server.feedback[(_toets, _an)], hasLength(1));
+      // It says it created the feedback (#158).
+      expect(feedback, isA<SkoreSavedFeedback>());
+      expect(feedback.isUpdate, isFalse);
+      expect(feedback.before, isNull);
+      expect(
+        '$feedback',
+        'SkoreSavedFeedback(id: $_created, pupilId: $_an, teacherId: $_me, '
+            'changedAt: 2026-10-08T10:00:01.000Z, attachments: 0, canEdit: '
+            'true, isUpdate: false)',
+      );
     });
 
     test("changes the user's own feedback, sending its attachments back, "
@@ -878,6 +922,59 @@ void main() {
       expect(feedback.attachments.single.json, _attachment);
       // The colleague's feedback is as it was, and still first.
       expect(server.feedback[(_toets, _an)]!.first, colleague);
+      // It says it changed the user's feedback, as it was before (#158).
+      expect(feedback.isUpdate, isTrue);
+      final before = feedback.before!;
+      expect(before, isNot(isA<SkoreSavedFeedback>()));
+      expect(before.id, _mine);
+      expect(before.text, 'Eerste opmerking.');
+      expect(before.teacherId, _me);
+      expect(before.pupilId, _an);
+      expect(before.createdAt, DateTime.utc(2026, 10, 8, 7, 49, 36));
+      expect(before.changedAt, DateTime.utc(2026, 10, 8, 7, 49, 36));
+      expect(before.attachments.single.json, _attachment);
+      expect('$feedback', endsWith('canEdit: true, isUpdate: true)'));
+    });
+
+    test('says what each save did: the first creates the feedback, the next '
+        'change it, each with the text it had before (#158)', () async {
+      final server = _Skore();
+      final (gradebooks, evaluation) = await ready(server);
+
+      final created = await gradebooks.saveFeedback(
+        _ewi,
+        evaluation,
+        _an,
+        'Goed gewerkt.',
+      );
+      final changed = await gradebooks.saveFeedback(
+        _ewi,
+        evaluation,
+        _an,
+        'Heel goed gewerkt.',
+      );
+      final again = await gradebooks.saveFeedback(
+        _ewi,
+        evaluation,
+        _an,
+        'Uitstekend.',
+      );
+
+      expect(
+        [for (final p in server.posts) p.path],
+        [_feedbackApi, '$_feedbackApi/$_created', '$_feedbackApi/$_created'],
+      );
+      expect(created.isUpdate, isFalse);
+      expect(created.before, isNull);
+      expect(changed.isUpdate, isTrue);
+      expect(changed.id, _created);
+      expect(changed.before?.id, _created);
+      expect(changed.before?.text, 'Goed gewerkt.');
+      expect(changed.text, 'Heel goed gewerkt.');
+      expect(again.isUpdate, isTrue);
+      expect(again.before?.text, 'Heel goed gewerkt.');
+      expect(again.text, 'Uitstekend.');
+      expect(server.feedback[(_toets, _an)], hasLength(1));
     });
 
     test("a colleague's feedback only: creates the user's own, and changes "
@@ -901,6 +998,9 @@ void main() {
       expect(server.posts.single.path, _feedbackApi);
       expect(server.posts.single.body, _createBody('Goed gewerkt.'));
       expect(feedback.teacherId, _me);
+      // A colleague's feedback is not the user's: created, nothing before.
+      expect(feedback.isUpdate, isFalse);
+      expect(feedback.before, isNull);
       expect(
         [for (final f in server.feedback[(_toets, _an)]!) f['text']],
         ['Van een collega.', 'Goed gewerkt.'],
@@ -981,6 +1081,8 @@ void main() {
       );
 
       expect(feedback.text, 'Goed gewerkt.');
+      expect(feedback.isUpdate, isTrue);
+      expect(feedback.before?.id, _mine);
       expect(
         [for (final p in server.posts) p.path],
         ['$_feedbackApi/$_mine', '$_feedbackApi/$_mine'],
@@ -1010,6 +1112,7 @@ void main() {
         'Goed gewerkt.',
       );
       expect(feedback.text, 'Goed gewerkt.');
+      expect(feedback.isUpdate, isFalse);
       expect(
         [for (final p in server.posts) p.path],
         [_feedbackApi, _feedbackApi],
@@ -1223,36 +1326,14 @@ void main() {
       }
     });
 
-    test(
-      "the user's own feedback that Skore does not let them change",
-      () async {
-        final server = _Skore(
-          feedback: {
-            (_toets, _an): [_feedback(_mine, canEdit: false)],
-          },
-        );
-        final (gradebooks, evaluation) = await ready(server);
-        await expectLater(
-          gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
-          throwsA(
-            _refused(
-              'Skore does not let you change your feedback $_mine for pupil '
-              '$_an on $_where (can_edit false)',
-            ),
-          ),
-        );
-        expect(server.posts, isEmpty);
-      },
-    );
-
-    test('more than one feedback of the user for the pupil: changes none of '
-        'them, nor creates another', () async {
+    test("the user's own feedback that Skore does not let them change: a "
+        'SmartschoolSkoreFeedbackNotEditableError with that feedback, '
+        'nothing sent (#158)', () async {
       final server = _Skore(
         feedback: {
           (_toets, _an): [
-            _feedback(_mine),
-            _feedback(_theirs, teacher: _colleague),
-            _feedback(_mineToo, text: 'Tweede opmerking.'),
+            _feedback(_theirs, teacher: _colleague, text: 'Van een collega.'),
+            _feedback(_mine, canEdit: false),
           ],
         },
       );
@@ -1260,14 +1341,83 @@ void main() {
       await expectLater(
         gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
         throwsA(
-          _refused(
-            'you gave pupil $_an 2 feedbacks on $_where already ($_mine, '
-            '$_mineToo): the library changes none of them',
+          _refusedNotEditable(
+            'Skore does not let you change your feedback $_mine for pupil '
+            '$_an on $_where (can_edit false)',
+            id: _mine,
           ),
         ),
       );
+      // The checks' reads, the pupil's feedback, and no save.
       expect(server.posts, isEmpty);
+      expect(server.requests.last, 'GET ${_getPath(_an)}');
+      expect(server.feedback[(_toets, _an)], hasLength(2));
     });
+
+    test(
+      'more than one feedback of the user for the pupil: changes none of '
+      'them, nor creates another; a SmartschoolSkoreFeedbackAmbiguousError '
+      "with the user's own, not a colleague's, nothing sent (#158)",
+      () async {
+        final server = _Skore(
+          feedback: {
+            (_toets, _an): [
+              _feedback(_mine),
+              _feedback(_theirs, teacher: _colleague),
+              _feedback(_mineToo, text: 'Tweede opmerking.'),
+            ],
+          },
+        );
+        final (gradebooks, evaluation) = await ready(server);
+        await expectLater(
+          gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
+          throwsA(
+            allOf(
+              _refusedAmbiguous(
+                'you gave pupil $_an 2 feedbacks on $_where already ($_mine, '
+                '$_mineToo): the library changes none of them',
+                ids: [_mine, _mineToo],
+              ),
+              isA<SmartschoolSkoreFeedbackAmbiguousError>().having(
+                (e) => [for (final f in e.feedbacks) f.text],
+                'feedbacks texts',
+                ['Eerste opmerking.', 'Tweede opmerking.'],
+              ),
+            ),
+          ),
+        );
+        expect(server.posts, isEmpty);
+        expect(server.requests.last, 'GET ${_getPath(_an)}');
+        expect(server.feedback[(_toets, _an)], hasLength(3));
+      },
+    );
+
+    test(
+      'more than one feedback of the user, one of them not editable: the '
+      'SmartschoolSkoreFeedbackAmbiguousError, which comes first (#158)',
+      () async {
+        final server = _Skore(
+          feedback: {
+            (_toets, _an): [
+              _feedback(_mine, canEdit: false),
+              _feedback(_mineToo, text: 'Tweede opmerking.'),
+            ],
+          },
+        );
+        final (gradebooks, evaluation) = await ready(server);
+        await expectLater(
+          gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
+          throwsA(
+            _refusedAmbiguous(
+              'you gave pupil $_an 2 feedbacks on $_where already ($_mine, '
+              '$_mineToo)',
+              ids: [_mine, _mineToo],
+            ),
+          ),
+        );
+        expect(server.posts, isEmpty);
+      },
+    );
 
     test('a session user ID not in the form 4069_146_0', () async {
       final server = _Skore(userId: '4069_$_me');
@@ -1585,6 +1735,53 @@ void main() {
       );
       expect(server.posts, hasLength(1));
       expect(server.feedback[(_toets, _an)], hasLength(1));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // The result
+  // ---------------------------------------------------------------------------
+
+  group('SkoreSavedFeedback (#158)', () {
+    test('is the SkoreFeedback saved, with the defaults of one; isUpdate is '
+        'whether it has the feedback before', () {
+      const created = SkoreSavedFeedback(
+        id: _created,
+        text: 'Goed gewerkt.',
+        pupilId: _an,
+        teacherId: _me,
+      );
+      expect(created, isA<SkoreFeedback>());
+      expect(created.teacherName, '');
+      expect(created.createdAt, isNull);
+      expect(created.changedAt, isNull);
+      expect(created.attachments, isEmpty);
+      expect(created.canEdit, isFalse);
+      expect(created.before, isNull);
+      expect(created.isUpdate, isFalse);
+
+      const before = SkoreFeedback(
+        id: _mine,
+        text: 'Eerste opmerking.',
+        pupilId: _an,
+        teacherId: _me,
+        canEdit: true,
+      );
+      const changed = SkoreSavedFeedback(
+        id: _mine,
+        text: 'Goed gewerkt.',
+        pupilId: _an,
+        teacherId: _me,
+        canEdit: true,
+        before: before,
+      );
+      expect(changed.isUpdate, isTrue);
+      expect(changed.before, same(before));
+      expect(
+        '$changed',
+        'SkoreSavedFeedback(id: $_mine, pupilId: $_an, teacherId: $_me, '
+            'changedAt: null, attachments: 0, canEdit: true, isUpdate: true)',
+      );
     });
   });
 }

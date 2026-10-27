@@ -73,15 +73,23 @@ abstract final class SkoreRpc {
 
   /// Decodes [body], the JSON answer to [what]; an empty body, an HTML page
   /// or invalid JSON is a [SmartschoolSkoreError].
-  static dynamic decodeJson(String body, String what) {
+  ///
+  /// With [page], the answer's page as [pageOf] names it, the error of an
+  /// HTML page names that page instead of quoting the start of it (#194):
+  /// Smartschool's pages all start with the same banner, in a comment, so
+  /// the start of one does not tell which page it is.
+  static dynamic decodeJson(String body, String what, {String? page}) {
     final trimmed = body.trimLeft();
     if (trimmed.isEmpty) {
       throw SmartschoolSkoreError('Skore answered $what with an empty body.');
     }
     if (trimmed.startsWith('<')) {
       throw SmartschoolSkoreError(
-        'Skore answered $what with an HTML page instead of JSON: '
-        '${preview(trimmed)}',
+        page == null
+            ? 'Skore answered $what with an HTML page instead of JSON: '
+                  '${preview(trimmed)}'
+            : 'Skore answered $what with an HTML page instead of JSON: '
+                  '$page.',
       );
     }
     try {
@@ -115,11 +123,8 @@ abstract final class SkoreRpc {
   /// `, a redirect without a Location` for one without, and `""` for any
   /// other answer (#192).
   ///
-  /// The target is the path of the `Location`, resolved against the
-  /// requested URL, with only the `module` of its query
-  /// (`/?module=Homepage`), and with its host only when it is another one
-  /// than the request's: the rest of a query can hold IDs, which a log
-  /// should not get from the message.
+  /// The target is the `Location`, resolved against the requested URL, as
+  /// [place] names it.
   static String redirectNote(Response<dynamic> response) {
     final status = response.statusCode ?? 0;
     if (status < 300 || status >= 400) return '';
@@ -127,19 +132,58 @@ abstract final class SkoreRpc {
     if (location.isEmpty) return ', a redirect without a Location';
     try {
       final request = response.realUri;
-      final target = request.resolve(location);
-      final module = target.queryParameters['module'];
-      final host = target.host == request.host
-          ? ''
-          : '${target.scheme}://${target.host}';
-      final path = target.path.isEmpty ? '/' : target.path;
-      final query = module == null ? '' : '?module=$module';
-      return ', a redirect to $host$path$query';
+      return ', a redirect to ${place(request.resolve(location), request)}';
     } on FormatException {
       return ', a redirect to a Location that is not a URL';
     } on ArgumentError {
       return ', a redirect to a Location that is not a URL';
     }
+  }
+
+  /// The page that [response] is, for the message of an error about it
+  /// (#194): the URL it ended on, as [place] names it, with the module that
+  /// Smartschool names in the page's `smsc-module` header when that URL names
+  /// none, and the redirects that led there, each as [place] names it:
+  /// `/ (module Homepage), after a redirect to /` for Smartschool's start
+  /// page, which it serves at `/` (seen live, 2026-10-27).
+  ///
+  /// Neither the page's text nor its title: Smartschool's pages start with
+  /// the same banner, in a comment, and carry the signed-in user's name.
+  static String pageOf(Response<dynamic> response) {
+    final request = response.requestOptions.uri;
+    final at = request.resolveUri(response.realUri);
+    final header = response.headers.value('smsc-module')?.trim() ?? '';
+    final module =
+        at.queryParameters['module'] == null && _moduleName.hasMatch(header)
+        ? ' (module $header)'
+        : '';
+    final hops = [
+      for (final redirect in response.redirects)
+        place(request.resolveUri(redirect.location), request),
+    ];
+    final via = switch (hops) {
+      [] => '',
+      [final hop] => ', after a redirect to $hop',
+      _ => ', after redirects to ${hops.join(', then ')}',
+    };
+    return '${place(at, request)}$module$via';
+  }
+
+  /// A module name as Smartschool gives one (`Homepage`, `Skore`).
+  static final _moduleName = RegExp(r'^[A-Za-z][A-Za-z0-9_]{0,63}$');
+
+  /// [target], a URL, for a message: its path, with only the `module` of its
+  /// query (`/?module=Homepage`), and with its host only when it is another
+  /// one than that of [request]. The rest of a query can hold IDs, which a
+  /// log should not get from the message (#192).
+  static String place(Uri target, Uri request) {
+    final module = target.queryParameters['module'];
+    final host = target.host == request.host
+        ? ''
+        : '${target.scheme}://${target.host}';
+    final path = target.path.isEmpty ? '/' : target.path;
+    final query = module == null ? '' : '?module=$module';
+    return '$host$path$query';
   }
 
   /// [value], a decoded JSON answer, as a short JSON text for a message.

@@ -69,7 +69,7 @@ class SmartschoolClient {
   _notificationCounterController =
       StreamController<NotificationCounterUpdate>.broadcast();
   // Kept so callers can clear cookies on logout via [clearCookies].
-  final PersistCookieJar _cookieJar; // ignore: unused_field
+  final CookieJar _cookieJar; // ignore: unused_field
 
   // Cached after first successful login (parsed from account-verification HTML)
   Map<String, dynamic>? _authenticatedUser;
@@ -92,7 +92,7 @@ class SmartschoolClient {
     required this.credentials,
     required this.cacheDir,
     required Dio dio,
-    required PersistCookieJar cookieJar,
+    required CookieJar cookieJar,
   }) : _dio = dio,
        _cookieJar = cookieJar;
 
@@ -184,9 +184,13 @@ class SmartschoolClient {
     final cachePath = cacheDir ?? defaultCacheDir(credentials.username);
     await Directory(cachePath).create(recursive: true);
 
-    final cookieJar = PersistCookieJar(
-      ignoreExpires: true,
-      storage: FileStorage(p.join(cachePath, '.cookies')),
+    // One operation at a time on the cookie cache (#210): see
+    // [_SerialCookieJar].
+    final cookieJar = _SerialCookieJar(
+      PersistCookieJar(
+        ignoreExpires: true,
+        storage: FileStorage(p.join(cachePath, '.cookies')),
+      ),
     );
 
     final baseUrl = 'https://${credentials.mainUrl}';
@@ -1627,6 +1631,57 @@ class _DownloadContent {
 // Cookie manager
 // ---------------------------------------------------------------------------
 
+/// A [CookieJar] that runs the operations on [_jar], the client's cookie
+/// cache, one at a time, in the order they are asked for (#210).
+///
+/// [PersistCookieJar] reads the cache when it is first used, and reads the
+/// file of a host's cookies when it loads them while it holds none of them
+/// in memory yet: what it read then replaces the host's cookies in memory.
+/// It does not keep two operations apart. So the first requests of a new
+/// client, sent at the same time, each read that file, and a read that comes
+/// in after a cookie was saved meanwhile puts the cached cookies back in its
+/// place. When that cookie is the session of the login's own login form
+/// (#45), the password POST goes out with the cached session id, which does
+/// not hold the CSRF token it posts, and fails as a wrong password.
+///
+/// One at a time, the first load reads the file and every later operation
+/// finds the cookies in memory; no read of a file runs while it is written,
+/// nor two writes of it.
+class _SerialCookieJar implements CookieJar {
+  _SerialCookieJar(this._jar);
+
+  final CookieJar _jar;
+
+  /// Completes when the last operation asked for has ended.
+  Future<void> _last = Future<void>.value();
+
+  /// Runs [operation] once every operation asked for before it has ended,
+  /// with its result or error.
+  Future<T> _run<T>(Future<T> Function() operation) {
+    final result = _last.then((_) => operation());
+    _last = result.then<void>((_) {}, onError: (Object _) {});
+    return result;
+  }
+
+  @override
+  bool get ignoreExpires => _jar.ignoreExpires;
+
+  @override
+  Future<List<Cookie>> loadForRequest(Uri uri) =>
+      _run(() => _jar.loadForRequest(uri));
+
+  @override
+  Future<void> saveFromResponse(Uri uri, List<Cookie> cookies) =>
+      _run(() => _jar.saveFromResponse(uri, cookies));
+
+  @override
+  Future<void> delete(Uri uri, [bool withDomainSharedCookie = false]) =>
+      _run(() => _jar.delete(uri, withDomainSharedCookie));
+
+  @override
+  Future<void> deleteAll() => _run(_jar.deleteAll);
+}
+
 /// A [CookieManager] that keeps the session a login runs in to the login
 /// chain (#45).
 ///
@@ -1826,9 +1881,11 @@ class _SmartschoolLogInFirstInterceptor extends Interceptor {
 /// page in that one session, each store a token of their own there, and the
 /// last one stored wins, so the page the login got first could post a token
 /// that Smartschool no longer holds, which it answers like a wrong password.
-/// No other request carries the new session, and [_SmartschoolCookieManager]
-/// keeps the cookies of refused answers out of the jar, so the password POST
-/// always goes out in the session of the token it posts.
+/// No other request carries the new session, [_SmartschoolCookieManager]
+/// keeps the cookies of refused answers out of the jar, and a late first read
+/// of the cookie cache cannot put the cached session back in the jar
+/// ([_SerialCookieJar], #210), so the password POST always goes out in the
+/// session of the token it posts.
 ///
 /// A request sent with `sameSessionAs` (see
 /// [SmartschoolClient.postMultipartResponse]) carries state of the session

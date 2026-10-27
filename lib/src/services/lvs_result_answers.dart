@@ -255,10 +255,14 @@ abstract final class LvsResultAnswers {
     if (attachments != null && attachments is! List) {
       throw LvsWire.unknownShape(read, '$where.attachments is not a list');
     }
+    // The web client shows it as HTML: plain text with its lines, as the
+    // other rich texts of the LVS (#171, #187).
+    final html = _text(item, 'text', read, where, required: true);
     return LvsFeedback(
       identifier: _identifier(item, read, where),
       kind: kind,
-      text: _text(item, 'text', read, where, required: true),
+      text: LvsWire.plainText(html),
+      html: html,
       author: owner == null ? '' : _personName(owner, read, '$where.owner'),
       report: known && report != null
           ? _report(report, read, '$where.report')

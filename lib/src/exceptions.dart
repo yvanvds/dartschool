@@ -2471,9 +2471,9 @@ class SmartschoolLvsAccessDeniedError extends SmartschoolLvsError {
   const SmartschoolLvsAccessDeniedError(super.message, {super.statusCode});
 }
 
-/// Thrown by `LvsService.getPupilFile` and `LvsService.getNotes` when the LVS
-/// knows no pupil with the ID asked for in the class asked for that the
-/// account may see (#160, #161).
+/// Thrown by `LvsService.getPupilFile`, `LvsService.getNotes` and
+/// `LvsService.getAbsences` when the LVS knows no pupil with the ID asked for
+/// in the class asked for that the account may see (#160, #161, #190).
 ///
 /// The LVS does not refuse such a read: it answers with HTTP `200`, the
 /// school's sections, none of which holds anything, and a placeholder pupil
@@ -2484,6 +2484,12 @@ class SmartschoolLvsAccessDeniedError extends SmartschoolLvsError {
 /// come with the same placeholder (`pupilInfo`, seen live): no notes, and
 /// this error instead of an empty list. Whether the LVS answers a pupil the
 /// account may not see the same way was not captured.
+///
+/// `LvsService.getAbsences` throws it too (#190): the LVS has no such answer
+/// for the absences, it answered a made-up pupil ID in a made-up class with
+/// HTTP `500` and Smartschool's error page (seen live), so on a `500` the
+/// service reads the pupil's file, and throws this error when that read gets
+/// the placeholder pupil.
 ///
 /// Its message holds neither ID: they are in [pupilId] and [classId]. A
 /// [SmartschoolLvsError], so `catch` clauses for that type keep catching it.

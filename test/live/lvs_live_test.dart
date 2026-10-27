@@ -1,7 +1,9 @@
 // What the pupil tracking system (LVS) answers the account of
 // credentials.yml through LvsService (#160, #161, #162, #163, #164): the
-// root of its class tree (checkAccess), a pupil search, the placeholder
-// pupil of a made-up ID (its file and its notes), the results app's, the
+// root of its class tree (checkAccess, and checkAccessDetails with the
+// number of its classes, #184), a pupil search, the placeholder
+// pupil of a made-up ID (its file, also read without today's status, #186,
+// and its notes), the results app's, the
 // support plans' and the absences' answers for that ID, and, when the
 // developer names one, the file, the notes, the results, the support plan
 // and the absences of a pupil they teach.
@@ -24,10 +26,14 @@
 // its results since they carry the results app's headers (#175, seen
 // 2026-10-25: the configuration, and an empty list or page for the others;
 // HTTP 500 for every one of them without the headers), with HTTP 500 for
-// its absences, and with no period of support
+// its absences (which getAbsences then tells apart by the placeholder of
+// its file, read without today's status: a pupil not found, #190), and with
+// no period of support
 // plans (a made-up class has no structure of them) for the support plan
 // reads. With it, it also searches for that text and reads
-// the file and today's status of the first pupil found; all its notes of the
+// the file and today's status of the first pupil found, and the file again
+// without today's status (#186: the same sections and note categories, and
+// no getStatusInfo tried); all its notes of the
 // current school year, then the notes of the first of its categories that
 // holds notes of its own in that year, which must be that category's own in
 // all its notes (#177, #180: a category's notes are never its
@@ -39,11 +45,14 @@
 // holds none of its own in that year (an empty list), and a made-up
 // category of it (support/lvs_notes_check.dart picks and compares, tested
 // offline in lvs_notes_check_test.dart); its results (configuration,
-// periods, courses, a page of two evaluations and all of them, feedback,
-// reports: counts and types only),
+// periods, courses, a page of two evaluations and all of them, feedback
+// (its text plain text with its lines, #187), reports: counts and types
+// only),
 // and, when its file has a section of support plans, their periods, the
 // plan of the current period and the profile sketch (status, kinds and
-// counts only), and its absences (counts by period, a school year each,
+// counts only; and, for #189, how many items have an author ID and are the
+// account's, and how many course IDs of the items and of their planning
+// the plan's courses name), and its absences (counts by period, a school year each,
 // part of the day and code only, and that every one has a date, #176):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
@@ -72,6 +81,7 @@ library;
 
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
@@ -92,6 +102,44 @@ const _madeUpId = 999999999;
 /// A school year `YYYY-YYYY`, as the LVS keys the periods of a pupil's
 /// absences (#176).
 final _schoolYear = RegExp(r'^\d{4}\s*-\s*\d{4}$');
+
+/// The path of the LVS's read of today's status (`getStatusInfo`).
+const _statusPath = '/LVS/Pupilxhr/getStatusInfo';
+
+/// An HTML tag (`<p>`, `</b>`, `<br/>`): what a plain text of the LVS models
+/// never holds (#171, #187).
+final _tag = RegExp(r'</?[a-zA-Z][^<>]*>');
+
+/// Whether [text] is plain text as the LVS models give it (#171): no tag, no
+/// empty line, nothing before or after a line.
+bool _isPlainText(String text) =>
+    !_tag.hasMatch(text) &&
+    (text.isEmpty ||
+        text
+            .split('\n')
+            .every((line) => line.isNotEmpty && line == line.trim()));
+
+/// Records the path of every request the library tries to send, before
+/// LiveWireGuard decides whether it goes out (#186). A path can hold a
+/// pupil's ID: the tests compare them, they never print one.
+class _Attempts extends Interceptor {
+  final List<String> paths = [];
+
+  /// Whether a request to [path] was tried since [from].
+  bool triedSince(int from, String path) =>
+      paths.skip(from).any((p) => p == path);
+
+  /// How many requests to a path that starts with [prefix] were tried since
+  /// [from].
+  int countSince(int from, String prefix) =>
+      paths.skip(from).where((p) => p.startsWith(prefix)).length;
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    paths.add(options.uri.path);
+    handler.next(options);
+  }
+}
 
 /// What a read of the results returned, by its type and count only: never a
 /// value of the answer (doc/lvs-privacy.md, rule 4).
@@ -117,9 +165,14 @@ void main() {
       late LiveRun run;
       late LvsService lvs;
       late bool access;
+      final attempts = _Attempts();
 
       setUpAll(() async {
         run = started = await LiveRun.start(credentials!);
+        // Before the guard: it sees what the library tries, also what the
+        // guard would refuse.
+        final interceptors = run.client.dio.interceptors;
+        interceptors.insert(interceptors.indexOf(run.guard), attempts);
         lvs = LvsService(run.client);
         access = await lvs.checkAccess();
         print('checkAccess: $access');
@@ -127,6 +180,17 @@ void main() {
 
       tearDownAll(() async {
         await started?.close();
+      });
+
+      test('checkAccessDetails (#184): the access checkAccess saw, with the '
+          'number of classes of the class tree (0 when refused)', () async {
+        final details = await lvs.checkAccessDetails();
+        // The flag and a count only: no class name, no ID.
+        print('checkAccessDetails: $details');
+        expect(details.granted, access);
+        expect(details.classCount, greaterThanOrEqualTo(0));
+        if (!details.granted) expect(details.classCount, 0);
+        expect(run.guard.violations, isEmpty);
       });
 
       test('a search for a text no one has: an empty list, or the refusal '
@@ -153,6 +217,26 @@ void main() {
                 : isA<SmartschoolLvsAccessDeniedError>(),
           ),
         );
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test("a made-up pupil ID without today's status (#186): the same "
+          'error, after the read of the file only', () async {
+        final from = attempts.paths.length;
+        await expectLater(
+          lvs.getPupilFile(
+            pupilId: _madeUpId,
+            classId: _madeUpId,
+            withTodayStatus: false,
+          ),
+          throwsA(
+            access
+                ? isA<SmartschoolLvsPupilNotFoundError>()
+                : isA<SmartschoolLvsAccessDeniedError>(),
+          ),
+        );
+        expect(attempts.countSince(from, '/LVS/Spotlight/'), greaterThan(0));
+        expect(attempts.triedSince(from, _statusPath), isFalse);
         expect(run.guard.violations, isEmpty);
       });
 
@@ -237,9 +321,12 @@ void main() {
         expect(run.guard.violations, isEmpty);
       });
 
-      test("a made-up pupil's absences (#164): a SmartschoolLvsError (the "
-          'LVS answered them with HTTP 500, seen 2026-10-21), never an empty '
+      test("a made-up pupil's absences (#164, #190): the LVS answers them "
+          'with HTTP 500 (seen 2026-10-21) and the file of that ID with its '
+          'placeholder pupil, so a SmartschoolLvsPupilNotFoundError, after '
+          "the read of the file without today's status; never an empty "
           'list', () async {
+        final from = attempts.paths.length;
         Object? error;
         try {
           await lvs.getAbsences(pupilId: _madeUpId, classId: _madeUpId);
@@ -249,12 +336,17 @@ void main() {
         // The type and the status only: never the message of an answer.
         print(
           'getAbsences: ${error.runtimeType}'
-          '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}',
+          '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}, '
+          'reads of the file tried: '
+          '${attempts.countSince(from, '/LVS/Spotlight/')}',
         );
         expect(error, isA<SmartschoolLvsError>());
         expect(error, isNot(isA<SmartschoolLvsRequestNotAllowedError>()));
+        expect(attempts.triedSince(from, '/LVS/Pupilpresences'), isTrue);
         if (access) {
-          expect(error, isNot(isA<SmartschoolLvsAccessDeniedError>()));
+          expect(error, isA<SmartschoolLvsPupilNotFoundError>());
+          expect(attempts.countSince(from, '/LVS/Spotlight/'), 1);
+          expect(attempts.triedSince(from, _statusPath), isFalse);
         }
         expect(run.guard.violations, isEmpty);
       });
@@ -349,6 +441,9 @@ void main() {
         );
         expect(plan.status == LvsSupportPlanStatus.noPeriod, isTrue);
         expect(plan.items.length, 0);
+        // #189: the answer's courses are read too: whatever it holds for a
+        // made-up class must parse. A count only.
+        print('courses of the plan of a made-up class: ${plan.courses.length}');
         final sketch = await lvs.getProfileSketch(
           pupilId: _madeUpId,
           classId: _madeUpId,
@@ -424,6 +519,43 @@ void main() {
           expect(
             {for (final item in items) '${item.type} ${item.id}'}.length,
             items.length,
+          );
+
+          // #189: whose items, and which courses, by their IDs (counts only;
+          // for #168: is authorID the account's user ID, and are the course
+          // IDs of the items and of their planning those of the plan's
+          // courses?).
+          final me = await run.client.getCurrentUser();
+          final courseIds = {for (final c in plan.courses) c.id};
+          final itemCourseIds = [for (final i in items) ...i.courseIds];
+          final moments = [
+            for (final item in items)
+              for (final goal in item.goals) ...goal.moments,
+          ];
+          final courseMoments = moments.where((m) => m.isCourse).toList();
+          print(
+            'courses of the plan: ${plan.courses.length} '
+            '(${courseIds.length} IDs); items with an author ID: '
+            '${items.where((i) => i.authorId != null).length}, by the '
+            'account: ${items.where((i) => i.authorId == me.id).length}; '
+            'items with course IDs: '
+            '${items.where((i) => i.courseIds.isNotEmpty).length}, course '
+            'IDs: ${itemCourseIds.length} (among the courses of the plan: '
+            '${itemCourseIds.where(courseIds.contains).length}); planning '
+            'entries: ${moments.length}, courses: ${courseMoments.length} '
+            '(with an ID: ${courseMoments.where((m) => m.id != null).length}, '
+            'among the courses of the plan: '
+            '${courseMoments.where((m) => courseIds.contains(m.id)).length}), '
+            'other kinds: ${moments.length - courseMoments.length}',
+          );
+          expect(plan.courses.every((c) => c.id > 0), isTrue);
+          expect(items.every((i) => i.courseIds.every((id) => id > 0)), isTrue);
+          expect(
+            items.every(
+              (i) =>
+                  i.goals.every((g) => g.moments.length == g.planning.length),
+            ),
+            isTrue,
           );
 
           final sketch = await lvs.getProfileSketch(
@@ -549,9 +681,25 @@ void main() {
             'feedback: ${feedback.length}, by kind: '
             '${{for (final kind in LvsFeedbackKind.values) kind.name: feedback.where((f) => f.kind == kind).length}}, '
             'attachments: '
-            '${feedback.fold<int>(0, (n, f) => n + f.attachments.length)}',
+            '${feedback.fold<int>(0, (n, f) => n + f.attachments.length)}, '
+            'given as HTML: '
+            '${feedback.where((f) => _tag.hasMatch(f.html)).length}, '
+            'of more than one line: '
+            '${feedback.where((f) => f.text.contains('\n')).length}',
           );
           expect(feedback.every((f) => f.identifier.isNotEmpty), isTrue);
+          // Plain text with its lines, the HTML beside it (#187): counts
+          // only, so that a failure quotes no feedback.
+          expect(
+            feedback.where((f) => !_isPlainText(f.text)).length,
+            0,
+            reason: 'feedback whose text is not plain text with its lines',
+          );
+          expect(
+            feedback.where((f) => f.text.isNotEmpty && f.html.isEmpty).length,
+            0,
+            reason: 'feedback with a text but without the HTML beside it',
+          );
 
           final reports = await lvs.getReports(
             pupilId: ids.pupilId,
@@ -758,7 +906,8 @@ void main() {
 
       test(
         'a pupil the developer teaches: found, and the overview of their '
-        'file, its sections with an id, a type and a name',
+        'file, its sections with an id, a type and a name; read without '
+        "today's status (#186), the same sections and no getStatusInfo",
         skip: pupil == null || pupil.isEmpty
             ? 'set $_pupilVariable to (part of) the name of a pupil you '
                   'teach to read their file'
@@ -798,6 +947,39 @@ void main() {
               (h) => h.partOfDay == 'am' || h.partOfDay == 'pm',
             ),
             isTrue,
+          );
+
+          // The file again, without today's status (#186): the file only.
+          final from = attempts.paths.length;
+          final bare = await lvs.getPupilFile(
+            pupilId: match.pupilId,
+            classId: match.classId,
+            withTodayStatus: false,
+          );
+          final tried = attempts.triedSince(from, _statusPath);
+          final bareCategories = [
+            for (final c in bare.noteCategories) ...[c, ...c.descendants],
+          ];
+          final categories = [
+            for (final c in file.noteCategories) ...[c, ...c.descendants],
+          ];
+          print(
+            'without today\'s status: sections: '
+            '${bare.allSections.length}, note categories: '
+            '${bareCategories.length}, half-days with a status: '
+            '${bare.todayStatus.halfDays.length}, getStatusInfo tried: '
+            '$tried',
+          );
+          expect(tried, isFalse);
+          expect(bare.todayStatus.halfDays.length, 0);
+          expect(bare.pupilId == file.pupilId, isTrue);
+          expect(bare.allSections.length, sections.length);
+          expect(bareCategories.length, categories.length);
+          expect(
+            bareCategories.map((c) => c.id).join(',') ==
+                categories.map((c) => c.id).join(','),
+            isTrue,
+            reason: 'the same categories, in the same order',
           );
           expect(run.guard.violations, isEmpty);
         },

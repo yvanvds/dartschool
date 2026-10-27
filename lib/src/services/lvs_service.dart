@@ -16,6 +16,7 @@ export '../models/lvs_absence_models.dart';
 export '../models/lvs_models.dart';
 export '../models/lvs_plan_models.dart';
 export '../models/lvs_results_models.dart';
+export '../models/lvs_time.dart' show lvsDayOf;
 
 /// Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem",
 /// `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by
@@ -27,7 +28,8 @@ export '../models/lvs_results_models.dart';
 /// [getReports], #162); and the pupil's support plan ([getSupportPlan],
 /// [getSupportPlanPeriods], [getProfileSketch], #163); and the pupil's
 /// absences ([getAbsences], #164). [checkAccess] tells whether the account
-/// may use the LVS.
+/// may use the LVS, and [checkAccessDetails] how many classes it may see
+/// there (#184).
 ///
 /// ```dart
 /// final lvs = LvsService(client);
@@ -37,6 +39,7 @@ export '../models/lvs_results_models.dart';
 /// final file = await lvs.getPupilFile(
 ///   pupilId: pupil.pupilId,
 ///   classId: pupil.classId,
+///   withTodayStatus: false, // the categories only: no attendance (#186)
 /// );
 /// // Each category on its own: a category's notes are not its sub-categories'.
 /// final categories = [
@@ -67,11 +70,12 @@ export '../models/lvs_results_models.dart';
 /// - [searchPupils]: `GET /LVS/Spotlight?searchVal=<text>`, answered with
 ///   `{search, classes, pupils, teachers, groups, groupUsers}` (lists);
 /// - [getPupilFile]: `GET /LVS/Spotlight/<pupil id>?classID=<class id>`,
-///   answered with `{categories, pupil}`, then
-///   `POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`, answered with a list
-///   of `{partOfDay, code: {name, code, color}}`;
-/// - [checkAccess]: `POST /?module=LVS&file=treeBuilder` with `id` `0`, the
-///   root of the LVS's left tree: the classes the account may see, no pupil;
+///   answered with `{categories, pupil}`, then (unless `withTodayStatus` is
+///   `false`, #186) `POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`,
+///   answered with a list of `{partOfDay, code: {name, code, color}}`;
+/// - [checkAccess] and [checkAccessDetails]:
+///   `POST /?module=LVS&file=treeBuilder` with `id` `0`, the root of the LVS's
+///   left tree: the classes the account may see, no pupil;
 /// - [getNotes]: the LVS's XML dispatcher, `POST /?module=LVS&file=dispatcher`
 ///   with the command `lvs_cats/getUserCatItems`, answered with the action
 ///   `renderPupilNotes` (#161);
@@ -90,7 +94,9 @@ export '../models/lvs_results_models.dart';
 ///   `jqDispatcher_settings&function=getLVSspecificTitles` (the periods),
 ///   form-encoded, answered with JSON as text;
 /// - [getAbsences] (#164): `POST /LVS/Pupilpresences` with `pupilID` and
-///   `groupID`, answered with JSON: per school year, a list of days (#176).
+///   `groupID`, answered with JSON: per school year, a list of days (#176);
+///   on HTTP 500, the read of the pupil's file without today's status, to
+///   tell a pupil the LVS does not know (#190).
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -104,7 +110,7 @@ export '../models/lvs_results_models.dart';
 /// empty lines, nothing before or after. The rich texts keep their HTML
 /// too ([LvsNoteField.html], [LvsPlanItem.approachCommentHtml],
 /// [LvsPlanItem.startSituationHtml], [LvsProfileSketch.html],
-/// [LvsAbsence.motivationHtml]).
+/// [LvsAbsence.motivationHtml], [LvsFeedback.html]).
 ///
 /// ### Privacy
 /// What this service returns is about pupils: see `doc/lvs-privacy.md`. Its
@@ -122,7 +128,9 @@ export '../models/lvs_results_models.dart';
 ///   pupil's results.
 /// - [SmartschoolLvsPupilNotFoundError] (a [SmartschoolLvsError]):
 ///   [getPupilFile] or [getNotes] got the LVS's placeholder pupil: it knows
-///   no pupil of that ID in that class that the account may see.
+///   no pupil of that ID in that class that the account may see; and
+///   [getAbsences], when the LVS answered the absences with HTTP 500 and the
+///   pupil's file with that placeholder (#190).
 /// - [SmartschoolLvsCategoryNotFoundError] (a [SmartschoolLvsError]):
 ///   [getNotes] got no category: the LVS knows no category of notes of that
 ///   ID.
@@ -153,9 +161,25 @@ class LvsService {
   /// it refuses it to the account ([SmartschoolLvsAccessDeniedError]). Reads
   /// no pupil; for a status check, before the other reads.
   ///
+  /// `true` also for a root that lists no class: [checkAccessDetails] tells
+  /// how many it lists.
+  ///
   /// Any other failure is thrown: an answer the service cannot read (a
   /// plain [SmartschoolLvsError]) is not taken for missing rights.
-  Future<bool> checkAccess() async {
+  Future<bool> checkAccess() async => (await checkAccessDetails()).granted;
+
+  /// Whether the account may use the LVS, as [checkAccess], with the number
+  /// of classes the root of the LVS's left tree lists (#184): its nodes of
+  /// type `class` (`attributes.rel`), not the LVS's other nodes there. One
+  /// read, the same as [checkAccess]'s; no pupil.
+  ///
+  /// [LvsAccess.granted] with a [LvsAccess.classCount] of `0`: the LVS
+  /// answers the account, but lists no class, so the account sees no pupil.
+  /// A refusal ([SmartschoolLvsAccessDeniedError]) is [LvsAccess.denied].
+  /// The result holds counts only: no class name and no ID.
+  ///
+  /// Any other failure is thrown, as for [checkAccess].
+  Future<LvsAccess> checkAccessDetails() async {
     const read = LvsWire.tree;
     try {
       final response = await _wire.post(
@@ -163,10 +187,10 @@ class LvsService {
         query: read.fixedQuery,
         form: const {'id': '0'},
       );
-      _parseTreeRoot(LvsWire.json(response, read));
-      return true;
+      final classCount = _parseTreeRoot(LvsWire.json(response, read));
+      return LvsAccess(granted: true, classCount: classCount);
     } on SmartschoolLvsAccessDeniedError {
-      return false;
+      return const LvsAccess.denied();
     }
   }
 
@@ -200,11 +224,18 @@ class LvsService {
   /// does not know in that class with a placeholder pupil, which is a
   /// [SmartschoolLvsPupilNotFoundError] (today's status is then not read).
   ///
+  /// With [withTodayStatus] `false`, one read: the file only, for an app
+  /// that needs its sections or its [LvsPupilFile.noteCategories] and not
+  /// the pupil's attendance today (#186). [LvsPupilFile.todayStatus] is then
+  /// [LvsTodayStatus.none]: not read, not "no code today". The placeholder
+  /// pupil is a [SmartschoolLvsPupilNotFoundError] all the same.
+  ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
   Future<LvsPupilFile> getPupilFile({
     required int pupilId,
     required int classId,
+    bool withTodayStatus = true,
   }) async {
     if (pupilId <= 0) {
       throw ArgumentError.value(pupilId, 'pupilId', 'must be positive');
@@ -222,6 +253,7 @@ class LvsService {
       pupilId: pupilId,
       classId: classId,
     );
+    if (!withTodayStatus) return file;
 
     const statusRead = LvsWire.todayStatus;
     final statusResponse = await _wire.post(
@@ -571,6 +603,8 @@ class LvsService {
   /// headers (see [getResultsConfiguration]). Remarks on reports (of
   /// the class council, or per course) and teachers' feedback on
   /// evaluations, with their attachments as metadata ([LvsFeedback.kind]).
+  /// Their text is plain text with its lines, as the notes' rich text, and
+  /// the HTML the LVS gives is kept beside it ([LvsFeedback.html], #187).
   ///
   /// An ID that is not positive, or a school year that ends before it
   /// starts, is an [ArgumentError], before anything is sent.
@@ -696,6 +730,15 @@ class LvsService {
   /// `exportID` `0` (the live plan, not an archived export). The item filters
   /// the web client saves for the account are not applied.
   ///
+  /// The web client filters the items by teacher and by course itself; the
+  /// IDs it filters by are kept (#189): an item's author
+  /// ([LvsPlanItem.authorId], a Smartschool user ID: compared with
+  /// `SmartschoolClient.getCurrentUser()`, the account's own items), the
+  /// courses it is planned in ([LvsPlanItem.courseIds]), and the kind and ID
+  /// of each entry of a goal's planning ([LvsPlanGoal.moments]), with the
+  /// plan's courses that name them ([LvsSupportPlan.courses]). Which courses
+  /// the account teaches is not read yet (#196).
+  ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
   Future<LvsSupportPlan> getSupportPlan({
@@ -779,9 +822,20 @@ class LvsService {
   /// LVS shows (`formattedDate`, `vr 23 oktober 2030`): [LvsAbsence.date]
   /// is read from that text, and is `null` when it does not parse (#176).
   /// That shape is a real pupil's answer, as the developer captured it in a
-  /// browser (shapes only). The LVS answered a made-up pupil ID in a made-up
-  /// class with HTTP 500 and Smartschool's error page (seen live,
-  /// 2026-10-21): a plain [SmartschoolLvsError], never an empty list.
+  /// browser (shapes only).
+  ///
+  /// A pupil the LVS does not know in that class has no answer of its own
+  /// here: the LVS answered a made-up pupil ID in a made-up class with
+  /// HTTP 500 and Smartschool's error page (seen live, 2026-10-21), as it
+  /// can answer any read it fails. So on a `500`, the service reads the
+  /// pupil's file, as [getPupilFile] with `withTodayStatus` `false` (one
+  /// `GET /LVS/Spotlight/<pupil id>?classID=<class id>`, no today's status)
+  /// (#190): when the LVS answers that with its placeholder pupil, the
+  /// absences throw a [SmartschoolLvsPupilNotFoundError] (with [pupilId] and
+  /// [classId]), as [getPupilFile] does. Otherwise (the file of a pupil it
+  /// knows, or a failure of that read) the `500` stands: a plain
+  /// [SmartschoolLvsError] with its status, never an empty list. Another
+  /// answer the service cannot use reads no file.
   ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
@@ -792,11 +846,48 @@ class LvsService {
     _checkId(pupilId, 'pupilId');
     _checkId(classId, 'classId');
     const read = LvsWire.absences;
-    final response = await _wire.post(
-      read.path as String,
-      form: {'pupilID': '$pupilId', 'groupID': '$classId'},
-    );
-    return LvsAbsenceAnswers.absences(LvsWire.json(response, read));
+    final Object? json;
+    try {
+      final response = await _wire.post(
+        read.path as String,
+        form: {'pupilID': '$pupilId', 'groupID': '$classId'},
+      );
+      json = LvsWire.json(response, read);
+    } on SmartschoolLvsError catch (e) {
+      if (e.statusCode != 500 || e is SmartschoolLvsAccessDeniedError) rethrow;
+      await _throwIfNoSuchPupil(pupilId, classId, failedRead: read);
+      rethrow;
+    }
+    return LvsAbsenceAnswers.absences(json);
+  }
+
+  /// After [failedRead] for pupil [pupilId] in class [classId] got HTTP 500
+  /// (#190): reads the pupil's file without today's status, and throws a
+  /// [SmartschoolLvsPupilNotFoundError] when the LVS answers it with its
+  /// placeholder pupil. Returns for any other outcome of that read, its
+  /// failures too: the caller's error stands.
+  Future<void> _throwIfNoSuchPupil(
+    int pupilId,
+    int classId, {
+    required LvsRead failedRead,
+  }) async {
+    try {
+      await getPupilFile(
+        pupilId: pupilId,
+        classId: classId,
+        withTodayStatus: false,
+      );
+    } on SmartschoolLvsPupilNotFoundError {
+      throw SmartschoolLvsPupilNotFoundError(
+        'The LVS knows no such pupil in that class that the account may see: '
+        "it answered ${failedRead.what} with HTTP 500, and the pupil's file "
+        'with its placeholder pupil.',
+        pupilId: pupilId,
+        classId: classId,
+      );
+    } on Exception {
+      // The file tells nothing about the pupil: the caller's error stands.
+    }
   }
 
   /// Throws an [ArgumentError] for a [count] (a page number, a page size, a
@@ -844,9 +935,11 @@ class LvsService {
   // Answers
   // ---------------------------------------------------------------------------
 
-  /// Checks the root of the left tree: a list whose first node is the LVS's
-  /// root (`attributes.rel` `lvs`) with a list of `children` (the classes).
-  static void _parseTreeRoot(Object? json) {
+  /// The number of classes of the root of the left tree: a list whose first
+  /// node is the LVS's root (`attributes.rel` `lvs`) with a list of
+  /// `children` (objects), of which the classes have `attributes.rel`
+  /// `class`. No `children` is no class.
+  static int _parseTreeRoot(Object? json) {
     const read = LvsWire.tree;
     if (json is! List || json.isEmpty || json.first is! Map) {
       throw LvsWire.unknownShape(read, 'not a list of tree nodes');
@@ -857,9 +950,21 @@ class LvsService {
       throw LvsWire.unknownShape(read, 'no root node (attributes.rel "lvs")');
     }
     final children = root['children'];
-    if (children != null && children is! List) {
+    if (children == null) return 0;
+    if (children is! List) {
       throw LvsWire.unknownShape(read, 'children is not a list');
     }
+    var classes = 0;
+    for (final (i, child) in children.indexed) {
+      if (child is! Map) {
+        throw LvsWire.unknownShape(read, 'children[$i]: no object');
+      }
+      final childAttributes = child['attributes'];
+      if (childAttributes is Map && childAttributes['rel'] == 'class') {
+        classes++;
+      }
+    }
+    return classes;
   }
 
   /// The pupils of a search answer: `{pupils: [{userID, classID, className,

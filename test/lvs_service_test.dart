@@ -1,7 +1,8 @@
 // Tests for issue #160: LvsService, the pupil tracking system (LVS) read as
 // the logged-in teacher: find a pupil by name (searchPupils), read the
-// overview of the pupil's file (getPupilFile: the file and today's status),
-// and checkAccess (the root of the LVS's left tree); the allowlist of its
+// overview of the pupil's file (getPupilFile: the file and today's status, or
+// the file only, #186), and checkAccess (the root of the LVS's left tree), with checkAccessDetails,
+// the number of classes that root lists (#184); the allowlist of its
 // requests, and errors that carry no name.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/ (spotlight,
@@ -177,8 +178,10 @@ const _answerValues = [
   'Testrichting',
   'Testcode',
   'Niet beschikbaar',
+  'Testknoop',
   '1A',
   '2B',
+  '3C',
   '9000',
   '9001',
   '9002',
@@ -532,6 +535,128 @@ void main() {
       });
     });
 
+    group('without today\'s status (#186)', () {
+      test('one read, the file: no getStatusInfo', () async {
+        // No answer for the status read: the fake fails the test if it
+        // comes.
+        final (server, lvs) = await _serve({
+          'file': _json('spotlight/pupil_file.json'),
+        });
+
+        await lvs.getPupilFile(
+          pupilId: 900001,
+          classId: 900101,
+          withTodayStatus: false,
+        );
+
+        expect(server.requests, ['GET /LVS/Spotlight/900001?classID=900101']);
+      });
+
+      test('the same file as with it, its note categories too; today\'s '
+          'status is LvsTodayStatus.none', () async {
+        final (_, withStatus) = await _serve({
+          'file': _json('spotlight/pupil_file.json'),
+          'status': _json('status/both.json'),
+        });
+        final (_, withoutStatus) = await _serve({
+          'file': _json('spotlight/pupil_file.json'),
+        });
+
+        final full = await withStatus.getPupilFile(
+          pupilId: 900001,
+          classId: 900101,
+        );
+        final file = await withoutStatus.getPupilFile(
+          pupilId: 900001,
+          classId: 900101,
+          withTodayStatus: false,
+        );
+
+        expect(full.todayStatus.halfDays, hasLength(2));
+        expect(file.todayStatus, same(LvsTodayStatus.none));
+        expect(file.todayStatus.am, isNull);
+        expect(file.todayStatus.pm, isNull);
+        expect(file.pupilId, full.pupilId);
+        expect(file.classId, full.classId);
+        expect(file.name, full.name);
+        expect(file.className, full.className);
+        expect(file.classDescription, full.classDescription);
+        expect(
+          file.teachers.map((t) => (t.id, t.name)),
+          full.teachers.map((t) => (t.id, t.name)),
+        );
+        (int, String, String, bool, bool, bool) section(LvsSection s) =>
+            (s.id, s.type, s.name, s.isTitle, s.hasItems, s.hasNewItems);
+        expect(file.allSections.map(section), full.allSections.map(section));
+        // Every category at any depth, each with its number of
+        // sub-categories, so that the tree compares too.
+        List<(int, String, bool, int)> categories(List<LvsCategory> top) => [
+          for (final c in [
+            for (final c in top) ...[c, ...c.descendants],
+          ])
+            (c.id, c.name, c.hasNotes, c.subcategories.length),
+        ];
+        expect(file.noteCategories, isNotEmpty);
+        expect(
+          categories(file.noteCategories),
+          categories(full.noteCategories),
+        );
+        expect(
+          file.supportPlanSections.map(section),
+          full.supportPlanSections.map(section),
+        );
+        expect(
+          '$file',
+          'LvsPupilFile(sections: 7, teachers: 2, todayStatus: 0 half-days)',
+        );
+      });
+
+      test('the LVS\'s placeholder pupil is a '
+          'SmartschoolLvsPupilNotFoundError all the same', () async {
+        final (server, lvs) = await _serve({
+          'file': _json('spotlight/pupil_not_found.json'),
+        });
+
+        await expectLater(
+          lvs.getPupilFile(
+            pupilId: 900009,
+            classId: 900109,
+            withTodayStatus: false,
+          ),
+          throwsA(
+            isA<SmartschoolLvsPupilNotFoundError>()
+                .having((e) => e.pupilId, 'pupilId', 900009)
+                .having((e) => e.classId, 'classId', 900109)
+                .having((e) => e.message, 'message', _quotesNothing),
+          ),
+        );
+        expect(server.requests, ['GET /LVS/Spotlight/900009?classID=900109']);
+      });
+
+      test('a refusal of the file is a SmartschoolLvsAccessDeniedError; an '
+          'ID that is not positive is an ArgumentError, before anything is '
+          'sent', () async {
+        final (_, refused) = await _serve({
+          'file': () => _answer('', status: 403, contentType: 'text/html'),
+        });
+        await expectLater(
+          refused.getPupilFile(
+            pupilId: 900001,
+            classId: 900101,
+            withTodayStatus: false,
+          ),
+          throwsA(_refused("the pupil's file")),
+        );
+
+        final (server, lvs) = await _serve({});
+        await expectLater(
+          lvs.getPupilFile(pupilId: 0, classId: 900101, withTodayStatus: false),
+          throwsArgumentError,
+        );
+        expect(server.requests, isEmpty);
+      });
+    });
+
     test(
       'the LVS\'s placeholder pupil is a SmartschoolLvsPupilNotFoundError, '
       'with neither ID in its message; today\'s status is not read',
@@ -705,6 +830,93 @@ void main() {
         final (_, lvs) = await _serve({'tree': answer});
         await expectLater(lvs.checkAccess(), throwsA(_unreadable()));
       }
+    });
+  });
+
+  // The number of classes of the root of the class tree (#184), for an
+  // access check that grants the LVS only to an account that sees a class.
+  group('checkAccessDetails (#184)', () {
+    ResponseBody Function() tree(String fixture) =>
+        () => _answer(
+          _fixture('tree/$fixture'),
+          contentType: 'text/json; charset=utf-8',
+        );
+
+    test('the classes the root of the class tree lists, with the one read of '
+        'checkAccess', () async {
+      final (server, lvs) = await _serve({'tree': tree('root.json')});
+
+      final access = await lvs.checkAccessDetails();
+
+      expect(access, const LvsAccess(granted: true, classCount: 2));
+      expect(access.granted, isTrue);
+      expect(access.classCount, 2);
+      expect(server.requests, ['POST /?module=LVS&file=treeBuilder id=0']);
+    });
+
+    test('a root that lists no class is told apart from one that does: '
+        'granted, with 0 classes (checkAccess is true for both)', () async {
+      for (final answer in [
+        tree('root_no_classes.json'),
+        () => _answer('[{"attributes":{"id":"lvs_0","rel":"lvs"}}]'),
+      ]) {
+        final (_, lvs) = await _serve({'tree': answer});
+        expect(
+          await lvs.checkAccessDetails(),
+          const LvsAccess(granted: true, classCount: 0),
+        );
+        expect(await lvs.checkAccess(), isTrue);
+      }
+    });
+
+    test("only the nodes of type class count, not the LVS's other nodes of "
+        'the root (new pupils, pupils who left school)', () async {
+      final (_, lvs) = await _serve({'tree': tree('root_other_nodes.json')});
+
+      expect((await lvs.checkAccessDetails()).classCount, 1);
+    });
+
+    test('a refusal (403, or the start page) is LvsAccess.denied: not '
+        'granted, 0 classes', () async {
+      for (final answer in [
+        () => _answer('', status: 403, contentType: 'text/html'),
+        _redirectToStartPage,
+      ]) {
+        final (_, lvs) = await _serve({'tree': answer});
+        final access = await lvs.checkAccessDetails();
+        expect(access, const LvsAccess.denied());
+        expect(access.granted, isFalse);
+        expect(access.classCount, 0);
+      }
+    });
+
+    test('an answer it cannot read is thrown, by checkAccess too, not '
+        'counted as no class', () async {
+      for (final answer in [
+        _html('<html><body>Klassen</body></html>'),
+        () => _answer('[]'),
+        () => _answer('[{"attributes":{"rel":"class"}}]'),
+        () => _answer('[{"attributes":{"rel":"lvs"},"children":{}}]'),
+        () => _answer('[{"attributes":{"rel":"lvs"},"children":["1A"]}]'),
+        _html(_errorPage, status: 500),
+      ]) {
+        final (_, lvs) = await _serve({'tree': answer});
+        await expectLater(lvs.checkAccessDetails(), throwsA(_unreadable()));
+        await expectLater(lvs.checkAccess(), throwsA(_unreadable()));
+      }
+    });
+
+    test('prints the flag and the count only: no class name, no ID', () async {
+      final (_, lvs) = await _serve({'tree': tree('root_other_nodes.json')});
+
+      final printed = '${await lvs.checkAccessDetails()}';
+
+      expect(printed, 'LvsAccess(granted: true, classCount: 1)');
+      expect(printed, _quotesNothing);
+      expect(
+        '${const LvsAccess.denied()}',
+        'LvsAccess(granted: false, classCount: 0)',
+      );
     });
   });
 

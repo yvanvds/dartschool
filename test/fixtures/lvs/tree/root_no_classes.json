@@ -1,0 +1,14 @@
+[
+  {
+    "attributes": {
+      "id": "lvs_0",
+      "rel": "lvs"
+    },
+    "state": "open",
+    "data": {
+      "title": "Klassen",
+      "icon": "/smsc/img/fake/lvs_icon.png"
+    },
+    "children": []
+  }
+]

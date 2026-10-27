@@ -1071,6 +1071,10 @@ void main() {
     expect(fakes.isFake('Jan Janssens'), isTrue);
     expect(fakes.isFake('Marie Peeters'), isTrue);
     expect(fakes.isFake('Springfield Academy'), isTrue);
+    // smartschool-mcp's copy of FAKES.md is the same list: a fake added
+    // there is added here too (#188), such as the second course of its
+    // results fixtures (smartschool-mcp#155).
+    expect(fakes.isFake('Testvak 2'), isTrue);
   });
 
   test('every fixture kind has a folder with fixtures in it', () {

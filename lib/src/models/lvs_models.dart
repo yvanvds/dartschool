@@ -1,9 +1,10 @@
 /// Models for Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem",
-/// `/?module=LVS`, #160): a pupil found by name, and the overview of one
-/// pupil's file: who, which class, today's attendance, and which sections of
-/// the file hold something; the notes of a pupil, per category (#161). The
-/// results (#162), the support plans (#163) and the absences (#164) have
-/// models of their own.
+/// `/?module=LVS`, #160): the account's access, with the number of classes it
+/// may see (#184); a pupil found by name, and the overview of one pupil's
+/// file: who, which class, today's attendance, and which sections of the file
+/// hold something; the notes of a pupil, per category (#161). The results
+/// (#162), the support plans (#163) and the absences (#164) have models of
+/// their own.
 ///
 /// The LVS is an **internal** Smartschool module, not part of the official
 /// (public) API, and it holds the most sensitive data Smartschool has. So
@@ -17,6 +18,42 @@
 library;
 
 import 'lvs_time.dart';
+
+/// Whether the account may use the LVS, and how many classes it may see
+/// there (`LvsService.checkAccessDetails`, #184): read from the root of the
+/// LVS's class tree, which holds no pupil.
+///
+/// An account the LVS answers with a root that lists no class is [granted]
+/// with a [classCount] of `0`: it may open the LVS, but sees no class, so no
+/// pupil.
+class LvsAccess {
+  /// Whether the LVS answers the root of its class tree to the account:
+  /// `false` when it refuses it (`SmartschoolLvsAccessDeniedError`).
+  final bool granted;
+
+  /// The number of classes the root of the class tree lists (its nodes of
+  /// type `class`; the LVS's other nodes there, such as new pupils and
+  /// pupils who left school, are not classes). `0` when not [granted].
+  final int classCount;
+
+  const LvsAccess({required this.granted, required this.classCount});
+
+  /// The LVS refused the root of its class tree to the account.
+  const LvsAccess.denied() : this(granted: false, classCount: 0);
+
+  @override
+  bool operator ==(Object other) =>
+      other is LvsAccess &&
+      other.granted == granted &&
+      other.classCount == classCount;
+
+  @override
+  int get hashCode => Object.hash(granted, classCount);
+
+  /// Shows the flag and the count only: no class name and no ID.
+  @override
+  String toString() => 'LvsAccess(granted: $granted, classCount: $classCount)';
+}
 
 /// A pupil whose name matches a search of the LVS
 /// (`LvsService.searchPupils`), with their class.
@@ -48,8 +85,9 @@ class LvsPupilMatch {
 }
 
 /// The overview of one pupil's file in the LVS
-/// (`LvsService.getPupilFile`): who, which class, today's attendance, and
-/// the sections of the file with whether each holds something.
+/// (`LvsService.getPupilFile`): who, which class, today's attendance (unless
+/// read without it, #186), and the sections of the file with whether each
+/// holds something.
 ///
 /// The sections are those of the school's LVS, the same for every pupil;
 /// [LvsSection.hasItems] and [LvsSection.hasNewItems] are about this pupil.
@@ -80,7 +118,9 @@ class LvsPupilFile {
   /// order, each with its own [LvsSection.children].
   final List<LvsSection> sections;
 
-  /// The pupil's attendance today (`getStatusInfo`).
+  /// The pupil's attendance today (`getStatusInfo`); [LvsTodayStatus.none]
+  /// when the file was read without it (`LvsService.getPupilFile` with
+  /// `withTodayStatus: false`, #186).
   final LvsTodayStatus todayStatus;
 
   const LvsPupilFile({
@@ -460,10 +500,10 @@ class LvsSchoolYear {
 
   static final _label = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
 
-  /// Whether the day of [instant] in Belgian time, the LVS's, is one of the
-  /// days [from] to [until], both included.
+  /// Whether the day of [instant] in Belgian time, the LVS's ([lvsDayOf]),
+  /// is one of the days [from] to [until], both included.
   bool includesDay(DateTime instant) {
-    final day = isoDay(brusselsWallTime(instant));
+    final day = lvsDayOf(instant);
     return day.compareTo(firstDay) >= 0 && day.compareTo(lastDay) <= 0;
   }
 
@@ -522,7 +562,8 @@ class LvsNote {
   /// The note's title; empty when it has none.
   final String title;
 
-  /// When the note was made, as the LVS dates it (a Unix time), in UTC.
+  /// When the note was made, as the LVS dates it (a Unix time), in UTC. The
+  /// day the LVS shows it on is its day in Belgian time: [lvsDayOf] (#185).
   final DateTime date;
 
   /// The name of who wrote the note, as the LVS shows it.
@@ -650,7 +691,8 @@ class LvsNoteField {
 
   /// The moment of a date field, in UTC (`val`, a Unix time); `null` for the
   /// other types, and when the field holds no time (empty, or the LVS's
-  /// `current`, kept in [value]).
+  /// `current`, kept in [value]). Its day in Belgian time ([lvsDayOf]) is
+  /// the [value].
   final DateTime? date;
 
   /// The attachments of an attachment field: their metadata only; empty for

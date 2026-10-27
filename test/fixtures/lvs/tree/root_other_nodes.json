@@ -1,0 +1,49 @@
+[
+  {
+    "attributes": {
+      "id": "lvs_0",
+      "rel": "lvs"
+    },
+    "state": "open",
+    "data": {
+      "title": "Klassen",
+      "icon": "/smsc/img/fake/lvs_icon.png"
+    },
+    "children": [
+      {
+        "attributes": {
+          "id": "tree_class_900103",
+          "rel": "class",
+          "gid": "900103"
+        },
+        "state": "closed",
+        "data": {
+          "title": "3C",
+          "icon": "/smsc/img/fake/group_icon.png"
+        }
+      },
+      {
+        "attributes": {
+          "id": "newpupils",
+          "rel": "newpupils"
+        },
+        "state": "closed",
+        "data": {
+          "title": "Testknoop",
+          "icon": "/smsc/img/fake/group_icon.png"
+        }
+      },
+      {
+        "attributes": {
+          "id": "schoolverlaters",
+          "rel": "schoolverlaters"
+        },
+        "state": "closed",
+        "data": {
+          "title": "Testknoop",
+          "icon": "/smsc/img/fake/group_icon.png"
+        }
+      }
+    ]
+  }
+]

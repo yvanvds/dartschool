@@ -46,7 +46,7 @@
       "source": "gwp",
       "author": "Céline Dupré",
       "authorID": 900202,
-      "courses": {"900301": 1},
+      "courses": {"900301": 1, "900302": "1", "900303": 0},
       "rights": {"edit": 0, "del": 0},
       "itemHistory": [],
       "lastversion": {
@@ -72,7 +72,9 @@
               {"aanpakID": 900821, "aanpakName": "Testaanpak bij het doel"}
             ],
             "occurrence": [
-              {"occType": "course", "occID": 900301, "occName": "Testvak"}
+              {"occType": "course", "occID": 900301, "occName": "Testvak"},
+              {"occType": "course", "occID": "900302", "occName": "Testvak 2"},
+              {"occType": "other", "occID": 0, "occName": "Testmoment"}
             ]
           },
           {
@@ -129,5 +131,8 @@
   "filters": {"groupBy": 0, "filterTeacher": 0, "filterCourse": 0},
   "OV": 0,
   "canWrite": false,
-  "courses": []
+  "courses": [
+    {"courseID": 900301, "title": "Testvak"},
+    {"courseID": "900302", "title": "Testvak 2"}
+  ]
 }

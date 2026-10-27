@@ -331,7 +331,7 @@ abstract final class LvsNoteAnswers {
             : null;
         if (seconds == null) return make(value);
         final date = _fromUnix(seconds);
-        return make(isoDay(brusselsWallTime(date)), date: date);
+        return make(lvsDayOf(date), date: date);
       case LvsNoteFieldType.heading:
         return make('');
       case LvsNoteFieldType.unknown:

@@ -2,8 +2,9 @@
 // logged-in teacher through LvsService: the note categories of a pupil's file
 // (LvsPupilFile.noteCategories), the notes of one category, its own (getNotes,
 // #180), all notes of the file (getAllNotes), the school year sent and the
-// notes kept of it (LvsSchoolYear, #180), the allowlist of the XML
-// dispatcher's commands, and errors that carry no name.
+// notes kept of it (LvsSchoolYear, #180), the Belgian day of a note
+// (lvsDayOf, #185), the allowlist of the XML dispatcher's commands, and
+// errors that carry no name.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/notes/
 // (doc/lvs-privacy.md: never trimmed from a live answer), in the shapes read
@@ -1222,6 +1223,119 @@ void main() {
       );
       expect(twoYears.includesNote(note('2030-2031', after)), isFalse);
       expect(twoYears.includesNote(note('2028-2029', inYear)), isTrue);
+    });
+  });
+
+  // The day an app shows a note on, as the LVS does: in Belgian time,
+  // whatever the time zone of the computer (#185), by the function the
+  // library keeps notes by.
+  group('lvsDayOf: the Belgian day of a note (#185)', () {
+    test("the day in Brussels, in summer and in winter time, whatever the "
+        "time zone of the instant; not the instant's UTC day", () {
+      // A note dated 1918247400: 2030-10-14 22:30 UTC, 00:30 in Brussels.
+      final note = DateTime.fromMillisecondsSinceEpoch(
+        1918247400 * 1000,
+        isUtc: true,
+      );
+      expect(note, DateTime.utc(2030, 10, 14, 22, 30));
+      expect(lvsDayOf(note), '2030-10-15');
+      expect(lvsDayOf(note.toLocal()), '2030-10-15');
+      expect(
+        lvsDayOf(DateTime.parse('2030-10-15T00:30:00+02:00')),
+        '2030-10-15',
+      );
+      // Summer time (CEST, UTC+2): the day starts at 22:00 UTC.
+      expect(lvsDayOf(DateTime.utc(2030, 10, 14, 21, 59)), '2030-10-14');
+      expect(lvsDayOf(DateTime.utc(2030, 10, 14, 22)), '2030-10-15');
+      // Winter time (CET, UTC+1): at 23:00 UTC, the year's first day too.
+      expect(lvsDayOf(DateTime.utc(2030, 12, 31, 22, 59)), '2030-12-31');
+      expect(lvsDayOf(DateTime.utc(2030, 12, 31, 23)), '2031-01-01');
+    });
+
+    test('summer time from the last Sunday of March to the last Sunday of '
+        'October, at 01:00 UTC', () {
+      // Sunday 27 October 2030: CET from 01:00 UTC on.
+      expect(lvsDayOf(DateTime.utc(2030, 10, 26, 22)), '2030-10-27');
+      expect(lvsDayOf(DateTime.utc(2030, 10, 27, 22)), '2030-10-27');
+      expect(lvsDayOf(DateTime.utc(2030, 10, 27, 23)), '2030-10-28');
+      // Sunday 30 March 2031: CEST from 01:00 UTC on.
+      expect(lvsDayOf(DateTime.utc(2031, 3, 29, 22, 30)), '2031-03-29');
+      expect(lvsDayOf(DateTime.utc(2031, 3, 30, 22, 30)), '2031-03-31');
+    });
+
+    test('the day includesDay keeps an instant by, every quarter of an hour '
+        'of the days around both changes of the clock', () {
+      for (final start in [
+        DateTime.utc(2030, 10, 26),
+        DateTime.utc(2031, 3, 29),
+      ]) {
+        for (var quarter = 0; quarter < 3 * 24 * 4; quarter++) {
+          final instant = start.add(Duration(minutes: 15 * quarter));
+          final day = DateTime.parse('${lvsDayOf(instant)}T00:00Z');
+          final next = day.add(const Duration(days: 1));
+          expect(
+            LvsSchoolYear(from: day, until: day).includesDay(instant),
+            isTrue,
+            reason: '$instant',
+          );
+          expect(
+            LvsSchoolYear(from: next, until: next).includesDay(instant),
+            isFalse,
+            reason: '$instant',
+          );
+        }
+      }
+    });
+
+    test('of the notes getNotes and getAllNotes read: the day they are kept '
+        'by, the first day of the school year for a note dated 22:30 UTC '
+        'the day before', () async {
+      final (_, lvs) = await _serve({
+        'notes': _xml('category_years.xml'),
+        'allNotes': _text(_fixture('notes/all_notes_years.xml')),
+      });
+
+      final notes = await _notesOf(lvs);
+      final next = await _notesOf(
+        lvs,
+        schoolYear: LvsSchoolYear.starting(2031),
+      );
+      final all = await _allNotesOf(lvs);
+
+      // 900315 ("0"): 31 August 2030 22:30 UTC, 1 September in Brussels.
+      final first = notes.singleWhere((n) => n.id == 900315);
+      expect(first.date.day, 31);
+      expect(lvsDayOf(first.date), '2030-09-01');
+      // 900316 ("2030"): 31 August 2031 22:30 UTC, of the school year after.
+      expect(next.single.id, 900316);
+      expect(lvsDayOf(next.single.date), '2031-09-01');
+      for (final note in [...notes, ...next, ...all]) {
+        final day = lvsDayOf(note.date);
+        expect(day, matches(RegExp(r'^\d{4}-\d{2}-\d{2}$')));
+        expect(
+          _year.includesDay(note.date),
+          day.compareTo(_year.firstDay) >= 0 &&
+              day.compareTo(_year.lastDay) <= 0,
+          reason: '${note.id}',
+        );
+      }
+    });
+
+    test("a date field's value is the Belgian day of its date", () async {
+      final (_, lvs) = await _serve({'notes': _xml('category.xml')});
+
+      final fields = [
+        for (final note in await _notesOf(lvs))
+          ...note.fields.where((f) => f.date != null),
+      ];
+
+      expect(fields, isNotEmpty);
+      for (final field in fields) {
+        expect(field.value, lvsDayOf(field.date!));
+      }
+      // Midnight in Brussels (CEST), 22:00 UTC the day before.
+      expect(fields.first.date!.day, 14);
+      expect(fields.first.value, '2030-10-15');
     });
   });
 

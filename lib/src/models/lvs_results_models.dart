@@ -379,9 +379,14 @@ class LvsFeedback {
   /// What kind of feedback it is.
   final LvsFeedbackKind kind;
 
-  /// The feedback itself (`text`), as the LVS gives it (the web client shows
-  /// it as HTML).
+  /// The feedback itself (`text`) as plain text, as the notes' rich text
+  /// (#187): the web client shows it as HTML, which is left out, with a line
+  /// for each line break and block of it (see `LvsService`).
   final String text;
+
+  /// The feedback as the LVS gives it (`text`, trimmed): HTML, or plain
+  /// text.
+  final String html;
 
   /// The name of the teacher who wrote it (`owner.name.startingWithFirstName`);
   /// empty when the answer names none (a remark on a report names none).
@@ -418,6 +423,7 @@ class LvsFeedback {
     required this.identifier,
     required this.kind,
     required this.text,
+    this.html = '',
     this.author = '',
     this.report,
     this.reportPart = '',

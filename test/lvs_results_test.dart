@@ -766,7 +766,14 @@ void main() {
       ]);
       final council = feedback[0];
       expect(council.identifier, '00000000-0000-0000-0000-000000901001');
-      expect(council.text, 'Testopmerking van de klassenraad.');
+      expect(
+        council.text,
+        'Testopmerking van de klassenraad.\nTestregel twee.',
+      );
+      expect(
+        council.html,
+        '<p>Testopmerking van de klassenraad.</p><p>Testregel twee.</p>',
+      );
       expect(council.reportPart, 'Testcomponent');
       expect(council.report!.id, 900501);
       expect(council.report!.name, 'Testrapport');
@@ -777,6 +784,7 @@ void main() {
 
       final course = feedback[1];
       expect(course.text, 'Testopmerking voor het vak.');
+      expect(course.html, 'Testopmerking voor het vak.');
       expect(course.course!.id, 900301);
       expect(course.course!.classId, 900101);
       expect(course.report!.id, 900501);
@@ -790,7 +798,14 @@ void main() {
       final feedback = await lvs.getFeedback(pupilId: 900001, classId: 900101);
 
       final onEvaluation = feedback[2];
-      expect(onEvaluation.text, 'Testfeedback bij de evaluatie.');
+      expect(
+        onEvaluation.text,
+        'Testfeedback bij de evaluatie.\nTestregel & twee.',
+      );
+      expect(
+        onEvaluation.html,
+        'Testfeedback bij de <b>evaluatie</b>.<br>Testregel &amp; twee.',
+      );
       expect(onEvaluation.author, 'Piet Peeters');
       expect(onEvaluation.report, isNull);
       final evaluation = onEvaluation.evaluation!;
@@ -854,6 +869,63 @@ void main() {
         await empty.getFeedback(pupilId: 900001, classId: 900101),
         isEmpty,
       );
+    });
+
+    test('the text of every kind is plain text with its lines, by the rules '
+        "of the notes' rich text, with the HTML beside it (#187)", () async {
+      // Each item of the fixture, and one of a kind the service does not
+      // know, with the same rich text: headings, paragraphs, a list, line
+      // breaks, entities (a non-breaking space is white space too), inline
+      // markup and the source's own white space.
+      const html =
+          '<h3>Testtitel</h3>\n'
+          '<p>Testregel\n  een, met <i>nad</i>ruk.</p>'
+          '<ul><li>Testpunt een</li><li>Testpunt&nbsp;twee</li></ul>'
+          '<div>Test &lt;b&gt; &amp; &eacute;&eacute;n<br><br>Testslot</div>';
+      const lines =
+          'Testtitel\n'
+          'Testregel een, met nadruk.\n'
+          'Testpunt een\n'
+          'Testpunt twee\n'
+          'Test <b> & één\n'
+          'Testslot';
+      final items = [
+        for (final item in jsonDecode(_fixture('feedback.json')) as List)
+          {...item as Map<String, Object?>, 'text': '  $html\n'},
+        {
+          'identifier': '00000000-0000-0000-0000-000000901005',
+          'text': html,
+          'other': {'id': 900999},
+        },
+        // Plain text without HTML: its own line breaks are white space, as
+        // the web client shows it.
+        {
+          'identifier': '00000000-0000-0000-0000-000000901006',
+          'text': ' Testopmerking\nzonder   opmaak. ',
+          'other': {'id': 900999},
+        },
+      ];
+      final (_, lvs) = await _serve({'feedback': _text(jsonEncode(items))});
+
+      final feedback = await lvs.getFeedback(pupilId: 900001, classId: 900101);
+
+      expect(feedback.map((f) => f.kind), [
+        LvsFeedbackKind.classCouncil,
+        LvsFeedbackKind.course,
+        LvsFeedbackKind.evaluation,
+        LvsFeedbackKind.goal,
+        LvsFeedbackKind.unknown,
+        LvsFeedbackKind.unknown,
+      ]);
+      final rich = feedback.take(5);
+      expect(rich.map((f) => f.text), everyElement(lines));
+      expect(rich.map((f) => f.html), everyElement(html));
+      // The one conversion of the LVS models (#171): the notes' rich text,
+      // the support plans' texts, the absences' motivation.
+      expect(LvsWire.plainText(html), lines);
+
+      expect(feedback.last.text, 'Testopmerking zonder opmaak.');
+      expect(feedback.last.html, 'Testopmerking\nzonder   opmaak.');
     });
   });
 

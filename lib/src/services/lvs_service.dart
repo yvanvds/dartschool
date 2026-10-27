@@ -108,7 +108,7 @@ export '../models/lvs_time.dart' show lvsDayOf;
 /// empty lines, nothing before or after. The rich texts keep their HTML
 /// too ([LvsNoteField.html], [LvsPlanItem.approachCommentHtml],
 /// [LvsPlanItem.startSituationHtml], [LvsProfileSketch.html],
-/// [LvsAbsence.motivationHtml]).
+/// [LvsAbsence.motivationHtml], [LvsFeedback.html]).
 ///
 /// ### Privacy
 /// What this service returns is about pupils: see `doc/lvs-privacy.md`. Its
@@ -599,6 +599,8 @@ class LvsService {
   /// headers (see [getResultsConfiguration]). Remarks on reports (of
   /// the class council, or per course) and teachers' feedback on
   /// evaluations, with their attachments as metadata ([LvsFeedback.kind]).
+  /// Their text is plain text with its lines, as the notes' rich text, and
+  /// the HTML the LVS gives is kept beside it ([LvsFeedback.html], #187).
   ///
   /// An ID that is not positive, or a school year that ends before it
   /// starts, is an [ArgumentError], before anything is sent.

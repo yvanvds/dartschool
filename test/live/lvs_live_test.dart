@@ -43,8 +43,9 @@
 // holds none of its own in that year (an empty list), and a made-up
 // category of it (support/lvs_notes_check.dart picks and compares, tested
 // offline in lvs_notes_check_test.dart); its results (configuration,
-// periods, courses, a page of two evaluations and all of them, feedback,
-// reports: counts and types only),
+// periods, courses, a page of two evaluations and all of them, feedback
+// (its text plain text with its lines, #187), reports: counts and types
+// only),
 // and, when its file has a section of support plans, their periods, the
 // plan of the current period and the profile sketch (status, kinds and
 // counts only), and its absences (counts by period, a school year each,
@@ -100,6 +101,19 @@ final _schoolYear = RegExp(r'^\d{4}\s*-\s*\d{4}$');
 
 /// The path of the LVS's read of today's status (`getStatusInfo`).
 const _statusPath = '/LVS/Pupilxhr/getStatusInfo';
+
+/// An HTML tag (`<p>`, `</b>`, `<br/>`): what a plain text of the LVS models
+/// never holds (#171, #187).
+final _tag = RegExp(r'</?[a-zA-Z][^<>]*>');
+
+/// Whether [text] is plain text as the LVS models give it (#171): no tag, no
+/// empty line, nothing before or after a line.
+bool _isPlainText(String text) =>
+    !_tag.hasMatch(text) &&
+    (text.isEmpty ||
+        text
+            .split('\n')
+            .every((line) => line.isNotEmpty && line == line.trim()));
 
 /// Records the path of every request the library tries to send, before
 /// LiveWireGuard decides whether it goes out (#186). A path can hold a
@@ -615,9 +629,25 @@ void main() {
             'feedback: ${feedback.length}, by kind: '
             '${{for (final kind in LvsFeedbackKind.values) kind.name: feedback.where((f) => f.kind == kind).length}}, '
             'attachments: '
-            '${feedback.fold<int>(0, (n, f) => n + f.attachments.length)}',
+            '${feedback.fold<int>(0, (n, f) => n + f.attachments.length)}, '
+            'given as HTML: '
+            '${feedback.where((f) => _tag.hasMatch(f.html)).length}, '
+            'of more than one line: '
+            '${feedback.where((f) => f.text.contains('\n')).length}',
           );
           expect(feedback.every((f) => f.identifier.isNotEmpty), isTrue);
+          // Plain text with its lines, the HTML beside it (#187): counts
+          // only, so that a failure quotes no feedback.
+          expect(
+            feedback.where((f) => !_isPlainText(f.text)).length,
+            0,
+            reason: 'feedback whose text is not plain text with its lines',
+          );
+          expect(
+            feedback.where((f) => f.text.isNotEmpty && f.html.isEmpty).length,
+            0,
+            reason: 'feedback with a text but without the HTML beside it',
+          );
 
           final reports = await lvs.getReports(
             pupilId: ids.pupilId,

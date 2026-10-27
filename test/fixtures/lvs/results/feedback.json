@@ -1,7 +1,7 @@
 [
   {
     "identifier": "00000000-0000-0000-0000-000000901001",
-    "text": "Testopmerking van de klassenraad.",
+    "text": "<p>Testopmerking van de klassenraad.</p><p>Testregel twee.</p>",
     "type": {
       "identifier": "900911",
       "name": "Testcomponent",
@@ -49,7 +49,7 @@
   },
   {
     "identifier": "00000000-0000-0000-0000-000000901003",
-    "text": "Testfeedback bij de evaluatie.",
+    "text": "Testfeedback bij de <b>evaluatie</b>.<br>Testregel &amp; twee.",
     "owner": {
       "id": "900000_900201_0",
       "name": {

@@ -154,8 +154,11 @@ Future<void> main(List<String> args) async {
       final SkoreReport read;
       try {
         read = await gradebooks.getReport(book, report.id);
+      } on SmartschoolSkoreCourseNotOnReportError {
+        // Skore's 404 "Course not found in source!" (#204): nothing to read.
+        print('  course ${book.courseId} is not on this report');
+        continue;
       } on SmartschoolSkoreError catch (e) {
-        // Such as a course that is not on the report (Skore's 404).
         print('  not read: ${e.message}');
         continue;
       }

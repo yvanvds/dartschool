@@ -799,6 +799,28 @@ void main() {
       );
     });
 
+    test('SmartschoolSkoreCourseNotOnReportError is a SmartschoolSkoreError, '
+        'not a refused change, with the IDs of the report read (#204)', () {
+      const error = SmartschoolSkoreCourseNotOnReportError(
+        'not on the report',
+        gradebookId: 34826,
+        reportId: 2762,
+        courseId: 1588,
+      );
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreChangeRefusedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreAccessDeniedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreEvaluationUnreadableError>()));
+      expect(error, isNot(isA<SmartschoolSkoreSaveUnconfirmedError>()));
+      expect(error.gradebookId, 34826);
+      expect(error.reportId, 2762);
+      expect(error.courseId, 1588);
+      expect(
+        error.toString(),
+        'SmartschoolSkoreCourseNotOnReportError: not on the report',
+      );
+    });
+
     test('SmartschoolSkoreGradeSaveUnconfirmedError is a '
         'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
         'and tells per pupil what is confirmed (#151)', () {

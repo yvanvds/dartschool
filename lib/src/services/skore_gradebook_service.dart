@@ -133,9 +133,12 @@ export '../models/skore_gradebook_models.dart';
 ///   nothing was saved; from
 ///   [saveFeedback] also when Skore refused the save with a `4xx` status.
 ///   An answer of Skore with another status than `200` and a JSON
-///   `message` names it: `getReportsResults` for a course that is not on
-///   the report is answered with HTTP 404 and "Course not found in
-///   source!" (seen live, #195).
+///   `message` names it. One about a course that is not on the report,
+///   `getReportsResults` answered with HTTP 404 and "Course not found in
+///   source!" (seen live, #195), is a
+///   [SmartschoolSkoreCourseNotOnReportError] (a subtype) from [getReport]
+///   (#204), and refused by [saveReportComment] and [clearReportComment]
+///   before anything is sent.
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
 ///   check of [createEvaluation], [saveGrade], [saveGrades],
 ///   [saveFeedback], [saveReportComment] or [clearReportComment] refused
@@ -821,13 +824,19 @@ class SkoreGradebookService {
   /// Skore keeps one course comment per pupil, course and report, and does
   /// not say who wrote it: the teachers of a course share it.
   ///
-  /// A course that is not on the report is a [SmartschoolSkoreError]:
-  /// Skore answers it with HTTP 404 and "Course not found in source!" (seen
-  /// live, for a course the report model has no place for), which its web
-  /// client shows as an error too. A [reportId] that is not positive is
-  /// refused with an [ArgumentError] before anything is sent; an answer
-  /// about another report or without the gradebook's course with a
-  /// [SmartschoolSkoreError].
+  /// A course that is not on the report is a
+  /// [SmartschoolSkoreCourseNotOnReportError] (#204), a
+  /// [SmartschoolSkoreError]: Skore answers it with HTTP 404 and "Course not
+  /// found in source!" (seen live, also for an open report Skore lists for
+  /// the gradebook, whose course is on it through a project), which its web
+  /// client shows as an error too. Not an empty report, which would
+  /// read as one without pupils: an app that walks the reports of its
+  /// gradebooks catches it and goes on. Only a `404` whose `message` holds
+  /// "Course not found" (in any case) is that error; another status, or a
+  /// `404` with another message or none, is a plain [SmartschoolSkoreError].
+  /// A [reportId] that is not positive is refused with an [ArgumentError]
+  /// before anything is sent; an answer about another report or without the
+  /// gradebook's course with a [SmartschoolSkoreError].
   Future<SkoreReport> getReport(SkoreGradebook gradebook, int reportId) async {
     if (reportId <= 0) {
       throw ArgumentError.value(
@@ -841,7 +850,9 @@ class SkoreGradebookService {
   }
 
   /// Report [reportId] of [gradebook] as user [userId] opens it ([_scope]):
-  /// Skore's `getReportsResults(pathIds, courses, reportID, userID)`.
+  /// Skore's `getReportsResults(pathIds, courses, reportID, userID)`. Its
+  /// answer for a course that is not on the report is a
+  /// [SmartschoolSkoreCourseNotOnReportError] ([_isCourseNotOnReport]).
   Future<SkoreReport> _readReport(
     SkoreGradebook gradebook,
     int reportId,
@@ -859,11 +870,33 @@ class SkoreGradebookService {
         ],
         scope: scope,
         workyearId: gradebook.workyearId,
+        statusError: (status, message, error) =>
+            _isCourseNotOnReport(status, message)
+            ? SmartschoolSkoreCourseNotOnReportError(
+                'Course ${gradebook.courseId} of gradebook '
+                '${gradebook.gradebookId} is not on report $reportId: $error',
+                gradebookId: gradebook.gradebookId,
+                reportId: reportId,
+                courseId: gradebook.courseId,
+              )
+            : null,
       ),
       gradebook,
       reportId,
     );
   }
+
+  /// Whether Skore's answer to `getReportsResults` with HTTP [status] and
+  /// the JSON `message` [message] says that the course is not on the
+  /// report: `404` and "Course not found in source!" (seen live, #195,
+  /// #204). The message is matched on "Course not found", in any case, so
+  /// that a change of its ending or punctuation keeps it apart; a `404`
+  /// with another message or none is not this answer (what Skore answers
+  /// for a report it does not know was not seen).
+  static bool _isCourseNotOnReport(int? status, String? message) =>
+      status == 404 &&
+      message != null &&
+      message.toLowerCase().contains('course not found');
 
   /// The page of Skore's gradebook, which hands its frame the start-up
   /// secret.
@@ -1884,6 +1917,8 @@ class SkoreGradebookService {
   /// - a report that is not one of the gradebook's ([getGradebook]'s
   ///   [SkoreGradebookSheet.reports]), or that is closed
   ///   ([SkoreReportPeriod.isOpen]);
+  /// - a report the gradebook's course is not on (where [getReport] throws
+  ///   a [SmartschoolSkoreCourseNotOnReportError], #204);
   /// - a report without course comments for the course, or a pupil without
   ///   a comment on it in the gradebook's class;
   /// - a comment Skore does not let the user change
@@ -1961,6 +1996,7 @@ class SkoreGradebookService {
   /// - a gradebook that is not one of the user's own gradebooks of Skore's
   ///   current school year, nor one shared with them to write;
   /// - a report that is not one of the gradebook's, or that is closed;
+  /// - a report the gradebook's course is not on (#204);
   /// - a report without course comments for the course, or a pupil without
   ///   a comment on it in the gradebook's class;
   /// - a comment Skore does not let the user change
@@ -2017,7 +2053,19 @@ class SkoreGradebookService {
     final report = target.report;
     final where =
         'report ${report.name} ($reportId) of gradebook ${book.gradebookId}';
-    final before = await _readReport(book, reportId, target.userId);
+    final SkoreReport before;
+    try {
+      before = await _readReport(book, reportId, target.userId);
+    } on SmartschoolSkoreCourseNotOnReportError {
+      // #204: Skore lists the report for the gradebook, but its course is
+      // not on it; the report holds no course comment of it to write.
+      _refuse(
+        operation,
+        'course ${book.courseId} is not on $where (Skore answers '
+        'getReportsResults for it with HTTP 404), so the report has no course '
+        'comment of it',
+      );
+    }
     if (!before.hasComments) {
       _refuse(
         operation,
@@ -2688,12 +2736,18 @@ class SkoreGradebookService {
   /// (a create): when Smartschool refuses the session for it, it fails at
   /// once with a [SmartschoolSessionExpiredError], instead of being sent
   /// again after logging in (see [SmartschoolClient.postFormResponse]).
+  ///
+  /// An answer with another HTTP status than `200` is a
+  /// [SmartschoolSkoreError] ([_body]); [statusError] may make a subtype of
+  /// it for an answer a caller tells apart (as [getReport] for a course
+  /// that is not on the report, #204).
   Future<dynamic> _rpc(
     String method,
     List<Object?> params, {
     required _Scope scope,
     required int? workyearId,
     bool retryAfterLogin = true,
+    _StatusError? statusError,
   }) async {
     checkRpcCall(method, params);
     final response = await _client.postFormResponse(
@@ -2709,7 +2763,10 @@ class SkoreGradebookService {
       ),
       retryAfterLogin: retryAfterLogin,
     );
-    return SkoreRpc.result(_body(response, method), method);
+    return SkoreRpc.result(
+      _body(response, method, statusError: statusError),
+      method,
+    );
   }
 
   /// The body of [response], the answer to RPC call [method]; any other
@@ -2722,15 +2779,24 @@ class SkoreGradebookService {
   /// Skore's answer to a call in a session Smartschool does not accept, a
   /// redirect to `/` (seen live, #192), never comes here: the client takes
   /// it for a refused session, logs in and sends the call again.
-  static String _body(Response<String> response, String method) {
+  ///
+  /// [statusError] makes the error of such an answer instead, when it
+  /// returns one: it is given the status, the answer's `message`
+  /// ([_message]) and the message of the plain error.
+  static String _body(
+    Response<String> response,
+    String method, {
+    _StatusError? statusError,
+  }) {
     final status = response.statusCode;
     if (status != 200) {
       final message = _message(response.data);
-      throw SmartschoolSkoreError(
-        'Skore answered the RPC call $method of its gradebook with HTTP '
-        '$status${SkoreRpc.redirectNote(response)}'
-        '${message == null ? '' : ': "$message"'}.',
-      );
+      final error =
+          'Skore answered the RPC call $method of its gradebook with HTTP '
+          '$status${SkoreRpc.redirectNote(response)}'
+          '${message == null ? '' : ': "$message"'}.';
+      throw statusError?.call(status, message, error) ??
+          SmartschoolSkoreError(error);
     }
     return response.data ?? '';
   }
@@ -4568,6 +4634,13 @@ class _ReportTarget {
 /// `userID`, [restriction] the session's `restriction` and the calls'
 /// `ownerRestriction` (`0`, or the ID of a gradebook shared with the user).
 typedef _Scope = ({int teacher, int restriction});
+
+/// Makes the error of an answer of Skore's RPC with another HTTP status
+/// than `200` ([SkoreGradebookService._body]) from its [status], its
+/// `message` (`null` when it has none) and the message of the plain
+/// [SmartschoolSkoreError] ([error]); `null` for that plain error.
+typedef _StatusError =
+    SmartschoolSkoreError? Function(int? status, String? message, String error);
 
 /// A grade as `SkoreGradebookService.saveGrades` sends it (#151): [text] is
 /// what goes out (`"15.5"`, `""` to clear), [number] its value (`null` to

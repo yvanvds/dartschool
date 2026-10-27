@@ -1440,7 +1440,7 @@ class SmartschoolPresenceUnreadableAnswerError
 /// than `200`, an HTML page, invalid JSON, a missing RPC `result`, data in
 /// a shape it does not recognise, or an answer about another gradebook).
 ///
-/// Three cases, which a caller handles differently, have a type each (#83):
+/// These cases, which a caller handles differently, have a type each (#83):
 /// - [SmartschoolSkoreAccessDeniedError]: Skore refused the request to the
 ///   account, which lacks the rights for that part of Skore (its `area`).
 /// - [SmartschoolSkoreChangeRefusedError]: a check before a save refused the
@@ -1450,6 +1450,10 @@ class SmartschoolPresenceUnreadableAnswerError
 ///   [SmartschoolSkoreFeedbackAmbiguousError] and
 ///   [SmartschoolSkoreFeedbackNotEditableError] too). Its message says why,
 ///   so the call can be corrected.
+/// - [SmartschoolSkoreCourseNotOnReportError]: the gradebook's course is not
+///   on the report `SkoreGradebookService.getReport` was asked for (Skore's
+///   HTTP 404 "Course not found in source!", #204). Reading it again does
+///   not help.
 /// - This type itself (none of its subtypes): Skore answered with something
 ///   the service cannot use: another HTTP status than `200`, an HTML page
 ///   instead of data, an answer that is not valid JSON, an RPC answer without
@@ -1589,6 +1593,50 @@ class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
     required this.evaluationId,
     required this.typeCode,
     required this.reason,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.getReport` when the gradebook's course
+/// is not on the report (#204): Skore answers its `getReportsResults` with
+/// HTTP 404 and `{"message": "Course not found in source!"}`. Seen live
+/// (2026-10-27, #195, #204) for gradebooks whose report Skore lists
+/// (`SkoreGradebookSheet.reports`), open: one of them a course that is on
+/// the report through a project ("Projecten"), not through evaluation
+/// results, which the library does not read. Skore's web client shows the
+/// answer as an error too.
+///
+/// It is not an answer the library cannot use, and not an empty report
+/// either (which would read as a report without pupils or comments): an app
+/// that walks the reports of its gradebooks can tell this one apart and go
+/// on with the next. Reading it again does not help. Only that answer is
+/// this error: a `404` whose `message` holds "Course not found" (in any
+/// case); any other status, or a `404` with another message or none, stays
+/// a plain [SmartschoolSkoreError].
+///
+/// `saveReportComment` and `clearReportComment` refuse such a report before
+/// anything is sent, with a [SmartschoolSkoreChangeRefusedError] that says
+/// the course is not on the report, not with this error.
+///
+/// A [SmartschoolSkoreError], so `catch` clauses for that type keep catching
+/// it. Its message names the course, the gradebook and the report by their
+/// IDs, and Skore's status and `message`, as the plain error did, and
+/// nothing else of the answer.
+class SmartschoolSkoreCourseNotOnReportError extends SmartschoolSkoreError {
+  /// The gradebook (`SkoreGradebook.gradebookId`).
+  final int gradebookId;
+
+  /// The report that was asked for (`SkoreReportPeriod.id`).
+  final int reportId;
+
+  /// The gradebook's course (`SkoreGradebook.courseId`), which is not on
+  /// the report.
+  final int courseId;
+
+  const SmartschoolSkoreCourseNotOnReportError(
+    super.message, {
+    required this.gradebookId,
+    required this.reportId,
+    required this.courseId,
   });
 }
 

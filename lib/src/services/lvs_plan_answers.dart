@@ -20,7 +20,18 @@
 //   is a heading (its `titleType` "title" a divider), the others periods
 // getIHP: {count: <int>, classInfo: "<HTML>", period, items: [item],
 //   filters: {groupBy, filterTeacher, filterCourse}, filterdata, domains
-//   (the items grouped by domain), OV, titles, canWrite, courses}
+//   (the items grouped by domain), OV, titles, canWrite, courses: [{courseID,
+//   title}] (the courses the edit form offers for an item, gwpEdit.ejs)}.
+//   The web client filters the items itself (#189): by teacher, an item
+//   whose `authorID` (a document's `author`) is the teacher's ID; by course,
+//   an item whose `courses[<course id>]` is 1 (never a document); `filters`
+//   holds the chosen teacher's and course's IDs (0 for all), `filterdata`
+//   {teachers, courses} the options of the two filters, each in the shape of
+//   the web client's select (`{option: {<n>: {value, title, selected}}}`).
+//   A goal's planning entry of `occType` "course" has the course's ID in
+//   `occID`, as the edit form reads it. The library reads `courses`, an
+//   item's `authorID` and `courses`, and `occType` / `occID`; not `filters`
+//   and `filterdata`, whose values for a real plan were not captured (#168)
 // a period: {currentPeriodID: <int>, error: 0|1, message: "<text>",
 //   currentlyInOpenPeriod: <flag>}
 // an item, by its type:
@@ -102,6 +113,7 @@ abstract final class LvsPlanAnswers {
         for (final (i, item) in items.indexed)
           if (item != null) _item(item, 'items[$i]'),
       ],
+      courses: _courses(answer),
     );
   }
 
@@ -159,6 +171,9 @@ abstract final class LvsPlanAnswers {
         type: type,
         kind: LvsPlanItemKind.document,
         author: _plain(item, 'authorName', read, where),
+        // A document's `author` is its author's ID (the web client's filter
+        // by teacher compares it), its name is `authorName`.
+        authorId: _optionalId(item, 'author', read, where),
         date: _plain(item, 'dateToShow', read, where),
         fileName: _text(item, 'fileName', read, where, required: true),
         mimeType: switch (_optionalObject(item, 'mime', read, where)) {
@@ -173,6 +188,7 @@ abstract final class LvsPlanAnswers {
         type: type,
         kind: LvsPlanItemKind.unknown,
         author: _author(item, where),
+        authorId: _authorId(item, where),
       ),
     };
   }
@@ -196,6 +212,7 @@ abstract final class LvsPlanAnswers {
       versionId: _optionalId(version, 'versionID', read, at),
       versionType: _plain(version, 'versionType', read, at),
       author: _author(item, where),
+      authorId: _authorId(item, where),
       date: _plain(version, 'dateToShow', read, at),
       supportNeeds: _names(plan, 'noden', 'ondName', '$at.ihp'),
       mainGoals: _names(plan, 'hoofddoelen', 'doelName', '$at.ihp'),
@@ -204,6 +221,7 @@ abstract final class LvsPlanAnswers {
       approachComment: LvsWire.plainText(comment),
       approachCommentHtml: comment,
       courses: _names(plan, 'courses', 'title', '$at.ihp'),
+      courseIds: _courseIds(item, where),
     );
   }
 
@@ -225,6 +243,8 @@ abstract final class LvsPlanAnswers {
       versionId: _optionalId(version, 'versionID', read, at),
       versionType: _plain(version, 'versionType', read, at),
       author: _author(item, where),
+      authorId: _authorId(item, where),
+      courseIds: _courseIds(item, where),
       date: _plain(version, 'dateToShow', read, at),
       theme: _plain(version, 'themeName', read, at),
       startSituation: LvsWire.plainText(start),
@@ -240,6 +260,10 @@ abstract final class LvsPlanAnswers {
     const read = LvsWire.supportPlan;
     final goal = _object(node, read, where);
     final deprecated = goal['parentDeprecated'];
+    final moments = [
+      for (final (i, entry) in _list(goal, 'occurrence', read, where).indexed)
+        _moment(entry, '$where.occurrence[$i]'),
+    ];
     return LvsPlanGoal(
       id: _optionalId(goal, 'parentID', read, where),
       name: _plain(goal, 'parentName', read, where, required: true),
@@ -247,8 +271,79 @@ abstract final class LvsPlanAnswers {
       isDeprecated: deprecated != null && LvsWire.tryId(deprecated) == 1,
       objectives: _names(goal, 'doelstellingen', 'doelName', where),
       approach: _names(goal, 'aanpak', 'aanpakName', where),
-      planning: _names(goal, 'occurrence', 'occName', where),
+      planning: [for (final moment in moments) moment.name],
+      moments: moments,
     );
+  }
+
+  /// An entry of a goal's planning (`occurrence`).
+  static LvsPlanMoment _moment(Object? node, String where) {
+    const read = LvsWire.supportPlan;
+    final entry = _object(node, read, where);
+    return LvsPlanMoment(
+      type: _text(entry, 'occType', read, where),
+      id: _optionalId(entry, 'occID', read, where),
+      name: _plain(entry, 'occName', read, where, required: true),
+    );
+  }
+
+  /// The courses of the answer (`courses`, `[{courseID, title}]`); none when
+  /// it is absent, `null` or empty.
+  static List<LvsPlanCourse> _courses(Map<Object?, Object?> answer) {
+    const read = LvsWire.supportPlan;
+    final courses = switch (answer['courses']) {
+      null => const <Object?>[],
+      final List<Object?> list => list,
+      // PHP sends a list with gaps in its keys as a map.
+      final Map<Object?, Object?> map => map.values.toList(),
+      _ => throw LvsWire.unknownShape(read, 'courses is not a list'),
+    };
+    return [
+      for (final (i, node) in courses.indexed) _course(node, 'courses[$i]'),
+    ];
+  }
+
+  /// A course of the answer's `courses`.
+  static LvsPlanCourse _course(Object? node, String where) {
+    const read = LvsWire.supportPlan;
+    final course = _object(node, read, where);
+    return LvsPlanCourse(
+      id: _id(course, 'courseID', read, where),
+      name: _plain(course, 'title', read, where, required: true),
+    );
+  }
+
+  /// The IDs of the courses an item is planned in: the keys of its
+  /// `courses` (`{<course id>: 1}`) whose value is `1`, as the web client's
+  /// filter by course tests them; none when it is absent, `null` or empty
+  /// (PHP sends an empty map as `[]`).
+  static List<int> _courseIds(Map<Object?, Object?> item, String where) {
+    const read = LvsWire.supportPlan;
+    final courses = item['courses'];
+    if (courses == null || (courses is List && courses.isEmpty)) {
+      return const [];
+    }
+    if (courses is! Map) {
+      throw LvsWire.unknownShape(read, '$where.courses is not a map');
+    }
+    final ids = <int>[];
+    for (final MapEntry(:key, :value) in courses.entries) {
+      final id = LvsWire.tryId(key);
+      if (id == null || id <= 0) {
+        throw LvsWire.unknownShape(
+          read,
+          '$where.courses has a key that is not a course ID',
+        );
+      }
+      final planned =
+          LvsWire.tryFlag(value) ??
+          (throw LvsWire.unknownShape(
+            read,
+            '$where.courses has a value that is not a flag',
+          ));
+      if (planned) ids.add(id);
+    }
+    return ids;
   }
 
   /// The `lastversion` of an item.
@@ -264,6 +359,10 @@ abstract final class LvsPlanAnswers {
   /// The name of an item's author (`author`, a text); `''` when absent.
   static String _author(Map<Object?, Object?> item, String where) =>
       _plain(item, 'author', LvsWire.supportPlan, where);
+
+  /// The user ID of an item's author (`authorID`); `null` when absent.
+  static int? _authorId(Map<Object?, Object?> item, String where) =>
+      _optionalId(item, 'authorID', LvsWire.supportPlan, where);
 
   // ---------------------------------------------------------------------------
   // Values

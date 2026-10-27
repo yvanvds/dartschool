@@ -105,7 +105,20 @@ class LvsSupportPlan {
   /// is no plan ([status]).
   final List<LvsPlanItem> items;
 
-  const LvsSupportPlan({required this.period, required this.items});
+  /// The courses the web client offers to plan an item of the plan in (the
+  /// answer's `courses`, `[{courseID, title}]`), in the LVS's order: they
+  /// name the IDs of [LvsPlanItem.courseIds] and of a course of a goal's
+  /// planning ([LvsPlanMoment.id]) (#189). Empty when the LVS gives none.
+  ///
+  /// Not the account's own courses: which of them the account teaches is
+  /// not read yet (#196).
+  final List<LvsPlanCourse> courses;
+
+  const LvsSupportPlan({
+    required this.period,
+    required this.items,
+    this.courses = const [],
+  });
 
   /// What was found: a plan, no plan in the period, or no period.
   LvsSupportPlanStatus get status => items.isNotEmpty
@@ -118,6 +131,24 @@ class LvsSupportPlan {
   @override
   String toString() =>
       'LvsSupportPlan(status: ${status.name}, items: ${items.length})';
+}
+
+/// A course of a support plan ([LvsSupportPlan.courses]): an entry of the
+/// answer's `courses`, `{courseID, title}` (#189).
+class LvsPlanCourse {
+  /// The course's ID in the LVS (`courseID`): the ID of
+  /// [LvsPlanItem.courseIds] and of a course of a goal's planning
+  /// ([LvsPlanMoment.id]).
+  final int id;
+
+  /// The course's name (`title`, as plain text).
+  final String name;
+
+  const LvsPlanCourse({required this.id, required this.name});
+
+  /// Shows no value: the name is the school's own.
+  @override
+  String toString() => 'LvsPlanCourse(<values hidden>)';
 }
 
 /// The kinds of [LvsPlanItem], by the LVS's `type` of an item.
@@ -179,6 +210,15 @@ class LvsPlanItem {
   /// document).
   final String author;
 
+  /// The Smartschool user ID of who wrote the item (`authorID`; `author` of
+  /// a document, which holds the ID there) (#189); `null` when the LVS gives
+  /// none. The web client's filter by teacher keeps the items whose author
+  /// has the teacher's ID. Compared with the `SmartschoolUser.id` of
+  /// `SmartschoolClient.getCurrentUser()`, it tells the account's own
+  /// items (the shape of the LVS's JavaScript; not yet seen on a real plan,
+  /// #168).
+  final int? authorId;
+
   /// When, as the LVS shows it (`lastversion.dateToShow`; `dateToShow` of a
   /// document): a text, kept as it comes; empty when none.
   final String date;
@@ -205,6 +245,14 @@ class LvsPlanItem {
 
   /// The courses the item is planned in (`ihp.courses`, their `title`).
   final List<String> courses;
+
+  /// The IDs of the courses the item is planned in (the keys of the item's
+  /// `courses`, `{<course id>: 1}`, flagged `1`), in the LVS's order (#189):
+  /// the web client's filter by course keeps the items whose course IDs
+  /// hold the course's. [LvsSupportPlan.courses] names them. Read for an
+  /// item of support needs or of goals; empty for a document (the web
+  /// client shows none when it filters by course) and another kind.
+  final List<int> courseIds;
 
   /// The theme, module or assignment of the goals ("thema",
   /// `lastversion.themeName`); empty when none.
@@ -236,6 +284,7 @@ class LvsPlanItem {
     this.versionId,
     this.versionType = '',
     this.author = '',
+    this.authorId,
     this.date = '',
     this.supportNeeds = const [],
     this.mainGoals = const [],
@@ -244,6 +293,7 @@ class LvsPlanItem {
     this.approachComment = '',
     this.approachCommentHtml = '',
     this.courses = const [],
+    this.courseIds = const [],
     this.theme = '',
     this.startSituation = '',
     this.startSituationHtml = '',
@@ -286,6 +336,12 @@ class LvsPlanGoal {
   /// course or another moment).
   final List<String> planning;
 
+  /// The same planning with the kind and the ID of each entry
+  /// (`occurrence`, `{occType, occID, occName}`), in the LVS's order
+  /// (#189): which entries are courses ([LvsPlanMoment.isCourse]), and
+  /// their course IDs.
+  final List<LvsPlanMoment> moments;
+
   const LvsPlanGoal({
     this.id,
     required this.name,
@@ -294,6 +350,7 @@ class LvsPlanGoal {
     this.objectives = const [],
     this.approach = const [],
     this.planning = const [],
+    this.moments = const [],
   });
 
   /// Shows the counts only.
@@ -301,6 +358,34 @@ class LvsPlanGoal {
   String toString() =>
       'LvsPlanGoal(objectives: ${objectives.length}, '
       'approach: ${approach.length}, planning: ${planning.length})';
+}
+
+/// An entry of a goal's planning ([LvsPlanGoal.moments]): a course or
+/// another moment the goal is worked on, `{occType, occID, occName}`
+/// (#189).
+class LvsPlanMoment {
+  /// The kind of entry as the LVS names it (`occType`): `course` for a
+  /// course ([isCourse]), the only kind the web client tells apart; another
+  /// is kept as it comes. Empty when none.
+  final String type;
+
+  /// The entry's ID (`occID`): for a course, its ID in the LVS, as in
+  /// [LvsPlanItem.courseIds] and [LvsSupportPlan.courses]; `null` when none.
+  final int? id;
+
+  /// The course or moment (`occName`, as plain text): the entry of
+  /// [LvsPlanGoal.planning].
+  final String name;
+
+  const LvsPlanMoment({required this.type, this.id, required this.name});
+
+  /// Whether the entry is a course (`occType` `course`): its [id] is the
+  /// course's.
+  bool get isCourse => type == 'course';
+
+  /// Shows the kind of entry only.
+  @override
+  String toString() => 'LvsPlanMoment(isCourse: $isCourse)';
 }
 
 /// A pupil's profile sketch ("profielschets") in one period

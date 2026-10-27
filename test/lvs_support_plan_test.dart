@@ -4,7 +4,10 @@
 // and approach (getSupportPlan), and the profile sketch (getProfileSketch);
 // the outcomes without a plan, without a period, and in a closed period;
 // the allowlist that keeps the edit flow's calls out, and errors that carry
-// no name.
+// no name. And for #189, the IDs that tell whose items they are and which
+// courses they are planned in: an item's author ID and course IDs, the kind
+// and ID of each entry of a goal's planning, and the plan's courses that
+// name those IDs.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/supportplan/
 // (doc/lvs-privacy.md: never trimmed from a live answer), in the shapes the
@@ -172,6 +175,8 @@ const _answerValues = [
   '9006',
   '9008',
   '/2030',
+  '9002',
+  '9003',
   'pdf',
   'PDF',
 ];
@@ -396,7 +401,7 @@ void main() {
       expect(first.isDeprecated, isFalse);
       expect(first.objectives, ['Testdoelstelling']);
       expect(first.approach, ['Testaanpak bij het doel']);
-      expect(first.planning, ['Testvak']);
+      expect(first.planning, ['Testvak', 'Testvak 2', 'Testmoment']);
       // Without objectives, approach and planning; no longer in its
       // curriculum.
       expect(second.id, 900802);
@@ -544,6 +549,180 @@ void main() {
         expect(unknown.type, 'gwp_other');
         expect(unknown.author, 'Piet Peeters');
         expect(unknown.supportNeeds, isEmpty);
+      },
+    );
+  });
+
+  group('getSupportPlan: whose items, and which courses (#189)', () {
+    test('the user ID of each item\'s author: authorID, and a document\'s '
+        'author (its name is authorName)', () async {
+      final (_, lvs) = await _serve({'plan': _file('plan.json')});
+
+      final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+      expect(plan.items.map((i) => i.authorId), [
+        900201,
+        900202,
+        900201,
+        900201,
+      ]);
+      expect(plan.items.last.author, 'Piet Peeters');
+    });
+
+    test('the course IDs of an item: the keys of its courses flagged 1, as '
+        "the web client's filter by course reads them; none for an empty "
+        'map (PHP: []) and for a document', () async {
+      final (_, lvs) = await _serve({'plan': _file('plan.json')});
+
+      final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+      expect(plan.items.map((i) => i.courseIds), [
+        [900301],
+        // 900303 is flagged 0: not planned in it.
+        [900301, 900302],
+        isEmpty,
+        isEmpty,
+      ]);
+    });
+
+    test("each entry of a goal's planning with its kind and ID: a course's "
+        'ID, another moment kept as it comes', () async {
+      final (_, lvs) = await _serve({'plan': _file('plan.json')});
+
+      final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+      final goal = plan.items[1].goals.first;
+      expect(goal.moments.map((m) => m.type), ['course', 'course', 'other']);
+      expect(goal.moments.map((m) => m.isCourse), [true, true, false]);
+      expect(goal.moments.map((m) => m.id), [900301, 900302, null]);
+      expect(goal.moments.map((m) => m.name), [
+        'Testvak',
+        'Testvak 2',
+        'Testmoment',
+      ]);
+      expect(goal.planning, goal.moments.map((m) => m.name));
+      // A goal without planning.
+      expect(plan.items[1].goals.last.moments, isEmpty);
+    });
+
+    test("the plan's courses name the course IDs of its items and of their "
+        'planning', () async {
+      final (_, lvs) = await _serve({'plan': _file('plan.json')});
+
+      final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+      expect(plan.courses.map((c) => c.id), [900301, 900302]);
+      expect(plan.courses.map((c) => c.name), ['Testvak', 'Testvak 2']);
+      final names = {for (final c in plan.courses) c.id: c.name};
+      expect(plan.items[1].courseIds.map((id) => names[id]), [
+        'Testvak',
+        'Testvak 2',
+      ]);
+      expect(
+        [
+          for (final goal in plan.items[1].goals)
+            for (final moment in goal.moments)
+              if (moment.isCourse) names[moment.id],
+        ],
+        ['Testvak', 'Testvak 2'],
+      );
+    });
+
+    test('an app tells the items of one author, or of one course, by their '
+        'IDs: the items the web client keeps for that filter', () async {
+      final (_, lvs) = await _serve({'plan': _file('plan.json')});
+
+      final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+      expect(plan.items.where((i) => i.authorId == 900201).map((i) => i.id), [
+        900601,
+        900603,
+        900604,
+      ]);
+      expect(
+        plan.items.where((i) => i.courseIds.contains(900302)).map((i) => i.id),
+        [900602],
+      );
+    });
+
+    test('no courses, no author ID, no course IDs: empty, not an '
+        'error', () async {
+      final json = _json('plan.json');
+      final items = (json['items'] as List).cast<Map<String, Object?>>();
+      final needs = items.first;
+      final goals = items[1];
+      final version = (goals['lastversion'] as Map).cast<String, Object?>();
+      final goal = ((version['doelen'] as List).first as Map)
+          .cast<String, Object?>();
+      for (final courses in [null, <Object?>[], <String, Object?>{}]) {
+        final (_, lvs) = await _serve({
+          'plan': _of({
+            ...json,
+            'courses': courses,
+            'items': [
+              {...needs, 'authorID': null, 'courses': null},
+              {
+                ...goals,
+                'authorID': 0,
+                'courses': <String, Object?>{},
+                'lastversion': {
+                  ...version,
+                  'doelen': [
+                    {
+                      ...goal,
+                      'occurrence': [
+                        {'occName': 'Testmoment'},
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        });
+
+        final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+        expect(plan.courses, isEmpty, reason: '$courses');
+        expect(plan.items.map((i) => i.authorId), [null, null]);
+        expect(plan.items.map((i) => i.courseIds), [isEmpty, isEmpty]);
+        final moment = plan.items.last.goals.single.moments.single;
+        expect(moment.type, '');
+        expect(moment.isCourse, isFalse);
+        expect(moment.id, isNull);
+        expect(moment.name, 'Testmoment');
+      }
+    });
+
+    test(
+      'courses as a map (PHP, a list with gaps in its keys), and an item '
+      'of a type the service does not know, kept with its author ID',
+      () async {
+        final json = _json('plan.json');
+        final courses = json['courses'] as List;
+        final (_, lvs) = await _serve({
+          'plan': _of({
+            ...json,
+            'courses': {'0': courses.first, '3': courses.last},
+            'items': [
+              {
+                'itemID': 900605,
+                'type': 'gwp_other',
+                'author': 'Piet Peeters',
+                'authorID': '900201',
+                'courses': {'900301': 1},
+              },
+            ],
+          }),
+        });
+
+        final plan = await lvs.getSupportPlan(pupilId: 900001, classId: 900101);
+
+        expect(plan.courses.map((c) => c.id), [900301, 900302]);
+        final unknown = plan.items.single;
+        expect(unknown.kind, LvsPlanItemKind.unknown);
+        expect(unknown.authorId, 900201);
+        expect(unknown.courseIds, isEmpty);
       },
     );
   });
@@ -798,6 +977,72 @@ void main() {
           withItem({...item(3), 'fileName': null}),
           withItem({...item(3), 'documentID': 0}),
           withItem({...item(3), 'mime': 'Testbijlage.pdf'}),
+          // #189: the courses of the answer, an item's author ID and course
+          // IDs, a goal's planning.
+          {...plan, 'courses': 'Testvak'},
+          {
+            ...plan,
+            'courses': [
+              {'title': 'Testvak'},
+            ],
+          },
+          {
+            ...plan,
+            'courses': [
+              {'courseID': 900301},
+            ],
+          },
+          {
+            ...plan,
+            'courses': ['Testvak'],
+          },
+          withItem({...item(0), 'authorID': 'Piet Peeters'}),
+          withItem({...item(3), 'author': 'Piet Peeters'}),
+          withItem({...item(0), 'courses': 'Testvak'}),
+          withItem({
+            ...item(0),
+            'courses': [900301],
+          }),
+          withItem({
+            ...item(0),
+            'courses': {'Testvak': 1},
+          }),
+          withItem({
+            ...item(1),
+            'courses': {'900301': 'Testvak'},
+          }),
+          withItem({
+            ...item(1),
+            'lastversion': {
+              ...version(1),
+              'doelen': [
+                {
+                  'parentName': 'Testdoel',
+                  'occurrence': [
+                    {'occType': 'course', 'occID': 900301},
+                  ],
+                },
+              ],
+            },
+          }),
+          withItem({
+            ...item(1),
+            'lastversion': {
+              ...version(1),
+              'doelen': [
+                {
+                  'parentName': 'Testdoel',
+                  'occurrence': [
+                    {
+                      'occType': 'course',
+                      'occID': 'Testvak',
+                      'occName': 'Testvak',
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
         ],
         'sketch': [
           {...sketch, 'check': null},
@@ -873,8 +1118,12 @@ void main() {
         '${plan.period}',
         for (final item in plan.items) ...[
           '$item',
-          for (final goal in item.goals) '$goal',
+          for (final goal in item.goals) ...[
+            '$goal',
+            for (final moment in goal.moments) '$moment',
+          ],
         ],
+        for (final course in plan.courses) '$course',
         '${await lvs.getProfileSketch(pupilId: 900001, classId: 900101)}',
       ];
 
@@ -890,7 +1139,10 @@ void main() {
           'LvsPlanPeriodInfo(hasError: false, isOpen: true)',
           'LvsPlanItem(kind: needs, supportNeeds: 2, mainGoals: 1, '
               'workGoals: 2, approach: 1, goals: 0)',
-          'LvsPlanGoal(objectives: 1, approach: 1, planning: 1)',
+          'LvsPlanGoal(objectives: 1, approach: 1, planning: 3)',
+          'LvsPlanMoment(isCourse: true)',
+          'LvsPlanMoment(isCourse: false)',
+          'LvsPlanCourse(<values hidden>)',
           'LvsProfileSketch(hasSketch: true)',
         ]),
       );

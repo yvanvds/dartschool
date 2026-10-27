@@ -726,6 +726,15 @@ class LvsService {
   /// `exportID` `0` (the live plan, not an archived export). The item filters
   /// the web client saves for the account are not applied.
   ///
+  /// The web client filters the items by teacher and by course itself; the
+  /// IDs it filters by are kept (#189): an item's author
+  /// ([LvsPlanItem.authorId], a Smartschool user ID: compared with
+  /// `SmartschoolClient.getCurrentUser()`, the account's own items), the
+  /// courses it is planned in ([LvsPlanItem.courseIds]), and the kind and ID
+  /// of each entry of a goal's planning ([LvsPlanGoal.moments]), with the
+  /// plan's courses that name them ([LvsSupportPlan.courses]). Which courses
+  /// the account teaches is not read yet (#196).
+  ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
   Future<LvsSupportPlan> getSupportPlan({

@@ -48,7 +48,9 @@
 // only),
 // and, when its file has a section of support plans, their periods, the
 // plan of the current period and the profile sketch (status, kinds and
-// counts only), and its absences (counts by period, a school year each,
+// counts only; and, for #189, how many items have an author ID and are the
+// account's, and how many course IDs of the items and of their planning
+// the plan's courses name), and its absences (counts by period, a school year each,
 // part of the day and code only, and that every one has a date, #176):
 //
 //   DARTSCHOOL_LVS_PUPIL=<part of the name of a pupil you teach> \
@@ -429,6 +431,9 @@ void main() {
         );
         expect(plan.status == LvsSupportPlanStatus.noPeriod, isTrue);
         expect(plan.items.length, 0);
+        // #189: the answer's courses are read too: whatever it holds for a
+        // made-up class must parse. A count only.
+        print('courses of the plan of a made-up class: ${plan.courses.length}');
         final sketch = await lvs.getProfileSketch(
           pupilId: _madeUpId,
           classId: _madeUpId,
@@ -504,6 +509,43 @@ void main() {
           expect(
             {for (final item in items) '${item.type} ${item.id}'}.length,
             items.length,
+          );
+
+          // #189: whose items, and which courses, by their IDs (counts only;
+          // for #168: is authorID the account's user ID, and are the course
+          // IDs of the items and of their planning those of the plan's
+          // courses?).
+          final me = await run.client.getCurrentUser();
+          final courseIds = {for (final c in plan.courses) c.id};
+          final itemCourseIds = [for (final i in items) ...i.courseIds];
+          final moments = [
+            for (final item in items)
+              for (final goal in item.goals) ...goal.moments,
+          ];
+          final courseMoments = moments.where((m) => m.isCourse).toList();
+          print(
+            'courses of the plan: ${plan.courses.length} '
+            '(${courseIds.length} IDs); items with an author ID: '
+            '${items.where((i) => i.authorId != null).length}, by the '
+            'account: ${items.where((i) => i.authorId == me.id).length}; '
+            'items with course IDs: '
+            '${items.where((i) => i.courseIds.isNotEmpty).length}, course '
+            'IDs: ${itemCourseIds.length} (among the courses of the plan: '
+            '${itemCourseIds.where(courseIds.contains).length}); planning '
+            'entries: ${moments.length}, courses: ${courseMoments.length} '
+            '(with an ID: ${courseMoments.where((m) => m.id != null).length}, '
+            'among the courses of the plan: '
+            '${courseMoments.where((m) => courseIds.contains(m.id)).length}), '
+            'other kinds: ${moments.length - courseMoments.length}',
+          );
+          expect(plan.courses.every((c) => c.id > 0), isTrue);
+          expect(items.every((i) => i.courseIds.every((id) => id > 0)), isTrue);
+          expect(
+            items.every(
+              (i) =>
+                  i.goals.every((g) => g.moments.length == g.planning.length),
+            ),
+            isTrue,
           );
 
           final sketch = await lvs.getProfileSketch(

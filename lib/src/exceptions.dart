@@ -2446,6 +2446,47 @@ class SmartschoolSkoreFeedbackSaveUnconfirmedError
   });
 }
 
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreGradebookService.saveReportComment` (#195): the course comment
+/// went out to Skore (its gradebook's `saveType`), but Skore's answer, or
+/// reading the report again afterwards, does not confirm it. Its message
+/// says what went wrong.
+///
+/// **It may or may not have been saved.** Saving it again is harmless: the
+/// save sends the whole text, and replaces the pupil's comment. Read the
+/// report again (`SkoreGradebookService.getReport`): pass the comment it
+/// shows as `replacing` to save it again.
+///
+/// Thrown when Skore answers the save with another result than `savedState`
+/// 1, with another status than `200` (such as a `500`) or with an answer
+/// that is not JSON; when no answer came in ([cause] holds the failure,
+/// typically a [SmartschoolConnectionError]); and when reading the report
+/// again fails ([cause]), shows no comment for the pupil, or shows another
+/// text.
+class SmartschoolSkoreReportCommentSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook of the report (its `gradebookId`).
+  final int gradebookId;
+
+  /// The report (its `SkoreReportPeriod.id`).
+  final int reportId;
+
+  /// The pupil the comment is for (their Smartschool user ID).
+  final int pupilId;
+
+  /// The text sent, as the service sends it (trimmed, each line trimmed).
+  final String text;
+
+  const SmartschoolSkoreReportCommentSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.gradebookId,
+    required this.reportId,
+    required this.pupilId,
+    required this.text,
+  });
+}
+
 /// Thrown by `LvsService`, the pupil tracking system (LVS,
 /// "leerlingvolgsysteem", `/?module=LVS`, #160), when the LVS answers a read
 /// with something the service cannot use: another HTTP status than `200` (in

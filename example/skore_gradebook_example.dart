@@ -4,7 +4,8 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 
 /// Example: list your own Skore gradebooks, as the logged-in teacher, and
 /// those colleagues shared with you (#191), and print the periods and pupils
-/// of one of them (#148), and the evaluations of its active period with
+/// of one of them (#148), its report periods with each pupil's results and
+/// course comment (#195), and the evaluations of its active period with
 /// whether they are published, the grades and the feedback (#149).
 ///
 /// It only reads: nothing in Skore changes. Any teacher can run it with
@@ -29,7 +30,9 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///   3. Read one gradebook (`SkoreGradebookService.getGradebook`) and print
 ///      its periods (open or closed, and until when), its pupils and whether
 ///      you may change it.
-///   4. Read the evaluations of its active period
+///   4. Read each of its report periods (`SkoreGradebookService.getReport`)
+///      and print each pupil's results and course comment.
+///   5. Read the evaluations of its active period
 ///      (`SkoreGradebookService.getEvaluations`) and print each with its
 ///      publication (not published, scheduled or published, and when), the
 ///      grades and the feedback (`SkoreGradebookService.getFeedback`).
@@ -130,7 +133,39 @@ Future<void> main(List<String> args) async {
       print('  $number. ${pupil.name}  [${pupil.id}]$inactive');
     }
 
-    // ── 4. The evaluations of the active period (#149) ────────────────────
+    // ── 4. The report periods, with results and comments (#195) ──────────
+
+    for (final report in sheet.reports) {
+      print(
+        '\nReport ${report.name} – ${report.fullName} (${report.id}): '
+        '${report.isOpen ? 'open' : 'closed'} until '
+        '${report.closesAt?.toLocal() ?? '-'}',
+      );
+      final SkoreReport read;
+      try {
+        read = await gradebooks.getReport(book, report.id);
+      } on SmartschoolSkoreError catch (e) {
+        // Such as a course that is not on the report (Skore's 404).
+        print('  not read: ${e.message}');
+        continue;
+      }
+      print(
+        '  ${read.courseName}: ${read.components.map((c) => '${c.name} (class '
+            'average ${c.classAverage ?? '-'})').join(', ')}; comments of at '
+        'most ${read.commentMaxLength ?? '?'} characters',
+      );
+      final names = {for (final p in sheet.pupils) p.id: p.name};
+      for (final pupil in read.pupils) {
+        final comment = pupil.comment;
+        print(
+          '    ${(names[pupil.pupilId] ?? '${pupil.pupilId}').padRight(28)} '
+          '${pupil.results.map((r) => r.value ?? '-').join(' ')}'
+          '${comment == null ? '' : '  ${comment.isEditable ? '' : '(closed) '}"${comment.text}"'}',
+        );
+      }
+    }
+
+    // ── 5. The evaluations of the active period (#149) ────────────────────
 
     final period = sheet.activePeriod;
     if (period == null) return;

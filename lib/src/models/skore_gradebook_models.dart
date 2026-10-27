@@ -3,7 +3,9 @@
 /// ("Puntenboek"): the teacher's own gradebooks of a school year and those
 /// colleagues shared with them (#191), the periods and pupils of one
 /// gradebook, and the evaluations of a period with their publication, grades
-/// and feedback, and the components a new evaluation can count for.
+/// and feedback, and the components a new evaluation can count for; and the
+/// report periods of a gradebook, with each pupil's results so far and the
+/// course comment that goes on the report (#195).
 ///
 /// This is the teacher's side of Skore, which any teacher reaches with their
 /// own login. The admin side (report models, assignments, sharing) is
@@ -220,6 +222,15 @@ class SkoreGradebookSheet {
   /// order. Skore adds periods during the school year.
   final List<SkoreGradebookPeriod> periods;
 
+  /// The report periods ("Rapporten | Rapport 1") of the gradebook, in
+  /// Skore's order (the `reports` of Skore's `init`, #195): where the
+  /// teacher writes the course comment of each pupil that goes on the
+  /// report (`SkoreGradebookService.getReport` and `saveReportComment`).
+  /// Empty for a gradebook without report periods. Seen live: one per
+  /// gradebook in October 2026, also for a gradebook without evaluation
+  /// periods (a behaviour gradebook).
+  final List<SkoreReportPeriod> reports;
+
   /// The period Skore opens the gradebook on (its `activePeriodE`), or
   /// `null` when the gradebook has no periods. Seen live: the only period of
   /// a new school year, and the last of the five of an earlier one.
@@ -259,14 +270,15 @@ class SkoreGradebookSheet {
     this.pupils = const [],
     this.writable = false,
     this.isCoordinator = false,
+    this.reports = const [],
   });
 
   @override
   String toString() =>
       'SkoreGradebookSheet(gradebookId: ${gradebook.gradebookId}, '
       'courseName: $courseName, periods: ${periods.length}, '
-      'activePeriod: ${activePeriod?.name}, pupils: ${pupils.length}, '
-      'writable: $writable)';
+      'activePeriod: ${activePeriod?.name}, reports: ${reports.length}, '
+      'pupils: ${pupils.length}, writable: $writable)';
 }
 
 /// A period of a gradebook: a tab of Skore's gradebook ("Evaluaties | DW1"),
@@ -312,6 +324,67 @@ class SkoreGradebookPeriod {
   @override
   String toString() =>
       'SkoreGradebookPeriod(id: $id, name: $name, isOpen: $isOpen, '
+      'closesAt: ${closesAt?.toIso8601String()})';
+}
+
+/// A report period of a gradebook: a tab of Skore's gradebook under
+/// "Rapporten" ("Rapporten | Rapport 1", #195), as Skore's `init` lists it:
+/// `{"name": "R1D", "fullname": "Rapport 1", "id": "2762", "info": "<p>...",
+/// "open": 1, "type": "a", "rating": 0, "timestamp":
+/// "2026-10-30T23:00:00+0100", "lockIcon": 0}` (seen live).
+///
+/// While it is open, the teacher writes the course comment of each pupil
+/// that goes on the report (`SkoreGradebookService.saveReportComment`). Its
+/// ID is not the ID of an evaluation period: `getEvaluations` does not take
+/// it.
+class SkoreReportPeriod {
+  /// The report's ID (e.g. `2762`). The gradebooks of a report model share
+  /// it (seen live).
+  final int id;
+
+  /// The short name Skore shows on the tab (e.g. `"R1D"`).
+  final String name;
+
+  /// The full name (Skore's `fullname`, e.g. `"Rapport 1"`); [name] when
+  /// Skore gives none.
+  final String fullName;
+
+  /// Whether the report is open (Skore's `open` 1): whether its course
+  /// comments can be written. Skore's web client shows a closed report's
+  /// comments read-only ("Dit rapport is gesloten. Enkel de beheerder kan
+  /// nog vakinfo ingeven.").
+  final bool isOpen;
+
+  /// When the report closes (or closed), from Skore's `timestamp`
+  /// (`"2026-10-30T23:00:00+0100"`), in UTC; `null` when Skore gives none.
+  final DateTime? closesAt;
+
+  /// Skore's description of the report, as HTML (e.g. "Rapport 1", "Open
+  /// tot 2026-10-30 23:00" and the school's note).
+  final String info;
+
+  /// Skore's `type` of the report as it gave it (`"a"`, the only one seen
+  /// live); what it means was not found out.
+  final String typeCode;
+
+  /// Skore's `rating` of the report (`0`, the only one seen live); what it
+  /// means was not found out.
+  final int rating;
+
+  const SkoreReportPeriod({
+    required this.id,
+    required this.name,
+    required this.fullName,
+    required this.isOpen,
+    required this.closesAt,
+    this.info = '',
+    this.typeCode = '',
+    this.rating = 0,
+  });
+
+  @override
+  String toString() =>
+      'SkoreReportPeriod(id: $id, name: $name, isOpen: $isOpen, '
       'closesAt: ${closesAt?.toIso8601String()})';
 }
 
@@ -725,4 +798,202 @@ class SkoreFeedbackAttachment {
 
   @override
   String toString() => 'SkoreFeedbackAttachment(id: $id, name: $name)';
+}
+
+/// A report period of a gradebook as Skore's gradebook shows it
+/// (`SkoreGradebookService.getReport`, #195): per pupil of the gradebook's
+/// class, the results so far per component of the course, as Skore
+/// calculates them, and the course comment ("vakcommentaar") that goes on
+/// the report.
+///
+/// Skore keeps **one** course comment per pupil, course and report: not one
+/// per teacher, and it does not say who wrote it.
+class SkoreReport {
+  /// The gradebook (its `SkoreGradebook.gradebookId`).
+  final int gradebookId;
+
+  /// The report ([SkoreReportPeriod.id]).
+  final int reportId;
+
+  /// The course of the gradebook (its `SkoreGradebook.courseId`).
+  final int courseId;
+
+  /// The course as the report names it (e.g. `"Informaticawetenschappen
+  /// (2 uur)"`).
+  final String courseName;
+
+  /// The components of the course the report shows results for (e.g.
+  /// `DW`), in Skore's order. Empty for a course without them, such as a
+  /// behaviour course, whose report holds only the comment (seen live).
+  final List<SkoreReportComponent> components;
+
+  /// Whether the report has a course comment for the course (Skore's
+  /// column `<courseId>_info`). Seen live for every report read.
+  final bool hasComments;
+
+  /// The most characters a course comment may have, as Skore gives it with
+  /// the report (its `length`, `1600` seen live), or `null` when it gives
+  /// none.
+  final int? commentMaxLength;
+
+  /// The pupils of the gradebook's class, in Skore's order. Not the class
+  /// average, and not the pupils of other classes.
+  final List<SkoreReportPupil> pupils;
+
+  const SkoreReport({
+    required this.gradebookId,
+    required this.reportId,
+    required this.courseId,
+    required this.courseName,
+    this.components = const [],
+    this.hasComments = false,
+    this.commentMaxLength,
+    this.pupils = const [],
+  });
+
+  /// The row of pupil [pupilId], or `null` when the report has none.
+  SkoreReportPupil? pupil(int pupilId) =>
+      pupils.where((p) => p.pupilId == pupilId).firstOrNull;
+
+  @override
+  String toString() =>
+      'SkoreReport(gradebookId: $gradebookId, reportId: $reportId, '
+      'courseId: $courseId, components: ${components.length}, pupils: '
+      '${pupils.length}, comments: '
+      '${pupils.where((p) => p.comment?.isEmpty == false).length})';
+}
+
+/// A component of a course on a report (e.g. `DW`, "Dagelijks werk"), with
+/// the class average Skore shows for it (#195).
+class SkoreReportComponent {
+  /// Skore's column of the component (e.g. `"2264_1"`: the course ID, and
+  /// the component's place on the report). Not a component ID of
+  /// `SkoreEvaluation.componentId`.
+  final String column;
+
+  /// The component's short name (e.g. `"DW"`).
+  final String name;
+
+  /// The class average as Skore shows it (e.g. `"74"`), or `null` when it
+  /// shows none (`-`).
+  final String? classAverage;
+
+  const SkoreReportComponent({
+    required this.column,
+    required this.name,
+    this.classAverage,
+  });
+
+  @override
+  String toString() =>
+      'SkoreReportComponent(column: $column, name: $name, classAverage: '
+      '$classAverage)';
+}
+
+/// One pupil's row of a report (#195): the results per component, and the
+/// course comment.
+class SkoreReportPupil {
+  /// The pupil's Smartschool user ID.
+  final int pupilId;
+
+  /// The Skore class ID of the row (the gradebook's class).
+  final int classId;
+
+  /// The pupil's result for each of the report's components, in their
+  /// order. Read-only: Skore calculates them from the evaluations.
+  final List<SkoreReportResult> results;
+
+  /// The pupil's course comment, or `null` when the report has no comment
+  /// for the pupil.
+  final SkoreReportComment? comment;
+
+  const SkoreReportPupil({
+    required this.pupilId,
+    required this.classId,
+    this.results = const [],
+    this.comment,
+  });
+
+  /// Skore's key of the pupil's row: `pupil_<pupilId>_<classId>`.
+  String get rowKey => 'pupil_${pupilId}_$classId';
+
+  /// The result for the component in Skore's [column], or `null` when the
+  /// row has none.
+  SkoreReportResult? resultOf(String column) =>
+      results.where((r) => r.column == column).firstOrNull;
+
+  @override
+  String toString() =>
+      'SkoreReportPupil(pupilId: $pupilId, results: ${results.length}, '
+      'comment: ${comment == null ? 'none' : '${comment!.text.length} characters'})';
+}
+
+/// A pupil's result for a component on a report, as Skore shows it (#195).
+class SkoreReportResult {
+  /// The component's column ([SkoreReportComponent.column]).
+  final String column;
+
+  /// The result as Skore shows it (e.g. `"79"`), or `null` when it shows
+  /// none (`-`, or empty).
+  final String? value;
+
+  /// Whether Skore marks the result as low (the class `gbc_low`, which it
+  /// shows in red).
+  final bool isLow;
+
+  const SkoreReportResult({
+    required this.column,
+    required this.value,
+    this.isLow = false,
+  });
+
+  @override
+  String toString() =>
+      'SkoreReportResult(column: $column, value: $value, isLow: $isLow)';
+}
+
+/// The course comment ("vakcommentaar") of a pupil on a report, which is
+/// printed on the report (#195). One per pupil, course and report: Skore
+/// does not say who wrote it.
+class SkoreReportComment {
+  /// The pupil's Smartschool user ID.
+  final int pupilId;
+
+  /// The report ([SkoreReportPeriod.id]).
+  final int reportId;
+
+  /// The course ([SkoreReport.courseId]).
+  final int courseId;
+
+  /// The text, plain, with its lines; `""` when the pupil has none.
+  final String text;
+
+  /// Whether Skore lets the user change it: the first of the cell's
+  /// parameters is `1`. Skore marks a comment it does not let them change
+  /// (`0`) as closed (`gbc_closed`; seen live for some pupils of a report
+  /// that is open). And only while the report is open
+  /// ([SkoreReportPeriod.isOpen]).
+  final bool isEditable;
+
+  /// The parameters of the comment's cell as Skore gives them, as text
+  /// (`["1", "2762"]`: whether it may be changed, and the report), which
+  /// the save sends back, as Skore's web client does.
+  final List<String> cellParams;
+
+  const SkoreReportComment({
+    required this.pupilId,
+    required this.reportId,
+    required this.courseId,
+    required this.text,
+    required this.isEditable,
+    this.cellParams = const [],
+  });
+
+  /// Whether the pupil has no comment.
+  bool get isEmpty => text.isEmpty;
+
+  @override
+  String toString() =>
+      'SkoreReportComment(pupilId: $pupilId, reportId: $reportId, '
+      '${text.length} characters, isEditable: $isEditable)';
 }

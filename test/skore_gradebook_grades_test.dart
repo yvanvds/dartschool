@@ -645,10 +645,20 @@ void main() {
   test('saveGrade joins the allowlist; saveGradeColumn, saveGradeInfo and '
       'the publishing calls do not', () {
     expect(SkoreGradebookService.rpcMethods, contains('saveGrade'));
+    // saveType joined it for the course comment of a report (#195), with
+    // the type info only: never the symbols of a grade.
+    expect(
+      () => SkoreGradebookService.checkRpcCall('saveType', [
+        'sym',
+        '500003',
+        'pupil_1201_2440',
+        'A',
+      ]),
+      throwsA(isA<ArgumentError>()),
+    );
     for (final method in [
       'saveGradeColumn',
       'saveGradeInfo',
-      'saveType',
       'getEvaluationIDByOwnerID',
       'setPublicProp',
       'saveEvalProperties',

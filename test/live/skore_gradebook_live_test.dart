@@ -17,6 +17,16 @@
 // createEvaluation any shared one, before anything is sent. Skipped when no
 // gradebook is shared with the account.
 //
+// For #195 it reads the report periods of a gradebook and its report, with
+// each pupil's results and course comment (getReport, Skore's
+// getReportsResults), of an own gradebook, of the behaviour gradebook and of
+// gradebooks shared with the account, and a course that is not on the report
+// (Skore's 404); and checks that saveReportComment refuses before its save
+// (a comment other than the one passed as replacing, a text too long, an
+// earlier school year), so that its saveType never goes out: a comment goes
+// on a real report, and its live write waits for the developer's go-ahead.
+// It prints counts only: no comment text and no result.
+//
 // For #192 it reads a gradebook without evaluation periods (the developer's
 // behaviour gradebook, 35158, which has only a report period; skipped when
 // the account has no such gradebook), and, last, a gradebook in a session
@@ -51,10 +61,10 @@
 // It only reads, and changes nothing in Skore, which drives the school's
 // grading and has no test instance: getNavigation, init,
 // getGradebookContext, getEvaluations, getNewEvalDialogBox,
-// getPosComponents and accessableList of Skore's gradebook RPC service, and
-// the GET of a
-// pupil's feedback of its REST API; never saveEvaluation or saveGrade, nor
-// a POST of a feedback (#152) to that API. The service refuses any other
+// getPosComponents, accessableList and getReportsResults of Skore's
+// gradebook RPC service, and the GET of a pupil's feedback of its REST API;
+// never saveEvaluation, saveGrade or saveType (#195), nor a POST of a
+// feedback (#152) to that API. The service refuses any other
 // method of that service itself (SkoreGradebookService.rpcMethods), and the
 // wire guard (support/live_wire_guard.dart) refuses every Skore POST but
 // those reads (and the two reads of the admin side), its REST API included.
@@ -92,6 +102,15 @@ const _earlierGradebookId = 28998;
 /// The developer's behaviour gradebook of 2026-2027 (#192): no evaluation
 /// periods, only a report period. Read only.
 const _behaviourGradebookId = 35158;
+
+/// The developer's gradebook of 5WW1, Digitale vaardigheden (the live test
+/// spot of #70), whose course is not on the report of 2026-2027: Skore
+/// answers its report with HTTP 404 (seen live, #195). Read only.
+const _notOnReportGradebookId = 34826;
+
+/// The closing time in the info of an open report, in Belgian time: "Open
+/// tot 2026-10-30 23:00" (#195).
+final _reportInfoCloses = RegExp(r'Open tot\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})');
 
 /// The opening and closing time in the info of an open period, in Belgian
 /// time: "Open van 2026-09-18 15:30<br/> tot en met 2026-12-18 20:00"
@@ -1098,6 +1117,342 @@ void main() {
           );
           expect(sent.requests, isEmpty, reason: 'nothing sent');
           expect(run.guard.violations, isEmpty);
+        });
+      });
+
+      // The report periods of a gradebook and their course comments (#195),
+      // read as Skore's web client opens a report. saveReportComment is tried
+      // only where one of its checks refuses it, before its save: it never
+      // sends saveType (the wire guard refuses it as well, and would list it
+      // as a violation). A comment goes on a real report: its live write is
+      // the developer's, on their go-ahead. Counts only: no comment text, no
+      // result.
+      group('report periods and course comments (#195):', () {
+        /// Checks the report periods of [sheet], read from [readFrom] on,
+        /// against the rest of Skore's answer, never against a date.
+        void expectReportPeriods(SkoreGradebookSheet sheet, DateTime readFrom) {
+          final ids = sheet.reports.map((r) => r.id).toList();
+          expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+          for (final report in sheet.reports) {
+            final where = 'report ${report.name} (${report.id})';
+            expect(report.id, greaterThan(0));
+            expect(report.name, isNotEmpty);
+            expect(report.fullName, isNotEmpty);
+            final closesAt = report.closesAt;
+            if (closesAt == null) continue;
+            expect(closesAt.isUtc, isTrue, reason: where);
+            if (report.isOpen) {
+              expect(closesAt.isAfter(readFrom), isTrue, reason: where);
+            }
+            final closes = _reportInfoCloses.firstMatch(report.info)?[1];
+            if (closes != null) {
+              expect(_belgianMinute(closesAt), closes, reason: '$where: info');
+            }
+          }
+        }
+
+        /// Checks [report], [book]'s report as getReport reads it, against
+        /// [sheet], and prints it in counts.
+        void expectReport(
+          SkoreGradebook book,
+          SkoreGradebookSheet sheet,
+          SkoreReport report,
+        ) {
+          final comments = [
+            for (final p in report.pupils)
+              if (p.comment != null) p.comment!,
+          ];
+          print(
+            'gradebook ${book.gradebookId} (course ${book.courseId}'
+            '${book.isShared ? ', shared' : ''}), report ${report.reportId}: '
+            '${report.components.length} components, '
+            '${report.pupils.length} pupils, ${comments.length} comments '
+            '(${comments.where((c) => !c.isEmpty).length} written, '
+            '${comments.where((c) => c.isEditable).length} editable), '
+            'max ${report.commentMaxLength} characters',
+          );
+          expect(report.gradebookId, book.gradebookId);
+          expect(report.courseId, book.courseId);
+          expect(report.courseName, isNotEmpty);
+          expect(report.hasComments, isTrue);
+          expect(report.commentMaxLength, greaterThan(0));
+          for (final component in report.components) {
+            expect(component.column, startsWith('${book.courseId}_'));
+            expect(component.name, isNotEmpty);
+          }
+          final pupilIds = sheet.pupils.map((p) => p.id).toSet();
+          final ids = report.pupils.map((p) => p.pupilId).toList();
+          expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+          for (final pupil in report.pupils) {
+            expect(pupilIds, contains(pupil.pupilId), reason: 'of the class');
+            expect(pupil.classId, book.classId);
+            expect(
+              report.components.map((c) => c.column),
+              containsAll(pupil.results.map((r) => r.column)),
+            );
+            final comment = pupil.comment;
+            expect(comment, isNotNull, reason: 'a comment for each pupil');
+            expect(comment!.reportId, report.reportId);
+            expect(comment.cellParams, [
+              comment.isEditable ? '1' : '0',
+              '${report.reportId}',
+            ]);
+            final max = report.commentMaxLength;
+            if (max != null) {
+              expect(comment.text.length, lessThanOrEqualTo(max));
+            }
+          }
+        }
+
+        test('getGradebook lists the report periods of a gradebook, and '
+            'getReport reads each', () async {
+          final book =
+              year.gradebooks
+                  .where((g) => g.gradebookId == _testGradebookId)
+                  .firstOrNull ??
+              year.gradebooks.first;
+          final answers = _RpcAnswers();
+          run.client.dio.interceptors.insert(0, answers);
+          addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+          final readFrom = DateTime.now();
+          final sheet = await gradebooks.getGradebook(book);
+          print(
+            'gradebook ${book.gradebookId}: reports '
+            '${[for (final r in sheet.reports) '${r.name} ${r.id} ${r.isOpen ? 'open' : 'closed'} until ${r.closesAt?.toIso8601String()} type ${r.typeCode} rating ${r.rating}']}',
+          );
+          expectReportPeriods(sheet, readFrom);
+          if (book.gradebookId == _testGradebookId) {
+            expect(sheet.reports, isNotEmpty);
+          }
+          for (final period in sheet.reports) {
+            final report = await gradebooks.getReport(book, period.id);
+            expectReport(book, sheet, report);
+            if (book.gradebookId == _testGradebookId) {
+              expect(report.components, isNotEmpty);
+            }
+          }
+          expect(
+            answers.answers.map((a) => a.$1),
+            everyElement(
+              isIn(['init', 'getGradebookContext', 'getReportsResults']),
+            ),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('the behaviour gradebook $_behaviourGradebookId: a report with '
+            'the comments only', () async {
+          final book = year.gradebooks
+              .where((g) => g.gradebookId == _behaviourGradebookId)
+              .firstOrNull;
+          if (book == null) {
+            markTestSkipped(
+              'no gradebook $_behaviourGradebookId in this account',
+            );
+            return;
+          }
+          final readFrom = DateTime.now();
+          final sheet = await gradebooks.getGradebook(book);
+          expectReportPeriods(sheet, readFrom);
+          expect(sheet.periods, isEmpty);
+          expect(sheet.reports, isNotEmpty, reason: 'only a report period');
+          for (final period in sheet.reports) {
+            final report = await gradebooks.getReport(book, period.id);
+            expectReport(book, sheet, report);
+            expect(report.components, isEmpty, reason: 'no components');
+          }
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('the gradebooks shared with the user: their reports, read in '
+            'their scope', () async {
+          final shared = await gradebooks.getSharedGradebooks();
+          if (shared.isEmpty) {
+            markTestSkipped('no gradebook is shared with this account');
+            return;
+          }
+          var read = 0;
+          var notOnReport = 0;
+          for (final book in shared) {
+            final sheet = await gradebooks.getGradebook(book);
+            for (final period in sheet.reports) {
+              try {
+                final report = await gradebooks.getReport(book, period.id);
+                expectReport(book, sheet, report);
+                read++;
+              } on SmartschoolSkoreError catch (e) {
+                // A course the report model has no place for (seen live).
+                expect(e.message, contains('Course not found in source!'));
+                notOnReport++;
+              }
+            }
+          }
+          print(
+            '${shared.length} shared gradebooks: $read reports read, '
+            '$notOnReport of a course not on the report',
+          );
+          expect(read + notOnReport, greaterThan(0));
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('a course that is not on the report: Skore\'s 404, a '
+            'SmartschoolSkoreError', () async {
+          final book = year.gradebooks
+              .where((g) => g.gradebookId == _notOnReportGradebookId)
+              .firstOrNull;
+          final report = book == null
+              ? null
+              : (await gradebooks.getGradebook(book)).reports.firstOrNull;
+          if (book == null || report == null) {
+            markTestSkipped(
+              'no gradebook $_notOnReportGradebookId with a report in this '
+              'account',
+            );
+            return;
+          }
+
+          await expectLater(
+            gradebooks.getReport(book, report.id),
+            throwsA(
+              isA<SmartschoolSkoreError>().having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('HTTP 404'),
+                  contains('"Course not found in source!"'),
+                ),
+              ),
+            ),
+          );
+          expect(run.guard.violations, isEmpty);
+        });
+
+        group('saveReportComment refuses before its save:', () {
+          Matcher refused(Object reason) =>
+              isA<SmartschoolSkoreChangeRefusedError>().having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  startsWith('saveReportComment: '),
+                  contains(reason),
+                  endsWith('Nothing was saved.'),
+                ),
+              );
+
+          test('another comment than the one passed as replacing, a text too '
+              'long, a blank text; or, once closed, the report or the '
+              'comment', () async {
+            final book = year.gradebooks
+                .where((g) => g.gradebookId == _testGradebookId)
+                .firstOrNull;
+            final sheet = book == null
+                ? null
+                : await gradebooks.getGradebook(book);
+            final period = sheet?.reports.firstOrNull;
+            if (book == null || period == null) {
+              markTestSkipped(
+                'no gradebook $_testGradebookId with a report in this account',
+              );
+              return;
+            }
+            final report = await gradebooks.getReport(book, period.id);
+            final pupil = report.pupils.firstOrNull;
+            final comment = pupil?.comment;
+            if (pupil == null || comment == null) {
+              markTestSkipped('no pupil with a comment on report ${period.id}');
+              return;
+            }
+            final answers = _RpcAnswers();
+            run.client.dio.interceptors.insert(0, answers);
+            addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+            // What refuses first: a closed report (once it closes), a comment
+            // closed for the pupil, then the check of the test.
+            Object reason(Object check) => !period.isOpen
+                ? 'is closed'
+                : !comment.isEditable
+                ? 'it is closed for the pupil'
+                : check;
+            print(
+              'report ${period.id} ${period.isOpen ? 'open' : 'closed'}, the '
+              "first pupil's comment ${comment.isEditable ? 'editable' : 'closed'}, "
+              '${comment.isEmpty ? 'empty' : 'written'}',
+            );
+            // Never the comment Skore holds: the marker of the live suite.
+            const marker = 'dartschool test: not the comment Skore holds';
+            await expectLater(
+              gradebooks.saveReportComment(
+                book,
+                period.id,
+                pupil.pupilId,
+                'dartschool test (mag weg)',
+                replacing: marker,
+              ),
+              throwsA(
+                refused(
+                  reason(
+                    comment.isEmpty
+                        ? 'has no course comment on'
+                        : 'has another course comment on',
+                  ),
+                ),
+              ),
+            );
+            final max = report.commentMaxLength ?? 1600;
+            await expectLater(
+              gradebooks.saveReportComment(
+                book,
+                period.id,
+                pupil.pupilId,
+                'x' * (max + 1),
+                replacing: comment.text,
+              ),
+              throwsA(refused(reason('characters, more than the $max'))),
+            );
+            await expectLater(
+              gradebooks.saveReportComment(book, period.id, pupil.pupilId, ' '),
+              throwsA(refused('the text is blank')),
+            );
+            expect(
+              answers.answers.map((a) => a.$1),
+              isNot(contains('saveType')),
+              reason: 'the save never went out',
+            );
+            expect(run.guard.violations, isEmpty);
+          });
+
+          test('a gradebook of an earlier school year', () async {
+            final earlier = year.workyears
+                .where((y) => y.id != year.workyear.id)
+                .firstOrNull;
+            final older = earlier == null
+                ? const <SkoreGradebook>[]
+                : await gradebooks.getGradebooks(workyearId: earlier.id);
+            final book =
+                older
+                    .where((g) => g.gradebookId == _earlierGradebookId)
+                    .firstOrNull ??
+                older.firstOrNull;
+            if (book == null) {
+              markTestSkipped('no gradebooks of an earlier school year');
+              return;
+            }
+            final sheet = await gradebooks.getGradebook(book);
+            final reportId = sheet.reports.firstOrNull?.id ?? 1;
+            final pupilId = sheet.pupils.firstOrNull?.id ?? 1;
+
+            await expectLater(
+              gradebooks.saveReportComment(
+                book,
+                reportId,
+                pupilId,
+                'dartschool test (mag weg)',
+              ),
+              throwsA(refused('writes in the current school year only')),
+            );
+            expect(run.guard.violations, isEmpty);
+          });
         });
       });
 

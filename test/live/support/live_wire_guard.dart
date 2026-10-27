@@ -77,11 +77,12 @@
 //   `owners.php` and `getCourses` of `rapportbeheer/rpc/data.php`
 //   (SkoreService.getTeachers, getGradebookShares and checkAccess, #91),
 //   and `getNavigation`, `init`, `getGradebookContext`, `getEvaluations`,
-//   `getNewEvalDialogBox`, `getPosComponents` and `accessableList` of
-//   `gradebook/rpc.php` (SkoreGradebookService, the teacher's own
-//   gradebooks, #148, #149, those shared with them, #191, and the reads of
-//   createEvaluation, #150, and of saveGrade and saveGrades, #151, whose
-//   saves `saveEvaluation` and `saveGrade` never go out); and
+//   `getNewEvalDialogBox`, `getPosComponents`, `accessableList` and
+//   `getReportsResults` of `gradebook/rpc.php` (SkoreGradebookService, the
+//   teacher's own gradebooks, #148, #149, those shared with them, #191, a
+//   report period, #195, and the reads of createEvaluation, #150, of
+//   saveGrade and saveGrades, #151, and of saveReportComment, #195, whose
+//   saves `saveEvaluation`, `saveGrade` and `saveType` never go out); and
 //   any POST to Skore's REST API (`/skore/`,
 //   whose GET of a pupil's feedback SkoreGradebookService.getFeedback sends,
 //   #149, and whose POSTs write feedback, as saveFeedback does, #152): the
@@ -608,10 +609,11 @@ class LiveWireGuard extends Interceptor {
   }
 
   /// The Skore RPC POSTs that only read, by path: the methods of each
-  /// service the live suite calls (#91, #148, #149, #150, #151, #191). Skore's
-  /// REST API (`/skore/`) has none: its reads are GETs. Not `saveEvaluation`
-  /// nor `saveGrade`: the live suite tries createEvaluation and saveGrade
-  /// only where their checks refuse them.
+  /// service the live suite calls (#91, #148, #149, #150, #151, #191, #195).
+  /// Skore's REST API (`/skore/`) has none: its reads are GETs. Not
+  /// `saveEvaluation`, `saveGrade` nor `saveType`: the live suite tries
+  /// createEvaluation, saveGrade and saveReportComment only where their
+  /// checks refuse them.
   static const _skoreReads = {
     '/modules/Skore/backend/models/owners.php': {'getTeachers'},
     '/modules/Skore/modules/rapportbeheer/rpc/data.php': {'getCourses'},
@@ -623,6 +625,7 @@ class LiveWireGuard extends Interceptor {
       'getNewEvalDialogBox',
       'getPosComponents',
       'accessableList', // #191: the gradebooks shared with the user
+      'getReportsResults', // #195: a report period of a gradebook
     },
   };
 
@@ -637,9 +640,9 @@ class LiveWireGuard extends Interceptor {
         'but the reads getTeachers (owners.php), getCourses '
         '(rapportbeheer/rpc/data.php) (#91), and getNavigation, init, '
         'getGradebookContext, getEvaluations, getNewEvalDialogBox, '
-        'getPosComponents and accessableList (gradebook/rpc.php, #148-#151, '
-        '#191); no saveEvaluation '
-        'or saveGrade, and none to its REST API (/skore/)';
+        'getPosComponents, accessableList and getReportsResults '
+        '(gradebook/rpc.php, #148-#151, #191, #195); no saveEvaluation, '
+        'saveGrade or saveType, and none to its REST API (/skore/)';
   }
 
   /// The LVS POSTs that only read and that the live suite sends, by path,

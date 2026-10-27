@@ -1,7 +1,7 @@
 // Tests for issue #195: the report periods of a gradebook ("Rapporten |
 // Rapport 1"), a report with each pupil's results so far and course comment
 // (`SkoreGradebookService.getReport`), and the save of a course comment
-// (`saveReportComment`).
+// (`saveReportComment`); and for #203, its clear (`clearReportComment`).
 //
 // What was seen live (read-only, 2026-10-27), and what the web client's code
 // sends:
@@ -30,7 +30,12 @@
 //     params, pathIds)`: the comment's column and the pupil's row, the text
 //     with its line breaks as `\n` (its cells show them as U+205F), the
 //     cell's `p` as strings, and the class's `pathIds`; it reads
-//     `{savedState, stream}`. From its code: **not tried live**.
+//     `{savedState, stream}`. Checked live afterwards (2026-10-27, #201, on
+//     the developer's go-ahead, in an own gradebook): Skore answered it with
+//     `{savedState: 1, stream}`, and getReportsResults showed the text; the
+//     same call with an empty text `""` was answered the same, and
+//     getReportsResults then showed the comment empty, and still editable
+//     (`clearReportComment`, #203).
 //
 // Teachers, pupils, names and texts are fakes; class, group, model, course,
 // gradebook and report IDs are Skore's own, as in the other gradebook tests
@@ -628,15 +633,21 @@ const _notInSource = (
   body: '{"message":"Course not found in source!"}',
 );
 
-/// A [SmartschoolSkoreChangeRefusedError] of saveReportComment whose message
+/// A [SmartschoolSkoreChangeRefusedError] of [operation] whose message
 /// holds [reason].
-Matcher _refused(Object reason) => isA<SmartschoolSkoreChangeRefusedError>()
-    .having(
-      (e) => e.message,
-      'message',
-      allOf(startsWith('saveReportComment: '), contains(reason)),
-    )
-    .having((e) => e.message, 'message', endsWith('Nothing was saved.'));
+Matcher _refused(Object reason, {String operation = 'saveReportComment'}) =>
+    isA<SmartschoolSkoreChangeRefusedError>()
+        .having(
+          (e) => e.message,
+          'message',
+          allOf(startsWith('$operation: '), contains(reason)),
+        )
+        .having((e) => e.message, 'message', endsWith('Nothing was saved.'));
+
+/// A [SmartschoolSkoreChangeRefusedError] of clearReportComment whose
+/// message holds [reason].
+Matcher _clearRefused(Object reason) =>
+    _refused(reason, operation: 'clearReportComment');
 
 /// A [SmartschoolSkoreReportCommentSaveUnconfirmedError] about An's comment
 /// on R1D of 6EWI's Informatica.
@@ -1460,6 +1471,346 @@ void main() {
         expect(server.comments[2264]![_an], 'Zeer goed gewerkt.');
       },
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // clearReportComment (#203)
+  // ---------------------------------------------------------------------------
+
+  group('clearReportComment', () {
+    test('clears the comment passed as replacing: the saveType of '
+        'saveReportComment with an empty text, then the report read '
+        'again', () async {
+      final server = _Skore(
+        comments: {_an: 'Goed gewerkt.\nZo verder.', _bart: 'Beleefd.'},
+      );
+      final gradebooks = await serve(server);
+
+      final comment = await gradebooks.clearReportComment(
+        _ewi,
+        _r1,
+        _an,
+        replacing: 'Goed gewerkt.  Zo verder. ',
+      );
+
+      expect(server.methods, [
+        'getNavigation', // the own gradebooks of the current school year
+        'init', // the report: one of the gradebook's, open
+        'getReportsResults', // the pupil's comment, now
+        'saveType', // the clear
+        'getReportsResults', // the check
+      ]);
+      final save = server.calls[3];
+      expect(save.params, [
+        'info',
+        '2264_info',
+        'pupil_${_an}_2440',
+        '', // the empty text, as seen live (#201)
+        ['1', '$_r1'],
+        _pathIds,
+      ]);
+      expect(save.session['teacher'], _me);
+      expect(save.session['restriction'], 0);
+      expect(save.session['wy'], '24');
+
+      expect(comment.isEmpty, isTrue);
+      expect(comment.pupilId, _an);
+      expect(comment.isEditable, isTrue, reason: 'still editable, seen live');
+      expect(server.comments[2264]![_an], '');
+      // Nothing else changed.
+      expect(server.comments[2264]![_bart], 'Beleefd.');
+    });
+
+    test('in a gradebook shared with the user to write: in the name of its '
+        'teacher, restricted to it (#191)', () async {
+      final server = _Skore(comments: {_an: 'Vlot.'});
+      final gradebooks = await serve(server);
+
+      final comment = await gradebooks.clearReportComment(
+        _shared,
+        _r1,
+        _an,
+        replacing: 'Vlot.',
+      );
+
+      expect(server.methods, [
+        'getNavigation',
+        'accessableList', // still shared with the user, to write
+        'init',
+        'getReportsResults',
+        'saveType',
+        'getReportsResults',
+      ]);
+      final save = server.calls[4];
+      expect(save.session['teacher'], _colleague);
+      expect(save.session['restriction'], 34980);
+      expect(save.params.take(4), [
+        'info',
+        '1588_info',
+        'pupil_${_an}_2440',
+        '',
+      ]);
+      expect(comment.isEmpty, isTrue);
+      expect(server.comments[1588]![_an], '');
+    });
+
+    test('a comment that is empty already: returned as Skore shows it, and '
+        'nothing is sent, whatever replacing says', () async {
+      final server = _Skore(comments: {_bart: 'Beleefd.'});
+      final gradebooks = await serve(server);
+
+      for (final replacing in ['', 'Goed gewerkt.']) {
+        server.calls.clear();
+        final comment = await gradebooks.clearReportComment(
+          _ewi,
+          _r1,
+          _an,
+          replacing: replacing,
+        );
+
+        expect(comment.isEmpty, isTrue);
+        expect(comment.pupilId, _an);
+        expect(server.methods, [
+          'getNavigation',
+          'init',
+          'getReportsResults', // the pupil's comment, now: empty
+        ], reason: 'no saveType, and no read after it');
+      }
+      expect(server.comments[2264], {_bart: 'Beleefd.'});
+    });
+  });
+
+  group('clearReportComment refuses, clearing nothing,', () {
+    test('a pupil or report ID that is not positive, or a gradebook shared '
+        'to read only, before anything is sent', () async {
+      final server = _Skore(comments: {_an: 'Goed.'});
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, _r1, 0, replacing: 'Goed.'),
+        throwsA(_clearRefused('0 is not a pupil ID')),
+      );
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, -1, _an, replacing: 'Goed.'),
+        throwsA(_clearRefused('-1 is not a report ID')),
+      );
+      await expectLater(
+        gradebooks.clearReportComment(
+          _sharedRead,
+          _r1,
+          _an,
+          replacing: 'Goed.',
+        ),
+        throwsA(
+          isA<SmartschoolSkoreGradebookReadOnlyError>().having(
+            (e) => e.message,
+            'message',
+            startsWith('clearReportComment: '),
+          ),
+        ),
+      );
+      expect(server.calls, isEmpty);
+    });
+
+    test('a gradebook of an earlier school year', () async {
+      final server = _Skore(comments: {_an: 'Goed.'});
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(_older, _r1, _an, replacing: 'Goed.'),
+        throwsA(_clearRefused('not of the current one, 2026-2027 (24)')),
+      );
+      expect(server.methods, ['getNavigation']);
+    });
+
+    test('a closed report, also for an empty comment', () async {
+      final server = _Skore(comments: {_an: 'Goed.'}, r1Open: 0);
+      final gradebooks = await serve(server);
+
+      for (final (pupil, replacing) in [(_an, 'Goed.'), (_bart, '')]) {
+        await expectLater(
+          gradebooks.clearReportComment(_ewi, _r1, pupil, replacing: replacing),
+          throwsA(
+            _clearRefused('report R1D (2762) of gradebook 32508 is closed'),
+          ),
+        );
+      }
+      expect(server.methods, isNot(contains('getReportsResults')));
+      expect(server.methods, isNot(contains('saveType')));
+      expect(server.comments[2264]![_an], 'Goed.');
+    });
+
+    test('a comment Skore does not let the user change, also an empty '
+        'one', () async {
+      final server = _Skore(comments: {_cas: 'Afwezig.'});
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, _r1, _cas, replacing: 'Afwezig.'),
+        throwsA(
+          _clearRefused(
+            'Skore does not let you change the course comment of pupil '
+            '$_cas on report R1D (2762) of gradebook 32508 (it is closed for '
+            'the pupil)',
+          ),
+        ),
+      );
+      server.comments[2264]!.remove(_cas);
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, _r1, _cas, replacing: ''),
+        throwsA(_clearRefused('it is closed for the pupil')),
+      );
+      expect(server.methods, isNot(contains('saveType')));
+    });
+
+    test('a pupil without a comment in the class', () async {
+      final server = _Skore();
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, _r1, _otherClass, replacing: ''),
+        throwsA(
+          _clearRefused(
+            'pupil $_otherClass has no course comment on report R1D (2762) of '
+            'gradebook 32508 in class 2440',
+          ),
+        ),
+      );
+      expect(server.methods, isNot(contains('saveType')));
+    });
+
+    test('another comment than replacing: one the caller did not pass, or '
+        'another one; its messages hold no comment text', () async {
+      final server = _Skore(comments: {_an: 'Goed gewerkt.'});
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(_ewi, _r1, _an, replacing: ' '),
+        throwsA(
+          _clearRefused(
+            'pupil $_an has a course comment on report R1D (2762) of '
+            'gradebook 32508 already (13 characters): pass it as replacing '
+            'to clear it',
+          ),
+        ),
+      );
+      await expectLater(
+        gradebooks.clearReportComment(
+          _ewi,
+          _r1,
+          _an,
+          replacing: 'Goed gedaan.',
+        ),
+        throwsA(
+          allOf(
+            _clearRefused(
+              'pupil $_an has another course comment on report R1D (2762) of '
+              'gradebook 32508 (13 characters) than the one passed as '
+              'replacing (12 characters)',
+            ),
+            isA<SmartschoolSkoreChangeRefusedError>().having(
+              (e) => e.message,
+              'message',
+              allOf(isNot(contains('Goed')), isNot(contains('gedaan'))),
+            ),
+          ),
+        ),
+      );
+      expect(server.methods, isNot(contains('saveType')));
+      expect(server.comments[2264], {_an: 'Goed gewerkt.'});
+    });
+  });
+
+  group("clearReportComment: Skore's answer to the clear", () {
+    Matcher unconfirmedClear(Object? message, {Object? cause = isNull}) =>
+        allOf(
+          _unconfirmed(text: '', cause: cause, message: message),
+          isA<SmartschoolSkoreReportCommentSaveUnconfirmedError>().having(
+            (e) => e.message,
+            'message',
+            allOf(
+              startsWith(
+                'clearReportComment: the clear of the course comment '
+                'of pupil $_an on report R1D (2762) of gradebook 32508',
+              ),
+              contains(
+                'It may or may not have been cleared: clearing it again is '
+                'harmless',
+              ),
+              isNot(contains('Goed')),
+            ),
+          ),
+        );
+
+    test('reading again shows the comment still there: unconfirmed, with '
+        'the text sent, ""', () async {
+      final server = _Skore(comments: {_an: 'Goed gewerkt.'}, forgetSave: true);
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(
+          _ewi,
+          _r1,
+          _an,
+          replacing: 'Goed gewerkt.',
+        ),
+        throwsA(
+          unconfirmedClear(
+            contains(
+              'reading the report again shows a comment (13 characters), not '
+              'an empty one.',
+            ),
+          ),
+        ),
+      );
+      expect(server.methods.last, 'getReportsResults');
+    });
+
+    test('another savedState: unconfirmed', () async {
+      final server = _Skore(
+        comments: {_an: 'Goed gewerkt.'},
+        saveAnswer: _ok(_answer('saveType', {'savedState': 0, 'stream': []})),
+      );
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(
+          _ewi,
+          _r1,
+          _an,
+          replacing: 'Goed gewerkt.',
+        ),
+        throwsA(
+          unconfirmedClear(
+            contains('answered {"savedState":0} instead of savedState 1'),
+          ),
+        ),
+      );
+      expect(server.methods.last, 'saveType', reason: 'no read after it');
+    });
+
+    test('a 500: unconfirmed, with the error as its cause', () async {
+      final server = _Skore(
+        comments: {_an: 'Goed gewerkt.'},
+        saveAnswer: (status: 500, body: ''),
+      );
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.clearReportComment(
+          _ewi,
+          _r1,
+          _an,
+          replacing: 'Goed gewerkt.',
+        ),
+        throwsA(
+          unconfirmedClear(
+            contains('no usable answer came in'),
+            cause: isA<SmartschoolSkoreError>(),
+          ),
+        ),
+      );
+    });
   });
 
   group('the text of a course comment', () {

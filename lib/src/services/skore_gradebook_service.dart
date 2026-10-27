@@ -23,8 +23,8 @@ export '../models/skore_gradebook_models.dart';
 /// And creates an evaluation in a period, never published
 /// ([createEvaluation], #150), saves the pupils' grades in it ([saveGrade],
 /// [saveGrades], #151), gives a pupil feedback on it ([saveFeedback], #152),
-/// and writes a pupil's course comment on a report ([saveReportComment],
-/// #195).
+/// and writes or clears a pupil's course comment on a report
+/// ([saveReportComment], #195; [clearReportComment], #203).
 ///
 /// This is what a teacher sees at `/SkoreGradebook` ("Puntenboek"), and it
 /// works for any teacher with their own login: it needs none of the admin
@@ -58,9 +58,10 @@ export '../models/skore_gradebook_models.dart';
 ///
 /// The only changes it makes in Skore are [createEvaluation], the grades
 /// of [saveGrade] and [saveGrades], the user's own feedback of
-/// [saveFeedback], and the course comment of [saveReportComment], which
-/// check the gradebook, the period or report, the evaluation and the values
-/// first, and read Skore again to check the save. **It never publishes**: a
+/// [saveFeedback], and the course comment of [saveReportComment] and
+/// [clearReportComment], which check the gradebook, the period or report,
+/// the evaluation and the values first, and read Skore again to check the
+/// save. **It never publishes**: a
 /// new evaluation goes out unpublished, and teachers publish it in
 /// Smartschool themselves; grades and feedback go into an evaluation that
 /// is published or scheduled only when the caller asks for it
@@ -123,8 +124,9 @@ export '../models/skore_gradebook_models.dart';
 ///   Its message may quote the answer, which can hold names: keep it in a
 ///   log. What Skore answers an account without a gradebook of its own (a
 ///   pupil, say) was not captured.
-///   From [createEvaluation], [saveGrade], [saveGrades], [saveFeedback] and
-///   [saveReportComment], it always means that nothing was saved; from
+///   From [createEvaluation], [saveGrade], [saveGrades], [saveFeedback],
+///   [saveReportComment] and [clearReportComment], it always means that
+///   nothing was saved; from
 ///   [saveFeedback] also when Skore refused the save with a `4xx` status.
 ///   An answer of Skore with another status than `200` and a JSON
 ///   `message` names it: `getReportsResults` for a course that is not on
@@ -132,8 +134,8 @@ export '../models/skore_gradebook_models.dart';
 ///   source!" (seen live, #195).
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
 ///   check of [createEvaluation], [saveGrade], [saveGrades],
-///   [saveFeedback] or [saveReportComment] refused the change before the
-///   save. Nothing was saved; its message says why. A
+///   [saveFeedback], [saveReportComment] or [clearReportComment] refused
+///   the change before the save. Nothing was saved; its message says why. A
 ///   [SmartschoolSkoreGradebookReadOnlyError] (a subtype) for a gradebook
 ///   shared with the user to read only (#191).
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
@@ -147,8 +149,9 @@ export '../models/skore_gradebook_models.dart';
 ///   [saveFeedback] sent the feedback, but could not confirm it. Read the
 ///   feedback again; calling [saveFeedback] again does not add a second.
 /// - [SmartschoolSkoreReportCommentSaveUnconfirmedError] (the same):
-///   [saveReportComment] sent the course comment, but could not confirm
-///   it. Saving it again is harmless.
+///   [saveReportComment] sent the course comment, or [clearReportComment]
+///   its clear, but could not confirm it. Saving or clearing it again is
+///   harmless.
 /// - [SmartschoolSkoreEvaluationPublicError] (neither): [createEvaluation]
 ///   created the evaluation, but Skore shows it as public. It was created;
 ///   check its publication in Smartschool.
@@ -169,8 +172,8 @@ export '../models/skore_gradebook_models.dart';
 ///   For the save of [createEvaluation], at once, without logging in again:
 ///   the save is never sent twice, and was not handled; so for a new
 ///   feedback of [saveFeedback]. For [saveGrade] and [saveGrades], only for
-///   the first save: nothing was saved. For [saveReportComment]: nothing
-///   was saved.
+///   the first save: nothing was saved. For [saveReportComment] and
+///   [clearReportComment]: nothing was saved.
 /// - Another [SmartschoolAuthenticationError]: logging in again failed.
 /// - [SmartschoolConnectionError]: Smartschool could not be reached.
 class SkoreGradebookService {
@@ -207,8 +210,9 @@ class SkoreGradebookService {
   /// `saveEvaluation`, which [createEvaluation] always sends with `public` 0
   /// and `publicdatetime` `""`, `saveGrade`, the grade of one pupil
   /// ([saveGrade], [saveGrades]), and `saveType`, which
-  /// [saveReportComment] sends with the type `info` only: the course
-  /// comment of one pupil on a report. The library never publishes an
+  /// [saveReportComment] and [clearReportComment] (with an empty text)
+  /// send with the type `info` only: the course comment of one pupil on a
+  /// report. The library never publishes an
   /// evaluation. Nor does it calculate a report (`calculateGrowReport`,
   /// `checkProcess`, `peek`), and it never calls the admin side's
   /// `rapportbeheer`, whose `unlockReport` opens a report again.
@@ -1737,7 +1741,7 @@ class SkoreGradebookService {
   /// and line breaks as `\n` (Skore's U+205F, with which its gradebook
   /// shows line breaks, too). It must fit the report's
   /// [SkoreReport.commentMaxLength] (1600 characters, seen live). To clear a
-  /// comment, use Smartschool.
+  /// comment, use [clearReportComment] (#203).
   ///
   /// Before the save, it reads Skore again and refuses with a
   /// [SmartschoolSkoreChangeRefusedError], saving nothing:
@@ -1769,15 +1773,17 @@ class SkoreGradebookService {
   /// parameters ([SkoreReportComment.cellParams]) and the class's
   /// `pathIds`, as its gradebook sends a course comment (from its code:
   /// when the comment editor applies a text to the comment's cell), in the
-  /// gradebook's scope (#191). **Not tried live**: it waits for the developer's
-  /// go-ahead. It sends the whole text, so it is sent again after a new
-  /// login when Smartschool refuses the session for it; when it refuses it
-  /// even then, this throws that [SmartschoolSessionExpiredError]: nothing
-  /// was saved. Skore must answer it with `savedState` 1, and reading the
-  /// report again must show the text sent for the pupil. Otherwise this
-  /// throws a [SmartschoolSkoreReportCommentSaveUnconfirmedError] (also for
-  /// an answer with another HTTP status, such as a `500`, or that is not
-  /// JSON): saving it again is harmless.
+  /// gradebook's scope (#191). Checked live (2026-10-27, #201), in an own
+  /// gradebook: Skore answered it with `savedState` 1, and the report read
+  /// again showed the text. It sends the whole text, so it is sent again
+  /// after a new login when Smartschool refuses the session for it; when it
+  /// refuses it even then, this throws that [SmartschoolSessionExpiredError]:
+  /// nothing was saved. Skore must answer it with `savedState` 1, and
+  /// reading the report again must show the text sent for the pupil.
+  /// Otherwise this throws a
+  /// [SmartschoolSkoreReportCommentSaveUnconfirmedError] (also for an answer
+  /// with another HTTP status, such as a `500`, or that is not JSON): saving
+  /// it again is harmless.
   ///
   /// It never closes, unlocks, calculates or publishes the report. The
   /// checks and the save are separate requests: do not change the same
@@ -1794,7 +1800,88 @@ class SkoreGradebookService {
     final sent = reportCommentText(text);
     if (pupilId <= 0) _refuse(operation, '$pupilId is not a pupil ID');
     if (sent.isEmpty) _refuse(operation, 'the text is blank');
+    return _writeReportComment(
+      operation,
+      gradebook,
+      reportId,
+      pupilId,
+      sent,
+      replacing: replacing ?? '',
+    );
+  }
 
+  /// Clears the course comment ("vakcommentaar") of pupil [pupilId] on
+  /// report [reportId] of [gradebook], and returns it as Skore shows it
+  /// right after the clear: empty (#203).
+  ///
+  /// The teachers of a course share the comment, and Skore does not say who
+  /// wrote it (see [saveReportComment]). So it clears only the comment the
+  /// caller expects: [replacing] is the comment Skore must hold right
+  /// before the clear (its [SkoreReportComment.text], from [getReport]).
+  /// When Skore holds another one (a comment written in the meantime, by a
+  /// colleague say), nothing is cleared. Comments are compared with their
+  /// white space collapsed. A comment that is empty already is returned as
+  /// Skore shows it, and nothing is sent, whatever [replacing] says.
+  ///
+  /// It makes the checks of [saveReportComment], and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], clearing nothing:
+  /// - a pupil or report ID that is not positive, and a gradebook shared
+  ///   with the user to read only ([SmartschoolSkoreGradebookReadOnlyError]),
+  ///   before anything is sent;
+  /// - a gradebook that is not one of the user's own gradebooks of Skore's
+  ///   current school year, nor one shared with them to write;
+  /// - a report that is not one of the gradebook's, or that is closed;
+  /// - a report without course comments for the course, or a pupil without
+  ///   a comment on it in the gradebook's class;
+  /// - a comment Skore does not let the user change
+  ///   ([SkoreReportComment.isEditable]), also an empty one;
+  /// - another comment than [replacing].
+  ///
+  /// The clear is the save of [saveReportComment] with an empty text:
+  /// Skore's `saveType` with the type `info` and `""`, as its comment editor
+  /// sends a comment emptied. Checked live (2026-10-27, #201), in an own
+  /// gradebook: Skore answered it with `savedState` 1, and the report read
+  /// again showed the comment empty, and still editable. Skore must answer
+  /// it with `savedState` 1, and reading the report again must show the
+  /// comment empty. Otherwise this throws a
+  /// [SmartschoolSkoreReportCommentSaveUnconfirmedError] whose `text` is
+  /// `""`: clearing it again is harmless. A refused session is handled as
+  /// for [saveReportComment].
+  ///
+  /// It never closes, unlocks, calculates or publishes the report.
+  Future<SkoreReportComment> clearReportComment(
+    SkoreGradebook gradebook,
+    int reportId,
+    int pupilId, {
+    required String replacing,
+  }) async {
+    const operation = 'clearReportComment';
+    _refuseReadOnly(operation, gradebook);
+    if (pupilId <= 0) _refuse(operation, '$pupilId is not a pupil ID');
+    return _writeReportComment(
+      operation,
+      gradebook,
+      reportId,
+      pupilId,
+      '',
+      replacing: replacing,
+    );
+  }
+
+  /// The write of [saveReportComment] and [clearReportComment] (an empty
+  /// [sent]), after their checks of the arguments: the checks that read
+  /// Skore, the save, and the report read again. [sent] is the text as
+  /// [reportCommentText] made it; [replacing] the comment Skore must hold
+  /// (`""`: none).
+  Future<SkoreReportComment> _writeReportComment(
+    String operation,
+    SkoreGradebook gradebook,
+    int reportId,
+    int pupilId,
+    String sent, {
+    required String replacing,
+  }) async {
+    final clear = sent.isEmpty;
     final target = await _checkReportWritable(operation, gradebook, reportId);
     final book = target.gradebook;
     final report = target.report;
@@ -1822,6 +1909,8 @@ class SkoreGradebookService {
         'on $where (it is closed for the pupil)',
       );
     }
+    // Nothing to clear (#203): nothing is sent.
+    if (clear && comment.isEmpty) return comment;
     final max = before.commentMaxLength;
     if (max != null && sent.length > max) {
       _refuse(
@@ -1830,7 +1919,7 @@ class SkoreGradebookService {
         'allows',
       );
     }
-    final expected = replacing ?? '';
+    final expected = replacing; // "": none
     if (!sameReportComment(comment.text, expected)) {
       _refuse(
         operation,
@@ -1841,21 +1930,24 @@ class SkoreGradebookService {
             : expected.trim().isEmpty
             ? 'pupil $pupilId has a course comment on $where already '
                   '(${comment.text.length} characters): pass it as '
-                  'replacing to replace it'
+                  'replacing to ${clear ? 'clear' : 'replace'} it'
             : 'pupil $pupilId has another course comment on $where '
                   '(${comment.text.length} characters) than the one passed '
                   'as replacing (${expected.length} characters)',
       );
     }
 
-    final what =
-        '$operation: the course comment of pupil $pupilId on $where '
-        '(${sent.length} characters)';
+    final what = clear
+        ? '$operation: the clear of the course comment of pupil $pupilId on '
+              '$where'
+        : '$operation: the course comment of pupil $pupilId on $where '
+              '(${sent.length} characters)';
+    final (done, doing) = clear ? ('cleared', 'clearing') : ('saved', 'saving');
     SmartschoolSkoreReportCommentSaveUnconfirmedError unconfirmed(
       String message, {
       Object? cause,
     }) => SmartschoolSkoreReportCommentSaveUnconfirmedError(
-      '$message It may or may not have been saved: saving it again is '
+      '$message It may or may not have been $done: $doing it again is '
       'harmless (read the report again, getReport, and pass the comment it '
       'shows as replacing).',
       cause: cause,
@@ -1932,8 +2024,13 @@ class SkoreGradebookService {
     }
     if (!sameReportComment(saved.text, sent)) {
       throw unconfirmed(
-        '$what was confirmed, but reading the report again shows another '
-        'text (${saved.text.length} characters, not ${sent.length}).',
+        clear
+            ? '$what was confirmed, but reading the report again shows a '
+                  'comment (${saved.text.length} characters), not an empty '
+                  'one.'
+            : '$what was confirmed, but reading the report again shows '
+                  'another text (${saved.text.length} characters, not '
+                  '${sent.length}).',
       );
     }
     return saved;
@@ -2114,7 +2211,8 @@ class SkoreGradebookService {
   /// - the report is one of the gradebook's, and open (`init`'s
   ///   `reports`), as Skore's web client checks it (`isOpenReport`).
   ///
-  /// The checks before [saveReportComment] (#195). Returns what they read.
+  /// The checks before [saveReportComment] (#195) and [clearReportComment]
+  /// (#203). Returns what they read.
   Future<_ReportTarget> _checkReportWritable(
     String operation,
     SkoreGradebook gradebook,

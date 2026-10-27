@@ -34,6 +34,13 @@
 // grades and feedback, to be published on 2026-10-09 08:00), and skips those
 // checks when the account has no such gradebook.
 //
+// When a period closes is the school's to set, and it moves it (#198: DW1's
+// closing time moved after #148). So no test expects a closing time, or
+// that a period is open: each checks a period's closing time against the
+// rest of Skore's answer (its info, whether it is open, the school year),
+// and expects of a period, open or closed, what Skore does for that state
+// (the refusals of saveGrade and saveFeedback, the rights).
+//
 // It only reads, and changes nothing in Skore, which drives the school's
 // grading and has no test instance: getNavigation, init,
 // getGradebookContext, getEvaluations, getNewEvalDialogBox and
@@ -54,6 +61,7 @@ library;
 
 import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
+import 'package:flutter_smartschool/src/models/lvs_time.dart';
 import 'package:test/test.dart';
 
 import 'support/live_client.dart';
@@ -64,7 +72,8 @@ const _testGradebookId = 32508;
 
 /// 6EWI's period DW1, and its evaluation with grades and feedback (#149),
 /// which is published from 2026-10-09 08:00 (CEST). Read only: never
-/// written to.
+/// written to. The school sets when DW1 closes, and moves it (#198): the
+/// tests read that, and whether DW1 is open, from Skore.
 const _testPeriodId = 1704;
 const _testEvaluationId = 395742;
 
@@ -75,6 +84,23 @@ const _earlierGradebookId = 28998;
 /// The developer's behaviour gradebook of 2026-2027 (#192): no evaluation
 /// periods, only a report period. Read only.
 const _behaviourGradebookId = 35158;
+
+/// The opening and closing time in the info of an open period, in Belgian
+/// time: "Open van 2026-09-18 15:30<br/> tot en met 2026-12-18 20:00"
+/// (#198). A closed period's info says "Gesloten!" instead.
+final _infoOpens = RegExp(r'Open van\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})');
+final _infoCloses = RegExp(r'tot en met\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2})');
+
+/// A school year's name, "2026-2027".
+final _schoolYearName = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
+
+/// [instant] in Belgian time to the minute, as a period's info gives it:
+/// `2026-12-18 20:00`.
+String _belgianMinute(DateTime instant) {
+  final wall = brusselsWallTime(instant);
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${isoDay(wall)} ${two(wall.hour)}:${two(wall.minute)}';
+}
 
 /// Records Skore's answer to every call of its gradebook RPC service, as
 /// (method, status, `Location`), as it comes in: the first interceptor, so
@@ -141,9 +167,57 @@ void main() {
         }
       }
 
-      /// Checks [sheet], [book] as getGradebook reads it, and prints it
-      /// without names.
-      void expectSheet(SkoreGradebook book, SkoreGradebookSheet sheet) {
+      /// Checks the closing time of [period], of a gradebook of school year
+      /// [workyear] read from [readFrom] on, against the rest of Skore's
+      /// answer, never against a date: the school sets it and moves it
+      /// (#198). A period may have none.
+      void expectClosingTime(
+        SkoreGradebookPeriod period,
+        SkoreWorkyear workyear,
+        DateTime readFrom,
+      ) {
+        final closesAt = period.closesAt;
+        if (closesAt == null) return;
+        final where = 'period ${period.name} (${period.id})';
+        expect(closesAt.isUtc, isTrue, reason: where);
+        final years = _schoolYearName.firstMatch(workyear.name.trim());
+        if (years != null) {
+          expect(
+            brusselsWallTime(closesAt).year,
+            anyOf(int.parse(years[1]!), int.parse(years[2]!)),
+            reason: '$where closes in school year ${workyear.name}',
+          );
+        }
+        // Skore closes a period at its closing time.
+        if (period.isOpen) {
+          expect(
+            closesAt.isAfter(readFrom),
+            isTrue,
+            reason: '$where is open: it closes later',
+          );
+        }
+        final closes = _infoCloses.firstMatch(period.info)?[1];
+        if (closes != null) {
+          expect(_belgianMinute(closesAt), closes, reason: '$where: its info');
+          final opens = _infoOpens.firstMatch(period.info)?[1];
+          if (opens != null) {
+            expect(
+              opens.compareTo(closes),
+              isNegative,
+              reason: '$where opens before it closes',
+            );
+          }
+        }
+      }
+
+      /// Checks [sheet], [book] of school year [workyear] as getGradebook
+      /// reads it from [readFrom] on, and prints it without names.
+      void expectSheet(
+        SkoreGradebook book,
+        SkoreGradebookSheet sheet,
+        SkoreWorkyear workyear,
+        DateTime readFrom,
+      ) {
         print(
           'gradebook ${book.gradebookId} (class ${book.classId}, course '
           '${book.courseId}, school year ${book.workyearId}): periods '
@@ -158,6 +232,9 @@ void main() {
         expect(sheet.courseName, isNotEmpty);
         expect(sheet.periods, isNotEmpty);
         expect(sheet.periods, contains(sheet.activePeriod));
+        for (final period in sheet.periods) {
+          expectClosingTime(period, workyear, readFrom);
+        }
         expect(sheet.pupils, isNotEmpty);
         final pupilIds = sheet.pupils.map((p) => p.id).toList();
         expect(pupilIds.toSet(), hasLength(pupilIds.length));
@@ -205,15 +282,24 @@ void main() {
                 .firstOrNull ??
             year.gradebooks.first;
 
+        final readFrom = DateTime.now();
         final sheet = await gradebooks.getGradebook(book);
 
-        expectSheet(book, sheet);
+        expectSheet(book, sheet, year.workyear, readFrom);
         if (book.gradebookId == _testGradebookId) {
           expect(sheet.courseName, 'Informaticawetenschappen (2 uur)');
-          final dw1 = sheet.periods.where((p) => p.id == 1704).single;
+          final dw1 = sheet.periods.where((p) => p.id == _testPeriodId).single;
           expect(dw1.name, 'DW1');
-          expect(dw1.closesAt, DateTime.utc(2026, 12, 18, 19));
-          expect(sheet.writable, isTrue);
+          // Set, and checked by expectSheet against the info, which gives it
+          // while DW1 is open: the school moves it (#198).
+          expect(dw1.closesAt, isNotNull);
+          if (dw1.isOpen) expect(dw1.info, matches(_infoCloses));
+          // The own gradebook takes grades in an open period. In a closed
+          // one Skore may answer either: writable 1 was seen for a closed
+          // period of an earlier school year (#148).
+          if (sheet.activePeriod!.isOpen) {
+            expect(sheet.writable, isTrue, reason: 'an open period');
+          }
           expect(sheet.pupils.map((p) => p.number), everyElement(isNotNull));
         }
         expect(run.guard.violations, isEmpty);
@@ -281,8 +367,21 @@ void main() {
                 .where((g) => g.gradebookId == _earlierGradebookId)
                 .firstOrNull ??
             older.gradebooks.first;
+        final readFrom = DateTime.now();
         final sheet = await gradebooks.getGradebook(book);
-        expectSheet(book, sheet);
+        expectSheet(book, sheet, older.workyear, readFrom);
+
+        // The components of a closed period, as DW1 of 6EWI is once its
+        // closing time has passed (#198): read as those of an open one.
+        final closed = sheet.periods.where((p) => !p.isOpen).firstOrNull;
+        if (closed != null) {
+          final components = await gradebooks.getComponents(book, closed.id);
+          print(
+            'gradebook ${book.gradebookId}, closed period ${closed.name}: '
+            '${components.length} components',
+          );
+          expect(components.where((c) => c.isNone), hasLength(1));
+        }
 
         // Its evaluations (#149), of the first period that has any:
         // published long ago, as far as they are public.
@@ -324,6 +423,28 @@ void main() {
             ? _testPeriodId
             : sheet.activePeriod?.id;
         return (book, sheet, periodId);
+      }
+
+      /// What a write into [evaluation], a published or scheduled one of
+      /// [sheet], without allowPublished, is refused for: its period first,
+      /// when Skore gives that closed (as DW1 of 6EWI once its closing time,
+      /// which the school sets, has passed: #198) or read-only; else its
+      /// publication.
+      String publicRefusal(
+        SkoreGradebookSheet sheet,
+        SkoreEvaluation evaluation,
+      ) {
+        final period = sheet.periods
+            .where((p) => p.id == evaluation.periodId)
+            .single;
+        if (!period.isOpen) return 'is closed';
+        if (period.id == sheet.activePeriod?.id &&
+            (!sheet.writable || sheet.isCoordinator)) {
+          return 'read-only to you';
+        }
+        return evaluation.publication.state == SkorePublicationState.scheduled
+            ? 'is scheduled to be published'
+            : 'is published';
       }
 
       test('getEvaluations reads the evaluations of a period with their '
@@ -545,10 +666,14 @@ void main() {
         test('a date outside the school year, and a component Skore does not '
             'offer, in an open period of the own gradebook', () async {
           final (book, sheet, periodId) = await evaluationSpot();
-          final period = sheet.periods
-              .where((p) => p.id == periodId)
-              .firstOrNull;
-          if (period == null || !period.isOpen || !sheet.writable) {
+          // DW1 of 6EWI while it is open, else the period Skore opens the
+          // gradebook on, while that is open: the school sets when a period
+          // closes (#198).
+          final period = [
+            ...sheet.periods.where((p) => p.id == periodId),
+            ?sheet.activePeriod,
+          ].where((p) => p.isOpen).firstOrNull;
+          if (period == null || !sheet.writable) {
             markTestSkipped(
               'no open period in gradebook ${book.gradebookId} to try it in',
             );
@@ -600,7 +725,7 @@ void main() {
         test(
           'a published or scheduled evaluation, without allowPublished',
           () async {
-            final (book, _, periodId) = await evaluationSpot();
+            final (book, sheet, periodId) = await evaluationSpot();
             final evaluations = periodId == null
                 ? const <SkoreEvaluation>[]
                 : await gradebooks.getEvaluations(book, periodId);
@@ -624,13 +749,7 @@ void main() {
 
             await expectLater(
               gradebooks.saveGrade(book, public, pupil.pupilId, '1'),
-              throwsA(
-                refused(
-                  public.publication.state == SkorePublicationState.scheduled
-                      ? 'is scheduled to be published'
-                      : 'is published',
-                ),
-              ),
+              throwsA(refused(publicRefusal(sheet, public))),
             );
             expect(run.guard.violations, isEmpty);
           },
@@ -699,7 +818,7 @@ void main() {
 
         test('a published or scheduled evaluation, without allowPublished; a '
             'blank text, before anything is sent', () async {
-          final (book, _, periodId) = await evaluationSpot();
+          final (book, sheet, periodId) = await evaluationSpot();
           final evaluations = periodId == null
               ? const <SkoreEvaluation>[]
               : await gradebooks.getEvaluations(book, periodId);
@@ -721,13 +840,7 @@ void main() {
 
           await expectLater(
             gradebooks.saveFeedback(book, public, pupil.pupilId, 'Test'),
-            throwsA(
-              refused(
-                public.publication.state == SkorePublicationState.scheduled
-                    ? 'is scheduled to be published'
-                    : 'is published',
-              ),
-            ),
+            throwsA(refused(publicRefusal(sheet, public))),
           );
           await expectLater(
             gradebooks.saveFeedback(

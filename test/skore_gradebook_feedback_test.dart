@@ -681,8 +681,52 @@ const _where =
     'evaluation $_toets ("Toets 1") in period DW1 (1704) of gradebook 32508';
 
 /// A [SmartschoolSkoreChangeRefusedError] of saveFeedback whose message
-/// holds [reason].
-Matcher _refused(Object reason) => isA<SmartschoolSkoreChangeRefusedError>()
+/// holds [reason]: the type itself, none of its subtypes, such as the
+/// [SmartschoolSkoreEvaluationPublishedError] of [_refusedPublished] (#157).
+Matcher _refused(Object reason) => allOf(
+  _refusal(reason),
+  isA<Object>().having(
+    (e) => e.runtimeType,
+    'runtimeType',
+    SmartschoolSkoreChangeRefusedError,
+  ),
+);
+
+/// The [SmartschoolSkoreEvaluationPublishedError] of saveFeedback (#157)
+/// for evaluation [id], whose message holds [reason]: it carries the
+/// evaluation as Skore lists it before the save, public, in [state], with
+/// Skore's `publicdatetime` [rawPublicDateTime].
+Matcher _refusedPublished(
+  Object reason, {
+  required int id,
+  required SkorePublicationState state,
+  required String rawPublicDateTime,
+}) => allOf(
+  _refusal(reason),
+  isA<SmartschoolSkoreEvaluationPublishedError>()
+      .having((e) => e.evaluation.id, 'evaluation.id', id)
+      .having((e) => e.evaluation.gradebookId, 'evaluation.gradebookId', 32508)
+      .having(
+        (e) => e.evaluation.publication.isPublic,
+        'evaluation.publication.isPublic',
+        isTrue,
+      )
+      .having(
+        (e) => e.evaluation.publication.state,
+        'evaluation.publication.state',
+        state,
+      )
+      .having(
+        (e) => e.evaluation.publication.rawPublicDateTime,
+        'evaluation.publication.rawPublicDateTime',
+        rawPublicDateTime,
+      ),
+);
+
+/// A refusal of saveFeedback whose message holds [reason]: a
+/// [SmartschoolSkoreChangeRefusedError], and so a [SmartschoolSkoreError].
+Matcher _refusal(Object reason) => isA<SmartschoolSkoreChangeRefusedError>()
+    .having((e) => e, 'error', isA<SmartschoolSkoreError>())
     .having(
       (e) => e.message,
       'message',
@@ -1001,29 +1045,44 @@ void main() {
     });
 
     test('a published or a scheduled evaluation, without allowPublished, '
-        'before the feedback is read', () async {
-      for (final (id, state) in [
-        (_published, 'is published'),
-        (_scheduled, 'is scheduled to be published'),
+        'before the feedback is read: a '
+        'SmartschoolSkoreEvaluationPublishedError with the evaluation '
+        '(#157)', () async {
+      for (final (id, state, text, publicDateTime) in [
+        (
+          _published,
+          SkorePublicationState.published,
+          'is published',
+          '2026-10-01T08:00:00',
+        ),
+        (
+          _scheduled,
+          SkorePublicationState.scheduled,
+          'is scheduled to be published',
+          '2026-10-09T08:00:00',
+        ),
       ]) {
         final server = _Skore();
         final (gradebooks, evaluation) = await ready(server, id);
         await expectLater(
           gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
           throwsA(
-            _refused(
-              '$state (public "1", publicdatetime "${id == _published ? '2026-10-01T08:00:00' : '2026-10-09T08:00:00'}"): '
+            _refusedPublished(
+              '$text (public "1", publicdatetime "$publicDateTime"): '
               'its pupils see what is written in it',
+              id: id,
+              state: state,
+              rawPublicDateTime: publicDateTime,
             ),
           ),
-          reason: state,
+          reason: text,
         );
-        expect(server.rest, isEmpty, reason: state);
+        expect(server.rest, isEmpty, reason: text);
       }
     });
 
     test('an evaluation Skore lists as public now, whatever the evaluation '
-        'passed says', () async {
+        'passed says: the error carries it as listed now (#157)', () async {
       final server = _Skore();
       final (gradebooks, evaluation) = await ready(server);
       expect(evaluation.publication.isPublic, isFalse);
@@ -1036,7 +1095,14 @@ void main() {
 
       await expectLater(
         gradebooks.saveFeedback(_ewi, evaluation, _an, 'Goed gewerkt.'),
-        throwsA(_refused('is published (public "1"')),
+        throwsA(
+          _refusedPublished(
+            'is published (public "1"',
+            id: _toets,
+            state: SkorePublicationState.published,
+            rawPublicDateTime: '2026-10-08T08:00:00',
+          ),
+        ),
       );
       expect(server.rest, isEmpty);
     });

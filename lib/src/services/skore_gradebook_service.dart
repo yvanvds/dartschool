@@ -137,7 +137,10 @@ export '../models/skore_gradebook_models.dart';
 ///   [saveFeedback], [saveReportComment] or [clearReportComment] refused
 ///   the change before the save. Nothing was saved; its message says why. A
 ///   [SmartschoolSkoreGradebookReadOnlyError] (a subtype) for a gradebook
-///   shared with the user to read only (#191).
+///   shared with the user to read only (#191); a
+///   [SmartschoolSkoreEvaluationPublishedError] (another subtype) from
+///   [saveGrade], [saveGrades] and [saveFeedback] for an evaluation that is
+///   published or scheduled, without `allowPublished` (#157).
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
@@ -1133,7 +1136,10 @@ class SkoreGradebookService {
   /// notification; in a scheduled one, from its publication on. So an
   /// evaluation that is published or scheduled ([SkorePublication.isPublic],
   /// as Skore lists it right before the save) is refused unless
-  /// [allowPublished] is `true`.
+  /// [allowPublished] is `true`, with a
+  /// [SmartschoolSkoreEvaluationPublishedError] that carries the evaluation
+  /// as listed then (#157): an app can tell the user what the pupils would
+  /// see, and ask for their yes.
   ///
   /// Before the first save, it reads Skore again and refuses with a
   /// [SmartschoolSkoreChangeRefusedError], saving nothing:
@@ -1156,7 +1162,8 @@ class SkoreGradebookService {
   ///   Skore's web client leaves those to the planner), one that is not in
   ///   points ([SkoreEvaluationType.points]), or one without a highest
   ///   grade;
-  /// - a published or scheduled evaluation, without [allowPublished];
+  /// - a published or scheduled evaluation, without [allowPublished], with
+  ///   a [SmartschoolSkoreEvaluationPublishedError];
   /// - a pupil without a cell in the evaluation's rows of the gradebook's
   ///   class (a pupil of another class, say), or whose cell has no
   ///   evaluation ID;
@@ -1477,7 +1484,8 @@ class SkoreGradebookService {
   ///   evaluation of another gradebook, no longer listed, that the library
   ///   cannot read ([SkoreEvaluation.isReadable], #193), or from the
   ///   planner, and one
-  ///   that is published or scheduled, without [allowPublished] (any type
+  ///   that is published or scheduled, without [allowPublished], with a
+  ///   [SmartschoolSkoreEvaluationPublishedError] (#157; any type
   ///   of evaluation: feedback is not a grade; for one on a scale, the
   ///   feedback goes to the same REST API, as the web client's code sends
   ///   it, which was not tried live);
@@ -2284,7 +2292,7 @@ class SkoreGradebookService {
   /// - it does not come from the planner (`isPlannerEval` 1: Skore's web
   ///   client leaves those to the planner);
   /// - it is not published or scheduled, unless [allowPublished]
-  ///   ([_checkPublication]).
+  ///   ([_checkPublication]: a [SmartschoolSkoreEvaluationPublishedError]).
   ///
   /// The checks every write into an evaluation makes first: the grades of
   /// #151, and the feedback of #152. Returns what they read: the target of
@@ -2342,8 +2350,9 @@ class SkoreGradebookService {
   }
 
   /// Refuses a write into [evaluation], as Skore lists it right before the
-  /// write ([where] names it), with a [SmartschoolSkoreChangeRefusedError]
-  /// when its pupils see it or will: Skore's `public` `"1"`, published or
+  /// write ([where] names it), with a
+  /// [SmartschoolSkoreEvaluationPublishedError] that carries it (#157) when
+  /// its pupils see it or will: Skore's `public` `"1"`, published or
   /// scheduled ([SkorePublication.isPublic], whatever the time), unless
   /// [allowPublished].
   ///
@@ -2366,6 +2375,10 @@ class SkoreGradebookService {
       '(public "1", publicdatetime "${publication.rawPublicDateTime}"): its '
       'pupils see what is written in it ${scheduled ? 'from then on' : 'at once'}. '
       'Pass allowPublished: true to write in it anyway',
+      error: (message) => SmartschoolSkoreEvaluationPublishedError(
+        message,
+        evaluation: evaluation,
+      ),
     );
   }
 
@@ -2497,11 +2510,16 @@ class SkoreGradebookService {
   }
 
   /// Refuses a write: a [SmartschoolSkoreChangeRefusedError] that names
-  /// [operation] and says [why].
-  static Never _refuse(String operation, String why) =>
-      throw SmartschoolSkoreChangeRefusedError(
-        '$operation: $why. Nothing was saved.',
-      );
+  /// [operation] and says [why]. A check that a caller tells apart passes
+  /// [error], which makes its subtype of that message (as
+  /// [SmartschoolSkoreEvaluationPublishedError] for [_checkPublication],
+  /// #157), in the same words as without it.
+  static Never _refuse(
+    String operation,
+    String why, {
+    SmartschoolSkoreChangeRefusedError Function(String message) error =
+        SmartschoolSkoreChangeRefusedError.new,
+  }) => throw error('$operation: $why. Nothing was saved.');
 
   /// Refuses a write in [gradebook] with a
   /// [SmartschoolSkoreGradebookReadOnlyError] that names [operation] when it

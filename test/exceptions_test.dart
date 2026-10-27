@@ -696,6 +696,48 @@ void main() {
       expect(error.toString(), 'SmartschoolSkoreEvaluationPublicError: public');
     });
 
+    test('SmartschoolSkoreEvaluationPublishedError is a refused change, and '
+        'so a SmartschoolSkoreError: nothing was saved (#157)', () {
+      final evaluation = SkoreEvaluation(
+        id: 500003,
+        evaluationId: 500003,
+        gradebookId: 32508,
+        periodId: 1704,
+        column: 'A',
+        title: 'Toets 1',
+        shortName: null,
+        date: DateTime(2026, 10, 8),
+        max: 20,
+        componentId: 2,
+        componentName: 'DW',
+        type: SkoreEvaluationType.points,
+        typeCode: 1,
+        courseId: 2264,
+        courseName: 'Informaticawetenschappen (2 uur)',
+        isPlannerEvaluation: false,
+        publication: SkorePublication(
+          state: SkorePublicationState.scheduled,
+          at: DateTime.utc(2026, 10, 9, 6),
+          rawPublic: '1',
+          rawPublicDateTime: '2026-10-09T08:00:00',
+        ),
+        results: const SkoreEvaluationResults(evaluationId: 500003),
+      );
+      final error = SmartschoolSkoreEvaluationPublishedError(
+        'published',
+        evaluation: evaluation,
+      );
+      expect(error, isA<SmartschoolSkoreChangeRefusedError>());
+      expect(error, isA<SmartschoolSkoreError>());
+      expect(error, isNot(isA<SmartschoolSkoreAccessDeniedError>()));
+      expect(error, isNot(isA<SmartschoolSkoreGradebookReadOnlyError>()));
+      expect(error.evaluation, same(evaluation));
+      expect(
+        error.toString(),
+        'SmartschoolSkoreEvaluationPublishedError: published',
+      );
+    });
+
     test('SmartschoolSkoreGradeSaveUnconfirmedError is a '
         'SmartschoolSkoreSaveUnconfirmedError, not a SmartschoolSkoreError, '
         'and tells per pupil what is confirmed (#151)', () {

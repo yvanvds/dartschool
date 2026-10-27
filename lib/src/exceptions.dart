@@ -1444,8 +1444,10 @@ class SmartschoolPresenceUnreadableAnswerError
 /// - [SmartschoolSkoreAccessDeniedError]: Skore refused the request to the
 ///   account, which lacks the rights for that part of Skore (its `area`).
 /// - [SmartschoolSkoreChangeRefusedError]: a check before a save refused the
-///   change (its subtype [SmartschoolSkoreMyGroupsError] too). Its message
-///   says why, so the call can be corrected.
+///   change (its subtypes [SmartschoolSkoreMyGroupsError],
+///   [SmartschoolSkoreGradebookReadOnlyError] and
+///   [SmartschoolSkoreEvaluationPublishedError] too). Its message says why,
+///   so the call can be corrected.
 /// - This type itself (none of its subtypes): Skore answered with something
 ///   the service cannot use: another HTTP status than `200`, an HTML page
 ///   instead of data, an answer that is not valid JSON, an RPC answer without
@@ -1530,7 +1532,8 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// more (before anything is sent); the gradebook and period checks of
 /// `createEvaluation`; an evaluation of another gradebook, no longer listed,
 /// from the planner, not in points, or without a highest grade; an
-/// evaluation that is published or scheduled, unless `allowPublished`; a
+/// evaluation that is published or scheduled, unless `allowPublished`
+/// ([SmartschoolSkoreEvaluationPublishedError], a subtype, #157); a
 /// pupil without a cell in the gradebook's class; a grade above the highest
 /// grade. The checks of `SkoreGradebookService.saveFeedback` (#152): a pupil
 /// ID that is not positive or a blank text (before anything is sent); the
@@ -1647,6 +1650,40 @@ class SmartschoolSkoreGradebookReadOnlyError
   const SmartschoolSkoreGradebookReadOnlyError(
     super.message, {
     required this.gradebook,
+  });
+}
+
+/// Thrown by the writes of `SkoreGradebookService` into an evaluation
+/// (`saveGrade`, `saveGrades`, `saveFeedback`) when it is published or
+/// scheduled to be (Skore's `public` `"1"`: `SkorePublication.isPublic`, as
+/// Skore lists the evaluation right before the save) and `allowPublished`
+/// is `false` (#157). **Nothing was saved.**
+///
+/// What is written into a published evaluation is visible to its pupils at
+/// once, and the school sends them a notification; in a scheduled one, from
+/// its publication on. So an app can tell the user what the pupils would
+/// see ([evaluation]'s `publication`: its `state` and `at`), apart from the
+/// other refusals, and ask for their yes before it passes `allowPublished:
+/// true`.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the evaluation (its ID and title), its
+/// period and gradebook, and Skore's `public` and `publicdatetime`, worded
+/// for the caller of the library (`allowPublished`). Not the
+/// [SmartschoolSkoreEvaluationPublicError] of `createEvaluation`, which
+/// means that an evaluation was created and came back public.
+class SmartschoolSkoreEvaluationPublishedError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The evaluation as Skore listed it right before the save (read again
+  /// with `getEvaluations`, not the one passed), with its `publication`: its
+  /// `state`, `published` or `scheduled` by the service's clock at that
+  /// read, and `at`.
+  final SkoreEvaluation evaluation;
+
+  const SmartschoolSkoreEvaluationPublishedError(
+    super.message, {
+    required this.evaluation,
   });
 }
 

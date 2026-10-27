@@ -26,6 +26,7 @@
 // session of its cookie as Smartschool answers a wrong password: with a
 // redirect back to `/login`.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -313,6 +314,100 @@ class _Probe extends Interceptor {
   }
 }
 
+/// The files of the cookie cache, as the client's cookie jar opens them in
+/// a zone of [IOOverrides.runWithIOOverrides]: a test can hold a read of the
+/// file that holds the cookies of [_host] (#210).
+///
+/// The client's [PersistCookieJar] reads that file when it loads the cookies
+/// of the host for the first time, and opens a [File] for each read and
+/// write.
+final class _CookieCache extends IOOverrides {
+  /// Whether a read of the cookie file that starts while another read of it
+  /// runs hands what it read on only once the file was written after it
+  /// started: it comes in after that write, with the cookies from before it.
+  bool holdOverlappingReads = false;
+
+  int _reading = 0;
+  final List<Completer<void>> _waitingForWrite = <Completer<void>>[];
+
+  /// Completes when the cookie file was written next.
+  Future<void> _nextWrite() {
+    final written = Completer<void>();
+    _waitingForWrite.add(written);
+    return written.future;
+  }
+
+  void _wrote() {
+    for (final waiting in _waitingForWrite) {
+      waiting.complete();
+    }
+    _waitingForWrite.clear();
+  }
+
+  @override
+  File createFile(String path) =>
+      _CookieCacheFile(super.createFile(path), this);
+}
+
+/// A file of the cookie cache, read and written through [_CookieCache].
+class _CookieCacheFile implements File {
+  _CookieCacheFile(this._file, this._cache);
+
+  final File _file;
+  final _CookieCache _cache;
+
+  /// Whether this is the file that holds the cookies of [_host].
+  bool get _holdsCookies => p.basename(_file.path) == _host;
+
+  @override
+  String get path => _file.path;
+
+  @override
+  bool existsSync() => _file.existsSync();
+
+  @override
+  Future<String> readAsString({Encoding encoding = utf8}) async {
+    if (!_holdsCookies) return _file.readAsString(encoding: encoding);
+    final written = _cache.holdOverlappingReads && _cache._reading > 0
+        ? _cache._nextWrite()
+        : null;
+    _cache._reading++;
+    try {
+      final content = await _file.readAsString(encoding: encoding);
+      if (written != null) await written;
+      return content;
+    } finally {
+      _cache._reading--;
+    }
+  }
+
+  @override
+  Future<File> writeAsString(
+    String contents, {
+    FileMode mode = FileMode.write,
+    Encoding encoding = utf8,
+    bool flush = false,
+  }) async {
+    await _file.writeAsString(
+      contents,
+      mode: mode,
+      encoding: encoding,
+      flush: flush,
+    );
+    if (_holdsCookies) _cache._wrote();
+    return this;
+  }
+
+  @override
+  Future<FileSystemEntity> delete({bool recursive = false}) =>
+      _file.delete(recursive: recursive);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
+    'The cookie cache of this test does not ${invocation.memberName}',
+  );
+}
+
 void main() {
   forbidRealNetwork();
 
@@ -382,11 +477,13 @@ void main() {
       probe.arrived('GET /c'),
     ]).then((_) => pumpEventQueue());
 
+    // eagerError: a request that fails ends the test with its error, while
+    // the requests held for it would wait for the server forever (#210).
     final pages = await Future.wait([
       client.getRaw('/a'),
       client.getRaw('/b'),
       client.getRaw('/c'),
-    ]);
+    ], eagerError: true);
 
     // The race took place: three login pages in the stale session, each with
     // a token of its own.
@@ -420,7 +517,13 @@ void main() {
         .arrived('GET /b')
         .then((_) => pumpEventQueue());
 
-    final pages = await Future.wait([client.getRaw('/a'), client.getRaw('/b')]);
+    // eagerError: a login that fails ends the test with its error. /b waits
+    // for the 2FA code, which such a login never sends, so the test would
+    // time out instead (#210).
+    final pages = await Future.wait([
+      client.getRaw('/a'),
+      client.getRaw('/b'),
+    ], eagerError: true);
 
     // Before the fix: the cookie manager saved /b's new session id over the
     // one the login got, and both retries went out in it and were refused
@@ -430,6 +533,35 @@ void main() {
     expect(server.count(_twoFactorCode), 1);
     expect(server.count('GET /a'), 2);
     expect(server.count('GET /b'), 2);
+  });
+
+  test('two concurrent GETs that both read the cookie cache: a read that '
+      'comes in after the login wrote its session does not put the cached '
+      'session back, and the login posts its password in its own '
+      'session', () async {
+    await cache({_session: _staleSession});
+    await serve(_Smartschool());
+    // A new client reads the cookie cache when it loads the cookies of the
+    // first request. Both requests go out at the same time, and the second
+    // read of the cache comes in only after the login wrote the session of
+    // its login form there, with the cached session (#210).
+    final pages = await IOOverrides.runWithIOOverrides(
+      () => Future.wait([
+        client.getRaw('/a'),
+        client.getRaw('/b'),
+      ], eagerError: true),
+      _CookieCache()..holdOverlappingReads = true,
+    );
+
+    // Before the fix: that read replaced the cookies the client held with
+    // the cached ones, so the password POST went out with the cached session
+    // id, in which /a's login page had stored another token, and both
+    // requests failed with SmartschoolInvalidCredentialsError.
+    expect(pages, ['page /a', 'page /b']);
+    expect(server.count(_password), 1);
+    expect(server.passwordTokenValid, [true]);
+    expect(server.sessionOf(_password), isNot(anyOf(isNull, _staleSession)));
+    expect(server.count(_twoFactorCode), 1);
   });
 
   test('a single refused GET: the login loads its own login page, without '

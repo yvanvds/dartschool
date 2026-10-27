@@ -1,7 +1,7 @@
 // Tests for issue #160: LvsService, the pupil tracking system (LVS) read as
 // the logged-in teacher: find a pupil by name (searchPupils), read the
-// overview of the pupil's file (getPupilFile: the file and today's status),
-// and checkAccess (the root of the LVS's left tree), with checkAccessDetails,
+// overview of the pupil's file (getPupilFile: the file and today's status, or
+// the file only, #186), and checkAccess (the root of the LVS's left tree), with checkAccessDetails,
 // the number of classes that root lists (#184); the allowlist of its
 // requests, and errors that carry no name.
 //
@@ -532,6 +532,128 @@ void main() {
           lvs.getPupilFile(pupilId: 900001, classId: 900101),
           throwsA(_unreadable(statusCode: 500)),
         );
+      });
+    });
+
+    group('without today\'s status (#186)', () {
+      test('one read, the file: no getStatusInfo', () async {
+        // No answer for the status read: the fake fails the test if it
+        // comes.
+        final (server, lvs) = await _serve({
+          'file': _json('spotlight/pupil_file.json'),
+        });
+
+        await lvs.getPupilFile(
+          pupilId: 900001,
+          classId: 900101,
+          withTodayStatus: false,
+        );
+
+        expect(server.requests, ['GET /LVS/Spotlight/900001?classID=900101']);
+      });
+
+      test('the same file as with it, its note categories too; today\'s '
+          'status is LvsTodayStatus.none', () async {
+        final (_, withStatus) = await _serve({
+          'file': _json('spotlight/pupil_file.json'),
+          'status': _json('status/both.json'),
+        });
+        final (_, withoutStatus) = await _serve({
+          'file': _json('spotlight/pupil_file.json'),
+        });
+
+        final full = await withStatus.getPupilFile(
+          pupilId: 900001,
+          classId: 900101,
+        );
+        final file = await withoutStatus.getPupilFile(
+          pupilId: 900001,
+          classId: 900101,
+          withTodayStatus: false,
+        );
+
+        expect(full.todayStatus.halfDays, hasLength(2));
+        expect(file.todayStatus, same(LvsTodayStatus.none));
+        expect(file.todayStatus.am, isNull);
+        expect(file.todayStatus.pm, isNull);
+        expect(file.pupilId, full.pupilId);
+        expect(file.classId, full.classId);
+        expect(file.name, full.name);
+        expect(file.className, full.className);
+        expect(file.classDescription, full.classDescription);
+        expect(
+          file.teachers.map((t) => (t.id, t.name)),
+          full.teachers.map((t) => (t.id, t.name)),
+        );
+        (int, String, String, bool, bool, bool) section(LvsSection s) =>
+            (s.id, s.type, s.name, s.isTitle, s.hasItems, s.hasNewItems);
+        expect(file.allSections.map(section), full.allSections.map(section));
+        // Every category at any depth, each with its number of
+        // sub-categories, so that the tree compares too.
+        List<(int, String, bool, int)> categories(List<LvsCategory> top) => [
+          for (final c in [
+            for (final c in top) ...[c, ...c.descendants],
+          ])
+            (c.id, c.name, c.hasNotes, c.subcategories.length),
+        ];
+        expect(file.noteCategories, isNotEmpty);
+        expect(
+          categories(file.noteCategories),
+          categories(full.noteCategories),
+        );
+        expect(
+          file.supportPlanSections.map(section),
+          full.supportPlanSections.map(section),
+        );
+        expect(
+          '$file',
+          'LvsPupilFile(sections: 7, teachers: 2, todayStatus: 0 half-days)',
+        );
+      });
+
+      test('the LVS\'s placeholder pupil is a '
+          'SmartschoolLvsPupilNotFoundError all the same', () async {
+        final (server, lvs) = await _serve({
+          'file': _json('spotlight/pupil_not_found.json'),
+        });
+
+        await expectLater(
+          lvs.getPupilFile(
+            pupilId: 900009,
+            classId: 900109,
+            withTodayStatus: false,
+          ),
+          throwsA(
+            isA<SmartschoolLvsPupilNotFoundError>()
+                .having((e) => e.pupilId, 'pupilId', 900009)
+                .having((e) => e.classId, 'classId', 900109)
+                .having((e) => e.message, 'message', _quotesNothing),
+          ),
+        );
+        expect(server.requests, ['GET /LVS/Spotlight/900009?classID=900109']);
+      });
+
+      test('a refusal of the file is a SmartschoolLvsAccessDeniedError; an '
+          'ID that is not positive is an ArgumentError, before anything is '
+          'sent', () async {
+        final (_, refused) = await _serve({
+          'file': () => _answer('', status: 403, contentType: 'text/html'),
+        });
+        await expectLater(
+          refused.getPupilFile(
+            pupilId: 900001,
+            classId: 900101,
+            withTodayStatus: false,
+          ),
+          throwsA(_refused("the pupil's file")),
+        );
+
+        final (server, lvs) = await _serve({});
+        await expectLater(
+          lvs.getPupilFile(pupilId: 0, classId: 900101, withTodayStatus: false),
+          throwsArgumentError,
+        );
+        expect(server.requests, isEmpty);
       });
     });
 

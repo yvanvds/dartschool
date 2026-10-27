@@ -39,6 +39,7 @@ export '../models/lvs_time.dart' show lvsDayOf;
 /// final file = await lvs.getPupilFile(
 ///   pupilId: pupil.pupilId,
 ///   classId: pupil.classId,
+///   withTodayStatus: false, // the categories only: no attendance (#186)
 /// );
 /// // Each category on its own: a category's notes are not its sub-categories'.
 /// final categories = [
@@ -69,9 +70,9 @@ export '../models/lvs_time.dart' show lvsDayOf;
 /// - [searchPupils]: `GET /LVS/Spotlight?searchVal=<text>`, answered with
 ///   `{search, classes, pupils, teachers, groups, groupUsers}` (lists);
 /// - [getPupilFile]: `GET /LVS/Spotlight/<pupil id>?classID=<class id>`,
-///   answered with `{categories, pupil}`, then
-///   `POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`, answered with a list
-///   of `{partOfDay, code: {name, code, color}}`;
+///   answered with `{categories, pupil}`, then (unless `withTodayStatus` is
+///   `false`, #186) `POST /LVS/Pupilxhr/getStatusInfo` with `pupilID`,
+///   answered with a list of `{partOfDay, code: {name, code, color}}`;
 /// - [checkAccess] and [checkAccessDetails]:
 ///   `POST /?module=LVS&file=treeBuilder` with `id` `0`, the root of the LVS's
 ///   left tree: the classes the account may see, no pupil;
@@ -219,11 +220,18 @@ class LvsService {
   /// does not know in that class with a placeholder pupil, which is a
   /// [SmartschoolLvsPupilNotFoundError] (today's status is then not read).
   ///
+  /// With [withTodayStatus] `false`, one read: the file only, for an app
+  /// that needs its sections or its [LvsPupilFile.noteCategories] and not
+  /// the pupil's attendance today (#186). [LvsPupilFile.todayStatus] is then
+  /// [LvsTodayStatus.none]: not read, not "no code today". The placeholder
+  /// pupil is a [SmartschoolLvsPupilNotFoundError] all the same.
+  ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
   Future<LvsPupilFile> getPupilFile({
     required int pupilId,
     required int classId,
+    bool withTodayStatus = true,
   }) async {
     if (pupilId <= 0) {
       throw ArgumentError.value(pupilId, 'pupilId', 'must be positive');
@@ -241,6 +249,7 @@ class LvsService {
       pupilId: pupilId,
       classId: classId,
     );
+    if (!withTodayStatus) return file;
 
     const statusRead = LvsWire.todayStatus;
     final statusResponse = await _wire.post(

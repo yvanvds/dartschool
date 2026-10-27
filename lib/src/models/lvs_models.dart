@@ -85,8 +85,9 @@ class LvsPupilMatch {
 }
 
 /// The overview of one pupil's file in the LVS
-/// (`LvsService.getPupilFile`): who, which class, today's attendance, and
-/// the sections of the file with whether each holds something.
+/// (`LvsService.getPupilFile`): who, which class, today's attendance (unless
+/// read without it, #186), and the sections of the file with whether each
+/// holds something.
 ///
 /// The sections are those of the school's LVS, the same for every pupil;
 /// [LvsSection.hasItems] and [LvsSection.hasNewItems] are about this pupil.
@@ -117,7 +118,9 @@ class LvsPupilFile {
   /// order, each with its own [LvsSection.children].
   final List<LvsSection> sections;
 
-  /// The pupil's attendance today (`getStatusInfo`).
+  /// The pupil's attendance today (`getStatusInfo`); [LvsTodayStatus.none]
+  /// when the file was read without it (`LvsService.getPupilFile` with
+  /// `withTodayStatus: false`, #186).
   final LvsTodayStatus todayStatus;
 
   const LvsPupilFile({

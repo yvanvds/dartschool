@@ -2,7 +2,8 @@
 // credentials.yml through LvsService (#160, #161, #162, #163, #164): the
 // root of its class tree (checkAccess, and checkAccessDetails with the
 // number of its classes, #184), a pupil search, the placeholder
-// pupil of a made-up ID (its file and its notes), the results app's, the
+// pupil of a made-up ID (its file, also read without today's status, #186,
+// and its notes), the results app's, the
 // support plans' and the absences' answers for that ID, and, when the
 // developer names one, the file, the notes, the results, the support plan
 // and the absences of a pupil they teach.
@@ -28,7 +29,9 @@
 // its absences, and with no period of support
 // plans (a made-up class has no structure of them) for the support plan
 // reads. With it, it also searches for that text and reads
-// the file and today's status of the first pupil found; all its notes of the
+// the file and today's status of the first pupil found, and the file again
+// without today's status (#186: the same sections and note categories, and
+// no getStatusInfo tried); all its notes of the
 // current school year, then the notes of the first of its categories that
 // holds notes of its own in that year, which must be that category's own in
 // all its notes (#177, #180: a category's notes are never its
@@ -73,6 +76,7 @@ library;
 
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
@@ -93,6 +97,31 @@ const _madeUpId = 999999999;
 /// A school year `YYYY-YYYY`, as the LVS keys the periods of a pupil's
 /// absences (#176).
 final _schoolYear = RegExp(r'^\d{4}\s*-\s*\d{4}$');
+
+/// The path of the LVS's read of today's status (`getStatusInfo`).
+const _statusPath = '/LVS/Pupilxhr/getStatusInfo';
+
+/// Records the path of every request the library tries to send, before
+/// LiveWireGuard decides whether it goes out (#186). A path can hold a
+/// pupil's ID: the tests compare them, they never print one.
+class _Attempts extends Interceptor {
+  final List<String> paths = [];
+
+  /// Whether a request to [path] was tried since [from].
+  bool triedSince(int from, String path) =>
+      paths.skip(from).any((p) => p == path);
+
+  /// How many requests to a path that starts with [prefix] were tried since
+  /// [from].
+  int countSince(int from, String prefix) =>
+      paths.skip(from).where((p) => p.startsWith(prefix)).length;
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
+    paths.add(options.uri.path);
+    handler.next(options);
+  }
+}
 
 /// What a read of the results returned, by its type and count only: never a
 /// value of the answer (doc/lvs-privacy.md, rule 4).
@@ -118,9 +147,14 @@ void main() {
       late LiveRun run;
       late LvsService lvs;
       late bool access;
+      final attempts = _Attempts();
 
       setUpAll(() async {
         run = started = await LiveRun.start(credentials!);
+        // Before the guard: it sees what the library tries, also what the
+        // guard would refuse.
+        final interceptors = run.client.dio.interceptors;
+        interceptors.insert(interceptors.indexOf(run.guard), attempts);
         lvs = LvsService(run.client);
         access = await lvs.checkAccess();
         print('checkAccess: $access');
@@ -165,6 +199,26 @@ void main() {
                 : isA<SmartschoolLvsAccessDeniedError>(),
           ),
         );
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test("a made-up pupil ID without today's status (#186): the same "
+          'error, after the read of the file only', () async {
+        final from = attempts.paths.length;
+        await expectLater(
+          lvs.getPupilFile(
+            pupilId: _madeUpId,
+            classId: _madeUpId,
+            withTodayStatus: false,
+          ),
+          throwsA(
+            access
+                ? isA<SmartschoolLvsPupilNotFoundError>()
+                : isA<SmartschoolLvsAccessDeniedError>(),
+          ),
+        );
+        expect(attempts.countSince(from, '/LVS/Spotlight/'), greaterThan(0));
+        expect(attempts.triedSince(from, _statusPath), isFalse);
         expect(run.guard.violations, isEmpty);
       });
 
@@ -770,7 +824,8 @@ void main() {
 
       test(
         'a pupil the developer teaches: found, and the overview of their '
-        'file, its sections with an id, a type and a name',
+        'file, its sections with an id, a type and a name; read without '
+        "today's status (#186), the same sections and no getStatusInfo",
         skip: pupil == null || pupil.isEmpty
             ? 'set $_pupilVariable to (part of) the name of a pupil you '
                   'teach to read their file'
@@ -810,6 +865,39 @@ void main() {
               (h) => h.partOfDay == 'am' || h.partOfDay == 'pm',
             ),
             isTrue,
+          );
+
+          // The file again, without today's status (#186): the file only.
+          final from = attempts.paths.length;
+          final bare = await lvs.getPupilFile(
+            pupilId: match.pupilId,
+            classId: match.classId,
+            withTodayStatus: false,
+          );
+          final tried = attempts.triedSince(from, _statusPath);
+          final bareCategories = [
+            for (final c in bare.noteCategories) ...[c, ...c.descendants],
+          ];
+          final categories = [
+            for (final c in file.noteCategories) ...[c, ...c.descendants],
+          ];
+          print(
+            'without today\'s status: sections: '
+            '${bare.allSections.length}, note categories: '
+            '${bareCategories.length}, half-days with a status: '
+            '${bare.todayStatus.halfDays.length}, getStatusInfo tried: '
+            '$tried',
+          );
+          expect(tried, isFalse);
+          expect(bare.todayStatus.halfDays.length, 0);
+          expect(bare.pupilId == file.pupilId, isTrue);
+          expect(bare.allSections.length, sections.length);
+          expect(bareCategories.length, categories.length);
+          expect(
+            bareCategories.map((c) => c.id).join(',') ==
+                categories.map((c) => c.id).join(','),
+            isTrue,
+            reason: 'the same categories, in the same order',
           );
           expect(run.guard.violations, isEmpty);
         },

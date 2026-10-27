@@ -22,7 +22,8 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 ///       GRADEBOOK_ID PERIOD_ID EVALUATION_ID PUPIL_ID GRADE [GRADE ...]
 ///
 /// - `GRADEBOOK_ID`: one of your own gradebooks of the current school year
-///   (see `example/skore_gradebook_example.dart`); `PERIOD_ID`: an open
+///   (see `example/skore_gradebook_example.dart`), or one a colleague
+///   shared with you to write (#191); `PERIOD_ID`: an open
 ///   period of it; `EVALUATION_ID`: an evaluation in that period (its
 ///   `SkoreEvaluation.id`); `PUPIL_ID`: a pupil of the gradebook.
 /// - `GRADE`: a number up to the evaluation's highest grade (`15`, `15.5`
@@ -68,17 +69,25 @@ Future<void> main(List<String> args) async {
 
     // ── 2. The gradebook, the evaluation and the pupil as they are now ───
 
-    final year = await gradebooks.getGradebookYear();
-    final book = year.gradebooks
-        .where((g) => g.gradebookId == gradebookId)
-        .firstOrNull;
+    // Yours, or one a colleague shared with you to write (#191).
+    final year = await gradebooks.getGradebookYear(includeShared: true);
+    final book = [
+      ...year.gradebooks,
+      ...year.sharedGradebooks,
+    ].where((g) => g.gradebookId == gradebookId).firstOrNull;
     if (book == null) {
       print(
         'Gradebook $gradebookId is not one of your gradebooks of '
-        '${year.workyear.name}.',
+        '${year.workyear.name}, nor shared with you.',
       );
       exitCode = 1;
       return;
+    }
+    if (book.isShared) {
+      print(
+        'Gradebook $gradebookId is shared with you by teacher '
+        '${book.teacherId}, to ${book.access.name}.',
+      );
     }
     final sheet = await gradebooks.getGradebook(book);
     final pupil = sheet.pupils.where((p) => p.id == pupilId).firstOrNull;

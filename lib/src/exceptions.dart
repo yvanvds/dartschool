@@ -27,7 +27,8 @@ import 'models/presence_models.dart'
         PresenceHalfDay,
         PresenceSaveError,
         PresenceUnreadableAnswerKind;
-import 'models/skore_gradebook_models.dart' show SkoreEvaluation, SkoreGrade;
+import 'models/skore_gradebook_models.dart'
+    show SkoreEvaluation, SkoreGrade, SkoreGradebook;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1535,7 +1536,10 @@ class SmartschoolSkoreAccessDeniedError extends SmartschoolSkoreError {
 /// ID that is not positive or a blank text (before anything is sent); the
 /// gradebook, period, evaluation and pupil checks of `saveGrade` (not the
 /// points); the user's own feedback for the pupil that Skore does not let
-/// them change (`can_edit`), or more than one of it.
+/// them change (`can_edit`), or more than one of it. For a gradebook a
+/// colleague shared with the user (#191): one shared to read only
+/// ([SmartschoolSkoreGradebookReadOnlyError], a subtype), one no longer
+/// shared with them, and, for `createEvaluation`, any shared gradebook.
 ///
 /// Its message says which check refused and why, with the IDs (and the
 /// course label, evaluation title or teacher name it read), and quotes
@@ -1580,6 +1584,36 @@ class SmartschoolSkoreMyGroupsError extends SmartschoolSkoreChangeRefusedError {
     required this.courseId,
     required this.teacherId,
     this.teacherName,
+  });
+}
+
+/// Thrown by the writes of `SkoreGradebookService` (`saveGrade`,
+/// `saveGrades`, `saveFeedback`, `createEvaluation`) for a gradebook a
+/// colleague shared with the user **to read only**
+/// (`SkoreGradebookAccess.read`, #191): the user may read it, not change it.
+/// **Nothing was saved.**
+///
+/// Thrown before anything is sent when the gradebook passed is one shared
+/// to read only; and, for one passed as shared to write, when Skore's list
+/// of the gradebooks shared with the user, read again right before the
+/// save, shows it shared to read only now. So an app can tell the user "you
+/// may only read this gradebook", apart from the other refusals.
+///
+/// A [SmartschoolSkoreChangeRefusedError] (and so a
+/// [SmartschoolSkoreError]), so `catch` clauses for those types keep
+/// catching it. Its message names the gradebook and its teacher by their
+/// IDs, and no name.
+class SmartschoolSkoreGradebookReadOnlyError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The gradebook as the check read it: the one passed, or as Skore's list
+  /// of shared gradebooks gives it right before the save. Its `access` is
+  /// `SkoreGradebookAccess.read`, its `teacherId` the colleague who shared
+  /// it.
+  final SkoreGradebook gradebook;
+
+  const SmartschoolSkoreGradebookReadOnlyError(
+    super.message, {
+    required this.gradebook,
   });
 }
 

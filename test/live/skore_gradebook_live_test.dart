@@ -10,6 +10,13 @@
 // (#151) and saveFeedback (#152): a published or scheduled evaluation, an
 // earlier school year (and, for saveFeedback, a blank text).
 //
+// For #191 it reads the gradebooks colleagues shared with the account
+// (getGradebookYear with includeShared, accessableList), and one of them as
+// Skore's web client opens it, in the name of its teacher and restricted to
+// it; and checks that the writes refuse one shared to read only, and
+// createEvaluation any shared one, before anything is sent. Skipped when no
+// gradebook is shared with the account.
+//
 // For #192 it reads a gradebook without evaluation periods (the developer's
 // behaviour gradebook, 35158, which has only a report period; skipped when
 // the account has no such gradebook), and, last, a gradebook in a session
@@ -43,8 +50,9 @@
 //
 // It only reads, and changes nothing in Skore, which drives the school's
 // grading and has no test instance: getNavigation, init,
-// getGradebookContext, getEvaluations, getNewEvalDialogBox and
-// getPosComponents of Skore's gradebook RPC service, and the GET of a
+// getGradebookContext, getEvaluations, getNewEvalDialogBox,
+// getPosComponents and accessableList of Skore's gradebook RPC service, and
+// the GET of a
 // pupil's feedback of its REST API; never saveEvaluation or saveGrade, nor
 // a POST of a feedback (#152) to that API. The service refuses any other
 // method of that service itself (SkoreGradebookService.rpcMethods), and the
@@ -121,6 +129,17 @@ class _RpcAnswers extends Interceptor {
       ));
     }
     h.next(response);
+  }
+}
+
+/// Records every request the client sends, as `METHOD path`.
+class _Sent extends Interceptor {
+  final List<String> requests = [];
+
+  @override
+  void onRequest(RequestOptions options, RequestInterceptorHandler h) {
+    requests.add('${options.method} ${options.uri.path}');
+    h.next(options);
   }
 }
 
@@ -897,6 +916,189 @@ void main() {
             expect(run.guard.violations, isEmpty);
           },
         );
+      });
+
+      // The gradebooks colleagues shared with the account (#191), read as
+      // Skore's web client opens them; skipped when none is shared with it.
+      // Every gradebook shared with the developer's account was shared to
+      // write, and had no evaluation (2026-10-27). No write goes out: the
+      // writes are tried only where they refuse before anything is sent.
+      group('gradebooks shared with the user (#191):', () {
+        late SkoreGradebookYear withShared;
+
+        setUpAll(() async {
+          withShared = await gradebooks.getGradebookYear(includeShared: true);
+        });
+
+        /// The shared gradebook to read: one with periods, if any.
+        Future<(SkoreGradebook, SkoreGradebookSheet)?> sharedSpot() async {
+          SkoreGradebookSheet? first;
+          for (final book in withShared.sharedGradebooks) {
+            final sheet = await gradebooks.getGradebook(book);
+            first ??= sheet;
+            if (sheet.periods.isNotEmpty) return (book, sheet);
+          }
+          return first == null ? null : (first.gradebook, first);
+        }
+
+        test('getGradebookYear(includeShared: true) lists them, each once, '
+            'with their teacher and the access, apart from the own', () {
+          final shared = withShared.sharedGradebooks;
+          final toWrite = shared
+              .where((b) => b.access == SkoreGradebookAccess.write)
+              .length;
+          final toRead = shared
+              .where((b) => b.access == SkoreGradebookAccess.read)
+              .length;
+          print(
+            '${shared.length} gradebooks shared with the account in '
+            '${withShared.workyear.name}: $toWrite to write, $toRead to read '
+            'only; ${withShared.gradebooks.length} own',
+          );
+          expect(withShared.workyear.id, year.workyear.id);
+          expect(
+            withShared.gradebooks.map((g) => g.gradebookId),
+            year.gradebooks.map((g) => g.gradebookId),
+          );
+          final ids = shared.map((g) => g.gradebookId).toList();
+          expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
+          final own = year.gradebooks.map((g) => g.gradebookId).toSet();
+          for (final book in shared) {
+            expect(book.isShared, isTrue);
+            expect(own, isNot(contains(book.gradebookId)));
+            expect(book.teacherId, isNot(me), reason: "a colleague's");
+            expect(book.workyearId, year.workyear.id);
+            expect(book.pathIds, everyElement(greaterThan(0)));
+            expect(book.courseId, greaterThan(0));
+            expect(book.className, isNotEmpty);
+            expect(book.ownerName, isNotEmpty);
+          }
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('getGradebook and getEvaluations read one as the web client '
+            'opens it: its pupils, periods and rights', () async {
+          final spot = await sharedSpot();
+          if (spot == null) {
+            markTestSkipped('no gradebook is shared with this account');
+            return;
+          }
+          final (book, sheet) = spot;
+          print(
+            'shared gradebook ${book.gradebookId} (class ${book.classId}, '
+            'course ${book.courseId}, teacher ${book.teacherId}, '
+            '${book.access.name}): ${sheet.periods.length} periods, '
+            '${sheet.pupils.length} pupils, writable ${sheet.writable}',
+          );
+          expect(sheet.gradebook, same(book));
+          expect(sheet.pupils, isNotEmpty, reason: 'opened in its scope');
+          for (final pupil in sheet.pupils) {
+            expect(pupil.classId, book.classId);
+          }
+          final active = sheet.activePeriod;
+          if (active != null) {
+            if (book.access == SkoreGradebookAccess.write && active.isOpen) {
+              expect(sheet.writable, isTrue, reason: 'shared to write');
+            }
+            final evaluations = await gradebooks.getEvaluations(
+              book,
+              active.id,
+            );
+            print(
+              'shared gradebook ${book.gradebookId}, period ${active.name}: '
+              '${evaluations.length} evaluations',
+            );
+            for (final evaluation in evaluations) {
+              expect(evaluation.gradebookId, book.gradebookId);
+              for (final grade in evaluation.results.grades) {
+                expect(grade.classId, book.classId);
+              }
+            }
+          }
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('the writes refuse one shared to read only, and createEvaluation '
+            'any shared one, before anything is sent', () async {
+          final book = withShared.sharedGradebooks.firstOrNull;
+          if (book == null) {
+            markTestSkipped('no gradebook is shared with this account');
+            return;
+          }
+          // The gradebook as one shared to read only would be listed.
+          final readOnly = SkoreGradebook(
+            gradebookId: book.gradebookId,
+            teacherId: book.teacherId,
+            modelId: book.modelId,
+            modelName: book.modelName,
+            groupId: book.groupId,
+            groupName: book.groupName,
+            classId: book.classId,
+            className: book.className,
+            courseId: book.courseId,
+            courseName: book.courseName,
+            workyearId: book.workyearId,
+            access: SkoreGradebookAccess.read,
+            ownerName: book.ownerName,
+          );
+          final evaluation = SkoreEvaluation(
+            id: 1,
+            evaluationId: 1,
+            gradebookId: book.gradebookId,
+            periodId: 1,
+            column: 'A',
+            title: 'dartschool test (mag weg)',
+            shortName: null,
+            date: DateTime.now(),
+            max: 20,
+            componentId: 0,
+            componentName: 'geen',
+            type: SkoreEvaluationType.points,
+            typeCode: 1,
+            courseId: book.courseId,
+            courseName: book.courseName,
+            isPlannerEvaluation: false,
+            publication: const SkorePublication(
+              state: SkorePublicationState.notPublished,
+              at: null,
+              rawPublic: '0',
+              rawPublicDateTime: '',
+            ),
+            results: const SkoreEvaluationResults(evaluationId: 1),
+          );
+          final sent = _Sent();
+          run.client.dio.interceptors.insert(0, sent);
+          addTearDown(() => run.client.dio.interceptors.remove(sent));
+          final readOnlyError = isA<SmartschoolSkoreGradebookReadOnlyError>()
+              .having((e) => e.gradebook, 'gradebook', same(readOnly));
+
+          await expectLater(
+            gradebooks.saveGrades(readOnly, evaluation, {1: '15'}),
+            throwsA(readOnlyError),
+          );
+          await expectLater(
+            gradebooks.saveFeedback(readOnly, evaluation, 1, 'x'),
+            throwsA(readOnlyError),
+          );
+          await expectLater(
+            gradebooks.createEvaluation(
+              book,
+              1,
+              title: 'dartschool test (mag weg)',
+              date: DateTime.now(),
+              max: 20,
+            ),
+            throwsA(
+              isA<SmartschoolSkoreChangeRefusedError>().having(
+                (e) => e.message,
+                'message',
+                contains('creates evaluations in your own gradebooks only'),
+              ),
+            ),
+          );
+          expect(sent.requests, isEmpty, reason: 'nothing sent');
+          expect(run.guard.violations, isEmpty);
+        });
       });
 
       test('a school year Skore does not offer is refused', () async {

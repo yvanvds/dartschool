@@ -266,6 +266,7 @@ void main() {
         'init',
         'getGradebookContext',
         'getEvaluations', // #149
+        'accessableList', // #191, the gradebooks shared with the user
         'getNewEvalDialogBox', // #150
         'getPosComponents', // #150
         'saveEvaluation', // #150, always unpublished
@@ -295,7 +296,7 @@ void main() {
         'saveType', // symbols instead of a grade (#151)
         'getEvaluationIDByOwnerID',
         'saveGradeInfo',
-        'usersThatCanAccess',
+        'usersThatCanAccess', // shares a gradebook (#191: never sent)
         'gradebooksToAccess',
         'getGradeInfo',
         '',

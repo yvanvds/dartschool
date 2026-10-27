@@ -12,6 +12,7 @@ export '../models/skore_gradebook_models.dart';
 
 /// Reads Skore's gradebook **as the logged-in teacher** (#148): the teacher's
 /// own gradebooks of a school year ([getGradebooks], [getGradebookYear]),
+/// and those colleagues shared with them ([getSharedGradebooks], #191),
 /// the periods and pupils of one gradebook, with whether the teacher may
 /// change it ([getGradebook]), and the evaluations of a period with whether
 /// and when they are published and the pupils' grades ([getEvaluations],
@@ -70,11 +71,28 @@ export '../models/skore_gradebook_models.dart';
 /// year Skore answered the same as without it, seen live) and with
 /// [getGradebookYear] for a school year asked for; without it, Skore answers
 /// for its current school year. The calls work straight after a login: no
-/// page needs to be loaded first (seen live). That service also deletes,
-/// moves, publishes and shares evaluations: the service only calls the
-/// methods in [rpcMethods], and refuses any other before anything is sent
-/// ([checkRpcMethod]). Feedback comes from Skore's REST API instead
-/// (`GET /skore/api/v1/gradebook/feedback/...`), as the feedback panel of
+/// page needs to be loaded first (seen live).
+///
+/// A gradebook a colleague shared with the user ([SkoreGradebook.isShared],
+/// #191) is opened as Skore's web client opens one from its tab "Gedeeld":
+/// in the name of its teacher, restricted to it. The session object's
+/// `teacher` and the calls' `userID` are the gradebook's teacher
+/// ([SkoreGradebook.teacherId]), and its `restriction` and the calls'
+/// `ownerRestriction` the gradebook's ID; for the user's own gradebooks,
+/// the user and `0`. Seen live: in that form, `init`, `getGradebookContext`
+/// and `getEvaluations` answer a shared gradebook as they answer an own one
+/// (its pupils, its periods, `writable` and its ID in `owners`); in the
+/// form of the own gradebooks, Skore answered it without pupils and with
+/// empty `owners`. The feedback of a shared gradebook is read and written
+/// with its teacher in the path and in `evaluation.teacherId`, as Skore's
+/// web client sends them; the user's own feedback stays the feedback
+/// written by the user (the web client's `isCurrentUser`).
+///
+/// That service also deletes, moves, publishes and shares evaluations: the
+/// service only calls the methods in [rpcMethods], and refuses any other
+/// before anything is sent ([checkRpcMethod]). Feedback comes from Skore's
+/// REST API instead (`GET /skore/api/v1/gradebook/feedback/...`), as the
+/// feedback panel of
 /// Skore's gradebook reads it ([getFeedback]), and goes there with a `POST`
 /// ([saveFeedback]); the service sends no other request to that API.
 ///
@@ -98,7 +116,8 @@ export '../models/skore_gradebook_models.dart';
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
 ///   check of [createEvaluation], [saveGrade], [saveGrades] or
 ///   [saveFeedback] refused the change before the save. Nothing was saved;
-///   its message says why.
+///   its message says why. A [SmartschoolSkoreGradebookReadOnlyError] (a
+///   subtype) for a gradebook shared with the user to read only (#191).
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
@@ -160,7 +179,8 @@ class SkoreGradebookService {
   /// The same service also holds methods that delete, move, publish or share
   /// (`deleteEvaluation`, `destroyEvaluations`, `moveEvaluation`,
   /// `setPublicProp`, `saveEvalProperties`, `usersThatCanAccess`,
-  /// `importWizardResults`, ...): none of them is here. The writes are
+  /// `importWizardResults`, ...): none of them is here, nor the read of the
+  /// share dialog (`gradebooksToAccess`). The writes are
   /// `saveEvaluation`, which [createEvaluation] always sends with `public` 0
   /// and `publicdatetime` `""`, and `saveGrade`, the grade of one pupil
   /// ([saveGrade], [saveGrades]). The library never publishes an evaluation.
@@ -169,6 +189,8 @@ class SkoreGradebookService {
     'init',
     'getGradebookContext',
     'getEvaluations',
+    // #191: the gradebooks shared with the user (a read).
+    'accessableList',
     // #150: the reads of the "new evaluation" dialog, and its save.
     'getNewEvalDialogBox',
     'getPosComponents',
@@ -209,7 +231,16 @@ class SkoreGradebookService {
   /// One request (Skore's `getNavigation`). Its answer is big (some 270 KB
   /// for a teacher with 22 gradebooks; 1.7 MB for 50), since Skore sends the
   /// colleagues of every gradebook with it: read it once, not per gradebook.
-  Future<SkoreGradebookYear> getGradebookYear({int? workyearId}) async {
+  ///
+  /// With [includeShared], also the gradebooks of that school year that
+  /// colleagues shared with the teacher ([SkoreGradebookYear.sharedGradebooks],
+  /// #191): a second request, Skore's `accessableList(userID)`, for the same
+  /// school year, read by [parseSharedGradebooks]. Without it, that list is
+  /// empty and not asked for.
+  Future<SkoreGradebookYear> getGradebookYear({
+    int? workyearId,
+    bool includeShared = false,
+  }) async {
     if (workyearId != null && workyearId <= 0) {
       throw ArgumentError.value(
         workyearId,
@@ -221,10 +252,26 @@ class SkoreGradebookService {
     final result = await _rpc(
       'getNavigation',
       [userId, 0],
-      userId: userId,
+      scope: _ownScope(userId),
       workyearId: workyearId,
     );
-    return parseNavigation(result, workyearId: workyearId);
+    final year = parseNavigation(result, workyearId: workyearId);
+    if (!includeShared) return year;
+    final shared = await _rpc(
+      'accessableList',
+      [userId],
+      scope: _ownScope(userId),
+      workyearId: workyearId,
+    );
+    return SkoreGradebookYear(
+      workyear: year.workyear,
+      workyears: year.workyears,
+      gradebooks: year.gradebooks,
+      sharedGradebooks: parseSharedGradebooks(
+        shared,
+        workyearId: year.workyear.id,
+      ),
+    );
   }
 
   /// Returns the logged-in teacher's own gradebooks of a school year: the
@@ -232,6 +279,28 @@ class SkoreGradebookService {
   /// [workyearId] (the current school year without it).
   Future<List<SkoreGradebook>> getGradebooks({int? workyearId}) async =>
       (await getGradebookYear(workyearId: workyearId)).gradebooks;
+
+  /// Returns the gradebooks of a school year that colleagues shared with the
+  /// logged-in teacher, to read or to write (#191): what the tab "Gedeeld"
+  /// of Skore's gradebook lists. Each with its teacher, who shared it
+  /// ([SkoreGradebook.teacherId], [SkoreGradebook.ownerName]) and the user's
+  /// access ([SkoreGradebook.access]: [SkoreGradebookAccess.read] or
+  /// [SkoreGradebookAccess.write]), in Skore's order, each once.
+  ///
+  /// A common case: the behaviour gradebook ("Gedrag") of a class is in the
+  /// name of one form teacher and shared with the co-titularis, who writes
+  /// their feedback in it.
+  ///
+  /// The [SkoreGradebookYear.sharedGradebooks] of
+  /// `getGradebookYear(workyearId: workyearId, includeShared: true)`: two
+  /// requests, `getNavigation` (which tells the school year, and is big; see
+  /// [getGradebookYear]) and `accessableList`. Pass a gradebook of it to the
+  /// other methods as any other: they open it as Skore's web client does.
+  Future<List<SkoreGradebook>> getSharedGradebooks({int? workyearId}) async =>
+      (await getGradebookYear(
+        workyearId: workyearId,
+        includeShared: true,
+      )).sharedGradebooks;
 
   /// Returns [gradebook] (from [getGradebooks]) with its periods, its pupils
   /// and whether Skore lets the user change it.
@@ -252,6 +321,12 @@ class SkoreGradebookService {
   ///
   /// Skore's answers must be about [gradebook]: an answer about another
   /// gradebook or class is refused with a [SmartschoolSkoreError].
+  ///
+  /// A gradebook shared with the user ([getSharedGradebooks], #191) is read
+  /// as Skore's web client opens it (see the class's "The endpoint"); its
+  /// [SkoreGradebookSheet.writable] is Skore's answer for the user in it.
+  /// Seen live: a shared gradebook can have no evaluation periods either,
+  /// only a report period.
   Future<SkoreGradebookSheet> getGradebook(SkoreGradebook gradebook) async {
     final userId = (await _client.getCurrentUser()).id;
     final sheet = await _readInit(gradebook, userId);
@@ -263,48 +338,78 @@ class SkoreGradebookService {
     );
   }
 
-  /// [gradebook] as Skore's `init(courses, owners, userID, pathIds, 0, 0)`
-  /// gives it, for its school year; not yet [SkoreGradebookSheet.writable].
+  /// [gradebook] as Skore's `init(courses, owners, userID, pathIds, 0,
+  /// ownerRestriction)` gives it, for its school year and as user [userId]
+  /// opens it ([_scope]); not yet [SkoreGradebookSheet.writable].
   Future<SkoreGradebookSheet> _readInit(
     SkoreGradebook gradebook,
     int userId,
-  ) async => _parseInit(
-    gradebook,
-    await _rpc(
-      'init',
-      [
-        ['${gradebook.courseId}'],
-        ['${gradebook.gradebookId}'],
-        userId,
-        _pathIds(gradebook),
-        0,
-        0,
-      ],
-      userId: userId,
-      workyearId: gradebook.workyearId,
-    ),
-  );
+  ) async {
+    final scope = _scope(gradebook, userId);
+    return _parseInit(
+      gradebook,
+      await _rpc(
+        'init',
+        [
+          ['${gradebook.courseId}'],
+          ['${gradebook.gradebookId}'],
+          scope.teacher,
+          _pathIds(gradebook),
+          0, // pageObj: the evaluations
+          scope.restriction,
+        ],
+        scope: scope,
+        workyearId: gradebook.workyearId,
+      ),
+    );
+  }
 
   /// The `result` of Skore's `getGradebookContext(pathIds, courses, owners,
-  /// userID, periodId, 0, wy)` for period [periodId] of [gradebook].
+  /// userID, periodId, ownerRestriction, wy)` for period [periodId] of
+  /// [gradebook], as user [userId] opens it ([_scope]).
   Future<dynamic> _readContext(
     SkoreGradebook gradebook,
     int periodId,
     int userId,
-  ) => _rpc(
-    'getGradebookContext',
-    [
-      _pathIds(gradebook),
-      ['${gradebook.courseId}'],
-      ['${gradebook.gradebookId}'],
-      userId,
-      periodId,
-      0,
-      gradebook.workyearId,
-    ],
-    userId: userId,
-    workyearId: gradebook.workyearId,
-  );
+  ) {
+    final scope = _scope(gradebook, userId);
+    return _rpc(
+      'getGradebookContext',
+      [
+        _pathIds(gradebook),
+        ['${gradebook.courseId}'],
+        ['${gradebook.gradebookId}'],
+        scope.teacher,
+        periodId,
+        scope.restriction,
+        gradebook.workyearId,
+      ],
+      scope: scope,
+      workyearId: gradebook.workyearId,
+    );
+  }
+
+  /// How Skore's web client opens [gradebook] for the logged-in user
+  /// [userId] (#191): for the user's own gradebook, in their name (`teacher`
+  /// and `userID` [userId]) and without a restriction (`restriction` and
+  /// `ownerRestriction` `0`); for one a colleague shared with them
+  /// ([SkoreGradebook.isShared]), in the name of its teacher
+  /// ([SkoreGradebook.teacherId]) and restricted to it (its
+  /// [SkoreGradebook.gradebookId]), as the web client's `setUser(teacher,
+  /// ownerRestriction)` does for an item of its tab "Gedeeld" (whose ID is
+  /// `<teacher>_<gradebook>`).
+  ///
+  /// Every call about a gradebook goes out so: the session object, the
+  /// `userID` and `ownerRestriction` of the calls, and the teacher in the
+  /// feedback API's paths.
+  static _Scope _scope(SkoreGradebook gradebook, int userId) =>
+      gradebook.isShared
+      ? (teacher: gradebook.teacherId, restriction: gradebook.gradebookId)
+      : _ownScope(userId);
+
+  /// The scope of the calls about the user [userId] themselves: their own
+  /// gradebooks, and the gradebooks shared with them.
+  static _Scope _ownScope(int userId) => (teacher: userId, restriction: 0);
 
   /// [gradebook]'s `pathIds` as Skore's web client sends them: strings.
   static List<String> _pathIds(SkoreGradebook gradebook) => [
@@ -331,6 +436,13 @@ class SkoreGradebookService {
   /// A [periodId] that is not positive is refused with an [ArgumentError]
   /// before anything is sent; an answer about another period with a
   /// [SmartschoolSkoreError].
+  ///
+  /// For a gradebook shared with the user (#191), its teacher is the
+  /// `userID`, as Skore's web client sends it. Seen live only for periods
+  /// without evaluations (none of the gradebooks shared with the
+  /// developer's account had any, 2026-10-27): Skore answered them as for an
+  /// own gradebook, and the evaluations of a shared gradebook are read in
+  /// the shape of the own ones.
   Future<List<SkoreEvaluation>> getEvaluations(
     SkoreGradebook gradebook,
     int periodId,
@@ -342,18 +454,18 @@ class SkoreGradebookService {
         'not a period ID; nothing was sent',
       );
     }
-    final userId = (await _client.getCurrentUser()).id;
+    final scope = _scope(gradebook, (await _client.getCurrentUser()).id);
     final result = await _rpc(
       'getEvaluations',
       [
         periodId,
-        userId,
+        scope.teacher,
         ['${gradebook.courseId}'],
         '${gradebook.groupId}',
         '${gradebook.classId}',
         _pathIds(gradebook),
       ],
-      userId: userId,
+      scope: scope,
       workyearId: gradebook.workyearId,
     );
     return parseEvaluations(result, gradebook, periodId, now: _clock());
@@ -396,6 +508,14 @@ class SkoreGradebookService {
   /// Unlike the cell's tooltip and Skore's older `getGradeInfo`, which join
   /// all feedback of a pupil into one text, it keeps them apart.
   ///
+  /// The `userId` of the path is the teacher Skore's web client names there
+  /// (its `gbc.userID`): the logged-in user for their own gradebook, the
+  /// gradebook's teacher ([SkoreGradebook.teacherId]) for one shared with
+  /// them (#191). Each feedback names the teacher who wrote it
+  /// ([SkoreFeedback.teacherId]). Not seen live for a shared gradebook:
+  /// none of the gradebooks shared with the developer's account had an
+  /// evaluation (2026-10-27).
+  ///
   /// An evaluation of another gradebook, or a [pupilId] that is not
   /// positive, is refused with an [ArgumentError] before anything is sent;
   /// feedback about another pupil or evaluation with a
@@ -417,7 +537,7 @@ class SkoreGradebookService {
     return _readFeedback(
       feedbackPath(
         platform: platform,
-        userId: userId,
+        userId: _scope(gradebook, userId).teacher,
         gradebook: gradebook,
         evaluationId: evaluation.id,
         pupilId: pupilId,
@@ -428,8 +548,10 @@ class SkoreGradebookService {
   }
 
   /// The path of Skore's REST API for the feedback of pupil [pupilId] on
-  /// evaluation [evaluationId] of [gradebook], read by user [userId] of
-  /// platform [platform] (see [getFeedback]). Exposed for testing.
+  /// evaluation [evaluationId] of [gradebook], with teacher [userId] of
+  /// platform [platform] (see [getFeedback]): the logged-in user for their
+  /// own gradebook, the gradebook's teacher for one shared with them (#191).
+  /// Exposed for testing.
   static String feedbackPath({
     required int platform,
     required int userId,
@@ -514,7 +636,7 @@ class SkoreGradebookService {
         '${gradebook.courseId}',
         _pathIds(gradebook),
       ],
-      userId: userId,
+      scope: _scope(gradebook, userId),
       workyearId: gradebook.workyearId,
     ),
   );
@@ -555,6 +677,12 @@ class SkoreGradebookService {
   /// - a gradebook that is not one of the user's own gradebooks of Skore's
   ///   current school year ([getGradebookYear]): the library writes in the
   ///   current school year only;
+  /// - a gradebook a colleague shared with the user ([SkoreGradebook.isShared],
+  ///   #191), before anything is sent: one shared to read only with a
+  ///   [SmartschoolSkoreGradebookReadOnlyError]; one shared to write too, as
+  ///   the library creates evaluations in the user's own gradebooks only
+  ///   (that Skore's web client creates one in a shared gradebook with the
+  ///   same call was not seen);
   /// - a period that is not one of the gradebook's, or is closed
   ///   ([SkoreGradebookPeriod.isOpen]);
   /// - a gradebook Skore shows read-only in that period
@@ -598,6 +726,15 @@ class SkoreGradebookService {
     int? componentId,
   }) async {
     const operation = 'createEvaluation';
+    if (gradebook.isShared) {
+      _refuseReadOnly(operation, gradebook);
+      _refuse(
+        operation,
+        'gradebook ${gradebook.gradebookId} is shared with you by teacher '
+        '${gradebook.teacherId}: the library creates evaluations in your own '
+        'gradebooks only',
+      );
+    }
     final name = title.trim();
     final short = shortName?.trim() ?? '';
     if (name.isEmpty) _refuse(operation, 'the title is blank');
@@ -654,7 +791,7 @@ class SkoreGradebookService {
       [
         0, // evaluationID: a new evaluation
         '${book.gradebookId}', // ownerID
-        target.userId,
+        target.scope.teacher,
         '${book.courseId}',
         course.name,
         name,
@@ -674,7 +811,7 @@ class SkoreGradebookService {
         1, // evalType: points ("Cijfers")
       ],
       gradebook: book,
-      userId: target.userId,
+      scope: target.scope,
       retryAfterLogin: false,
       unconfirmed: (failure) => unconfirmed(
         '$what was sent, but no usable answer came in ($failure).',
@@ -796,6 +933,13 @@ class SkoreGradebookService {
   /// - a gradebook or period [createEvaluation] refuses too: not one of the
   ///   user's own gradebooks of Skore's current school year, a period that
   ///   is closed, or one Skore shows read-only;
+  /// - for a gradebook a colleague shared with the user
+  ///   ([SkoreGradebook.isShared], #191), which is written in when it is
+  ///   shared to write: one shared to read only, with a
+  ///   [SmartschoolSkoreGradebookReadOnlyError], before anything is sent;
+  ///   and one Skore's list of the gradebooks shared with the user
+  ///   ([getSharedGradebooks], read again) no longer holds for the current
+  ///   school year, or holds as shared to read only now (that error too);
   /// - an evaluation of another gradebook, or one Skore no longer lists in
   ///   its period;
   /// - an evaluation from the planner ([SkoreEvaluation.isPlannerEvaluation]:
@@ -813,7 +957,11 @@ class SkoreGradebookService {
   ///
   /// Then it sends Skore's `saveGrade` for each pupil in turn, as the web
   /// client sends it for a cell (verified live), and Skore must answer each
-  /// with `savedState` 1. A failed save does not stop the others. Saving the
+  /// with `savedState` 1. In a gradebook shared with the user to write
+  /// (#191), its `userID` is the gradebook's teacher and the session is
+  /// restricted to the gradebook, as the web client sends it there (from
+  /// its code; not tried live: it waits for the developer's go-ahead). A
+  /// failed save does not stop the others. Saving the
   /// same grade twice gives the same state, so a save is sent again after a
   /// new login when Smartschool refuses the session for it. When Smartschool
   /// refuses it even then, or logging in again fails, for the first save
@@ -851,7 +999,9 @@ class SkoreGradebookService {
     required bool allowPublished,
   }) async {
     if (grades.isEmpty) return const {};
-    // Before anything is sent: the pupils' IDs and the grades.
+    // Before anything is sent: a gradebook shared to read only (#191), the
+    // pupils' IDs and the grades.
+    _refuseReadOnly(operation, gradebook);
     final values = <int, _GradeValue>{};
     final wrong = <String>[];
     for (final MapEntry(key: pupilId, value: grade) in grades.entries) {
@@ -926,7 +1076,7 @@ class SkoreGradebookService {
             '${current.id}', // col: the evaluation's column, its refID
             cell.rowKey, // row: pupil_<pupilId>_<classId>
             value.text,
-            target.userId,
+            target.scope.teacher, // userID: the gradebook's teacher
             0, // projectID: an evaluation, not a project
             0, // catID
             0, // courseID
@@ -935,7 +1085,7 @@ class SkoreGradebookService {
             '${cell.cellEvaluationId}', // evaluationID: p[2] of the cell
             '${book.gradebookId}', // ownerID: p[3] of the cell
           ],
-          userId: target.userId,
+          scope: target.scope,
           workyearId: book.workyearId,
         );
         handled = true;
@@ -1091,14 +1241,27 @@ class SkoreGradebookService {
   /// "{modelId}_{groupId}_{classId}"}` and `studentId` `"{ss}_{pupilId}_0"`,
   /// the IDs of [getFeedback].
   ///
+  /// **In a gradebook shared with the user to write** (#191), the same, with
+  /// the gradebook's teacher as `teacherId` (and in the path of the read),
+  /// as Skore's web client builds it from its `gbc.userID`; the user's own
+  /// feedback is the feedback they wrote (by their user ID, as the web
+  /// client's `isCurrentUser`), and the answer must name them as its
+  /// teacher. That save was not tried live: it waits for the developer's
+  /// go-ahead in a test evaluation of a gradebook shared to write. A
+  /// gradebook shared to read only is refused before anything is sent, with
+  /// a [SmartschoolSkoreGradebookReadOnlyError].
+  ///
   /// Before the save, it reads Skore again and refuses with a
   /// [SmartschoolSkoreChangeRefusedError], saving nothing:
   /// - a pupil ID that is not positive, or a blank [text] (before anything
   ///   is sent);
   /// - what [saveGrade] refuses for the gradebook, the period and the
   ///   evaluation: not one of the user's own gradebooks of Skore's current
-  ///   school year, a period that is closed or read-only, an evaluation of
-  ///   another gradebook, no longer listed, or from the planner, and one
+  ///   school year (nor one shared with them to write, #191; one shared to
+  ///   read only with a [SmartschoolSkoreGradebookReadOnlyError], before
+  ///   anything is sent), a period that is closed or read-only, an
+  ///   evaluation of another gradebook, no longer listed, or from the
+  ///   planner, and one
   ///   that is published or scheduled, without [allowPublished] (any type
   ///   of evaluation: feedback is not a grade);
   /// - a pupil without a cell in the evaluation's rows of the gradebook's
@@ -1133,6 +1296,7 @@ class SkoreGradebookService {
     bool allowPublished = false,
   }) async {
     const operation = 'saveFeedback';
+    _refuseReadOnly(operation, gradebook);
     final sent = text.trim();
     if (pupilId <= 0) _refuse(operation, '$pupilId is not a pupil ID');
     if (sent.isEmpty) _refuse(operation, 'the text is blank');
@@ -1154,11 +1318,15 @@ class SkoreGradebookService {
       );
     }
 
-    // The user's own feedback for the pupil, as Skore has it now.
+    // The user's own feedback for the pupil, as Skore has it now: the
+    // feedback the user wrote. The path and the save name the gradebook's
+    // teacher, as Skore's web client does: for a gradebook shared with the
+    // user, its teacher, not the user (#191).
     final (platform, userId) = await _platformAndUser();
+    final teacher = checked.target.scope.teacher;
     final readPath = feedbackPath(
       platform: platform,
-      userId: userId,
+      userId: teacher,
       gradebook: book,
       evaluationId: current.id,
       pupilId: pupilId,
@@ -1188,7 +1356,7 @@ class SkoreGradebookService {
     final reference = {
       'evaluationId': '${platform}_${current.id}',
       'classGroupId': '${platform}_${book.classId}',
-      'teacherId': '${platform}_${userId}_0',
+      'teacherId': '${platform}_${teacher}_0',
       'context': book.pathIds.join('_'),
     };
     final studentId = '${platform}_${pupilId}_0';
@@ -1363,10 +1531,16 @@ class SkoreGradebookService {
   /// Reads [gradebook] and its period [periodId] again, and refuses a write
   /// in them with a [SmartschoolSkoreChangeRefusedError] that names
   /// [operation] unless:
-  /// - [periodId] is positive (checked before anything is sent);
+  /// - the gradebook is not one shared with the user to read only
+  ///   ([SkoreGradebookAccess.read]: a
+  ///   [SmartschoolSkoreGradebookReadOnlyError], #191), and [periodId] is
+  ///   positive (both checked before anything is sent);
   /// - the gradebook is one of the user's own gradebooks of Skore's current
   ///   school year (`getNavigation` without `wy`), with the user as its
-  ///   teacher;
+  ///   teacher; or, for one passed as shared ([SkoreGradebook.isShared]),
+  ///   one Skore lists as shared with the user in the current school year
+  ///   (`accessableList` without `wy`), to write (shared to read only now:
+  ///   a [SmartschoolSkoreGradebookReadOnlyError]);
   /// - the period is one of the gradebook's, and open (`init`);
   /// - Skore lets the user change the gradebook in that period
   ///   (`getGradebookContext` for the period: `writable` 1, no coordinator
@@ -1374,18 +1548,22 @@ class SkoreGradebookService {
   ///   period of an earlier school year too (seen live, #148).
   ///
   /// The checks every write in a gradebook makes first: [createEvaluation]
-  /// (#150), and the grades and feedback of #151 and #152. Returns what
-  /// they read, the gradebook as Skore lists it now included, which the
-  /// write then uses.
+  /// (#150), and the grades and feedback of #151 and #152, in the user's
+  /// own gradebooks and in those shared with them to write (#191). Returns
+  /// what they read, the gradebook as Skore lists it now included, which
+  /// the write then uses, with the [_Scope] its calls go out in
+  /// ([_WriteTarget.scope]).
   Future<_WriteTarget> _checkWritable(
     String operation,
     SkoreGradebook gradebook,
     int periodId,
   ) async {
+    _refuseReadOnly(operation, gradebook);
     if (periodId <= 0) _refuse(operation, '$periodId is not a period ID');
     final gradebookId = gradebook.gradebookId;
+    final shared = gradebook.isShared;
     final userId = (await _client.getCurrentUser()).id;
-    final year = await getGradebookYear();
+    final year = await getGradebookYear(includeShared: shared);
     final current = year.workyear;
     if (gradebook.workyearId != current.id) {
       _refuse(
@@ -1395,17 +1573,22 @@ class SkoreGradebookService {
         'library writes in the current school year only',
       );
     }
-    final book = year.gradebooks
-        .where((g) => g.gradebookId == gradebookId)
-        .firstOrNull;
+    final listed = shared ? year.sharedGradebooks : year.gradebooks;
+    final book = listed.where((g) => g.gradebookId == gradebookId).firstOrNull;
     if (book == null) {
       _refuse(
         operation,
-        'gradebook $gradebookId is not one of your own gradebooks of '
-        '${current.name} (Skore lists ${year.gradebooks.length})',
+        shared
+            ? 'gradebook $gradebookId is not shared with you in '
+                  '${current.name} (Skore lists ${listed.length} gradebooks '
+                  'shared with you)'
+            : 'gradebook $gradebookId is not one of your own gradebooks of '
+                  '${current.name} (Skore lists ${listed.length})',
       );
     }
-    if (book.teacherId != userId) {
+    if (shared) {
+      _refuseReadOnly(operation, book, now: true);
+    } else if (book.teacherId != userId) {
       _refuse(
         operation,
         'gradebook $gradebookId is of teacher ${book.teacherId}, not your own '
@@ -1546,9 +1729,9 @@ class SkoreGradebookService {
     );
   }
 
-  /// Sends the save [method] with [params] in [gradebook], as user
-  /// [userId], and returns the `result` of Skore's answer. With
-  /// [retryAfterLogin] `false`, it goes out once, never again.
+  /// Sends the save [method] with [params] in [gradebook], in [scope], and
+  /// returns the `result` of Skore's answer. With [retryAfterLogin]
+  /// `false`, it goes out once, never again.
   ///
   /// A session Smartschool refuses for it, or an answer without a session,
   /// is rethrown as the [SmartschoolSessionExpiredError] it is: Skore did not
@@ -1559,7 +1742,7 @@ class SkoreGradebookService {
     String method,
     List<Object?> params, {
     required SkoreGradebook gradebook,
-    required int userId,
+    required _Scope scope,
     required bool retryAfterLogin,
     required SmartschoolSkoreSaveUnconfirmedError Function(Exception failure)
     unconfirmed,
@@ -1568,7 +1751,7 @@ class SkoreGradebookService {
       return await _rpc(
         method,
         params,
-        userId: userId,
+        scope: scope,
         workyearId: gradebook.workyearId,
         retryAfterLogin: retryAfterLogin,
       );
@@ -1598,7 +1781,7 @@ class SkoreGradebookService {
         '${book.groupId}',
         target.period.id,
       ],
-      userId: target.userId,
+      scope: target.scope,
       workyearId: book.workyearId,
     );
     const what = 'the courses of a new evaluation (getNewEvalDialogBox)';
@@ -1681,6 +1864,26 @@ class SkoreGradebookService {
         '$operation: $why. Nothing was saved.',
       );
 
+  /// Refuses a write in [gradebook] with a
+  /// [SmartschoolSkoreGradebookReadOnlyError] that names [operation] when it
+  /// is shared with the user to read only ([SkoreGradebookAccess.read],
+  /// #191): as it was passed, or, with [now], as Skore lists it right before
+  /// the save.
+  static void _refuseReadOnly(
+    String operation,
+    SkoreGradebook gradebook, {
+    bool now = false,
+  }) {
+    if (gradebook.access != SkoreGradebookAccess.read) return;
+    throw SmartschoolSkoreGradebookReadOnlyError(
+      '$operation: gradebook ${gradebook.gradebookId} is shared with you by '
+      'teacher ${gradebook.teacherId} to read only'
+      '${now ? ' (as Skore lists the gradebooks shared with you now)' : ''}: '
+      'you may read it, not change it. Nothing was saved.',
+      gradebook: gradebook,
+    );
+  }
+
   static final _schoolYearName = RegExp(r'^(\d{4})\s*-\s*(\d{4})$');
 
   /// The first and last day of school year [workyear], from its name:
@@ -1713,8 +1916,9 @@ class SkoreGradebookService {
   // RPC
   // ---------------------------------------------------------------------------
 
-  /// Calls [method] of Skore's gradebook RPC service with [params], as user
-  /// [userId], for school year [workyearId] (`null`: Skore's current one),
+  /// Calls [method] of Skore's gradebook RPC service with [params], in
+  /// [scope] (the session object's `teacher` and `restriction`, see
+  /// [_scope]), for school year [workyearId] (`null`: Skore's current one),
   /// and returns the `result` of its answer.
   ///
   /// Only the methods in [rpcMethods]: any other is refused before anything
@@ -1727,7 +1931,7 @@ class SkoreGradebookService {
   Future<dynamic> _rpc(
     String method,
     List<Object?> params, {
-    required int userId,
+    required _Scope scope,
     required int? workyearId,
     bool retryAfterLogin = true,
   }) async {
@@ -1739,7 +1943,7 @@ class SkoreGradebookService {
         params,
         session: SkoreRpc.session(
           DateTime.now(),
-          extra: {'teacher': userId, 'restriction': 0},
+          extra: {'teacher': scope.teacher, 'restriction': scope.restriction},
           trailing: {if (workyearId != null) 'wy': '$workyearId'},
         ),
       ),
@@ -2014,6 +2218,151 @@ class SkoreGradebookService {
     final content = node['content'];
     if (content is! String) return '';
     return html_parser.parseFragment(content).text?.trim() ?? '';
+  }
+
+  /// Parses the `result` of `accessableList(userID)`, the gradebooks of
+  /// school year [workyearId] that colleagues shared with the user (#191),
+  /// as the tab "Gedeeld" of Skore's gradebook lists them (its
+  /// `/SkoreGradebook/Main/getSharedGradebooks` gives the same list, with
+  /// numbers for the IDs).
+  ///
+  /// The answer is a list (seen live, 2026-10-27), one entry per gradebook:
+  /// ```json
+  /// {"id": "1006_34980", "userId": "1006", "ownerId": "34980",
+  ///  "courseId": "1588", "writable": 1, "username": "Jan Janssens",
+  ///  "classcourse": "6EWI/Digitale vaardigheden",
+  ///  "text": "6EWI/Digitale vaardigheden Jan Janssens",
+  ///  "userPictureUrl": "...",
+  ///  "navigation": {"pathIds": ["176", "472", "2440"],
+  ///                 "data": {"classID": "2440", "courseID": "1588",
+  ///                          "groupID": "472", "modelID": "176",
+  ///                          "ownerID": "34980", "userID": "1006"}}}
+  /// ```
+  /// - `id` is `<teacher>_<gradebook>`, which Skore's web client opens the
+  ///   gradebook by (`setUser(teacher, ownerRestriction)`); `userId` is the
+  ///   gradebook's teacher (the colleague who shared it), `ownerId` the
+  ///   gradebook ([SkoreGradebook.gradebookId]);
+  /// - `writable` is `1` for a gradebook shared to write
+  ///   ([SkoreGradebookAccess.write]) and `0` for one shared to read only
+  ///   ([SkoreGradebookAccess.read]), as the web client shows it
+  ///   ("writable" or "readable"). Only `1` was seen live;
+  /// - `navigation` is what the web client opens: the class's `pathIds`
+  ///   and the gradebook's IDs, which must agree with the entry;
+  /// - `classcourse` is `<class>/<course>`: [SkoreGradebook.className] is
+  ///   the part before the first `/`, [SkoreGradebook.courseName] the part
+  ///   after it (all of it, and `""`, without a `/`); `username` is the
+  ///   teacher's name ([SkoreGradebook.ownerName]). The list does not name
+  ///   the report model and the group: `""`.
+  ///
+  /// Each gradebook once (by `ownerId`), in Skore's order. Anything not in
+  /// this shape (also a `pathIds` that is not that of a class, three
+  /// positive IDs) is refused with a [SmartschoolSkoreError].
+  static List<SkoreGradebook> parseSharedGradebooks(
+    dynamic result, {
+    required int workyearId,
+  }) {
+    const what = 'the gradebooks shared with you (accessableList)';
+    if (result is! List) {
+      throw SmartschoolSkoreError(
+        'Skore gave $what as ${SkoreRpc.jsonPreview(result)} instead of a '
+        'list.',
+      );
+    }
+    final gradebooks = <int, SkoreGradebook>{};
+    for (final entry in result) {
+      final gradebook = _sharedGradebook(entry, what, workyearId: workyearId);
+      gradebooks.putIfAbsent(gradebook.gradebookId, () => gradebook);
+    }
+    return [...gradebooks.values];
+  }
+
+  /// A gradebook [entry] of [what], the list of `accessableList`; see
+  /// [parseSharedGradebooks].
+  static SkoreGradebook _sharedGradebook(
+    Object? entry,
+    String what, {
+    required int workyearId,
+  }) {
+    if (entry is! Map) {
+      throw SmartschoolSkoreError(
+        'Skore gave a gradebook in $what as ${SkoreRpc.jsonPreview(entry)} '
+        'instead of an object.',
+      );
+    }
+    final gradebookId = SkoreRpc.id(entry['ownerId'], 'a gradebook in $what');
+    final where = 'gradebook $gradebookId in $what';
+    final teacherId = SkoreRpc.id(entry['userId'], 'the teacher of $where');
+    final courseId = SkoreRpc.id(entry['courseId'], 'the course of $where');
+    if ('${entry['id'] ?? ''}'.trim() != '${teacherId}_$gradebookId') {
+      throw SmartschoolSkoreError(
+        'Skore gave $where the ID ${SkoreRpc.jsonPreview(entry['id'])} '
+        'instead of ${teacherId}_$gradebookId.',
+      );
+    }
+    final access = switch (SkoreRpc.tryId(entry['writable'])) {
+      1 => SkoreGradebookAccess.write,
+      0 => SkoreGradebookAccess.read,
+      _ => throw SmartschoolSkoreError(
+        'Skore gave $where the access ${SkoreRpc.jsonPreview(entry['writable'])} '
+        'instead of writable 1 or 0.',
+      ),
+    };
+    final navigation = entry['navigation'];
+    final pathIds = navigation is Map ? navigation['pathIds'] : null;
+    final data = navigation is Map ? navigation['data'] : null;
+    if (pathIds is! List || pathIds.length != 3 || data is! Map) {
+      throw SmartschoolSkoreError(
+        'Skore gave $where the navigation '
+        '${SkoreRpc.jsonPreview(navigation)} instead of the pathIds of a '
+        'class and the IDs of the gradebook.',
+      );
+    }
+    final [modelId, groupId, classId] = [
+      for (final id in pathIds) SkoreRpc.id(id, 'the pathIds of $where'),
+    ];
+    final ids = {
+      'modelID': modelId,
+      'groupID': groupId,
+      'classID': classId,
+      'ownerID': gradebookId,
+      'userID': teacherId,
+      'courseID': courseId,
+    };
+    if ([modelId, groupId, classId].any((id) => id <= 0) ||
+        ids.entries.any((e) => SkoreRpc.tryId(data[e.key]) != e.value)) {
+      throw SmartschoolSkoreError(
+        'Skore gave $where the navigation '
+        '${SkoreRpc.jsonPreview(navigation)}, which is not that of a class '
+        'with its IDs (pathIds ${SkoreRpc.jsonPreview(pathIds)}, teacher '
+        '$teacherId, course $courseId).',
+      );
+    }
+    final label = entry['classcourse'];
+    final name = entry['username'];
+    if ((label != null && label is! String) ||
+        (name != null && name is! String)) {
+      throw SmartschoolSkoreError(
+        'Skore gave $where the label ${SkoreRpc.jsonPreview(label)} and the '
+        'teacher name ${SkoreRpc.jsonPreview(name)} instead of texts.',
+      );
+    }
+    final text = (label as String?)?.trim() ?? '';
+    final slash = text.indexOf('/');
+    return SkoreGradebook(
+      gradebookId: gradebookId,
+      teacherId: teacherId,
+      modelId: modelId,
+      modelName: '',
+      groupId: groupId,
+      groupName: '',
+      classId: classId,
+      className: (slash < 0 ? text : text.substring(0, slash)).trim(),
+      courseId: courseId,
+      courseName: slash < 0 ? '' : text.substring(slash + 1).trim(),
+      workyearId: workyearId,
+      access: access,
+      ownerName: (name as String?)?.trim() ?? '',
+    );
   }
 
   /// Parses [gradebook] from the `result` of Skore's
@@ -2840,7 +3189,18 @@ class _WriteTarget {
     required this.sheet,
     required this.period,
   });
+
+  /// How the write's calls go out ([SkoreGradebookService._scope]): as
+  /// [userId] for their own gradebook, as its teacher, restricted to it,
+  /// for one shared with them to write (#191).
+  _Scope get scope => SkoreGradebookService._scope(gradebook, userId);
 }
+
+/// How Skore's web client opens a gradebook (`SkoreGradebookService._scope`,
+/// #191): [teacher] is the session object's `teacher` and the calls'
+/// `userID`, [restriction] the session's `restriction` and the calls'
+/// `ownerRestriction` (`0`, or the ID of a gradebook shared with the user).
+typedef _Scope = ({int teacher, int restriction});
 
 /// A grade as `SkoreGradebookService.saveGrades` sends it (#151): [text] is
 /// what goes out (`"15.5"`, `""` to clear), [number] its value (`null` to

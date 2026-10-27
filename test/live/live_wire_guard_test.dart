@@ -119,6 +119,13 @@ const _skoreResults = {
       '"p":[1,0,"500001","32508",500001]}]}}',
   'getNewEvalDialogBox': '[["2264","Informatica"]]',
   'getPosComponents': '[[0,"geen"],["2","DW"]]',
+  // #191: a gradebook a colleague (888) shared with the user to write.
+  'accessableList':
+      '[{"id":"888_34980","userId":"888","ownerId":"34980","courseId":"1588",'
+      '"writable":1,"username":"Piet Peeters","classcourse":'
+      '"6EWI/Digitale vaardigheden","navigation":{"pathIds":["176","472",'
+      '"2440"],"data":{"classID":"2440","courseID":"1588","groupID":"472",'
+      '"modelID":"176","ownerID":"34980","userID":"888"}}}]',
 };
 
 /// The start page, where the client reads the own user (777, #148).
@@ -1424,6 +1431,22 @@ void main() {
         '$_skoreGradebook getNavigation',
         '$_skoreGradebook init',
         '$_skoreGradebook getGradebookContext',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('the read of the gradebooks shared with the user (#191)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final gradebooks = SkoreGradebookService(client);
+
+      final shared = await gradebooks.getSharedGradebooks();
+
+      expect(shared.single.gradebookId, 34980);
+      expect(shared.single.access, SkoreGradebookAccess.write);
+      expect(server.skoreCalls, [
+        '$_skoreGradebook getNavigation',
+        '$_skoreGradebook accessableList',
       ]);
       expect(guard.violations, isEmpty);
     });
@@ -3198,6 +3221,7 @@ void main() {
         (_skoreGradebooks, 'deleteTeacher'),
         (_skoreGradebooks, 'getTeachers'),
         (_skoreGradebook, 'gradebooksToAccess'),
+        (_skoreGradebook, 'usersThatCanAccess'), // shares a gradebook
         // The gradebook's writes, its publishing above all (#148), and its
         // reads on the other services.
         (_skoreGradebook, 'setPublicProp'),

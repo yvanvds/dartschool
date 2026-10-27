@@ -1,9 +1,9 @@
 /// Models for the Skore gradebook of a teacher (#148, #149, #150): what
 /// `SkoreGradebookService` reads as the logged-in teacher at `/SkoreGradebook`
-/// ("Puntenboek"): the teacher's own gradebooks of a school year, the
-/// periods and pupils of one gradebook, and the evaluations of a period with
-/// their publication, grades and feedback, and the components a new
-/// evaluation can count for.
+/// ("Puntenboek"): the teacher's own gradebooks of a school year and those
+/// colleagues shared with them (#191), the periods and pupils of one
+/// gradebook, and the evaluations of a period with their publication, grades
+/// and feedback, and the components a new evaluation can count for.
 ///
 /// This is the teacher's side of Skore, which any teacher reaches with their
 /// own login. The admin side (report models, assignments, sharing) is
@@ -34,7 +34,8 @@ class SkoreWorkyear {
 
 /// The logged-in teacher's own gradebooks of one school year, as the left
 /// panel of Skore's gradebook lists them, with the school years Skore offers
-/// (`SkoreGradebookService.getGradebookYear`).
+/// (`SkoreGradebookService.getGradebookYear`), and, when asked for, the
+/// gradebooks colleagues shared with the teacher (#191).
 class SkoreGradebookYear {
   /// The school year of [gradebooks]: the one asked for, or Skore's current
   /// school year when none was asked for.
@@ -46,27 +47,65 @@ class SkoreGradebookYear {
 
   /// The teacher's gradebooks of [workyear], one per class and course, in
   /// the order of the left panel (per model, group and class). Empty for a
-  /// teacher without gradebooks in that year.
+  /// teacher without gradebooks in that year. Each with
+  /// [SkoreGradebookAccess.own].
   final List<SkoreGradebook> gradebooks;
+
+  /// The gradebooks of [workyear] that colleagues shared with the teacher
+  /// ("Gedeeld" in Skore's left panel), to read or to write
+  /// ([SkoreGradebook.access]), in Skore's order, each once (#191).
+  ///
+  /// Only read when asked for (`getGradebookYear(includeShared: true)`, or
+  /// `getSharedGradebooks`): empty otherwise, and for a teacher with whom no
+  /// gradebook is shared.
+  final List<SkoreGradebook> sharedGradebooks;
 
   const SkoreGradebookYear({
     required this.workyear,
     this.workyears = const [],
     this.gradebooks = const [],
+    this.sharedGradebooks = const [],
   });
 
   @override
   String toString() =>
       'SkoreGradebookYear(workyear: ${workyear.name} (${workyear.id}), '
-      'gradebooks: ${gradebooks.length}, workyears: ${workyears.length})';
+      'gradebooks: ${gradebooks.length}, shared: ${sharedGradebooks.length}, '
+      'workyears: ${workyears.length})';
 }
 
-/// A gradebook of the logged-in teacher: the grades of one class for one
-/// course in one school year, as the left panel of Skore's gradebook lists
-/// it (Skore's `getNavigation`).
+/// Whose gradebook a [SkoreGradebook] is to the logged-in user, and what
+/// Skore lets them do in it (#191).
+enum SkoreGradebookAccess {
+  /// One of the user's own gradebooks: they are its teacher (the left panel
+  /// of Skore's gradebook, `getNavigation`).
+  own,
+
+  /// A colleague's gradebook, shared with the user **to read only**
+  /// (`writable` 0 in Skore's list of shared gradebooks; Skore's web client
+  /// shows it as "readable"). The writes of `SkoreGradebookService` refuse
+  /// it before anything is sent (`SmartschoolSkoreGradebookReadOnlyError`).
+  /// Not seen live: every gradebook shared with the developer's account was
+  /// shared to write (2026-10-27).
+  read,
+
+  /// A colleague's gradebook, shared with the user to read and to write
+  /// (`writable` 1), as an admin shares it with `SkoreService.shareGradebook`
+  /// (#74). Grades and feedback can be saved in it; an evaluation is not
+  /// created in it (`createEvaluation` keeps to the own gradebooks).
+  write,
+}
+
+/// A gradebook the logged-in teacher can open: the grades of one class for
+/// one course in one school year. One of their own, as the left panel of
+/// Skore's gradebook lists it (Skore's `getNavigation`), or one a colleague
+/// shared with them, as its tab "Gedeeld" lists it (Skore's
+/// `accessableList`, #191): [access] tells which.
 ///
 /// Pass it to `SkoreGradebookService.getGradebook` for its periods and
-/// pupils. Every call about the gradebook goes out for its [workyearId].
+/// pupils. Every call about the gradebook goes out for its [workyearId]; one
+/// about a shared gradebook goes out as Skore's web client opens it, in the
+/// name of its teacher ([teacherId]) and restricted to it (#191).
 class SkoreGradebook {
   /// The gradebook ID (Skore's `ownerID`): the ID of the assignment that
   /// holds it, `SkoreAssignment.id` of the admin side (e.g. `32508`).
@@ -74,26 +113,32 @@ class SkoreGradebook {
 
   /// The Smartschool user ID of the teacher the gradebook belongs to
   /// (Skore's `userID`). For the teacher's own gradebooks, the logged-in
-  /// user (all of them, seen live).
+  /// user (all of them, seen live). For a gradebook shared with the user,
+  /// the colleague it belongs to, who shared it ([ownerName]; seen live,
+  /// #191).
   final int teacherId;
 
   /// The ID of the report model of the class (e.g. `176`), the first of
   /// [pathIds].
   final int modelId;
 
-  /// The name of the report model (e.g. `"3gr D-D/A"`).
+  /// The name of the report model (e.g. `"3gr D-D/A"`). `""` for a shared
+  /// gradebook: Skore's list of shared gradebooks does not name it.
   final String modelName;
 
   /// The ID of the group of classes (e.g. `472`), the second of [pathIds].
   final int groupId;
 
-  /// The name of the group of classes (e.g. `"6DO"`).
+  /// The name of the group of classes (e.g. `"6DO"`). `""` for a shared
+  /// gradebook: Skore's list of shared gradebooks does not name it.
   final String groupName;
 
   /// The Skore class ID (e.g. `2440`), the last of [pathIds].
   final int classId;
 
-  /// The class name (e.g. `"6EWI"`).
+  /// The class name (e.g. `"6EWI"`). For a shared gradebook, the part
+  /// before the first `/` of the label Skore's list gives it
+  /// (`classcourse`, `"6EWI/Digitale vaardigheden"`).
   final String className;
 
   /// The Skore course ID (e.g. `2264`).
@@ -101,17 +146,31 @@ class SkoreGradebook {
 
   /// The course as the left panel names it, with the grade Skore adds to it
   /// (e.g. `"Informaticawetenschappen (2 uur) (6e j DO)"`). Skore's other
-  /// calls leave the grade out: `SkoreGradebookSheet.courseName`.
+  /// calls leave the grade out: `SkoreGradebookSheet.courseName`. For a
+  /// shared gradebook, the part after the first `/` of its label in Skore's
+  /// list (`"Digitale vaardigheden"`).
   final String courseName;
 
   /// The names of the teachers of the course, as Skore lists them in the
   /// left panel (Skore's `part`, e.g. `["Janssens Jan"]`: last name first,
-  /// without a comma).
+  /// without a comma). Empty for a shared gradebook: [ownerName] names its
+  /// teacher.
   final List<String> teacherNames;
 
   /// The Skore ID of the school year the gradebook is of
   /// ([SkoreWorkyear.id]).
   final int workyearId;
+
+  /// Whose gradebook it is to the user, and what Skore lets them do in it
+  /// (#191): [SkoreGradebookAccess.own] for one of their own gradebooks,
+  /// [SkoreGradebookAccess.read] or [SkoreGradebookAccess.write] for one a
+  /// colleague shared with them. [SkoreGradebookAccess.own] by default.
+  final SkoreGradebookAccess access;
+
+  /// For a gradebook shared with the user, the name of its teacher, who
+  /// shared it, as Skore's list of shared gradebooks gives it (`username`,
+  /// first name first, e.g. `"Jan Janssens"`). `""` for the user's own.
+  final String ownerName;
 
   const SkoreGradebook({
     required this.gradebookId,
@@ -126,17 +185,24 @@ class SkoreGradebook {
     required this.courseName,
     required this.workyearId,
     this.teacherNames = const [],
+    this.access = SkoreGradebookAccess.own,
+    this.ownerName = '',
   });
 
   /// Skore's path to the class (its `pathIds`): [modelId], [groupId] and
   /// [classId]. Skore's gradebook calls name the class by it.
   List<int> get pathIds => [modelId, groupId, classId];
 
+  /// Whether a colleague shared the gradebook with the user (to read or to
+  /// write), rather than it being one of their own (#191).
+  bool get isShared => access != SkoreGradebookAccess.own;
+
   @override
   String toString() =>
       'SkoreGradebook(gradebookId: $gradebookId, class: $className '
       '($classId), course: $courseName ($courseId), pathIds: $pathIds, '
-      'workyearId: $workyearId)';
+      'workyearId: $workyearId'
+      '${isShared ? ', access: ${access.name}, teacherId: $teacherId' : ''})';
 }
 
 /// One gradebook with its periods and pupils
@@ -172,6 +238,11 @@ class SkoreGradebookSheet {
   /// earlier school year. Whether a period takes grades is
   /// [SkoreGradebookPeriod.isOpen]. `false` when the gradebook has no
   /// periods: then Skore is not asked.
+  ///
+  /// For a gradebook shared with the user to write, Skore answered `1`
+  /// (seen live, #191); what it answers for one shared to read only was not
+  /// seen. Whether a gradebook was shared to write is
+  /// [SkoreGradebook.access].
   final bool writable;
 
   /// Whether Skore answered the gradebook in coordinator mode

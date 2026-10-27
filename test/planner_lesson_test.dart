@@ -1079,6 +1079,183 @@ void main() {
       );
     });
 
+    // #155: the planner keeps an info in its own form. An info with a quote
+    // sent as `&quot;` or `&#39;` was saved (seen live, 2026-10-08), but the
+    // edit threw a SmartschoolPlannerSaveUnconfirmedError: the answer was
+    // compared with the HTML sent, character for character. The planner
+    // answers `&quot;`, `&#39;` and `&eacute;` as `"`, `'` and `é`, and keeps
+    // `&amp;`, `&lt;` and `&gt;` (seen live, 2026-10-27, with the info of the
+    // first test). The other answers below hold the info in another form of
+    // the same HTML, as the planner may.
+    group('an info is compared as HTML (#155)', () {
+      test('changePublicInfo: references that the planner answers in its own '
+          'form, as seen live, are confirmed', () async {
+        const sent =
+            '<p>Breng &quot;je&quot; laptop &amp; lader mee, &#39;s middags '
+            '&lt;3 &gt; 2 caf&eacute;</p>';
+        const kept =
+            '<p>Breng "je" laptop &amp; lader mee, \'s middags &lt;3 &gt; 2 '
+            'café</p>';
+        final (server, planner) = await serve({
+          _readLesson: [_json(_lesson)],
+          _changePublic: [
+            _json(_with(_lesson, changes: {'publicInfo': kept})),
+          ],
+        });
+
+        final changed = await planner.changePublicInfo(_listed(_lesson), sent);
+
+        expect(server.plannerLog, [_readLesson, _changePublic]);
+        expect(server.bodyOf(_changePublic), {'newInfo': sent});
+        expect(changed.publicInfo, kept, reason: "the planner's form");
+      });
+
+      test('changePrivateInfo: quotes sent as &#39; that the planner answers '
+          'as quotes are confirmed', () async {
+        const sent = '<p>Oefening 3 &#39;overslaan&#39;</p>';
+        const kept = "<p>Oefening 3 'overslaan'</p>";
+        final (server, planner) = await serve({
+          _readLesson: [_json(_lesson)],
+          _changePrivate: [
+            _json(_with(_lesson, changes: {'privateInfo': kept, 'info': kept})),
+          ],
+        });
+
+        final changed = await planner.changePrivateInfo(_listed(_lesson), sent);
+
+        expect(server.plannerLog, [_readLesson, _changePrivate]);
+        expect(server.bodyOf(_changePrivate), {'newInfo': sent});
+        expect(changed.privateInfo, kept);
+      });
+
+      // Sent, and the same HTML in another form.
+      const sameHtml = {
+        '&gt;': ('<p>3 &gt; 2</p>', '<p>3 > 2</p>'),
+        'a named reference': ('<p>Caf&eacute;</p>', '<p>Café</p>'),
+        'a numeric reference': ('<p>Caf&#233;</p>', '<p>Caf&eacute;</p>'),
+        'a hexadecimal reference': ('<p>Caf&#xE9;</p>', '<p>Café</p>'),
+        '&nbsp;': ('<p>a&nbsp;b</p>', '<p>a b</p>'),
+        'a quote as a character': ('<p>"je"</p>', '<p>&quot;je&quot;</p>'),
+        'an empty tag': ('<p>a<br/>b</p>', '<p>a<br />b</p>'),
+        'a tag in capitals': ('<P>a<BR>b</P>', '<p>a<br>b</p>'),
+        'an attribute': (
+          "<a href='https://example.com/?a=1&amp;b=2'>x</a>",
+          '<a href="https://example.com/?a=1&b=2">x</a>',
+        ),
+      };
+      for (final MapEntry(key: what, value: (sent, kept)) in sameHtml.entries) {
+        test('$what in another form is confirmed', () async {
+          final (server, planner) = await serve({
+            _readLesson: [_json(_lesson)],
+            _changePublic: [
+              _json(_with(_lesson, changes: {'publicInfo': kept})),
+            ],
+          });
+
+          final changed = await planner.changePublicInfo(
+            _listed(_lesson),
+            sent,
+          );
+
+          expect(server.plannerLog, [_readLesson, _changePublic]);
+          expect(server.bodyOf(_changePublic), {'newInfo': sent});
+          expect(changed.publicInfo, kept);
+        });
+      }
+
+      test('an info the element has already in another form is not sent '
+          'again', () async {
+        const kept = '<p>Breng "je" laptop mee</p>';
+        final (server, planner) = await serve({
+          _readLesson: [
+            _json(
+              _with(
+                _lesson,
+                changes: {'publicInfo': kept, 'privateInfo': kept},
+              ),
+            ),
+          ],
+        });
+
+        final samePublic = await planner.changePublicInfo(
+          _listed(_lesson),
+          '<p>Breng &quot;je&quot; laptop mee</p>',
+        );
+        final samePrivate = await planner.changePrivateInfo(
+          _listed(_lesson),
+          '<p>Breng &#34;je&#34; laptop mee</p>',
+        );
+
+        expect(samePublic.publicInfo, kept, reason: 'the element as read');
+        expect(samePrivate.privateInfo, kept);
+        expect(server.plannerLog, [_readLesson, _readLesson]);
+      });
+
+      test('other markup is not the same: unconfirmed', () async {
+        final (server, planner) = await serve({
+          _readLesson: [_json(_lesson)],
+          _changePublic: [
+            _json(
+              _with(
+                _lesson,
+                changes: {'publicInfo': '<p>Breng je laptop opgeladen mee</p>'},
+              ),
+            ),
+          ],
+        });
+
+        await expectLater(
+          planner.changePublicInfo(
+            _listed(_lesson),
+            '<p>Breng je laptop <strong>opgeladen</strong> mee</p>',
+          ),
+          throwsA(
+            _unconfirmed(
+              contains('the publicInfo "<p>Breng je laptop opgeladen'),
+              statusCode: 200,
+            ),
+          ),
+        );
+        expect(server.plannerLog, [_readLesson, _changePublic]);
+      });
+
+      test('a tag written as text is not the tag: sent, and unconfirmed when '
+          'the planner answers the tag', () async {
+        const tag = '<p><b>vet</b></p>';
+        const text = '<p>&lt;b&gt;vet&lt;/b&gt;</p>';
+        final (server, planner) = await serve({
+          _readLesson: [
+            _json(_with(_lesson, changes: {'publicInfo': tag})),
+          ],
+          _changePublic: [
+            _json(_with(_lesson, changes: {'publicInfo': tag})),
+          ],
+        });
+
+        await expectLater(
+          planner.changePublicInfo(_listed(_lesson), text),
+          throwsA(_unconfirmed(contains('the publicInfo "$tag"'))),
+        );
+        expect(server.plannerLog, [_readLesson, _changePublic]);
+        expect(server.bodyOf(_changePublic), {'newInfo': text});
+      });
+
+      test('a name is compared as it is, not as HTML', () async {
+        final (server, planner) = await serve({
+          _readLesson: [_json(_lesson)],
+          _rename: [
+            _json(_with(_lesson, changes: {'name': 'Lussen & functies'})),
+          ],
+        });
+
+        await expectLater(
+          planner.renameElement(_listed(_lesson), 'Lussen &amp; functies'),
+          throwsA(_unconfirmed(contains('the name "Lussen & functies"'))),
+        );
+        expect(server.bodyOf(_rename), {'newName': 'Lussen &amp; functies'});
+      });
+    });
+
     group('refuse before anything is sent', () {
       final edits =
           <String, Future<PlannedElementDetail> Function(PlannerService)>{

@@ -94,7 +94,9 @@ export '../models/lvs_time.dart' show lvsDayOf;
 ///   `jqDispatcher_settings&function=getLVSspecificTitles` (the periods),
 ///   form-encoded, answered with JSON as text;
 /// - [getAbsences] (#164): `POST /LVS/Pupilpresences` with `pupilID` and
-///   `groupID`, answered with JSON: per school year, a list of days (#176).
+///   `groupID`, answered with JSON: per school year, a list of days (#176);
+///   on HTTP 500, the read of the pupil's file without today's status, to
+///   tell a pupil the LVS does not know (#190).
 ///
 /// They answer straight after a login: the LVS page (some 300 KB) does not
 /// have to be loaded first (seen live).
@@ -126,7 +128,9 @@ export '../models/lvs_time.dart' show lvsDayOf;
 ///   pupil's results.
 /// - [SmartschoolLvsPupilNotFoundError] (a [SmartschoolLvsError]):
 ///   [getPupilFile] or [getNotes] got the LVS's placeholder pupil: it knows
-///   no pupil of that ID in that class that the account may see.
+///   no pupil of that ID in that class that the account may see; and
+///   [getAbsences], when the LVS answered the absences with HTTP 500 and the
+///   pupil's file with that placeholder (#190).
 /// - [SmartschoolLvsCategoryNotFoundError] (a [SmartschoolLvsError]):
 ///   [getNotes] got no category: the LVS knows no category of notes of that
 ///   ID.
@@ -818,9 +822,20 @@ class LvsService {
   /// LVS shows (`formattedDate`, `vr 23 oktober 2030`): [LvsAbsence.date]
   /// is read from that text, and is `null` when it does not parse (#176).
   /// That shape is a real pupil's answer, as the developer captured it in a
-  /// browser (shapes only). The LVS answered a made-up pupil ID in a made-up
-  /// class with HTTP 500 and Smartschool's error page (seen live,
-  /// 2026-10-21): a plain [SmartschoolLvsError], never an empty list.
+  /// browser (shapes only).
+  ///
+  /// A pupil the LVS does not know in that class has no answer of its own
+  /// here: the LVS answered a made-up pupil ID in a made-up class with
+  /// HTTP 500 and Smartschool's error page (seen live, 2026-10-21), as it
+  /// can answer any read it fails. So on a `500`, the service reads the
+  /// pupil's file, as [getPupilFile] with `withTodayStatus` `false` (one
+  /// `GET /LVS/Spotlight/<pupil id>?classID=<class id>`, no today's status)
+  /// (#190): when the LVS answers that with its placeholder pupil, the
+  /// absences throw a [SmartschoolLvsPupilNotFoundError] (with [pupilId] and
+  /// [classId]), as [getPupilFile] does. Otherwise (the file of a pupil it
+  /// knows, or a failure of that read) the `500` stands: a plain
+  /// [SmartschoolLvsError] with its status, never an empty list. Another
+  /// answer the service cannot use reads no file.
   ///
   /// An ID that is not positive is an [ArgumentError], before anything is
   /// sent.
@@ -831,11 +846,48 @@ class LvsService {
     _checkId(pupilId, 'pupilId');
     _checkId(classId, 'classId');
     const read = LvsWire.absences;
-    final response = await _wire.post(
-      read.path as String,
-      form: {'pupilID': '$pupilId', 'groupID': '$classId'},
-    );
-    return LvsAbsenceAnswers.absences(LvsWire.json(response, read));
+    final Object? json;
+    try {
+      final response = await _wire.post(
+        read.path as String,
+        form: {'pupilID': '$pupilId', 'groupID': '$classId'},
+      );
+      json = LvsWire.json(response, read);
+    } on SmartschoolLvsError catch (e) {
+      if (e.statusCode != 500 || e is SmartschoolLvsAccessDeniedError) rethrow;
+      await _throwIfNoSuchPupil(pupilId, classId, failedRead: read);
+      rethrow;
+    }
+    return LvsAbsenceAnswers.absences(json);
+  }
+
+  /// After [failedRead] for pupil [pupilId] in class [classId] got HTTP 500
+  /// (#190): reads the pupil's file without today's status, and throws a
+  /// [SmartschoolLvsPupilNotFoundError] when the LVS answers it with its
+  /// placeholder pupil. Returns for any other outcome of that read, its
+  /// failures too: the caller's error stands.
+  Future<void> _throwIfNoSuchPupil(
+    int pupilId,
+    int classId, {
+    required LvsRead failedRead,
+  }) async {
+    try {
+      await getPupilFile(
+        pupilId: pupilId,
+        classId: classId,
+        withTodayStatus: false,
+      );
+    } on SmartschoolLvsPupilNotFoundError {
+      throw SmartschoolLvsPupilNotFoundError(
+        'The LVS knows no such pupil in that class that the account may see: '
+        "it answered ${failedRead.what} with HTTP 500, and the pupil's file "
+        'with its placeholder pupil.',
+        pupilId: pupilId,
+        classId: classId,
+      );
+    } on Exception {
+      // The file tells nothing about the pupil: the caller's error stands.
+    }
   }
 
   /// Throws an [ArgumentError] for a [count] (a page number, a page size, a

@@ -8,16 +8,19 @@
 // or HTML, as plain text), and the totals per code; no absences; the shapes
 // the web client takes (the class view's days keyed `YYYY-MM-DD`, keys it
 // leaves out); refusals and unknown shapes as errors that carry no value;
-// the allowlist that keeps the section's other calls out.
+// the allowlist that keeps the section's other calls out; and a pupil the
+// LVS does not know (#190): on HTTP 500 for the absences, the read of the
+// pupil's file without today's status, whose placeholder pupil is a
+// SmartschoolLvsPupilNotFoundError.
 //
 // The answers are the hand-written fixtures of test/fixtures/lvs/absences/
 // (doc/lvs-privacy.md: never trimmed from a live answer), in the shape of a
 // real pupil's answer as the developer captured it in a browser (#176,
-// shapes only): per school year a list of days. Smaller variants are inline
-// below.
+// shapes only): per school year a list of days; and, for the file, those of
+// test/fixtures/lvs/spotlight/. Smaller variants are inline below.
 //
 // The fake Smartschool fails the test on any request that is not the
-// service's read of the absences.
+// service's read of the absences or of the pupil's file.
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -46,6 +49,21 @@ class _Credentials extends Credentials {
 String _fixture(String name) =>
     File('test/fixtures/lvs/absences/$name').readAsStringSync();
 
+/// A fixture of the pupil's file (#190): `pupil_file.json` (pupil 900001 in
+/// class 900101) or `pupil_not_found.json` (the LVS's placeholder for pupil
+/// 900009).
+ResponseBody Function() _spotlight(String name) =>
+    () => _answer(File('test/fixtures/lvs/spotlight/$name').readAsStringSync());
+
+/// Smartschool's error page with HTTP 500, as the LVS answered the absences
+/// of a made-up pupil in a made-up class (seen live).
+ResponseBody _errorPage() => _answer(
+  '<!DOCTYPE html><html><body><h1>Oeps, er ging iets mis</h1>'
+  '</body></html>',
+  status: 500,
+  contentType: 'text/html; charset=UTF-8',
+);
+
 ResponseBody _answer(
   String body, {
   int status = 200,
@@ -68,12 +86,15 @@ ResponseBody Function() _file(String name) =>
 ResponseBody Function() _of(Object? json) =>
     () => _answer(jsonEncode(json));
 
-/// A Smartschool whose LVS answers the read of the absences with [answer].
-/// Any other request fails the test.
+/// A Smartschool whose LVS answers the read of the absences with [answer],
+/// and the read of the pupil's file with [file] (#190). Any other request
+/// fails the test.
 class _Lvs implements HttpClientAdapter {
-  _Lvs(this.answer);
+  _Lvs(this.answer, {this.file});
 
   final ResponseBody Function()? answer;
+
+  final ResponseBody Function()? file;
 
   /// Every request that reached it, as `METHOD path?query`.
   final requests = <String>[];
@@ -93,6 +114,11 @@ class _Lvs implements HttpClientAdapter {
     );
     final data = options.data;
     forms.add(data is Map ? data.cast<String, String>() : const {});
+    if (options.method == 'GET' && uri.path.startsWith('/LVS/Spotlight/')) {
+      final file = this.file;
+      if (file == null) fail("The test gave no answer to the pupil's file");
+      return file();
+    }
     if (options.method != 'POST' ||
         uri.path != '/LVS/Pupilpresences' ||
         uri.hasQuery) {
@@ -107,8 +133,11 @@ class _Lvs implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-Future<(_Lvs, LvsService)> _serve([ResponseBody Function()? answer]) async {
-  final server = _Lvs(answer);
+Future<(_Lvs, LvsService)> _serve(
+  ResponseBody Function()? answer, {
+  ResponseBody Function()? file,
+}) async {
+  final server = _Lvs(answer, file: file);
   final client = await SmartschoolClient.create(
     _Credentials(),
     cacheDir: tempCacheDir(),
@@ -739,21 +768,6 @@ void main() {
       await expectLater(_read(lvs), throwsA(_refused));
     });
 
-    test("Smartschool's error page with a 500, as the LVS answered a "
-        'made-up pupil in a made-up class (seen live), is a '
-        'SmartschoolLvsError with the status', () async {
-      final (_, lvs) = await _serve(
-        () => _answer(
-          '<!DOCTYPE html><html><body><h1>Oeps, er ging iets mis</h1>'
-          '</body></html>',
-          status: 500,
-          contentType: 'text/html; charset=UTF-8',
-        ),
-      );
-
-      await expectLater(_read(lvs), throwsA(_unreadable(statusCode: 500)));
-    });
-
     test('an HTML page, an answer that is not JSON, or an empty answer is a '
         'SmartschoolLvsError that quotes nothing', () async {
       for (final body in [
@@ -773,7 +787,7 @@ void main() {
 
     test('an ID that is not positive is an ArgumentError, before anything is '
         'sent', () async {
-      final (server, lvs) = await _serve();
+      final (server, lvs) = await _serve(null);
 
       for (final (pupilId, classId) in [(0, 900101), (900001, -1), (-5, 0)]) {
         await expectLater(
@@ -810,6 +824,131 @@ void main() {
           'LvsAbsenceTotal(count: 2, halfDays: 2)',
         ]),
       );
+    });
+  });
+
+  group('a pupil the LVS does not know (#190)', () {
+    /// The error of the absences themselves: their HTTP 500, not an error of
+    /// the read of the file.
+    Matcher absencesFailed() => allOf(
+      _unreadable(statusCode: 500),
+      isA<SmartschoolLvsError>().having(
+        (e) => e.message,
+        'message',
+        contains("the pupil's absences with HTTP 500"),
+      ),
+    );
+
+    test("Smartschool's error page with a 500, as the LVS answered a made-up "
+        "pupil in a made-up class (seen live), then the LVS's placeholder "
+        "pupil for the pupil's file: a SmartschoolLvsPupilNotFoundError with "
+        'both IDs, neither in its message, as getPupilFile throws', () async {
+      final (server, lvs) = await _serve(
+        _errorPage,
+        file: _spotlight('pupil_not_found.json'),
+      );
+
+      await expectLater(
+        lvs.getAbsences(pupilId: 900009, classId: 900109),
+        throwsA(
+          isA<SmartschoolLvsPupilNotFoundError>()
+              .having((e) => e.pupilId, 'pupilId', 900009)
+              .having((e) => e.classId, 'classId', 900109)
+              .having((e) => e.message, 'message', _quotesNothing)
+              .having((e) => e.message, 'message', isNot(contains('900009')))
+              .having((e) => e.message, 'message', isNot(contains('900109')))
+              .having((e) => '$e', 'toString()', _quotesNothing),
+        ),
+      );
+      // The file only, as getPupilFile reads it without today's status: no
+      // getStatusInfo.
+      expect(server.requests, [
+        'POST /LVS/Pupilpresences',
+        'GET /LVS/Spotlight/900009?classID=900109',
+      ]);
+      expect(server.forms.last, isEmpty);
+    });
+
+    test('a 500 for the absences of a pupil the LVS knows: the file is read, '
+        'and the 500 stands, a plain SmartschoolLvsError with the '
+        'status', () async {
+      final (server, lvs) = await _serve(
+        _errorPage,
+        file: _spotlight('pupil_file.json'),
+      );
+
+      await expectLater(_read(lvs), throwsA(absencesFailed()));
+      expect(server.requests, [
+        'POST /LVS/Pupilpresences',
+        'GET /LVS/Spotlight/900001?classID=900101',
+      ]);
+    });
+
+    test('a 500 for the absences and a read of the file that fails (a '
+        "refusal, a 500, an answer that is not JSON, another pupil's file, an "
+        'unknown shape, no connection): the 500 of the absences '
+        'stands', () async {
+      final files = <String, ResponseBody Function()>{
+        '403': () => _answer('', status: 403, contentType: 'text/html'),
+        '500': _errorPage,
+        'not JSON': () => _answer('{"pupil": '),
+        'another pupil': _spotlight('pupil_file.json'),
+        'unknown shape': _of({'pupil': 'Testleerling'}),
+        'no connection': () => throw const SocketException('Testfout'),
+      };
+      for (final MapEntry(key: what, value: file) in files.entries) {
+        final (server, lvs) = await _serve(_errorPage, file: file);
+        await expectLater(
+          lvs.getAbsences(pupilId: 900009, classId: 900109),
+          throwsA(absencesFailed()),
+          reason: what,
+        );
+        expect(server.requests, [
+          'POST /LVS/Pupilpresences',
+          'GET /LVS/Spotlight/900009?classID=900109',
+        ], reason: what);
+      }
+    });
+
+    test('an answer of the absences other than a 500 (a refusal, another '
+        'status, an HTML page, an answer that is not JSON, an unknown shape) '
+        'reads no file', () async {
+      final answers = <String, ResponseBody Function()>{
+        '403': () => _answer('', status: 403),
+        'start page': () => _answer(
+          '',
+          status: 302,
+          headers: {
+            'location': ['/?module=Homepage'],
+          },
+        ),
+        '404': () => _answer('', status: 404, contentType: 'text/html'),
+        '502': () => _answer('', status: 502, contentType: 'text/html'),
+        '503': () => _answer('', status: 503, contentType: 'text/html'),
+        'HTML': () => _answer(
+          '<html><body>Testpagina</body></html>',
+          contentType: 'text/html',
+        ),
+        'not JSON': () => _answer('{"presences": '),
+        'unknown shape': _of(['Testperiode']),
+      };
+      for (final MapEntry(key: what, value: answer) in answers.entries) {
+        final (server, lvs) = await _serve(
+          answer,
+          file: _spotlight('pupil_not_found.json'),
+        );
+        await expectLater(
+          lvs.getAbsences(pupilId: 900009, classId: 900109),
+          throwsA(
+            allOf(
+              isA<SmartschoolLvsError>(),
+              isNot(isA<SmartschoolLvsPupilNotFoundError>()),
+            ),
+          ),
+          reason: what,
+        );
+        expect(server.requests, ['POST /LVS/Pupilpresences'], reason: what);
+      }
     });
   });
 

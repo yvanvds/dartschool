@@ -26,7 +26,9 @@
 // its results since they carry the results app's headers (#175, seen
 // 2026-10-25: the configuration, and an empty list or page for the others;
 // HTTP 500 for every one of them without the headers), with HTTP 500 for
-// its absences, and with no period of support
+// its absences (which getAbsences then tells apart by the placeholder of
+// its file, read without today's status: a pupil not found, #190), and with
+// no period of support
 // plans (a made-up class has no structure of them) for the support plan
 // reads. With it, it also searches for that text and reads
 // the file and today's status of the first pupil found, and the file again
@@ -319,9 +321,12 @@ void main() {
         expect(run.guard.violations, isEmpty);
       });
 
-      test("a made-up pupil's absences (#164): a SmartschoolLvsError (the "
-          'LVS answered them with HTTP 500, seen 2026-10-21), never an empty '
+      test("a made-up pupil's absences (#164, #190): the LVS answers them "
+          'with HTTP 500 (seen 2026-10-21) and the file of that ID with its '
+          'placeholder pupil, so a SmartschoolLvsPupilNotFoundError, after '
+          "the read of the file without today's status; never an empty "
           'list', () async {
+        final from = attempts.paths.length;
         Object? error;
         try {
           await lvs.getAbsences(pupilId: _madeUpId, classId: _madeUpId);
@@ -331,12 +336,17 @@ void main() {
         // The type and the status only: never the message of an answer.
         print(
           'getAbsences: ${error.runtimeType}'
-          '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}',
+          '${error is SmartschoolLvsError ? ' (${error.statusCode})' : ''}, '
+          'reads of the file tried: '
+          '${attempts.countSince(from, '/LVS/Spotlight/')}',
         );
         expect(error, isA<SmartschoolLvsError>());
         expect(error, isNot(isA<SmartschoolLvsRequestNotAllowedError>()));
+        expect(attempts.triedSince(from, '/LVS/Pupilpresences'), isTrue);
         if (access) {
-          expect(error, isNot(isA<SmartschoolLvsAccessDeniedError>()));
+          expect(error, isA<SmartschoolLvsPupilNotFoundError>());
+          expect(attempts.countSince(from, '/LVS/Spotlight/'), 1);
+          expect(attempts.triedSince(from, _statusPath), isFalse);
         }
         expect(run.guard.violations, isEmpty);
       });

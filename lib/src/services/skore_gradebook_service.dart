@@ -113,7 +113,11 @@ export '../models/skore_gradebook_models.dart';
 ///   page instead of data, invalid JSON, an RPC answer without its `result`,
 ///   or data in a shape it does not recognise (such as a tree without its
 ///   lists, a non-numeric ID, or an answer about another gradebook, period,
-///   school year or pupil). Never an empty list instead. An evaluation of a
+///   school year or pupil). Never an empty list instead. One about the list
+///   of shared gradebooks of [getGradebookYear] with `includeShared` does
+///   not lose the own gradebooks: it comes back in
+///   [SkoreGradebookYear.sharedError] (#207), and
+///   [SkoreGradebookYear.sharedGradebooks] throws it. An evaluation of a
 ///   type the library does not know, or with a grade cell without its
 ///   `raw`, does not make its period unreadable: it comes back not
 ///   readable ([SkoreEvaluation.isReadable], #193), and its grades throw a
@@ -164,9 +168,10 @@ export '../models/skore_gradebook_models.dart';
 ///   check its publication in Smartschool.
 /// - [ArgumentError]: a school year ID that is not positive (before
 ///   anything is sent), or one Skore does not offer (Skore answers it with
-///   no gradebooks; seen live); a period, report ([getReport]) or pupil ID
-///   that is not positive, or an evaluation of another gradebook (before
-///   anything is sent).
+///   no gradebooks; seen live); a `workyearId` and a `workyear` both given
+///   to [getSharedGradebooks] (before anything is sent); a period, report
+///   ([getReport]) or pupil ID that is not positive, or an evaluation of
+///   another gradebook (before anything is sent).
 /// - [SmartschoolParsingError]: the session's user ID
 ///   (`authenticatedUser.id`) is not in the form `4069_146_0`, which
 ///   [getFeedback] and [saveFeedback] build Skore's IDs from.
@@ -297,6 +302,19 @@ class SkoreGradebookService {
   /// #191): a second request, Skore's `accessableList(userID)`, for the same
   /// school year, read by [parseSharedGradebooks]. Without it, that list is
   /// empty and not asked for.
+  ///
+  /// When Skore answers that second request with something the library
+  /// cannot use (an entry [parseSharedGradebooks] refuses, another HTTP
+  /// status than `200`, a redirect included, an HTML page, ...), the own
+  /// gradebooks are returned all the same, with that [SmartschoolSkoreError]
+  /// in [SkoreGradebookYear.sharedError], and
+  /// [SkoreGradebookYear.sharedGradebooks] throws it (#207). The request was
+  /// accepted for the own gradebooks, so such an answer is about the shared
+  /// list only. [getSharedGradebooks] with `workyear` reads it again, without
+  /// `getNavigation`. A session Smartschool does not accept (also after
+  /// logging in again, or Skore answering without a session), a failed login
+  /// and no connection still throw, as for `getNavigation`: they are not
+  /// about that list, and the next call would fail the same way.
   Future<SkoreGradebookYear> getGradebookYear({
     int? workyearId,
     bool includeShared = false,
@@ -317,20 +335,19 @@ class SkoreGradebookService {
     );
     final year = parseNavigation(result, workyearId: workyearId);
     if (!includeShared) return year;
-    final shared = await _rpc(
-      'accessableList',
-      [userId],
-      scope: _ownScope(userId),
-      workyearId: workyearId,
-    );
+    var shared = const <SkoreGradebook>[];
+    SmartschoolSkoreError? sharedError;
+    try {
+      shared = await _readShared(userId, year.workyear, wy: workyearId);
+    } on SmartschoolSkoreError catch (error) {
+      sharedError = error;
+    }
     return SkoreGradebookYear(
       workyear: year.workyear,
       workyears: year.workyears,
       gradebooks: year.gradebooks,
-      sharedGradebooks: parseSharedGradebooks(
-        shared,
-        workyearId: year.workyear.id,
-      ),
+      sharedGradebooks: shared,
+      sharedError: sharedError,
     );
   }
 
@@ -351,16 +368,67 @@ class SkoreGradebookService {
   /// name of one form teacher and shared with the co-titularis, who writes
   /// their feedback in it.
   ///
-  /// The [SkoreGradebookYear.sharedGradebooks] of
+  /// Without [workyear], the [SkoreGradebookYear.sharedGradebooks] of
   /// `getGradebookYear(workyearId: workyearId, includeShared: true)`: two
   /// requests, `getNavigation` (which tells the school year, and is big; see
   /// [getGradebookYear]) and `accessableList`. Pass a gradebook of it to the
   /// other methods as any other: they open it as Skore's web client does.
-  Future<List<SkoreGradebook>> getSharedGradebooks({int? workyearId}) async =>
-      (await getGradebookYear(
+  ///
+  /// With [workyear], a school year the caller read already
+  /// ([SkoreGradebookYear.workyear], or one of its
+  /// [SkoreGradebookYear.workyears]), one request: `accessableList`, for
+  /// that school year (`wy`), without `getNavigation` (#207). So the shared
+  /// list can be read again after [SkoreGradebookYear.sharedError], or later
+  /// than the own gradebooks. [workyearId] and [workyear] together, or a
+  /// [workyear] whose ID is not positive, are refused with an
+  /// [ArgumentError] before anything is sent.
+  ///
+  /// An answer it cannot use is a [SmartschoolSkoreError] (with or without
+  /// [workyear]): never an empty list instead.
+  Future<List<SkoreGradebook>> getSharedGradebooks({
+    int? workyearId,
+    SkoreWorkyear? workyear,
+  }) async {
+    if (workyear == null) {
+      return (await getGradebookYear(
         workyearId: workyearId,
         includeShared: true,
       )).sharedGradebooks;
+    }
+    if (workyearId != null) {
+      throw ArgumentError(
+        'workyearId $workyearId and workyear ${workyear.id} both given: pass '
+        'one; nothing was sent',
+      );
+    }
+    if (workyear.id <= 0) {
+      throw ArgumentError.value(
+        workyear.id,
+        'workyear',
+        'not a school year ID; nothing was sent',
+      );
+    }
+    final userId = (await _client.getCurrentUser()).id;
+    return _readShared(userId, workyear, wy: workyear.id);
+  }
+
+  /// The gradebooks of school year [workyear] shared with user [userId]:
+  /// Skore's `accessableList(userID)` in the user's own scope, for school
+  /// year [wy] (`null`: Skore's current one, which [workyear] is then), read
+  /// by [parseSharedGradebooks].
+  Future<List<SkoreGradebook>> _readShared(
+    int userId,
+    SkoreWorkyear workyear, {
+    required int? wy,
+  }) async => parseSharedGradebooks(
+    await _rpc(
+      'accessableList',
+      [userId],
+      scope: _ownScope(userId),
+      workyearId: wy,
+    ),
+    workyearId: workyear.id,
+  );
 
   /// Returns [gradebook] (from [getGradebooks]) with its periods, its report
   /// periods ([SkoreGradebookSheet.reports], #195), its pupils and whether
@@ -2229,6 +2297,9 @@ class SkoreGradebookService {
     final shared = gradebook.isShared;
     final userId = (await _client.getCurrentUser()).id;
     final year = await getGradebookYear(includeShared: shared);
+    // A shared list Skore answered with something the library cannot use
+    // throws its SmartschoolSkoreError here (#207): nothing is saved.
+    final listed = shared ? year.sharedGradebooks : year.gradebooks;
     final current = year.workyear;
     if (gradebook.workyearId != current.id) {
       _refuse(
@@ -2238,7 +2309,6 @@ class SkoreGradebookService {
         'library writes in the current school year only',
       );
     }
-    final listed = shared ? year.sharedGradebooks : year.gradebooks;
     final book = listed.where((g) => g.gradebookId == gradebookId).firstOrNull;
     if (book == null) {
       _refuse(

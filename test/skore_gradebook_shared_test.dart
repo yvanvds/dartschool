@@ -30,11 +30,19 @@
 //     feedback's own `teacher` is who wrote it (`isCurrentUser`) (from the
 //     web client's code, not tried live).
 //
+// And for issue #207: a shared list the library cannot read (an entry it
+// refuses, an answer with another status, ...) no longer loses the own
+// gradebooks of getGradebookYear(includeShared: true), which keeps that
+// error in SkoreGradebookYear.sharedError; a session, login or connection
+// failure still throws; and getSharedGradebooks(workyear: ...) reads the
+// list alone, without getNavigation.
+//
 // Teachers, pupils, names, texts, feedback and evaluation IDs are fakes;
 // class, group, model, course, gradebook and period IDs are Skore's own, as
 // in the other gradebook tests (34999 is made up). Nothing here reaches
 // Skore: the fake fails the test on any request it does not expect.
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -341,6 +349,10 @@ class _Skore implements HttpClientAdapter {
   final Map<String, Object?> init;
   final Map<String, Object?> context;
 
+  /// When set, what answers `accessableList` instead of [shared] (the call
+  /// is checked all the same): another status, a page, or a failure (#207).
+  ResponseBody Function(RequestOptions options)? sharedAnswer;
+
   /// The grades of Toets 1, by pupil.
   final Map<int, String> grades = {};
 
@@ -484,7 +496,12 @@ class _Skore implements HttpClientAdapter {
         );
         calls.add(call);
         requests.add('RPC ${call.method}');
-        return _body(_answer(call.method, _rpc(call)));
+        final result = _rpc(call);
+        final answer = sharedAnswer;
+        if (call.method == 'accessableList' && answer != null) {
+          return answer(options);
+        }
+        return _body(_answer(call.method, result));
     }
     if (path.startsWith(_feedbackApi)) {
       requests.add('${options.method} $path');
@@ -788,6 +805,290 @@ void main() {
         ('accessableList', '22'),
       ]);
       expect(books.map((b) => b.workyearId), [22, 22]);
+    });
+  });
+
+  group('a shared list the library cannot read (#207)', () {
+    /// A list with the gradebook of 6EWI and one entry the parser refuses.
+    List<Map<String, Object?>> withRefused(Map<String, Object?> entry) => [
+      _entry(),
+      entry,
+    ];
+
+    /// Checks [year]: the own gradebook of 6EWI and the school years, as
+    /// getNavigation gave them, and [error] for the shared list, which its
+    /// sharedGradebooks throws.
+    void expectOwnKept(SkoreGradebookYear year, Matcher error) {
+      expect(year.workyear.id, 24);
+      expect(year.workyears.map((y) => y.id), [24, 22]);
+      expect(year.gradebooks.map((g) => (g.gradebookId, g.access)), [
+        (32508, SkoreGradebookAccess.own),
+      ]);
+      expect(year.sharedError, error);
+      expect(() => year.sharedGradebooks, throwsA(same(year.sharedError)));
+      expect(year.toString(), contains('shared: unreadable'));
+    }
+
+    test('the issue\'s repro: an entry the parser refuses ("writable": '
+        'true, or a navigation without pathIds) keeps the own gradebooks of '
+        'getGradebookYear(includeShared: true), with the error in '
+        'sharedError; getNavigation is not sent again', () async {
+      for (final (entry, reason) in [
+        (
+          {..._entry(gradebook: 34981), 'writable': true},
+          'instead of writable 1 or 0',
+        ),
+        (
+          {
+            ..._entry(gradebook: 34981),
+            'navigation': {
+              'data': (_entry(gradebook: 34981)['navigation']! as Map)['data'],
+            },
+          },
+          'instead of the pathIds of a class',
+        ),
+      ]) {
+        final server = _Skore(shared: withRefused(entry));
+        final gradebooks = await serve(server);
+
+        // Before #207: a SmartschoolSkoreError for the whole call.
+        final year = await gradebooks.getGradebookYear(includeShared: true);
+
+        expectOwnKept(
+          year,
+          isA<SmartschoolSkoreError>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('gradebook 34981'), contains(reason)),
+          ),
+        );
+        expect(server.requests.where((r) => r.startsWith('RPC')), [
+          'RPC getNavigation',
+          'RPC accessableList',
+        ]);
+      }
+    });
+
+    test('Skore answering the list with something the service cannot use '
+        '(another status, a redirect to the start page, an HTML page, no '
+        'result, not a list): the own gradebooks, and the error', () async {
+      final answers = <(ResponseBody Function(), String)>[
+        (
+          () => _Skore._body('{"message": "Internal error"}', status: 500),
+          'Skore answered the RPC call accessableList of its gradebook with '
+              'HTTP 500: "Internal error".',
+        ),
+        // Skore's refusal of a request to an account: a redirect to the
+        // start page in a session Smartschool accepts (#91, #192).
+        (
+          () => ResponseBody.fromString(
+            '',
+            302,
+            headers: {
+              Headers.contentTypeHeader: ['text/html; charset=UTF-8'],
+              'location': ['/?module=Homepage'],
+            },
+          ),
+          'Skore answered the RPC call accessableList of its gradebook with '
+              'HTTP 302, a redirect to /?module=Homepage.',
+        ),
+        (
+          () => _Skore._body(
+            '<!DOCTYPE html><html><body>Fout</body></html>',
+            type: 'text/html',
+          ),
+          'the RPC call accessableList',
+        ),
+        (
+          () => _Skore._body(
+            jsonEncode({'session': 1, 'method': 'accessableList'}),
+          ),
+          'Skore answered the RPC call accessableList without a result.',
+        ),
+        (
+          () => _Skore._body(_answer('accessableList', {'list': []})),
+          'instead of a list',
+        ),
+      ];
+      for (final (answer, message) in answers) {
+        final server = _Skore()..sharedAnswer = (_) => answer();
+        final gradebooks = await serve(server);
+
+        final year = await gradebooks.getGradebookYear(includeShared: true);
+
+        expectOwnKept(
+          year,
+          isA<SmartschoolSkoreError>()
+              .having(
+                (e) => e,
+                'error',
+                isNot(isA<SmartschoolAuthenticationError>()),
+              )
+              .having((e) => e.message, 'message', contains(message)),
+        );
+        expect(server.requests.where((r) => r.startsWith('RPC')), [
+          'RPC getNavigation',
+          'RPC accessableList',
+        ]);
+      }
+    });
+
+    test('a session Smartschool does not accept (Skore answering without a '
+        'session) and no connection still throw: they are not about the '
+        'list', () async {
+      final expired = _Skore()
+        ..sharedAnswer = (_) => _Skore._body(
+          jsonEncode({
+            'result': _sharedList(),
+            'session': 0,
+            'method': 'accessableList',
+          }),
+        );
+      await expectLater(
+        (await serve(expired)).getGradebookYear(includeShared: true),
+        throwsA(
+          isA<SmartschoolSessionExpiredError>().having(
+            (e) => e.message,
+            'message',
+            'Skore answered the RPC call accessableList without a session.',
+          ),
+        ),
+      );
+
+      final unreachable = _Skore()
+        ..sharedAnswer = (options) => throw DioException.connectionError(
+          requestOptions: options,
+          reason: 'Connection reset by peer',
+          error: const SocketException('Connection reset by peer'),
+        );
+      await expectLater(
+        (await serve(unreachable)).getGradebookYear(includeShared: true),
+        throwsA(isA<SmartschoolConnectionError>()),
+      );
+      expect(unreachable.requests.where((r) => r.startsWith('RPC')), [
+        'RPC getNavigation',
+        'RPC accessableList',
+      ]);
+    });
+
+    test('getSharedGradebooks without a school year throws the error, as '
+        'before: never an empty list', () async {
+      final server = _Skore(
+        shared: withRefused({..._entry(gradebook: 34981), 'writable': true}),
+      );
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.getSharedGradebooks(),
+        throwsA(
+          isA<SmartschoolSkoreError>().having(
+            (e) => e.message,
+            'message',
+            contains('instead of writable 1 or 0'),
+          ),
+        ),
+      );
+    });
+
+    test('a write in a shared gradebook throws the error, before the save: '
+        'nothing is saved', () async {
+      final server = _Skore();
+      final (gradebooks, evaluation) = await ready(server);
+      server.sharedAnswer = (_) => _Skore._body('', status: 500);
+
+      await expectLater(
+        gradebooks.saveGrade(_shared, evaluation, _an, '15'),
+        throwsA(
+          isA<SmartschoolSkoreError>()
+              .having(
+                (e) => e,
+                'error',
+                isNot(isA<SmartschoolSkoreChangeRefusedError>()),
+              )
+              .having((e) => e.message, 'message', contains('HTTP 500')),
+        ),
+      );
+      expect(server.requests, ['RPC getNavigation', 'RPC accessableList']);
+      expect(server.grades, isEmpty);
+    });
+
+    test('getSharedGradebooks(workyear: ...) reads the list again with '
+        'accessableList alone, for that school year (wy)', () async {
+      final server = _Skore()
+        ..sharedAnswer = (_) => _Skore._body('', status: 500);
+      final gradebooks = await serve(server);
+      final year = await gradebooks.getGradebookYear(includeShared: true);
+      expect(year.sharedError, isNotNull);
+      server.sharedAnswer = null;
+      server.requests.clear();
+      server.calls.clear();
+
+      final books = await gradebooks.getSharedGradebooks(
+        workyear: year.workyear,
+      );
+
+      expect(server.requests, ['RPC accessableList']);
+      expect(server.calls.single.session['wy'], '24');
+      expect(books.map(_parts), [_parts(_shared), _parts(_readOnly)]);
+
+      server.calls.clear();
+      final earlier = await gradebooks.getSharedGradebooks(
+        workyear: year.workyears.last,
+      );
+      expect(server.calls.map((c) => (c.method, c.session['wy'])), [
+        ('accessableList', '22'),
+      ]);
+      expect(earlier.map((b) => b.workyearId), [22, 22]);
+    });
+
+    test('getSharedGradebooks refuses a workyearId and a workyear together, '
+        'and a workyear whose ID is not positive, before anything is '
+        'sent', () async {
+      final server = _Skore();
+      final gradebooks = await serve(server);
+
+      await expectLater(
+        gradebooks.getSharedGradebooks(
+          workyearId: 22,
+          workyear: const SkoreWorkyear(id: 24, name: '2026-2027'),
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains('both given'),
+          ),
+        ),
+      );
+      await expectLater(
+        gradebooks.getSharedGradebooks(
+          workyear: const SkoreWorkyear(id: 0, name: ''),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(server.requests, isEmpty);
+    });
+
+    test('SkoreGradebookYear: the shared gradebooks passed without an error, '
+        'as before; with one, sharedGradebooks throws it', () {
+      const workyear = SkoreWorkyear(id: 24, name: '2026-2027');
+      const read = SkoreGradebookYear(
+        workyear: workyear,
+        sharedGradebooks: [_shared],
+      );
+      expect(read.sharedError, isNull);
+      expect(read.sharedGradebooks, [same(_shared)]);
+      expect(read.toString(), contains('shared: 1'));
+      expect(
+        const SkoreGradebookYear(workyear: workyear).sharedGradebooks,
+        isEmpty,
+      );
+
+      const error = SmartschoolSkoreError('unreadable list');
+      const failed = SkoreGradebookYear(workyear: workyear, sharedError: error);
+      expect(failed.sharedError, same(error));
+      expect(() => failed.sharedGradebooks, throwsA(same(error)));
+      expect(failed.toString(), contains('shared: unreadable'));
     });
   });
 

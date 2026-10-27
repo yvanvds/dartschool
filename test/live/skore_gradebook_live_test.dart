@@ -15,7 +15,9 @@
 // Skore's web client opens it, in the name of its teacher and restricted to
 // it; and checks that the writes refuse one shared to read only, and
 // createEvaluation any shared one, before anything is sent. Skipped when no
-// gradebook is shared with the account.
+// gradebook is shared with the account. For #207 it reads that list again
+// with getSharedGradebooks(workyear: ...), accessableList alone, for the
+// school year getGradebookYear read.
 //
 // For #195 it reads the report periods of a gradebook and its report, with
 // each pupil's results and course comment (getReport, Skore's
@@ -1040,6 +1042,39 @@ void main() {
             expect(book.className, isNotEmpty);
             expect(book.ownerName, isNotEmpty);
           }
+          expect(withShared.sharedError, isNull, reason: 'the list was read');
+          expect(run.guard.violations, isEmpty);
+        });
+
+        test('getSharedGradebooks(workyear: ...) sends accessableList alone, '
+            'for that school year, and gives the same list (#207)', () async {
+          final answers = _RpcAnswers();
+          run.client.dio.interceptors.insert(0, answers);
+          addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+          final again = await gradebooks.getSharedGradebooks(
+            workyear: withShared.workyear,
+          );
+
+          print(
+            '${again.length} gradebooks shared with the account, read with '
+            'accessableList alone (wy ${withShared.workyear.id})',
+          );
+          expect(answers.answers.map((a) => (a.$1, a.$2)), [
+            ('accessableList', 200),
+          ]);
+          // Sent with the current school year's wy, where getGradebookYear
+          // sends none: Skore answers the same list.
+          expect(
+            again.map((b) => (b.gradebookId, b.teacherId, b.access)),
+            withShared.sharedGradebooks.map(
+              (b) => (b.gradebookId, b.teacherId, b.access),
+            ),
+          );
+          expect(
+            again.map((b) => b.workyearId),
+            everyElement(year.workyear.id),
+          );
           expect(run.guard.violations, isEmpty);
         });
 

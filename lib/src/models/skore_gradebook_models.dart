@@ -19,7 +19,8 @@
 /// Smartschool user IDs (the middle part of `4069_146_0`).
 library;
 
-import '../exceptions.dart' show SmartschoolSkoreEvaluationUnreadableError;
+import '../exceptions.dart'
+    show SmartschoolSkoreError, SmartschoolSkoreEvaluationUnreadableError;
 
 /// A school year of Skore (a "werkjaar"), as Skore's gradebook lists them:
 /// `["24", "2026-2027"]`.
@@ -40,7 +41,8 @@ class SkoreWorkyear {
 /// The logged-in teacher's own gradebooks of one school year, as the left
 /// panel of Skore's gradebook lists them, with the school years Skore offers
 /// (`SkoreGradebookService.getGradebookYear`), and, when asked for, the
-/// gradebooks colleagues shared with the teacher (#191).
+/// gradebooks colleagues shared with the teacher (#191), or why they could
+/// not be read ([sharedError], #207).
 class SkoreGradebookYear {
   /// The school year of [gradebooks]: the one asked for, or Skore's current
   /// school year when none was asked for.
@@ -56,6 +58,30 @@ class SkoreGradebookYear {
   /// [SkoreGradebookAccess.own].
   final List<SkoreGradebook> gradebooks;
 
+  final List<SkoreGradebook> _sharedGradebooks;
+
+  /// Why the library could not read the gradebooks of [workyear] shared
+  /// with the teacher, or `null` when it read them, or was not asked to
+  /// (#207): Skore answered its list (`accessableList`) with something the
+  /// library cannot use, such as an entry in a shape it does not recognise,
+  /// another HTTP status than `200` or an HTML page. Its message may quote
+  /// the answer, which can hold names: keep it in a log.
+  ///
+  /// [gradebooks] are read all the same: `getGradebookYear(includeShared:
+  /// true)` keeps them, so an app can go on with the own gradebooks and say
+  /// that the shared ones could not be read. `getSharedGradebooks(workyear:
+  /// workyear)` reads the list again, without the big read of the own
+  /// gradebooks.
+  final SmartschoolSkoreError? sharedError;
+
+  const SkoreGradebookYear({
+    required this.workyear,
+    this.workyears = const [],
+    this.gradebooks = const [],
+    List<SkoreGradebook> sharedGradebooks = const [],
+    this.sharedError,
+  }) : _sharedGradebooks = sharedGradebooks;
+
   /// The gradebooks of [workyear] that colleagues shared with the teacher
   /// ("Gedeeld" in Skore's left panel), to read or to write
   /// ([SkoreGradebook.access]), in Skore's order, each once (#191).
@@ -63,19 +89,21 @@ class SkoreGradebookYear {
   /// Only read when asked for (`getGradebookYear(includeShared: true)`, or
   /// `getSharedGradebooks`): empty otherwise, and for a teacher with whom no
   /// gradebook is shared.
-  final List<SkoreGradebook> sharedGradebooks;
-
-  const SkoreGradebookYear({
-    required this.workyear,
-    this.workyears = const [],
-    this.gradebooks = const [],
-    this.sharedGradebooks = const [],
-  });
+  ///
+  /// When the library could not read them, it throws [sharedError] (a
+  /// [SmartschoolSkoreError]), rather than give an empty list: check
+  /// [sharedError] first (#207).
+  List<SkoreGradebook> get sharedGradebooks {
+    final error = sharedError;
+    if (error != null) throw error;
+    return _sharedGradebooks;
+  }
 
   @override
   String toString() =>
       'SkoreGradebookYear(workyear: ${workyear.name} (${workyear.id}), '
-      'gradebooks: ${gradebooks.length}, shared: ${sharedGradebooks.length}, '
+      'gradebooks: ${gradebooks.length}, shared: '
+      '${sharedError == null ? _sharedGradebooks.length : 'unreadable'}, '
       'workyears: ${workyears.length})';
 }
 

@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.1 - 2026-10-29
 
 ### Can break a build
 - New top-level names (#157, #158, #204, #214): `SkoreSavedFeedback`, `SmartschoolAuthenticatedUserNotFoundError`, `SmartschoolSkoreCourseNotOnReportError`, `SmartschoolSkoreEvaluationPublishedError`, `SmartschoolSkoreFeedbackAmbiguousError`, `SmartschoolSkoreFeedbackNotEditableError`.

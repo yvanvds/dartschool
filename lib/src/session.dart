@@ -15,6 +15,7 @@ import 'cache_dir.dart';
 import 'credentials.dart';
 import 'download.dart';
 import 'exceptions.dart';
+import 'js_string.dart';
 import 'models/notification_models.dart';
 import 'models/user_models.dart';
 import 'xml_answer.dart';
@@ -1286,6 +1287,10 @@ class SmartschoolClient {
   /// at the end of the script is looked at, not the function the data is
   /// handed to: a script was skipped when it did not hold `extend`, which
   /// lost the user at that rename.
+  ///
+  /// The JSON is in a JavaScript string, with its escapes
+  /// ([unescapeJsString]): undoing them in two passes left the `/` of a URL
+  /// as `\/`, so `pictureUrl` read `https:\/\/...` (#213).
   void _parseLoginInformation(String htmlBody) {
     final doc = html_parser.parse(htmlBody);
     for (final script in doc.querySelectorAll('script')) {
@@ -1302,15 +1307,12 @@ class SmartschoolClient {
       if (match == null) continue;
 
       try {
-        // Unescape \uXXXX sequences and double back-slashes
-        var raw = match.group(1)!;
-        raw = raw.replaceAllMapped(
-          RegExp(r'\\u([0-9a-fA-F]{4})'),
-          (m) => String.fromCharCode(int.parse(m.group(1)!, radix: 16)),
-        );
-        raw = raw.replaceAll(r'\\', r'\');
-
-        final data = jsonDecode(raw) as Map<String, dynamic>;
+        // The JSON is in a JavaScript string: undo its escapes in one pass,
+        // so that the `\\\/` of a URL's `/` gives `\/`, which jsonDecode
+        // reads as `/` (#213).
+        final data =
+            jsonDecode(unescapeJsString(match.group(1)!))
+                as Map<String, dynamic>;
         final vars = data['vars'] as Map<String, dynamic>?;
         final user = vars?['authenticatedUser'] as Map<String, dynamic>?;
         if (user != null) {

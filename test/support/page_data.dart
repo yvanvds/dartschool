@@ -14,21 +14,31 @@ import 'dart:convert';
 /// [json] escaped as Smartschool's templates escape the JSON of its page
 /// data for a JavaScript string (as Twig's `js` escaping does): letters,
 /// digits, `,`, `.` and `_` stay as they are, `\` becomes `\\`, `/` becomes
-/// `\/`, and every other character `\uXXXX` (upper case), so that a `"`
-/// is `"` and the whole of it is on one line.
+/// `\/`, a backspace, form feed, line feed, carriage return and tab `\b`,
+/// `\f`, `\n`, `\r` and `\t`, and every other character `\uXXXX` (upper
+/// case; one outside the BMP as the two of its UTF-16 surrogates), so that
+/// a `"` is `\u0022` and the whole of it is on one line.
 ///
 /// Give it JSON with `/` escaped as `\/`, as Smartschool's JSON has it (in a
-/// URL: `https:\/\/...`), to get the `\\\/` of the live page.
+/// URL: `https:\/\/...`; see [smartschoolJson]), to get the `\\\/` of the
+/// live page (#213).
 String jsEscaped(String json) {
+  const short = {
+    r'\': r'\\',
+    '/': r'\/',
+    '\b': r'\b',
+    '\f': r'\f',
+    '\n': r'\n',
+    '\r': r'\r',
+    '\t': r'\t',
+  };
   final out = StringBuffer();
   for (final unit in json.codeUnits) {
     final char = String.fromCharCode(unit);
     if (RegExp(r'[A-Za-z0-9,._]').hasMatch(char)) {
       out.write(char);
-    } else if (char == r'\') {
-      out.write(r'\\');
-    } else if (char == '/') {
-      out.write(r'\/');
+    } else if (short[char] case final escape?) {
+      out.write(escape);
     } else {
       out.write(r'\u');
       out.write(unit.toRadixString(16).toUpperCase().padLeft(4, '0'));
@@ -36,6 +46,13 @@ String jsEscaped(String json) {
   }
   return out.toString();
 }
+
+/// [value] as JSON as Smartschool writes the JSON of its page data (as
+/// PHP's `json_encode` does with `JSON_UNESCAPED_UNICODE`): `/` escaped as
+/// `\/`, and every other character as `jsonEncode` writes it, so `é` as it
+/// is (#213).
+String smartschoolJson(Object? value) =>
+    jsonEncode(value).replaceAll('/', r'\/');
 
 /// An inline script that merges [data] into `window.SMSC`, as Smartschool's
 /// pages hand each block of their data to their JavaScript since 2026-10

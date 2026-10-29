@@ -1,6 +1,7 @@
-// Tests for issue #212: reading the authenticated user from the page data
-// of Smartschool's pages (`SmartschoolClient.authenticatedUser` and
-// `getCurrentUser`).
+// Tests for issues #212 and #213: reading the authenticated user from the
+// page data of Smartschool's pages (`SmartschoolClient.authenticatedUser`
+// and `getCurrentUser`), and undoing the escapes of the JavaScript string
+// that holds it (#213, at the end of the file).
 //
 // Since 2026-10 Smartschool hands its page data to its JavaScript in inline
 // scripts that merge each block into `window.SMSC`
@@ -215,6 +216,103 @@ void main() {
         throwsA(isA<SmartschoolAuthenticationError>()),
       );
       expect(server.paths, contains('/'));
+    });
+  });
+
+  // Issue #213: the page data is JSON in a JavaScript string, with the
+  // escaping of Smartschool's templates (jsEscaped), and the JSON has `/` as
+  // `\/` itself (smartschoolJson): the `/` of a URL is `\\\/` on the page.
+  // The escapes were undone in two passes (every `\uXXXX`, then every
+  // `\\`), which left `\/`: the picture URL came out as `https:\/\/...`.
+  group('the page data is JSON in a JavaScript string (#213):', () {
+    /// The picture of [authenticatedUserJson], as the URL it is.
+    const pictureUrl =
+        'https://userpicture20.smartschool.be/User/Userimage/hashimage/hash/'
+        'initials_JJ/plain/1/res/128';
+
+    test('getCurrentUser gives the picture URL with its slashes, on the '
+        'start page as it is served since 2026-10', () async {
+      final (_, client) = await serve(startPage());
+
+      expect((await client.authenticatedUser)['pictureUrl'], pictureUrl);
+      expect((await client.getCurrentUser()).avatarUrl, pictureUrl);
+    });
+
+    for (final (form, script) in [
+      ('APP.extend(APP.vars || {}, JSON.parse(...))', appExtendScript),
+      (r'$.extend(true, SMSC, JSON.parse(...))', jQueryExtendScript),
+    ]) {
+      test('and from $form', () async {
+        final (_, client) = await serve(
+          smartschoolPage([
+            script(
+              '{"vars":{"authenticatedUser":'
+              '${authenticatedUserJson()}}}',
+            ),
+          ]),
+        );
+
+        expect((await client.getCurrentUser()).avatarUrl, pictureUrl);
+      });
+    }
+
+    test(r'a name with a ", a \, a /, an apostrophe and letters outside '
+        'ASCII comes out as written', () async {
+      const firstNameFirst = 'Zoë "Jo" D\'Hondt \\ A/B \u{1F600}';
+      const lastNameFirst = 'D\'Hondt \\ A/B Zoë "Jo" \u{1F600}';
+      final (_, client) = await serve(
+        startPage(
+          userJson: smartschoolJson({
+            'id': '49_777_0',
+            'pictureUrl': pictureUrl,
+            'name': {
+              'startingWithFirstName': firstNameFirst,
+              'startingWithLastName': lastNameFirst,
+            },
+          }),
+        ),
+      );
+
+      expect((await client.authenticatedUser)['name'], {
+        'startingWithFirstName': firstNameFirst,
+        'startingWithLastName': lastNameFirst,
+      });
+      final user = await client.getCurrentUser();
+      expect(user.displayName, firstNameFirst);
+      expect(user.avatarUrl, pictureUrl);
+    });
+
+    test(r'JSON that writes a letter outside ASCII as \uXXXX (as json_encode '
+        r'does by default), which is \\uXXXX on the page, is read', () async {
+      final (_, client) = await serve(
+        startPage(
+          userJson: authenticatedUserJson(
+            firstNameFirst: r'Zo\u00eb Janssens',
+            lastNameFirst: r'Janssens Zo\u00EB',
+          ),
+        ),
+      );
+
+      final user = await client.getCurrentUser();
+      expect(user.displayName, 'Zoë Janssens');
+      expect((await client.authenticatedUser)['name'], {
+        'startingWithFirstName': 'Zoë Janssens',
+        'startingWithLastName': 'Janssens Zoë',
+      });
+    });
+
+    test(r'JSON with line breaks and tabs between its tokens, which are \n, '
+        r'\r and \t on the page, is read', () async {
+      final (_, client) = await serve(
+        smartschoolPage([
+          mergeScript(
+            '{\n\t"vars": {\r\n\t\t"authenticatedUser": '
+            '${authenticatedUserJson()}\n\t}\n}',
+          ),
+        ]),
+      );
+
+      expect(await client.getCurrentUser(), janJanssens);
     });
   });
 }

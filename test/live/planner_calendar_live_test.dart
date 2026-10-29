@@ -18,8 +18,9 @@
 // (support/live_wire_guard.dart) refuses every other planner POST, and the
 // last test checks that the library did not even try one. As every live
 // run, it takes the lock of the session first, logs in at most once, and
-// prints no credential, no cookie and no name: names are compared, never
-// shown.
+// prints no credential, no cookie and no name: names are compared in the
+// test and checked as booleans, never shown (support/unshown.dart: `expect`
+// shows the actual value of a failed match whatever the matcher, #215).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -32,6 +33,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/unshown.dart';
 
 const _lookupPath = '/planner/api/v1/quick-search/planner/start';
 
@@ -55,14 +57,6 @@ class _Attempts extends Interceptor {
     handler.next(options);
   }
 }
-
-/// Whether [actual] is [expected], as a matcher that does not show either
-/// when it fails: the names of colleagues, classes and rooms stay out of
-/// the output.
-Matcher _sameName(String expected) => predicate<String>(
-  (actual) => actual == expected,
-  'the same name as the element gives (not shown)',
-);
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -114,8 +108,16 @@ void main() {
         expect(me!.calendar, own);
         expect(me.kind, PlannerSearchResultKind.user);
         expect(me.isDeleted, isFalse);
-        expect(me.name, _sameName(user.displayName));
-        expect(me.title, isNot(contains('%')));
+        expectSameUnshown(
+          me.name,
+          user.displayName,
+          reason: 'the own calendar is not named as the authenticated user',
+        );
+        expect(
+          me.title.contains('%'),
+          isFalse,
+          reason: 'the title of the own calendar holds a % (not shown)',
+        );
       });
 
       test('a class and a room of the own planner are named as its elements '
@@ -138,12 +140,20 @@ void main() {
         expect(klas, isNotNull);
         expect(klas!.calendar, group.calendar);
         expect(klas.kind, PlannerSearchResultKind.group);
-        expect(klas.name, _sameName(group.name));
+        expectSameUnshown(
+          klas.name,
+          group.name,
+          reason: 'the class is not named as the element names it',
+        );
         expect(klas.isDeleted, isFalse);
         expect(location, isNotNull);
         expect(location!.calendar, room.calendar);
         expect(location.kind, PlannerSearchResultKind.location);
-        expect(location.name, _sameName(room.title));
+        expectSameUnshown(
+          location.name,
+          room.title,
+          reason: 'the room is not named as the element names it',
+        );
       });
 
       test('a colleague of a class of the own planner is named as the '
@@ -174,7 +184,11 @@ void main() {
         expect(named, isNotNull);
         expect(named!.calendar, colleague.calendar);
         expect(named.kind, PlannerSearchResultKind.user);
-        expect(named.name, _sameName(colleague.name));
+        expectSameUnshown(
+          named.name,
+          colleague.name,
+          reason: 'the colleague is not named as the elements name them',
+        );
       });
 
       test('a made-up class, user, co-account and room are null', () async {
@@ -189,10 +203,12 @@ void main() {
         ];
 
         for (final calendar in madeUp) {
+          // Checked as a boolean: a calendar found would show its name.
+          final found = await planner.getCalendar(calendar);
           expect(
-            await planner.getCalendar(calendar),
-            isNull,
-            reason: '$calendar',
+            found == null,
+            isTrue,
+            reason: '$calendar: a calendar was found (not shown)',
           );
         }
       });
@@ -218,9 +234,20 @@ void main() {
             ),
           ),
         );
-        // getCalendar tells both from a planner with nothing planned.
-        expect(await planner.getCalendar(room), isNull);
-        expect(await planner.getCalendar(klas), isNull);
+        // getCalendar tells both from a planner with nothing planned
+        // (checked as booleans: a calendar found would show its name).
+        final foundRoom = await planner.getCalendar(room);
+        final foundClass = await planner.getCalendar(klas);
+        expect(
+          foundRoom == null,
+          isTrue,
+          reason: 'getCalendar found the made-up room (not shown)',
+        );
+        expect(
+          foundClass == null,
+          isTrue,
+          reason: 'getCalendar found the made-up class (not shown)',
+        );
       });
 
       test('nothing but reads went out', () {

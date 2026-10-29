@@ -19,7 +19,9 @@
 // folder moved there, so intradesk_write_live_test.dart tries that, with a
 // folder it made. As every live run, it takes the lock of the session first,
 // logs in at most once, and prints no credential, no cookie and no folder
-// name: names are compared, never shown.
+// name: names are compared in the test, never shown (support/unshown.dart:
+// `expect` shows the actual value of a failed match whatever the matcher,
+// so a failure shows the fields that differ, not their values, #215).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -33,6 +35,7 @@ import 'package:test/test.dart';
 import 'support/live_client.dart';
 import 'support/live_run.dart';
 import 'support/live_wire_guard.dart';
+import 'support/unshown.dart';
 
 /// Records every request the library tries to send (`METHOD path`), before
 /// LiveWireGuard decides whether it goes out.
@@ -66,13 +69,27 @@ Map<String, Object> _entry(IntradeskFolder folder) => {
   'dateCreated': folder.dateCreated,
 };
 
-/// Whether [actual] is the entry [expected], as a matcher that does not show
-/// either when it fails: the names of the school's folders stay out of the
-/// output.
-Matcher _sameEntry(IntradeskFolder expected) => predicate<IntradeskFolder>(
-  (actual) => _entry(actual).toString() == _entry(expected).toString(),
-  'the same entry as the listing gives (not shown)',
-);
+/// Expects [actual] to be the entry [expected] (see [_entry]), and shows no
+/// folder name when it fails: only [what] and the fields that differ.
+void _expectSameEntry(
+  IntradeskFolder actual,
+  IntradeskFolder expected,
+  String what,
+) => expectSameFieldsUnshown(_entry(actual), _entry(expected), reason: what);
+
+/// Expects [path] to be the entries [expected], folder by folder (see
+/// [_entry]), and shows no folder name when it fails: only [what], the
+/// number of folders and the fields that differ.
+void _expectSamePath(
+  List<IntradeskFolder> path,
+  List<IntradeskFolder> expected,
+  String what,
+) {
+  expect(path.length, expected.length, reason: '$what: the number of folders');
+  for (var i = 0; i < expected.length; i++) {
+    _expectSameEntry(path[i], expected[i], '$what, folder ${i + 1}');
+  }
+}
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -129,7 +146,11 @@ void main() {
           'of its parent gives it', () async {
         final folder = await intradesk.getFolder(tests.id);
 
-        expect(folder, _sameEntry(tests));
+        _expectSameEntry(
+          folder,
+          tests,
+          'getFolder of the test folder, against the listing of its parent',
+        );
         expect(folder.parentFolderId, sma.id);
         // The live account adds to it: the writes of the live suite do.
         expect(folder.capabilities.canAdd, isTrue);
@@ -140,14 +161,18 @@ void main() {
           'it', () async {
         final folder = await intradesk.getFolder(sma.id);
 
-        expect(folder, _sameEntry(sma));
+        _expectSameEntry(
+          folder,
+          sma,
+          'getFolder of a folder at the root, against the root listing',
+        );
         expect(folder.parentFolderId, isEmpty);
       });
 
       test('getFolderPath of the test folder is "2. SMA" > "tests"', () async {
         final path = await intradesk.getFolderPath(tests.id);
 
-        expect(path, [_sameEntry(sma), _sameEntry(tests)]);
+        _expectSamePath(path, [sma, tests], 'getFolderPath of the test folder');
       });
 
       test('getFolderPath of a folder two levels down names the folders '
@@ -167,16 +192,21 @@ void main() {
           sma.id,
           withSubfolders.id,
         ]);
-        expect(await intradesk.getFolder(deeper.id), _sameEntry(deeper));
-        expect(await intradesk.getFolderPath(deeper.id), [
-          _sameEntry(sma),
-          _sameEntry(withSubfolders),
-          _sameEntry(deeper),
-        ]);
+        _expectSameEntry(
+          await intradesk.getFolder(deeper.id),
+          deeper,
+          'getFolder of a folder two levels down, against its listing',
+        );
+        _expectSamePath(await intradesk.getFolderPath(deeper.id), [
+          sma,
+          withSubfolders,
+          deeper,
+        ], 'getFolderPath of a folder two levels down');
         // In capitals, as Smartschool takes it.
-        expect(
+        _expectSameEntry(
           await intradesk.getFolder(deeper.id.toUpperCase()),
-          _sameEntry(deeper),
+          deeper,
+          'getFolder of a folder two levels down, its ID in capitals',
         );
       });
 

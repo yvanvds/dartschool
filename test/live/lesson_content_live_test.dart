@@ -16,7 +16,10 @@
 // lesson_content_write_live_test.dart on the lesfiches that run made (#129);
 // each test here checks that the library tried no request but a GET to
 // them. As every live run, it takes the lock of the session first, logs in
-// at most once, and prints no credential, no cookie and no name.
+// at most once, and prints no credential, no cookie and no name: a course
+// is shown by its ID, and its name is compared in the test and checked as
+// a boolean (support/unshown.dart: `expect` shows the actual value of a
+// failed match whatever the matcher, #216).
 //
 // For a course list that fails (#118), one test answers the GET of the course
 // list itself, with Smartschool's error page and HTTP 500, before it goes
@@ -34,6 +37,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/unshown.dart';
 
 const _fichesPath = '/lesson-content/api/v1/lesson-content/';
 const _coursesPath = '/course-list/api/v1/courses';
@@ -60,6 +64,13 @@ class _Attempts extends Interceptor {
     handler.next(options);
   }
 }
+
+/// The IDs of the [courses] that have a name: a failure shows these, not
+/// the names (#216).
+List<String> _named(Iterable<LessonContentCourse> courses) => [
+  for (final course in courses)
+    if (course.name != null) course.id,
+];
 
 /// While [enabled], answers the GET of the course list with Smartschool's
 /// error page and HTTP 500 itself, so that the request does not go out: a
@@ -158,15 +169,17 @@ void main() {
         for (final course in courses) {
           // Named as the course list names the course with its ID; null only
           // for a course the list does not have.
-          expect(
+          expectSameUnshown(
             course.name,
             schoolCourses[course.id]?.name,
-            reason: 'course ${course.id}',
+            reason:
+                'course ${course.id} is not named as the course list names '
+                'it',
           );
         }
         // The IDs are the course list's: at least one course is named (seen
         // live, 2026-10-03: every one).
-        expect(courses.where((c) => c.name != null), isNotEmpty);
+        expect(_named(courses), isNotEmpty);
         expect(attempts.writesSince(mark), isEmpty);
       });
 
@@ -184,8 +197,9 @@ void main() {
           named.map((f) => f.courses.map((c) => c.id).toList()),
         );
         expect(
-          plain.expand((f) => f.courses).map((c) => c.name),
-          everyElement(isNull),
+          _named(plain.expand((f) => f.courses)),
+          isEmpty,
+          reason: 'courses named (by ID; their names not shown)',
         );
       });
 
@@ -235,8 +249,9 @@ void main() {
           plain.map((f) => f.courses.map((c) => c.id).toList()),
         );
         expect(
-          items.expand((f) => f.courses).map((c) => c.name),
-          everyElement(isNull),
+          _named(items.expand((f) => f.courses)),
+          isEmpty,
+          reason: 'courses named (by ID; their names not shown)',
         );
         expect(attempts.writesSince(mark), isEmpty);
         expect(run.guard.violations, isEmpty);
@@ -262,10 +277,12 @@ void main() {
           return;
         }
         for (final course in plannerCourses.values) {
-          expect(
+          expectSameUnshown(
             schoolCourses[course.id]?.name,
             course.name,
-            reason: 'planner course ${course.id}',
+            reason:
+                'planner course ${course.id} is not in the course list with '
+                "the planner's name",
           );
         }
         // A lesfiche of a course in the own planner is named as the planner
@@ -273,7 +290,15 @@ void main() {
         final fiches = await lessonContent.getItems();
         for (final course in fiches.expand((f) => f.courses)) {
           final planned = plannerCourses[course.id];
-          if (planned != null) expect(course.name, planned.name);
+          if (planned != null) {
+            expectSameUnshown(
+              course.name,
+              planned.name,
+              reason:
+                  'the course ${course.id} of a lesfiche is not named as the '
+                  'planner names it',
+            );
+          }
         }
         expect(attempts.writesSince(mark), isEmpty);
         expect(run.guard.violations, isEmpty);

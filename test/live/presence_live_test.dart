@@ -36,7 +36,11 @@
 // three reads, a save of presences above all, and each test checks that the
 // library did not even try one. As every live run, it takes the lock of the
 // session first, logs in at most once, and prints no credential, no cookie
-// and no name.
+// and no name: pupils are counted, a class is shown by its ID, and a
+// class's name is compared in the test and checked as a boolean
+// (support/unshown.dart: `expect` shows the actual value of a failed match
+// whatever the matcher, and the toString of a pupil or a class holds its
+// name, #216).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -49,6 +53,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/unshown.dart';
 
 const _getConfig = '/Presence/Main/getConfig';
 const _getAllCodes = '/Presence/Code/getAllCodes';
@@ -163,7 +168,13 @@ void main() {
         expect(pupils.saveIsAllowed, isTrue);
         expect(pupils.errorMessage, isNull);
         expect(pupils.classRef?.groupId, recordable.groupId);
-        expect(pupils.classRef?.name, recordable.name);
+        expectSameUnshown(
+          pupils.classRef?.name,
+          recordable.name,
+          reason:
+              'class ${recordable.groupId} is not named as getConfig names '
+              'it',
+        );
         expect(pupils.classRef?.structId, recordable.structId);
         expect(attempts.requests.skip(mark).toList(), ['POST $_getClass']);
         expect(attempts.presenceWritesSince(mark), isEmpty);
@@ -211,8 +222,9 @@ void main() {
 
       test('a class ID the module does not know: no pupils, saveIsAllowed '
           "false and the module's reason, without a class", () async {
+        // By ID, by count: a failure prints no class's or pupil's name.
         expect(
-          config.classForGroup(_unknownClassId),
+          config.classForGroup(_unknownClassId)?.groupId,
           isNull,
           reason: 'getConfig lists class $_unknownClassId',
         );
@@ -223,12 +235,12 @@ void main() {
           day.subtract(const Duration(days: 7)),
         );
 
-        expect(pupils, isEmpty);
+        expect(pupils.length, 0);
         expect(pupils.saveIsAllowed, isFalse);
         // Seen 2026-10-03: "Deze klas bevat geen leerlingen.", as for a
         // class without pupils.
         expect(pupils.errorMessage, isNotNull);
-        expect(pupils.classRef, isNull);
+        expect(pupils.classRef?.groupId, isNull, reason: 'a class');
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });
 
@@ -245,30 +257,42 @@ void main() {
           '${placeholder?.groupId ?? 'none'}',
         );
 
+        // By ID, by count: a failure prints no class's or pupil's name.
         if (active != null) {
           expect(active.isPlaceholder, isFalse);
           expect(config.classForGroup(active.groupId), isNotNull);
-          expect(placeholder, isNull);
+          expect(placeholder?.groupId, isNull, reason: 'a placeholder');
         }
         if (placeholder != null) {
           expect(placeholder.isPlaceholder, isTrue);
-          expect(config.classForGroup(placeholder.groupId), isNull);
+          expect(
+            config.classForGroup(placeholder.groupId)?.groupId,
+            isNull,
+            reason: 'getConfig lists the placeholder',
+          );
           final pupils = await classPupils(
             placeholder.groupId,
             day.subtract(const Duration(days: 7)),
           );
-          expect(pupils, isEmpty);
+          expect(pupils.length, 0);
           expect(pupils.saveIsAllowed, isFalse);
           // Seen 2026-10-03: "U geeft momenteel geen les. Kies een andere
           // klas in de keuzelijst."
           expect(pupils.errorMessage, isNotNull);
-          expect(pupils.classRef, isNull);
+          expect(pupils.classRef?.groupId, isNull, reason: 'a class');
         }
         // The classes of the account, as a caller lists them (the allowed
         // classes, plus the active class when it is not among them): none is
         // a placeholder.
         final classes = [...config.allowedClasses, ?config.activeClass];
-        expect(classes.where((c) => c.isPlaceholder), isEmpty);
+        expect(
+          [
+            for (final c in classes)
+              if (c.isPlaceholder) c.groupId,
+          ],
+          isEmpty,
+          reason: 'placeholders, by ID',
+        );
         expect(attempts.presenceWritesSince(mark), isEmpty);
       });
 

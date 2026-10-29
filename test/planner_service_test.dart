@@ -1167,6 +1167,32 @@ void main() {
       expect(await planner.ownCalendar(), PlannerCalendar.user('4069_1001_0'));
     });
 
+    test('a start page without the user is a '
+        'SmartschoolAuthenticatedUserNotFoundError (#214)', () async {
+      final (_, planner) = await serve({
+        ...loggedInAs('4069_1001_0'),
+        '/': (
+          status: 200,
+          body: smartschoolPage([
+            mergeScript('{"vars":{"showNotifyAlerts":false}}'),
+            mergeScript('{"topnav":{"title":"Springfield Academy"}}'),
+          ]),
+          contentType: 'text/html; charset=UTF-8',
+        ),
+      });
+
+      await expectLater(
+        planner.ownCalendar(),
+        throwsA(
+          isA<SmartschoolAuthenticatedUserNotFoundError>().having(
+            (e) => e.pageDataKeys,
+            'pageDataKeys',
+            ['vars', 'topnav'],
+          ),
+        ),
+      );
+    });
+
     test('reads the own planner: GET planned-elements/user/{own ID}', () async {
       const path = '$_api/planned-elements/user/4069_1001_0';
       final (server, planner) = await serve({

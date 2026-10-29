@@ -1,7 +1,8 @@
-// Tests for issues #212 and #213: reading the authenticated user from the
-// page data of Smartschool's pages (`SmartschoolClient.authenticatedUser`
-// and `getCurrentUser`), and undoing the escapes of the JavaScript string
-// that holds it (#213, at the end of the file).
+// Tests for issues #212, #213 and #214: reading the authenticated user from
+// the page data of Smartschool's pages (`SmartschoolClient.authenticatedUser`
+// and `getCurrentUser`), the error for a page without the user (#214), and
+// undoing the escapes of the JavaScript string that holds it (#213, at the
+// end of the file).
 //
 // Since 2026-10 Smartschool hands its page data to its JavaScript in inline
 // scripts that merge each block into `window.SMSC`
@@ -190,33 +191,168 @@ void main() {
 
       expect(await client.getCurrentUser(), janJanssens);
     });
+  });
 
-    test('a page without vars.authenticatedUser is still a '
-        'SmartschoolAuthenticationError', () async {
+  // Issue #214: a page without vars.authenticatedUser, read in a session that
+  // Smartschool accepted, was the same SmartschoolAuthenticationError "Could
+  // not retrieve authenticated user information" as a failed login, which
+  // pointed the wrong way when #212 showed itself. It is now a
+  // SmartschoolAuthenticatedUserNotFoundError, a subclass, that keeps the
+  // shape of the page data and none of its values.
+  group('a page without vars.authenticatedUser in an accepted session '
+      '(#214):', () {
+    /// The error of a page without the user: still a
+    /// SmartschoolAuthenticationError, with the words of the error before
+    /// #214 at the start of its message, but no login failure.
+    final userNotFound = isA<SmartschoolAuthenticatedUserNotFoundError>()
+        .having(
+          (e) => e,
+          'a SmartschoolAuthenticationError',
+          isA<SmartschoolAuthenticationError>(),
+        )
+        .having(
+          (e) => e.message,
+          'message',
+          startsWith('Could not retrieve authenticated user information'),
+        )
+        .having(
+          (e) => e,
+          'no login failure',
+          isNot(
+            anyOf(
+              isA<SmartschoolSessionExpiredError>(),
+              isA<SmartschoolInvalidCredentialsError>(),
+              isA<SmartschoolUnexpectedPageError>(),
+            ),
+          ),
+        );
+
+    test('is a SmartschoolAuthenticatedUserNotFoundError with the path, the '
+        'status and the shape of the page data, from authenticatedUser and '
+        'getCurrentUser, without logging in', () async {
       final (server, client) = await serve(
         smartschoolPage([
-          mergeScript('{"vars":{"showNotifyAlerts":false}}'),
-          mergeScript('{"quickSearch":{}}'),
-          mergeScript('{"topnav":{}}'),
+          '<script type="text/javascript" nonce="fake-nonce" '
+              'src="/js/app.js"></script>',
+          '<script type="text/javascript">var SMSC = SMSC || {};</script>',
+          mergeScript('{"vars":{"showNotifyAlerts":false,"isMP":false}}'),
+          mergeScript(
+            '{"quickSearch":{"quicksearch.search_placeholder":"Zoeken..."},'
+            '"vars":{"ssID":49}}',
+          ),
+          mergeScript('{not json'),
+          mergeScript('null'),
+          mergeScript('{"topnav":{"title":"Springfield Academy"}}'),
         ]),
       );
 
-      await expectLater(
-        client.authenticatedUser,
-        throwsA(
-          isA<SmartschoolAuthenticationError>().having(
+      final shape = userNotFound
+          .having((e) => e.path, 'path', '/')
+          .having((e) => e.statusCode, 'statusCode', 200)
+          // The five scripts that end with JSON.parse('...'), not the one
+          // loaded from a src or the one without JSON.parse.
+          .having((e) => e.pageDataScripts, 'pageDataScripts', 5)
+          .having(
+            (e) => e.unreadablePageDataScripts,
+            'unreadablePageDataScripts',
+            2,
+          )
+          .having((e) => e.pageDataKeys, 'pageDataKeys', [
+            'vars',
+            'quickSearch',
+            'topnav',
+          ])
+          .having(
             (e) => e.message,
             'message',
-            'Could not retrieve authenticated user information',
-          ),
-        ),
-      );
-      await expectLater(
-        client.getCurrentUser(),
-        throwsA(isA<SmartschoolAuthenticationError>()),
-      );
-      expect(server.paths, contains('/'));
+            allOf(
+              contains("Smartschool's page / (status 200)"),
+              contains(
+                "5 inline scripts with JSON.parse('...'), 2 of them "
+                'without a JSON object; top-level keys: vars, quickSearch, '
+                'topnav',
+              ),
+              contains('not a failed login'),
+            ),
+          );
+      await expectLater(client.authenticatedUser, throwsA(shape));
+      await expectLater(client.getCurrentUser(), throwsA(shape));
+      // The start page was read in the session of the cookie cache: no login
+      // (the fake fails the test on any other request).
+      expect(server.paths.toSet(), {'/course-list/api/v1/courses', '/'});
     });
+
+    test('holds none of the values of the page data: not the name of a user '
+        'kept under another key, not the keys of vars, not the text of the '
+        'page', () async {
+      final (_, client) = await serve(
+        smartschoolPage([
+          '<p>Welkom, Jan Janssens</p>',
+          mergeScript(
+            '{"vars":{"authUser":{"id":"49_777_0","name":'
+            '{"startingWithFirstName":"Jan Janssens",'
+            '"startingWithLastName":"Janssens Jan"}},"ssID":49}}',
+          ),
+          mergeScript('{"topnav":{"title":"Springfield Academy"}}'),
+        ]),
+      );
+
+      final error = await client.authenticatedUser.then<Object?>(
+        (_) => null,
+        onError: (Object e) => e,
+      );
+
+      expect(error, userNotFound);
+      final e = error! as SmartschoolAuthenticatedUserNotFoundError;
+      expect(e.pageDataKeys, ['vars', 'topnav']);
+      for (final value in [
+        'Jan',
+        'Janssens',
+        '777',
+        '49_',
+        'authUser',
+        'ssID',
+        'Springfield',
+        'Welkom',
+      ]) {
+        expect(e.message, isNot(contains(value)));
+        expect(e.toString(), isNot(contains(value)));
+      }
+    });
+
+    test(
+      'a page without a script with JSON.parse says that it has none',
+      () async {
+        final (_, client) = await serve(
+          smartschoolPage([
+            '<script type="text/javascript">'
+                "window.SMSC = {vars: {}};</script>",
+          ]),
+        );
+
+        await expectLater(
+          client.authenticatedUser,
+          throwsA(
+            userNotFound
+                .having((e) => e.pageDataScripts, 'pageDataScripts', 0)
+                .having(
+                  (e) => e.unreadablePageDataScripts,
+                  'unreadablePageDataScripts',
+                  0,
+                )
+                .having((e) => e.pageDataKeys, 'pageDataKeys', isEmpty)
+                .having(
+                  (e) => e.message,
+                  'message',
+                  contains(
+                    "page / (status 200) holds no vars.authenticatedUser in "
+                    "its page data (no inline script with JSON.parse('...'))",
+                  ),
+                ),
+          ),
+        );
+      },
+    );
   });
 
   // Issue #213: the page data is JSON in a JavaScript string, with the

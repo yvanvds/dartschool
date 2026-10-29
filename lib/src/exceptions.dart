@@ -72,6 +72,9 @@ class SmartschoolException implements Exception {
 /// - [SmartschoolUnexpectedPageError]: Smartschool answered an XML command
 ///   with an HTML page; it says whether that is the login page, which an
 ///   error page, for one, is not (#106).
+/// - [SmartschoolAuthenticatedUserNotFoundError]: a page read in a session
+///   that Smartschool accepted holds no signed-in user in its page data
+///   (#214). Not a failed login.
 ///
 /// This class itself is still thrown for the remaining authentication
 /// failures, such as an unrecognised step in the login chain, or an HTML page
@@ -495,6 +498,112 @@ class SmartschoolUnexpectedPageError extends SmartschoolAuthenticationError {
     final characters = masked.runes;
     if (characters.length <= max) return masked;
     return '${String.fromCharCodes(characters.take(max))}...';
+  }
+}
+
+/// Thrown by `SmartschoolClient.authenticatedUser`, and so by
+/// `SmartschoolClient.getCurrentUser` and everything that reads the own user
+/// (`PlannerService.ownCalendar`, and so the reads of the own planner and
+/// every planner write; the reads and writes of `SkoreGradebookService`;
+/// `SkoreService.checkAccess`), when a page that Smartschool served in a
+/// session it accepted holds no signed-in user in its page data: no
+/// `vars.authenticatedUser` in the blocks of data its inline scripts hand
+/// to its JavaScript with `JSON.parse('...')` (#214).
+///
+/// Not a failed login, and not a session that Smartschool refused: those are
+/// thrown before the page is read, as the matching
+/// [SmartschoolAuthenticationError] (such as
+/// [SmartschoolInvalidCredentialsError] or [SmartschoolSessionExpiredError]).
+/// Logging in again does not help. It points at a change on Smartschool's
+/// side, in how its pages hand their data to their JavaScript: when
+/// Smartschool did so in 2026-10, the client found the user on no page while
+/// the login worked (#212). It can also be an error page that Smartschool
+/// served instead of the start page: the [statusCode] tells.
+///
+/// It extends [SmartschoolAuthenticationError] because `authenticatedUser`
+/// threw that error for such a page before: code that catches it still
+/// catches this one, and its [message] still starts with the words of that
+/// error, "Could not retrieve authenticated user information".
+///
+/// It keeps the shape of the page data, so that a next change can be
+/// understood: the [path] and [statusCode] of the page, how many of its
+/// inline scripts hand data to its JavaScript with `JSON.parse('...')`
+/// ([pageDataScripts]), how many of those hold no JSON object
+/// ([unreadablePageDataScripts]), and the top-level keys of the blocks that
+/// do ([pageDataKeys]), all in the [message] too. Nothing of the page's text
+/// and none of the values of its data: the page data holds the signed-in
+/// user, with their name. The top-level keys are the names under which the
+/// page's JavaScript keeps each block (`SMSC.vars`, `SMSC.quickSearch`,
+/// ...), not data.
+class SmartschoolAuthenticatedUserNotFoundError
+    extends SmartschoolAuthenticationError {
+  /// The path of the page's URL (after any redirect), such as `/`, without
+  /// its query; `null` when it is not known.
+  final String? path;
+
+  /// The HTTP status of the page, or `null` when it is not known.
+  final int? statusCode;
+
+  /// How many of the page's inline scripts end with a `JSON.parse('...')`,
+  /// the scripts that hand a block of page data to its JavaScript. `0` when
+  /// it has none, as when the form of those scripts changed.
+  final int pageDataScripts;
+
+  /// How many of the [pageDataScripts] hold no JSON object in their
+  /// `JSON.parse('...')`: a string that is no JSON once its JavaScript
+  /// escapes are undone, as when the escaping changed, or JSON that is not an
+  /// object (such as `null`).
+  final int unreadablePageDataScripts;
+
+  /// The top-level keys of the blocks of page data that the
+  /// [pageDataScripts] hold, in the order of the page, each once: such as
+  /// `vars`, `quickSearch`, `wopiConfig` and `topnav` on the start page. A
+  /// `vars` among them holds no `authenticatedUser`; its own keys are not
+  /// kept.
+  final List<String> pageDataKeys;
+
+  const SmartschoolAuthenticatedUserNotFoundError(
+    super.message, {
+    this.path,
+    this.statusCode,
+    this.pageDataScripts = 0,
+    this.unreadablePageDataScripts = 0,
+    this.pageDataKeys = const [],
+  });
+
+  /// The error for the page at [path], with the HTTP [statusCode], whose
+  /// page data has the shape that [pageDataScripts],
+  /// [unreadablePageDataScripts] and [pageDataKeys] give; builds a [message]
+  /// that says so.
+  factory SmartschoolAuthenticatedUserNotFoundError.forPage({
+    String? path,
+    int? statusCode,
+    int pageDataScripts = 0,
+    int unreadablePageDataScripts = 0,
+    List<String> pageDataKeys = const [],
+  }) {
+    final page = path == null ? 'page' : 'page $path';
+    final scripts = pageDataScripts == 1 ? 'script' : 'scripts';
+    final shape = [
+      if (pageDataScripts == 0)
+        "no inline script with JSON.parse('...')"
+      else
+        "$pageDataScripts inline $scripts with JSON.parse('...'), "
+            '$unreadablePageDataScripts of them without a JSON object',
+      if (pageDataKeys.isNotEmpty) 'top-level keys: ${pageDataKeys.join(', ')}',
+    ].join('; ');
+    return SmartschoolAuthenticatedUserNotFoundError(
+      "Could not retrieve authenticated user information: Smartschool's "
+      '$page (status ${statusCode ?? 'unknown'}) holds no '
+      'vars.authenticatedUser in its page data ($shape). The session was '
+      'accepted, so this is not a failed login: Smartschool may have changed '
+      'how its pages hand their data to their JavaScript.',
+      path: path,
+      statusCode: statusCode,
+      pageDataScripts: pageDataScripts,
+      unreadablePageDataScripts: unreadablePageDataScripts,
+      pageDataKeys: List.unmodifiable(pageDataKeys),
+    );
   }
 }
 

@@ -735,6 +735,14 @@ class SmartschoolClient {
   ///
   /// Triggers a minimal API call to force login if not yet authenticated.
   ///
+  /// Throws a [SmartschoolAuthenticatedUserNotFoundError] (a
+  /// [SmartschoolAuthenticationError]) when the start page, read in a session
+  /// that Smartschool accepted, holds no `vars.authenticatedUser` in its page
+  /// data (#214): not a failed login, but a sign that Smartschool changed how
+  /// its pages hand their data to their JavaScript (as it did in 2026-10,
+  /// #212). A failed login is thrown as the matching
+  /// [SmartschoolAuthenticationError], as by every request.
+  ///
   /// Throws a [SmartschoolClientDisposedError] on a disposed client, also
   /// when the user is cached (see [dispose]).
   Future<Map<String, dynamic>> get authenticatedUser async {
@@ -745,15 +753,28 @@ class SmartschoolClient {
     if (_authenticatedUser == null) {
       // Session was already valid (no auth flow triggered), so
       // _parseLoginInformation was never called. Fetch any page to hydrate it.
-      _parseLoginInformation(await getRaw('/'));
+      final page = await getResponse('/');
+      _parseLoginInformation(page.data ?? '');
+      if (_authenticatedUser == null) throw _userNotFound(page);
     }
-    final user = _authenticatedUser;
-    if (user == null) {
-      throw const SmartschoolAuthenticationError(
-        'Could not retrieve authenticated user information',
-      );
-    }
-    return user;
+    return _authenticatedUser!;
+  }
+
+  /// The [SmartschoolAuthenticatedUserNotFoundError] for [page], a page
+  /// without `vars.authenticatedUser` in its page data (#214): with the path
+  /// and status of the page and the shape of its page data, none of its
+  /// values.
+  static SmartschoolAuthenticatedUserNotFoundError _userNotFound(
+    Response<String> page,
+  ) {
+    final blocks = _pageDataBlocks(page.data ?? '').toList();
+    return SmartschoolAuthenticatedUserNotFoundError.forPage(
+      path: page.realUri.path,
+      statusCode: page.statusCode,
+      pageDataScripts: blocks.length,
+      unreadablePageDataScripts: blocks.where((b) => b == null).length,
+      pageDataKeys: {for (final block in blocks) ...?block?.keys}.toList(),
+    );
   }
 
   /// Returns the currently logged-in user.
@@ -764,6 +785,11 @@ class SmartschoolClient {
   ///
   /// The integer [SmartschoolUser.id] is the server-assigned user ID, parsed
   /// from the `authenticatedUser.id` string (`{ssID}_{userId}_{coaccountIdx}`).
+  ///
+  /// Throws what [authenticatedUser] throws, such as a
+  /// [SmartschoolAuthenticatedUserNotFoundError] for a start page without the
+  /// user (#214), and a [SmartschoolParsingError] for a user without an ID or
+  /// a name in the form it reads.
   ///
   /// Throws a [SmartschoolClientDisposedError] on a disposed client (see
   /// [dispose]).
@@ -1292,38 +1318,54 @@ class SmartschoolClient {
   /// ([unescapeJsString]): undoing them in two passes left the `/` of a URL
   /// as `\/`, so `pictureUrl` read `https:\/\/...` (#213).
   void _parseLoginInformation(String htmlBody) {
+    for (final block in _pageDataBlocks(htmlBody)) {
+      final vars = block?['vars'];
+      final user = vars is Map<String, dynamic>
+          ? vars['authenticatedUser']
+          : null;
+      if (user is Map<String, dynamic>) {
+        _authenticatedUser = user;
+        return;
+      }
+    }
+  }
+
+  /// The blocks of page data of [htmlBody], a Smartschool page, in the order
+  /// of the page, read when asked for: one per inline script that ends with
+  /// a `JSON.parse('...')` (see [_parseLoginInformation]), the JSON object
+  /// in it, or `null` for a script whose string holds no JSON object (no
+  /// JSON once its escapes are undone, or JSON that is not an object). A
+  /// script loaded from a `src` is passed over.
+  static Iterable<Map<String, dynamic>?> _pageDataBlocks(
+    String htmlBody,
+  ) sync* {
     final doc = html_parser.parse(htmlBody);
     for (final script in doc.querySelectorAll('script')) {
-      final src = script.attributes['src'];
-      if (src != null) continue; // skip external scripts
+      if (script.attributes['src'] != null) continue; // skip external scripts
 
-      final text = script.text;
-
-      final match = RegExp(
-        r'''JSON\s*\.\s*parse\s*\(\s*'(.*)'\s*\)\s*\)\s*;?\s*$''',
-        caseSensitive: false,
-      ).firstMatch(text);
-
+      final match = _pageDataScript.firstMatch(script.text);
       if (match == null) continue;
 
+      Object? data;
       try {
         // The JSON is in a JavaScript string: undo its escapes in one pass,
         // so that the `\\\/` of a URL's `/` gives `\/`, which jsonDecode
         // reads as `/` (#213).
-        final data =
-            jsonDecode(unescapeJsString(match.group(1)!))
-                as Map<String, dynamic>;
-        final vars = data['vars'] as Map<String, dynamic>?;
-        final user = vars?['authenticatedUser'] as Map<String, dynamic>?;
-        if (user != null) {
-          _authenticatedUser = user;
-          return;
-        }
-      } catch (_) {
-        // Malformed script — try next one
+        data = jsonDecode(unescapeJsString(match.group(1)!));
+      } on FormatException {
+        data = null; // Malformed script: the next one may hold the data.
       }
+      yield data is Map<String, dynamic> ? data : null;
     }
   }
+
+  /// The `JSON.parse('...')` at the end of an inline script that hands a
+  /// block of page data to Smartschool's JavaScript; its group 1 is the
+  /// content of the string.
+  static final _pageDataScript = RegExp(
+    r'''JSON\s*\.\s*parse\s*\(\s*'(.*)'\s*\)\s*\)\s*;?\s*$''',
+    caseSensitive: false,
+  );
 
   /// Extracts all form inputs and overlays [values] onto them.
   ///

@@ -1273,8 +1273,19 @@ class SmartschoolClient {
 
   /// Parses the authenticated user from a Smartschool HTML page.
   ///
-  /// Smartschool embeds user data in a script tag like:
-  /// `APP.extend({...}, JSON.parse('{"vars":{"authenticatedUser":{...}}}'));`
+  /// Smartschool hands its page data to its JavaScript in inline scripts
+  /// that end with `JSON.parse('...')`, one script per block of data
+  /// (`vars`, `quickSearch`, `wopiConfig`, `topnav`, ...). The user is in the
+  /// first one whose `vars.authenticatedUser` is a map; the scripts before it
+  /// can hold other data, a `vars` without the user included. Since
+  /// 2026-10 such a script reads (#212):
+  /// `(function (data) { ... window.smscMergeJsVariables(window.SMSC, data); })(JSON.parse('...'));`
+  /// and before:
+  /// `APP.extend(APP.vars || {}, JSON.parse('...'));` or
+  /// `$.extend(true, SMSC, JSON.parse('...'));`. Only the `JSON.parse` call
+  /// at the end of the script is looked at, not the function the data is
+  /// handed to: a script was skipped when it did not hold `extend`, which
+  /// lost the user at that rename.
   void _parseLoginInformation(String htmlBody) {
     final doc = html_parser.parse(htmlBody);
     for (final script in doc.querySelectorAll('script')) {
@@ -1282,7 +1293,6 @@ class SmartschoolClient {
       if (src != null) continue; // skip external scripts
 
       final text = script.text;
-      if (!text.contains('extend')) continue;
 
       final match = RegExp(
         r'''JSON\s*\.\s*parse\s*\(\s*'(.*)'\s*\)\s*\)\s*;?\s*$''',

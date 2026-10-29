@@ -30,6 +30,7 @@ import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
 import 'support/no_network.dart';
+import 'support/page_data.dart';
 import 'support/temp_cache_dir.dart';
 
 const _host = 'school.smartschool.be';
@@ -1150,6 +1151,20 @@ void main() {
       final (_, planner) = await serve(loggedInAs('4069_1001_2'));
 
       expect(await planner.ownCalendar(), PlannerCalendar.user('4069_1001_2'));
+    });
+
+    test('reads the own user ID from the start page as Smartschool serves '
+        'it since #212: page data merged into window.SMSC', () async {
+      final (_, planner) = await serve({
+        ...loggedInAs('4069_1001_0'),
+        '/': (
+          status: 200,
+          body: startPage(userJson: authenticatedUserJson(id: '4069_1001_0')),
+          contentType: 'text/html; charset=UTF-8',
+        ),
+      });
+
+      expect(await planner.ownCalendar(), PlannerCalendar.user('4069_1001_0'));
     });
 
     test('reads the own planner: GET planned-elements/user/{own ID}', () async {

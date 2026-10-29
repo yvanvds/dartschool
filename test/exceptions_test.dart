@@ -155,6 +155,81 @@ void main() {
     });
   });
 
+  group('SmartschoolAuthenticatedUserNotFoundError (#214)', () {
+    test('is a SmartschoolAuthenticationError, but no login failure and no '
+        'refused session', () {
+      // Code that catches the error authenticatedUser threw before #214
+      // still catches it; code that signs in again on a refused session
+      // does not take it for one.
+      const error = SmartschoolAuthenticatedUserNotFoundError('not found');
+      expect(error, isA<SmartschoolAuthenticationError>());
+      expect(error, isNot(isA<SmartschoolSessionExpiredError>()));
+      expect(error, isNot(isA<SmartschoolInvalidCredentialsError>()));
+      expect(error, isNot(isA<SmartschoolUnexpectedPageError>()));
+      expect(error.path, isNull);
+      expect(error.statusCode, isNull);
+      expect(error.pageDataScripts, 0);
+      expect(error.unreadablePageDataScripts, 0);
+      expect(error.pageDataKeys, isEmpty);
+      expect(
+        error.toString(),
+        'SmartschoolAuthenticatedUserNotFoundError: not found',
+      );
+    });
+
+    test('forPage builds a message with the shape of the page data, that '
+        'starts with the words of the error before #214', () {
+      final error = SmartschoolAuthenticatedUserNotFoundError.forPage(
+        path: '/',
+        statusCode: 200,
+        pageDataScripts: 4,
+        unreadablePageDataScripts: 1,
+        pageDataKeys: ['vars', 'quickSearch', 'topnav'],
+      );
+      expect(error.path, '/');
+      expect(error.statusCode, 200);
+      expect(error.pageDataScripts, 4);
+      expect(error.unreadablePageDataScripts, 1);
+      expect(error.pageDataKeys, ['vars', 'quickSearch', 'topnav']);
+      expect(
+        error.message,
+        "Could not retrieve authenticated user information: Smartschool's "
+        'page / (status 200) holds no vars.authenticatedUser in its page '
+        "data (4 inline scripts with JSON.parse('...'), 1 of them without a "
+        'JSON object; top-level keys: vars, quickSearch, topnav). The session '
+        'was accepted, so this is not a failed login: Smartschool may have '
+        'changed how its pages hand their data to their JavaScript.',
+      );
+    });
+
+    test('forPage without scripts, path or status says so', () {
+      final error = SmartschoolAuthenticatedUserNotFoundError.forPage();
+      expect(
+        error.message,
+        allOf(
+          contains(
+            "Smartschool's page (status unknown) holds no "
+            'vars.authenticatedUser in its page data (no inline script with '
+            "JSON.parse('...')).",
+          ),
+          isNot(contains('top-level keys')),
+        ),
+      );
+      expect(
+        SmartschoolAuthenticatedUserNotFoundError.forPage(
+          path: '/',
+          statusCode: 500,
+          pageDataScripts: 1,
+        ).message,
+        contains(
+          "page / (status 500) holds no vars.authenticatedUser in its page "
+          "data (1 inline script with JSON.parse('...'), 0 of them without a "
+          'JSON object).',
+        ),
+      );
+    });
+  });
+
   group('SmartschoolMoveUncheckedError (#115)', () {
     test('is not a SmartschoolAuthenticationError, whatever its cause, and '
         'carries the move and the cause', () {

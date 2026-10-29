@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 import '../exceptions.dart';
+import '../js_string.dart';
 import '../session.dart';
 import '../models/intradesk_models.dart';
 import 'smartschool_uploader.dart';
@@ -440,7 +441,7 @@ class IntradeskService {
     for (final match in _jsonParseCall.allMatches(html)) {
       final Object? config;
       try {
-        config = jsonDecode(_unescapeJsString(match.group(1)!));
+        config = jsonDecode(unescapeJsString(match.group(1)!));
       } on FormatException {
         continue;
       }
@@ -475,56 +476,6 @@ class IntradeskService {
       at = at[key];
     }
     return at;
-  }
-
-  /// The text of the JavaScript string literal whose content (between its
-  /// quotes) is [literal]: its escapes (a `u` with four hex digits, an `x`
-  /// with two, `\\`, `\'`, `\/`, `\n`, ...) undone, in one pass.
-  static String _unescapeJsString(String literal) {
-    final out = StringBuffer();
-    for (var i = 0; i < literal.length; i++) {
-      final char = literal[i];
-      if (char != r'\' || i + 1 == literal.length) {
-        out.write(char);
-        continue;
-      }
-      final escaped = literal[++i];
-      final hexDigits = switch (escaped) {
-        'u' => 4,
-        'x' => 2,
-        _ => 0,
-      };
-      if (hexDigits > 0 && i + hexDigits < literal.length) {
-        final code = int.tryParse(
-          literal.substring(i + 1, i + 1 + hexDigits),
-          radix: 16,
-        );
-        if (code != null) {
-          out.writeCharCode(code);
-          i += hexDigits;
-          continue;
-        }
-      }
-      switch (escaped) {
-        case 'n':
-          out.write('\n');
-        case 'r':
-          out.write('\r');
-        case 't':
-          out.write('\t');
-        case 'b':
-          out.write('\b');
-        case 'f':
-          out.write('\f');
-        case 'v':
-          out.write('\v');
-        case '\n':
-          break; // A line continuation.
-        default:
-          out.write(escaped);
-      }
-    }
-    return out.toString();
   }
 
   // -------------------------------------------------------------------------

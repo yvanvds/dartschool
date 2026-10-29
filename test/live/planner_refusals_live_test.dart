@@ -19,7 +19,11 @@
 // #127), and each test checks that the library did not even try one. The
 // last test reads the week again and finds it as it was. As every live run,
 // it takes the lock of the session first, logs in at most once, and prints
-// no credential, no cookie and no name.
+// no credential, no cookie and no name: an element or a lesfiche is shown
+// by its ID, and its name is compared in the test and checked as a boolean
+// (support/unshown.dart: `expect` shows the actual value of a failed match
+// whatever the matcher, and the toString of an element or a lesfiche holds
+// its name, #216).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -32,6 +36,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/unshown.dart';
 
 /// Records every request the library tries to send (`METHOD path`), before
 /// LiveWireGuard decides whether it goes out.
@@ -161,9 +166,13 @@ void main() {
 
         expect(refused.reason, PlannerWriteRefusalReason.periodChanged);
         expect(refused.capabilityFlags, isEmpty);
-        expect(refused.lessonContent, isNull);
+        expect(refused.lessonContent?.id, isNull, reason: 'a lesfiche');
         final element = refused.element!;
-        expect(element, isA<PlannedElementDetail>());
+        expect(
+          element is PlannedElementDetail,
+          isTrue,
+          reason: 'element ${element.id} is not read as its detail',
+        );
         expect(element.id, hour.id);
         expect(element.type, PlannedElementType.placeholder);
         expect(element.period.from.isAtSameMomentAs(hour.period.from), isTrue);
@@ -220,8 +229,8 @@ void main() {
         );
 
         expect(refused.reason, PlannerWriteRefusalReason.unknownLessonContent);
-        expect(refused.element, isNull);
-        expect(refused.lessonContent, isNull);
+        expect(refused.element?.id, isNull, reason: 'an element');
+        expect(refused.lessonContent?.id, isNull, reason: 'a lesfiche');
       });
 
       test('planLessonContent of an own assignment lesfiche: '
@@ -250,9 +259,13 @@ void main() {
           refused.reason,
           PlannerWriteRefusalReason.notALessonLessonContent,
         );
-        expect(refused.element, isNull);
+        expect(refused.element?.id, isNull, reason: 'an element');
         expect(refused.lessonContent?.id, fiche.id);
-        expect(refused.lessonContent?.name, fiche.name);
+        expectSameUnshown(
+          refused.lessonContent?.name,
+          fiche.name,
+          reason: 'lesfiche ${fiche.id} is not named as getItems names it',
+        );
         expect(refused.lessonContent?.type, LessonContentType.assignment);
       });
 
@@ -280,7 +293,7 @@ void main() {
         );
 
         expect(refused.reason, PlannerWriteRefusalReason.unknownAssignmentType);
-        expect(refused.element, isNull);
+        expect(refused.element?.id, isNull, reason: 'an element');
 
         // The types the check read: the school's, without the refused one,
         // the same as a read of their own right afterwards gives them.
@@ -305,10 +318,19 @@ void main() {
           from: from,
           to: to,
         );
+        // The elements by type, ID and period, then their names compared
+        // in the test: a failure prints no name.
         String key(PlannedElement e) =>
-            '${e.typeName} ${e.id} ${e.name} '
+            '${e.typeName} ${e.id} '
             '${e.period.from.toUtc()} ${e.period.to.toUtc()}';
         expect(weekAfter.map(key).toList(), weekBefore.map(key).toList());
+        for (var i = 0; i < weekBefore.length; i++) {
+          expectSameUnshown(
+            weekAfter[i].name,
+            weekBefore[i].name,
+            reason: 'element ${weekBefore[i].id} is named otherwise',
+          );
+        }
         expect(attempts.writesSince(0), isEmpty);
         expect(run.guard.violations, isEmpty);
       });

@@ -15,6 +15,7 @@ import 'cache_dir.dart';
 import 'credentials.dart';
 import 'download.dart';
 import 'exceptions.dart';
+import 'js_string.dart';
 import 'models/notification_models.dart';
 import 'models/user_models.dart';
 import 'xml_answer.dart';
@@ -734,6 +735,14 @@ class SmartschoolClient {
   ///
   /// Triggers a minimal API call to force login if not yet authenticated.
   ///
+  /// Throws a [SmartschoolAuthenticatedUserNotFoundError] (a
+  /// [SmartschoolAuthenticationError]) when the start page, read in a session
+  /// that Smartschool accepted, holds no `vars.authenticatedUser` in its page
+  /// data (#214): not a failed login, but a sign that Smartschool changed how
+  /// its pages hand their data to their JavaScript (as it did in 2026-10,
+  /// #212). A failed login is thrown as the matching
+  /// [SmartschoolAuthenticationError], as by every request.
+  ///
   /// Throws a [SmartschoolClientDisposedError] on a disposed client, also
   /// when the user is cached (see [dispose]).
   Future<Map<String, dynamic>> get authenticatedUser async {
@@ -744,15 +753,28 @@ class SmartschoolClient {
     if (_authenticatedUser == null) {
       // Session was already valid (no auth flow triggered), so
       // _parseLoginInformation was never called. Fetch any page to hydrate it.
-      _parseLoginInformation(await getRaw('/'));
+      final page = await getResponse('/');
+      _parseLoginInformation(page.data ?? '');
+      if (_authenticatedUser == null) throw _userNotFound(page);
     }
-    final user = _authenticatedUser;
-    if (user == null) {
-      throw const SmartschoolAuthenticationError(
-        'Could not retrieve authenticated user information',
-      );
-    }
-    return user;
+    return _authenticatedUser!;
+  }
+
+  /// The [SmartschoolAuthenticatedUserNotFoundError] for [page], a page
+  /// without `vars.authenticatedUser` in its page data (#214): with the path
+  /// and status of the page and the shape of its page data, none of its
+  /// values.
+  static SmartschoolAuthenticatedUserNotFoundError _userNotFound(
+    Response<String> page,
+  ) {
+    final blocks = _pageDataBlocks(page.data ?? '').toList();
+    return SmartschoolAuthenticatedUserNotFoundError.forPage(
+      path: page.realUri.path,
+      statusCode: page.statusCode,
+      pageDataScripts: blocks.length,
+      unreadablePageDataScripts: blocks.where((b) => b == null).length,
+      pageDataKeys: {for (final block in blocks) ...?block?.keys}.toList(),
+    );
   }
 
   /// Returns the currently logged-in user.
@@ -763,6 +785,11 @@ class SmartschoolClient {
   ///
   /// The integer [SmartschoolUser.id] is the server-assigned user ID, parsed
   /// from the `authenticatedUser.id` string (`{ssID}_{userId}_{coaccountIdx}`).
+  ///
+  /// Throws what [authenticatedUser] throws, such as a
+  /// [SmartschoolAuthenticatedUserNotFoundError] for a start page without the
+  /// user (#214), and a [SmartschoolParsingError] for a user without an ID or
+  /// a name in the form it reads.
   ///
   /// Throws a [SmartschoolClientDisposedError] on a disposed client (see
   /// [dispose]).
@@ -1273,45 +1300,72 @@ class SmartschoolClient {
 
   /// Parses the authenticated user from a Smartschool HTML page.
   ///
-  /// Smartschool embeds user data in a script tag like:
-  /// `APP.extend({...}, JSON.parse('{"vars":{"authenticatedUser":{...}}}'));`
+  /// Smartschool hands its page data to its JavaScript in inline scripts
+  /// that end with `JSON.parse('...')`, one script per block of data
+  /// (`vars`, `quickSearch`, `wopiConfig`, `topnav`, ...). The user is in the
+  /// first one whose `vars.authenticatedUser` is a map; the scripts before it
+  /// can hold other data, a `vars` without the user included. Since
+  /// 2026-10 such a script reads (#212):
+  /// `(function (data) { ... window.smscMergeJsVariables(window.SMSC, data); })(JSON.parse('...'));`
+  /// and before:
+  /// `APP.extend(APP.vars || {}, JSON.parse('...'));` or
+  /// `$.extend(true, SMSC, JSON.parse('...'));`. Only the `JSON.parse` call
+  /// at the end of the script is looked at, not the function the data is
+  /// handed to: a script was skipped when it did not hold `extend`, which
+  /// lost the user at that rename.
+  ///
+  /// The JSON is in a JavaScript string, with its escapes
+  /// ([unescapeJsString]): undoing them in two passes left the `/` of a URL
+  /// as `\/`, so `pictureUrl` read `https:\/\/...` (#213).
   void _parseLoginInformation(String htmlBody) {
-    final doc = html_parser.parse(htmlBody);
-    for (final script in doc.querySelectorAll('script')) {
-      final src = script.attributes['src'];
-      if (src != null) continue; // skip external scripts
-
-      final text = script.text;
-      if (!text.contains('extend')) continue;
-
-      final match = RegExp(
-        r'''JSON\s*\.\s*parse\s*\(\s*'(.*)'\s*\)\s*\)\s*;?\s*$''',
-        caseSensitive: false,
-      ).firstMatch(text);
-
-      if (match == null) continue;
-
-      try {
-        // Unescape \uXXXX sequences and double back-slashes
-        var raw = match.group(1)!;
-        raw = raw.replaceAllMapped(
-          RegExp(r'\\u([0-9a-fA-F]{4})'),
-          (m) => String.fromCharCode(int.parse(m.group(1)!, radix: 16)),
-        );
-        raw = raw.replaceAll(r'\\', r'\');
-
-        final data = jsonDecode(raw) as Map<String, dynamic>;
-        final vars = data['vars'] as Map<String, dynamic>?;
-        final user = vars?['authenticatedUser'] as Map<String, dynamic>?;
-        if (user != null) {
-          _authenticatedUser = user;
-          return;
-        }
-      } catch (_) {
-        // Malformed script — try next one
+    for (final block in _pageDataBlocks(htmlBody)) {
+      final vars = block?['vars'];
+      final user = vars is Map<String, dynamic>
+          ? vars['authenticatedUser']
+          : null;
+      if (user is Map<String, dynamic>) {
+        _authenticatedUser = user;
+        return;
       }
     }
   }
+
+  /// The blocks of page data of [htmlBody], a Smartschool page, in the order
+  /// of the page, read when asked for: one per inline script that ends with
+  /// a `JSON.parse('...')` (see [_parseLoginInformation]), the JSON object
+  /// in it, or `null` for a script whose string holds no JSON object (no
+  /// JSON once its escapes are undone, or JSON that is not an object). A
+  /// script loaded from a `src` is passed over.
+  static Iterable<Map<String, dynamic>?> _pageDataBlocks(
+    String htmlBody,
+  ) sync* {
+    final doc = html_parser.parse(htmlBody);
+    for (final script in doc.querySelectorAll('script')) {
+      if (script.attributes['src'] != null) continue; // skip external scripts
+
+      final match = _pageDataScript.firstMatch(script.text);
+      if (match == null) continue;
+
+      Object? data;
+      try {
+        // The JSON is in a JavaScript string: undo its escapes in one pass,
+        // so that the `\\\/` of a URL's `/` gives `\/`, which jsonDecode
+        // reads as `/` (#213).
+        data = jsonDecode(unescapeJsString(match.group(1)!));
+      } on FormatException {
+        data = null; // Malformed script: the next one may hold the data.
+      }
+      yield data is Map<String, dynamic> ? data : null;
+    }
+  }
+
+  /// The `JSON.parse('...')` at the end of an inline script that hands a
+  /// block of page data to Smartschool's JavaScript; its group 1 is the
+  /// content of the string.
+  static final _pageDataScript = RegExp(
+    r'''JSON\s*\.\s*parse\s*\(\s*'(.*)'\s*\)\s*\)\s*;?\s*$''',
+    caseSensitive: false,
+  );
 
   /// Extracts all form inputs and overlays [values] onto them.
   ///

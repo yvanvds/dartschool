@@ -14,7 +14,10 @@
 // lets a search out only on a compose form loaded through it, with the empty
 // selection the library sends. As every live run, it takes the lock of the
 // session first, logs in at most once, and prints no credential, no cookie
-// and no name.
+// and no name: the own account is counted among the results, and the names
+// searched are compared in the test and checked as booleans
+// (support/unshown.dart: `expect` shows the actual value of a failed match
+// whatever the matcher, and a result's toString holds its name, #216).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -25,6 +28,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/unshown.dart';
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -55,9 +59,11 @@ void main() {
 
         final (users, _) = await run.messages.searchRecipientsForCompose(name);
 
+        // By count: a failure prints no result, whose toString holds the
+        // name.
         expect(
-          users.where(run.isOwn),
-          hasLength(1),
+          users.where(run.isOwn).length,
+          1,
           reason:
               'the search for the own name must find the own account once, '
               'with its user ID, ssID and userLT',
@@ -84,15 +90,28 @@ void main() {
           name,
         ]);
 
-        expect(results.keys, [nobody, name]);
+        // The keys compared in the test, the results by count: a failure
+        // prints no name.
+        final keys = results.keys.toList();
+        expect(keys.length, 2, reason: 'one result per name searched');
+        expectSameUnshown(
+          keys.first,
+          nobody,
+          reason: 'the first key is not the first name searched',
+        );
+        expectSameUnshown(
+          keys.last,
+          name,
+          reason: 'the second key is not the own name',
+        );
         expect(
-          results[nobody]!.$1.where(run.isOwn),
-          isEmpty,
+          results[nobody]!.$1.where(run.isOwn).length,
+          0,
           reason: 'each name has the results of its own search',
         );
         expect(
-          results[name]!.$1.where(run.isOwn),
-          hasLength(1),
+          results[name]!.$1.where(run.isOwn).length,
+          1,
           reason:
               'the second search on the compose form must find the own '
               'account once, as the search on a form of its own does',

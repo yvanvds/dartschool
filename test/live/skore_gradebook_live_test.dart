@@ -82,7 +82,11 @@
 // those reads (and the two reads of the admin side), its REST API included.
 // As every live run, it takes the lock of the session first, logs in at
 // most once, and prints no credential, no cookie, no name and no feedback
-// text: only IDs, counts, states, dates and period names.
+// text: only IDs, counts, states, dates and period names. A failed check
+// does not either: names, and gradebooks (whose toString names their class
+// and course), are compared in the test and checked as booleans
+// (support/unshown.dart: `expect` shows the actual value of a failed match
+// whatever the matcher, #216).
 //
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
@@ -96,6 +100,7 @@ import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
+import 'support/unshown.dart';
 
 /// The live test spot of #148: the developer's gradebook of 6EWI.
 const _testGradebookId = 32508;
@@ -140,6 +145,24 @@ String _belgianMinute(DateTime instant) {
   String two(int n) => n.toString().padLeft(2, '0');
   return '${isoDay(wall)} ${two(wall.hour)}:${two(wall.minute)}';
 }
+
+/// Expects [sheet] to hold [book] itself, and shows neither gradebook when
+/// it fails: a gradebook's toString names its class and its course (#216).
+void _expectSheetOf(SkoreGradebookSheet sheet, SkoreGradebook book) => expect(
+  identical(sheet.gradebook, book),
+  isTrue,
+  reason:
+      'the sheet of gradebook ${book.gradebookId} holds another gradebook '
+      '(not shown)',
+);
+
+/// Expects [pupil]'s name to be in the shape "Last, First", and shows it
+/// not when it fails (#216).
+void _expectPupilName(SkoreGradebookPupil pupil) => expect(
+  pupil.name.contains(','),
+  isTrue,
+  reason: 'pupil ${pupil.id} has a name without a comma (not shown)',
+);
 
 /// Records Skore's answer to every call of its gradebook RPC service, as
 /// (method, status, `Location`), as it comes in: the first interceptor, so
@@ -278,7 +301,7 @@ void main() {
           'inactive; writable ${sheet.writable}, coordinator '
           '${sheet.isCoordinator}',
         );
-        expect(sheet.gradebook, same(book));
+        _expectSheetOf(sheet, book);
         expect(sheet.courseName, isNotEmpty);
         expect(sheet.periods, isNotEmpty);
         expect(sheet.periods, contains(sheet.activePeriod));
@@ -290,7 +313,7 @@ void main() {
         expect(pupilIds.toSet(), hasLength(pupilIds.length));
         for (final pupil in sheet.pupils) {
           expect(pupil.classId, book.classId);
-          expect(pupil.name, contains(','));
+          _expectPupilName(pupil);
           expect(pupil.displayName, isNotEmpty);
         }
       }
@@ -318,10 +341,22 @@ void main() {
           return;
         }
         expect(book.pathIds, [176, 472, 2440]);
-        expect(book.className, '6EWI');
-        expect(book.groupName, '6DO');
+        expectSameUnshown(
+          book.className,
+          '6EWI',
+          reason: 'the class of the test spot',
+        );
+        expectSameUnshown(
+          book.groupName,
+          '6DO',
+          reason: 'the group of the test spot',
+        );
         expect(book.courseId, 2264);
-        expect(book.courseName, startsWith('Informaticawetenschappen'));
+        expect(
+          book.courseName.startsWith('Informaticawetenschappen'),
+          isTrue,
+          reason: 'the course of the test spot (not shown)',
+        );
       });
 
       test('getGradebook reads the periods, the pupils and the rights of a '
@@ -337,7 +372,11 @@ void main() {
 
         expectSheet(book, sheet, year.workyear, readFrom);
         if (book.gradebookId == _testGradebookId) {
-          expect(sheet.courseName, 'Informaticawetenschappen (2 uur)');
+          expectSameUnshown(
+            sheet.courseName,
+            'Informaticawetenschappen (2 uur)',
+            reason: 'the course of the test spot, as its sheet names it',
+          );
           final dw1 = sheet.periods.where((p) => p.id == _testPeriodId).single;
           expect(dw1.name, 'DW1');
           // Set, and checked by expectSheet against the info, which gives it
@@ -377,14 +416,14 @@ void main() {
           '${book.courseId}): ${sheet.periods.length} periods, '
           '${sheet.pupils.length} pupils, writable ${sheet.writable}',
         );
-        expect(sheet.gradebook, same(book));
+        _expectSheetOf(sheet, book);
         expect(sheet.periods, isEmpty);
         expect(sheet.activePeriod, isNull);
         expect(sheet.writable, isFalse);
         expect(sheet.pupils, isNotEmpty);
         for (final pupil in sheet.pupils) {
           expect(pupil.classId, book.classId);
-          expect(pupil.name, contains(','));
+          _expectPupilName(pupil);
         }
         // Without periods, getGradebookContext is not asked.
         expect(answers.answers, [('init', 200, null)]);
@@ -1093,7 +1132,7 @@ void main() {
             '${book.access.name}): ${sheet.periods.length} periods, '
             '${sheet.pupils.length} pupils, writable ${sheet.writable}',
           );
-          expect(sheet.gradebook, same(book));
+          _expectSheetOf(sheet, book);
           expect(sheet.pupils, isNotEmpty, reason: 'opened in its scope');
           for (final pupil in sheet.pupils) {
             expect(pupil.classId, book.classId);
@@ -1172,8 +1211,14 @@ void main() {
           final sent = _Sent();
           run.client.dio.interceptors.insert(0, sent);
           addTearDown(() => run.client.dio.interceptors.remove(sent));
+          // Checked as a boolean: a gradebook's toString names its class
+          // and its course (#216).
           final readOnlyError = isA<SmartschoolSkoreGradebookReadOnlyError>()
-              .having((e) => e.gradebook, 'gradebook', same(readOnly));
+              .having(
+                (e) => identical(e.gradebook, readOnly),
+                'whether its gradebook is the one passed (not shown)',
+                isTrue,
+              );
 
           await expectLater(
             gradebooks.saveGrades(readOnly, evaluation, {1: '15'}),
@@ -1706,7 +1751,7 @@ void main() {
         expect(answers.answers.first, ('init', 302, '/'));
         expect(answers.answers[1], ('init', 200, null));
         expect(run.guard.loggedIn, isTrue);
-        expect(sheet.gradebook, same(book));
+        _expectSheetOf(sheet, book);
         expect(sheet.pupils, isNotEmpty);
         expect(run.guard.violations, isEmpty);
       });

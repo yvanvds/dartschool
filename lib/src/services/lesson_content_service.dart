@@ -97,8 +97,9 @@ typedef _Courses = ({
 /// 2026-11-01), in the own library, which is private to the teacher. The
 /// service never deletes a lesfiche for good (`lesson-content/delete/bulk`),
 /// never changes or removes a label, and does not cover mini-database
-/// items, merging or converting lesfiches, sharing, year plans, method
-/// lessons of publishers or printing.
+/// items, merging or converting lesfiches, sharing, year plans (those are
+/// `TeachingAssignmentService`, #229), method lessons of publishers or
+/// printing.
 ///
 /// What Smartschool answers, and what the service makes of it:
 /// - **A create answers with the ID only** (`201` with `{"id"}`), so the

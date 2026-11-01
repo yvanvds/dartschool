@@ -574,11 +574,125 @@ class _Smartschool implements HttpClientAdapter {
   /// detail of a lesfiche, an edit with the lesfiche, a weblink with the
   /// weblink, a removal with `204`, and a move to the trash with no
   /// exceptions.
+  /// The teaching assignments it made (#229), by ID.
+  final Map<String, Map<String, Object?>> teachingAssignments = {};
+
+  /// The lesson clusters it made (#229), by ID, and their entries.
+  final Map<String, Map<String, Object?>> lessonClusters = {};
+  final Map<String, List<Object?>> clusterEntries = {};
+
+  /// Answers a request to the teaching assignments (#229) of the Lesfiches
+  /// module as it does (in short).
+  ResponseBody _teachingAssignmentAnswer(String rest, RequestOptions options) {
+    const json = 'application/json';
+    final body = options.data is Map ? options.data as Map : const {};
+    final method = options.method;
+    if (method == 'POST' && rest == '49_777_0') {
+      final id = _uuid();
+      teachingAssignments[id] = {
+        'id': id,
+        'platformId': 49,
+        'owner': {'id': '49_777_0'},
+        'name': body['name'],
+        'icon': body['icon'],
+        'collaborators': [
+          {
+            'user': {'id': '49_777_0'},
+            'contentFilter': {'type': (body['contentFilter'] as Map)['type']},
+          },
+        ],
+        'publication': null,
+        'lessonClusters': [],
+        'visibility': true,
+        'favourite': false,
+      };
+      return _answer(
+        jsonEncode(teachingAssignments[id]),
+        contentType: json,
+        status: 201,
+      );
+    }
+    final create = RegExp(
+      r'^49_777_0/49/([^/]+)/lesson-clusters$',
+    ).firstMatch(rest);
+    if (method == 'POST' && create != null) {
+      final id = _uuid();
+      lessonClusters[id] = {
+        'id': id,
+        'platformId': 49,
+        'teachingAssignmentId': create.group(1),
+        'teachingAssignmentPlatformId': 49,
+        'name': body['name'],
+        'icon': body['icon'],
+        'isVisible': true,
+        'position': 0,
+        'goals': [],
+      };
+      clusterEntries[id] = [];
+      return _answer(
+        jsonEncode(lessonClusters[id]),
+        contentType: json,
+        status: 201,
+      );
+    }
+    if (method == 'DELETE') {
+      teachingAssignments.remove(rest.split('/').last);
+      return _answer('', status: 204);
+    }
+    final action = RegExp(
+      r'^49/[^/]+/lesson-clusters/49/([^/]+)/(.+)$',
+    ).firstMatch(rest);
+    final cluster = lessonClusters[action?.group(1)];
+    if (cluster == null) return _answer('[]', contentType: json);
+    final entries = clusterEntries[cluster['id']]!;
+    switch (action!.group(2)) {
+      case 'titles':
+        final title = {
+          'id': _uuid(),
+          'platformId': 49,
+          'lessonClusterId': cluster['id'],
+          'position': entries.length,
+          'text': body['text'],
+          'type': 'titles',
+        };
+        entries.add(title);
+        return _answer(jsonEncode(title), contentType: json);
+      case 'lesson-content-from-teaching-assignment':
+        final added = [
+          for (final entry in body['lessonContentIdentifiers'] as List)
+            lessonContent[(entry as Map)['id']],
+        ];
+        entries.addAll(added);
+        return _answer(
+          jsonEncode({'lessonContent': added, 'exceptions': []}),
+          contentType: json,
+          status: 201,
+        );
+      case 'change-goals':
+        cluster['goals'] = [
+          for (final goal in body['newGoals'] as List)
+            {
+              'id': (goal as Map)['id'],
+              'leerplanId': goal['leerplanId'],
+              'type': goal['type'],
+            },
+        ];
+        return _answer(jsonEncode(cluster), contentType: json);
+    }
+    return _answer('[]', contentType: json);
+  }
+
   ResponseBody _lessonContentAnswer(RequestOptions options) {
     const api = '/lesson-content/api/v1/';
     const json = 'application/json';
     final path = options.uri.path.substring(api.length);
     final body = options.data is Map ? options.data as Map : const {};
+    if (path.startsWith('teaching-assignments/')) {
+      return _teachingAssignmentAnswer(
+        path.substring('teaching-assignments/'.length),
+        options,
+      );
+    }
     if (path == 'lessons/' || path == 'assignments/') {
       final id = _uuid();
       lessonContent[id] = {
@@ -2451,6 +2565,188 @@ void main() {
         contains('which this run did not make'),
         contains('no labels DELETE but of an own label'),
         contains('which this run did not make (or removed already)'),
+      ]);
+    });
+  });
+
+  group('year plans (#229)', () {
+    const api = '/lesson-content/api/v1/teaching-assignments';
+    const goal = LearningGoalRef(
+      id: 'aaaa0003-0000-4000-8000-000000000000',
+      leerplanId: 'aaaa0004-0000-4000-8000-000000000000',
+      type: 'miniDB',
+    );
+
+    test('lets out the create of a teaching assignment and a cluster named '
+        'after the run, the add of a title, a lesfiche of the run and goals '
+        'in that cluster, and the delete of the teaching assignment', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final plans = TeachingAssignmentService(client);
+
+      final fiche = await lessonContent.createLesson(name: _lessonName('les'));
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      expect(guard.teachingAssignmentsMade, {plan.id});
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      await plans.addTitle(unit, _lessonName('week'));
+      await plans.addLessonContent(unit, [fiche]);
+      await plans.changeClusterGoals(unit, [goal]);
+      await plans.changeClusterGoals(unit, const []);
+      await plans.deleteTeachingAssignment(plan);
+
+      final cluster = 'POST $api/49/${plan.id}/lesson-clusters/49/${unit.id}';
+      expect(server.lessonContentWrites.where((w) => w.contains('teaching')), [
+        'POST $api/49_777_0',
+        'POST $api/49_777_0/49/${plan.id}/lesson-clusters',
+        '$cluster/titles',
+        '$cluster/lesson-content-from-teaching-assignment',
+        '$cluster/change-goals',
+        '$cluster/change-goals',
+        'DELETE $api/49/${plan.id}',
+      ]);
+      expect(server.teachingAssignments, isEmpty);
+      expect(guard.teachingAssignmentCreates, 1);
+      expect(guard.lessonClusterCreates, 1);
+      expect(guard.teachingAssignmentsMade, isEmpty);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('refuses a teaching assignment or cluster without the run\'s tag, '
+        'shared, with another filter or over the maximum, writes in one the '
+        'run did not make or deleted, a lesfiche the run did not make, '
+        'goals not as the library sends them, and other writes', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final plans = TeachingAssignmentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+      Map<String, Object?> create(
+        String name, {
+        String type = 'all',
+        List<Object?> labels = const [],
+        List<Object?> users = const [],
+        Object? publication,
+      }) => {
+        'name': name,
+        'icon': 'box_curver_blue',
+        'contentFilter': {
+          'type': type,
+          'labels': labels,
+          'courses': [],
+          'assignmentTypes': [],
+        },
+        'collaborators': {'users': users, 'groups': []},
+        'publication': publication,
+      };
+      const otherId = 'aaaa0009-0000-4000-8000-000000000000';
+
+      await refused(plans.createTeachingAssignment(name: 'Informatica'));
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), type: 'particular'),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), labels: ['x']),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), users: ['49_778_0']),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), publication: {}),
+        ),
+      );
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      await refused(plans.createTeachingAssignment(name: _lessonName('2')));
+      await refused(
+        plans.addCluster(
+          TeachingAssignmentRef(id: otherId, platformId: 49),
+          name: _lessonName('unit'),
+        ),
+      );
+      await refused(plans.addCluster(plan, name: 'Lussen'));
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      await refused(plans.addCluster(plan, name: _lessonName('2')));
+      await refused(plans.addTitle(unit, 'Week 1'));
+      final other = LessonClusterRef(
+        id: otherId,
+        platformId: 49,
+        teachingAssignment: plan,
+      );
+      await refused(plans.addTitle(other, _lessonName('week')));
+      final notMade = LessonContentItem.fromJson({
+        'id': otherId,
+        'platformId': 49,
+        'type': 'lessons',
+      });
+      await refused(plans.addLessonContent(unit, [notMade]));
+      final fiche = await lessonContent.createLesson(name: _lessonName('les'));
+      await lessonContent.trash([fiche]);
+      await refused(plans.addLessonContent(unit, [fiche]));
+      final path = '$api/49/${plan.id}/lesson-clusters/49/${unit.id}';
+      await refused(
+        dio.post<String>(
+          '$path/change-goals',
+          data: {
+            'newGoals': [
+              {'id': goal.id},
+            ],
+          },
+        ),
+      );
+      await refused(
+        dio.post<String>('$path/rename', data: {'newName': _lessonName('x')}),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49/${plan.id}/duplicate',
+          data: <String, Object?>{},
+        ),
+      );
+      await refused(
+        plans.deleteTeachingAssignment(
+          TeachingAssignmentRef(id: otherId, platformId: 49),
+        ),
+      );
+      await plans.deleteTeachingAssignment(plan);
+      await refused(plans.deleteTeachingAssignment(plan));
+      await refused(plans.addTitle(unit, _lessonName('week')));
+
+      expect(_violations(guard), [
+        contains('the name of the teaching assignment does not start with'),
+        for (var i = 0; i < 2; i++)
+          contains('another content filter than all or none'),
+        for (var i = 0; i < 2; i++) contains('it shares the teaching'),
+        contains('1 teaching assignments already'),
+        contains('which this run did not make'),
+        contains('the name of the lesson cluster does not start with'),
+        contains('1 lesson clusters already'),
+        contains('adds a title that is not only a text starting with'),
+        contains('which this run did not make in that teaching assignment'),
+        contains('which this run did not make'),
+        contains('was moved to the trash already'),
+        contains('a goal that is not as the library sends one'),
+        contains('no "rename" to a lesson cluster'),
+        contains('no teaching assignments POST but'),
+        contains('which this run did not make'),
+        contains('(or deleted already)'),
+        contains('(or deleted already)'),
       ]);
     });
   });

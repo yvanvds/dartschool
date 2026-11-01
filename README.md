@@ -20,6 +20,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year and those colleagues shared with them, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback, and the report periods with each pupil's results so far and course comment; create an evaluation in a period, never published, save pupils' grades and feedback in it, and write a pupil's course comment on a report.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library, replace a lesson by a lesfiche, plan one lesfiche into several hours at once, save a lesson as a new lesfiche, and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, change the name and info of an own lesson or assignment, and set the learning goals of an own lesson, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
 - Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, set its learning goals and its labels (in the create, too), read the school's and the own labels and make a new own label, duplicate lesfiches, move them to the module's trash, read the trash and restore from it, with checks before each write and creates, duplicates and new labels that are never retried.
+- Year plans (`TeachingAssignmentService`): the teaching assignments of the Lesfiches module, each split into lesson clusters that hold lesfiches and titles in order, with learning goals; make a teaching assignment, add a cluster, fill it with lesfiches and titles, set its goals, and delete the teaching assignment again, with creates and adds that are never retried.
 - Learning goals (`GoalService`): the curricula of Smartschool's goal selector (the eindtermen, the curricula of the philosophies of life, the school's mini-databases), each as a tree of headings and goals with the goals that can be picked, and the naming of the goals a lesfiche or a planned lesson stores; read only.
 - Pupil tracking system support (`LvsService`, LVS): as the logged-in teacher, find a pupil by name and read the overview of the pupil's file (who, which class, today's attendance, and which sections of the file hold something), the pupil's notes per category (behaviour, care, talks with parents: the school's own categories) or all of them, with their fields, the pupil's results in every course (evaluations with their scores, feedback, reports), the pupil's support plan (support needs, goals, approach, profile sketch), and whether the account may use the LVS; read only, by an allowlist of requests, with models and errors that never print a pupil's data (see [`doc/lvs-privacy.md`](doc/lvs-privacy.md)).
 
@@ -142,7 +143,7 @@ The README gives an overview of each service, with a short example. The rest of 
 | `PresenceService` | [`doc/presence.md`](doc/presence.md) |
 | `SkoreService`, `SkoreGradebookService` | [`doc/skore.md`](doc/skore.md) |
 | `PlannerService` | [`doc/planner.md`](doc/planner.md) |
-| `LessonContentService` | [`doc/lesson-content.md`](doc/lesson-content.md) |
+| `LessonContentService`, `TeachingAssignmentService` | [`doc/lesson-content.md`](doc/lesson-content.md) |
 | `GoalService` | [`doc/goals.md`](doc/goals.md) |
 | `LvsService` | [`doc/lvs.md`](doc/lvs.md) |
 | Models and enums | [`doc/models.md`](doc/models.md) |
@@ -571,6 +572,23 @@ await lessonContent.trash([fiche]);                  // the module's trash, neve
 ```
 
 The rest of its reference is in [`doc/lesson-content.md`](doc/lesson-content.md#lessoncontentservice): [Methods](doc/lesson-content.md#methods), [Errors](doc/lesson-content.md#errors).
+
+---
+
+## `TeachingAssignmentService`
+
+Reads and builds the **year plans** of the Lesfiches module (#229): the teaching assignments ("leeropdrachten") of a teacher, each a collection of the teacher's lesfiches split into lesson clusters (the units of the year), which hold lesfiches and titles in order, with learning goals. The planner plans a lesson cluster over a period for a class (#230); a `LessonClusterRef` names one. In the own teaching assignments it makes a teaching assignment and a cluster, adds lesfiches and titles to a cluster, sets its goals, and deletes a teaching assignment again; the creates and adds are sent once.
+
+```dart
+final plans = TeachingAssignmentService(client);
+final plan = await plans.createTeachingAssignment(name: 'Informatica 5');
+final unit = await plans.addCluster(plan, name: 'Lussen');   // LessonCluster
+await plans.addTitle(unit, 'Week 1');
+await plans.addLessonContent(unit, [fiche]);                  // a lesfiche of getItems
+final entries = await plans.getClusterContent(unit);          // titles and lesfiches, in order
+```
+
+The rest of its reference is in [`doc/lesson-content.md`](doc/lesson-content.md#teachingassignmentservice).
 
 ---
 

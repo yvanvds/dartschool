@@ -230,8 +230,9 @@ class LessonContentItem {
   final bool isVisible;
 
   /// The whole user ID of the owner (`owner`, `{platformId}_{userId}_
-  /// {coaccount}`, such as `4069_146_0`), or `null` when the module gave
-  /// none.
+  /// {coaccount}`, such as `4069_146_0`; the `id` of `owner` when the
+  /// module gives a user object there, as the lesfiches of a teaching
+  /// assignment have it, #229), or `null` when the module gave none.
   final String? ownerId;
 
   /// When the lesfiche was last changed (`dateLastChanged`), or `null` when
@@ -332,7 +333,12 @@ class LessonContentItem {
       icon: _optionalString(json['icon']),
       publicInfo: _optionalString(json['publicInfo']) ?? '',
       isVisible: json['isVisible'] == null || _bool(json['isVisible']),
-      ownerId: _optionalString(json['owner']),
+      // The lesfiches of a teaching assignment (#229) give the owner as a
+      // user object (`{"id", "name", ...}`); the others as its ID.
+      ownerId: switch (json['owner']) {
+        final Map<String, dynamic> owner => _optionalString(owner['id']),
+        final owner => _optionalString(owner),
+      },
       dateLastChanged: _optionalDateTime(
         json['dateLastChanged'],
         'the last change of $what',

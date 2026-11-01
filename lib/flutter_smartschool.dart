@@ -39,6 +39,7 @@ export 'src/models/skore_gradebook_models.dart';
 export 'src/models/skore_project_models.dart';
 export 'src/models/planner_models.dart';
 export 'src/models/lesson_content_models.dart';
+export 'src/models/teaching_assignment_models.dart';
 export 'src/models/goal_models.dart';
 export 'src/models/lvs_models.dart';
 
@@ -52,5 +53,6 @@ export 'src/services/skore_service.dart';
 export 'src/services/skore_gradebook_service.dart';
 export 'src/services/planner_service.dart';
 export 'src/services/lesson_content_service.dart';
+export 'src/services/teaching_assignment_service.dart';
 export 'src/services/goal_service.dart';
 export 'src/services/lvs_service.dart';

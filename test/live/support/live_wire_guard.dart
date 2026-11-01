@@ -145,8 +145,20 @@
 //   kind, until Smartschool answered one for them; and the restore
 //   (`lesson-content/restore/bulk`, #227) of lesfiches the run made and
 //   moved to the trash, after which they may be written again. Never a
-//   share, a merge or conversion, a year plan, and never
-//   `lesson-content/delete/bulk` (deleted for good);
+//   share, a merge or conversion, and never `lesson-content/delete/bulk`
+//   (deleted for good). Of the year plans (`teaching-assignments`, #229):
+//   the create of a teaching assignment named after the run, with the
+//   content filter `all` or `none` and no labels, courses, assignment
+//   types, collaborators or publication, at most
+//   maxTeachingAssignmentCreates of them; in a teaching assignment the run
+//   made (as Smartschool answered its create) and did not delete, the
+//   create of a lesson cluster named after the run, at most
+//   maxLessonClusterCreates; in a cluster the run made, the add of a title
+//   named after the run, of lesfiches the run made and did not move to the
+//   trash (`lesson-content-from-teaching-assignment`), and a change of its
+//   goals (goals as in the create of a lesfiche); and the DELETE of a
+//   teaching assignment the run made, once. Never a share, an export or
+//   import, a rename, reorder or removal in it;
 // - any request to the labels module (`/labels/`) that writes, but the
 //   create of an own label (`POST /labels/api/v1/user-labels/{userId}`,
 //   #228, `{text, color, isVisible}` only) whose text starts with the run's
@@ -230,6 +242,10 @@ class LiveWireGuard extends Interceptor {
     this.maxLessonContentCreates = 2,
     // The own label of lesson_content_labels_live_test.dart (#228).
     this.maxLabelCreates = 1,
+    // The teaching assignment and its cluster of
+    // teaching_assignment_live_test.dart (#229).
+    this.maxTeachingAssignmentCreates = 1,
+    this.maxLessonClusterCreates = 1,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -251,6 +267,12 @@ class LiveWireGuard extends Interceptor {
 
   /// How many own labels the run may make at most (#228).
   final int maxLabelCreates;
+
+  /// How many teaching assignments the run may make at most (#229).
+  final int maxTeachingAssignmentCreates;
+
+  /// How many lesson clusters the run may make at most (#229).
+  final int maxLessonClusterCreates;
 
   final void Function(LiveGuardViolation violation) _onViolation;
 
@@ -279,6 +301,12 @@ class LiveWireGuard extends Interceptor {
 
   /// How many creates of an own label it let out (#228).
   int labelCreates = 0;
+
+  /// How many creates of a teaching assignment it let out (#229).
+  int teachingAssignmentCreates = 0;
+
+  /// How many creates of a lesson cluster it let out (#229).
+  int lessonClusterCreates = 0;
 
   /// Whether a step of a login (the password, the 2FA code, the account
   /// verification answer) came through the guard in this run (#134). The
@@ -396,6 +424,19 @@ class LiveWireGuard extends Interceptor {
 
   /// The IDs of the own labels the run made and did not remove (#228).
   Set<String> get labelsMade => Set.unmodifiable(_labelsMade);
+
+  /// The teaching assignments the run made, as Smartschool answered their
+  /// creates, and did not delete (#229): their IDs, in lower case.
+  final Set<String> _teachingAssignmentsMade = {};
+
+  /// The IDs of the teaching assignments the run made and did not delete.
+  Set<String> get teachingAssignmentsMade =>
+      Set.unmodifiable(_teachingAssignmentsMade);
+
+  /// The lesson clusters the run made, as Smartschool answered their
+  /// creates (#229): the ID of their teaching assignment by their ID, both
+  /// in lower case.
+  final Map<String, String> _lessonClustersMade = {};
 
   /// Smartschool's answers to the moves to the trash out of a box, by
   /// (message ID, box), as they came in.
@@ -1053,6 +1094,12 @@ class LiveWireGuard extends Interceptor {
     final rest = path.startsWith(_lessonContentApi)
         ? path.substring(_lessonContentApi.length)
         : null;
+    if (rest != null && rest.startsWith(_teachingAssignments)) {
+      return _teachingAssignmentRefusal(
+        rest.substring(_teachingAssignments.length),
+        data,
+      );
+    }
     switch (rest) {
       case 'lessons/' || 'assignments/':
         return _lessonContentCreateRefusal(data);
@@ -1322,12 +1369,199 @@ class LiveWireGuard extends Interceptor {
   /// itself.
   String? _lessonContentDeleteRefusal(String path) {
     final rest = path.substring(_lessonContentApi.length);
+    if (rest.startsWith(_teachingAssignments)) {
+      return _teachingAssignmentDeleteRefusal(
+        rest.substring(_teachingAssignments.length),
+      );
+    }
     final action = _lessonContentAction.firstMatch(rest);
     if (action == null || !_lessonContentRemoval.hasMatch(action.group(3)!)) {
       return 'the live suite sends no DELETE but of a weblink or an '
           'attachment of a lesfiche it made (#129)';
     }
     return _madeLessonContentRefusal(action.group(1)!, action.group(2)!);
+  }
+
+  /// The year plans of the Lesfiches module (#229).
+  static const _teachingAssignments = 'teaching-assignments/';
+
+  /// The create of a teaching assignment: `{userId}`.
+  static final _taCreate = RegExp(r'^\d+_\d+_\d+$');
+
+  /// The create of a lesson cluster: `{userId}/{platformId}/{id}/
+  /// lesson-clusters`.
+  static final _clusterCreate = RegExp(
+    r'^\d+_\d+_\d+/\d+/([^/]+)/lesson-clusters$',
+  );
+
+  /// A write in a lesson cluster: `{taPlatformId}/{taId}/lesson-clusters/
+  /// {platformId}/{id}/{action}`.
+  static final _clusterAction = RegExp(
+    r'^\d+/([^/]+)/lesson-clusters/\d+/([^/]+)/([^/]+)$',
+  );
+
+  /// A teaching assignment itself: `{platformId}/{id}`.
+  static final _taItself = RegExp(r'^\d+/([^/]+)$');
+
+  /// Why the POST to the teaching assignments' [rest] with the JSON body
+  /// [data] may not go out, or `null` (#229).
+  String? _teachingAssignmentRefusal(String rest, Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    if (_taCreate.hasMatch(rest)) return _taCreateRefusal(data);
+    final cluster = _clusterCreate.firstMatch(rest);
+    if (cluster != null) {
+      final made = _madeTeachingAssignmentRefusal(cluster.group(1)!);
+      if (made != null) return made;
+      if (!data.keys.every(const {'name', 'icon', 'isVisible'}.contains)) {
+        return 'it makes a lesson cluster with more than its name, icon and '
+            'visibility';
+      }
+      final name = data['name'];
+      if (name is! String || !name.startsWith(_lessonContentTagged)) {
+        return 'the name of the lesson cluster does not start with '
+            '"$_lessonContentTagged"';
+      }
+      if (lessonClusterCreates >= maxLessonClusterCreates) {
+        return 'the run made $maxLessonClusterCreates lesson clusters '
+            'already, its maximum';
+      }
+      lessonClusterCreates++;
+      return null;
+    }
+    final action = _clusterAction.firstMatch(rest);
+    if (action == null) {
+      return 'the live suite sends no teaching assignments POST but the '
+          'creates of a teaching assignment and a lesson cluster, and the '
+          'adds and goals of a cluster it made (#229)';
+    }
+    final made = _madeTeachingAssignmentRefusal(action.group(1)!);
+    if (made != null) return made;
+    final clusterId = action.group(2)!.toLowerCase();
+    if (_lessonClustersMade[clusterId] != action.group(1)!.toLowerCase()) {
+      return 'it writes to lesson cluster $clusterId, which this run did not '
+          'make in that teaching assignment';
+    }
+    switch (action.group(3)) {
+      case 'titles':
+        final text = data['text'];
+        if (data.length != 1 ||
+            text is! String ||
+            !text.startsWith(_lessonContentTagged)) {
+          return 'it adds a title that is not only a text starting with '
+              '"$_lessonContentTagged"';
+        }
+        return null;
+      case 'change-goals':
+        if (data.length != 1) return 'it changes more than the goals';
+        return _lessonContentGoalsRefusal(data['newGoals']);
+      case 'lesson-content-from-teaching-assignment':
+        final list = data['lessonContentIdentifiers'];
+        if (data.length != 1 || list is! List || list.isEmpty) {
+          return 'it adds no lesfiches that it names';
+        }
+        for (final entry in list) {
+          if (entry is! Map ||
+              entry['id'] is! String ||
+              entry['type'] is! String) {
+            return 'it adds a lesfiche that it does not name';
+          }
+          final fiche = _madeLessonContentRefusal(
+            entry['type'] as String,
+            entry['id'] as String,
+          );
+          if (fiche != null) return fiche;
+        }
+        return null;
+    }
+    return 'the live suite sends no "${action.group(3)}" to a lesson cluster: '
+        'only titles, lesfiches and goals (#229)';
+  }
+
+  /// Why the create of a teaching assignment with the JSON body [data] may
+  /// not go out, or `null` (#229).
+  String? _taCreateRefusal(Map<dynamic, dynamic> data) {
+    final name = data['name'];
+    if (name is! String || !name.startsWith(_lessonContentTagged)) {
+      return 'the name of the teaching assignment does not start with '
+          '"$_lessonContentTagged"';
+    }
+    final filter = data['contentFilter'];
+    if (filter is! Map ||
+        (filter['type'] != 'all' && filter['type'] != 'none') ||
+        [
+          filter['labels'],
+          filter['courses'],
+          filter['assignmentTypes'],
+        ].any((list) => list is! List || list.isNotEmpty)) {
+      return 'it makes a teaching assignment with another content filter '
+          'than all or none, without labels, courses and assignment types';
+    }
+    final collaborators = data['collaborators'];
+    if (collaborators is! Map ||
+        collaborators.values.any((list) => list is! List || list.isNotEmpty) ||
+        data['publication'] != null) {
+      return 'it shares the teaching assignment (collaborators or a '
+          'publication)';
+    }
+    if (teachingAssignmentCreates >= maxTeachingAssignmentCreates) {
+      return 'the run made $maxTeachingAssignmentCreates teaching '
+          'assignments already, its maximum';
+    }
+    teachingAssignmentCreates++;
+    return null;
+  }
+
+  /// Why a write in the teaching assignment [id] may not go out, or `null`:
+  /// only one the run made and did not delete (#229).
+  String? _madeTeachingAssignmentRefusal(String id) =>
+      _teachingAssignmentsMade.contains(id.toLowerCase())
+      ? null
+      : 'it writes to teaching assignment $id, which this run did not make '
+            '(or deleted already)';
+
+  /// Why the DELETE of the teaching assignments' [rest] may not go out, or
+  /// `null` (#229): only of a teaching assignment the run made, once.
+  String? _teachingAssignmentDeleteRefusal(String rest) {
+    final match = _taItself.firstMatch(rest);
+    if (match == null) {
+      return 'the live suite sends no teaching assignments DELETE but of a '
+          'teaching assignment it made (#229)';
+    }
+    return _madeTeachingAssignmentRefusal(match.group(1)!);
+  }
+
+  /// Keeps what Smartschool's answer [body] to the teaching assignments
+  /// request [method] of [rest] (a `2xx`) says (#229): the teaching
+  /// assignment or cluster a create made (the `id` of its answer), and the
+  /// teaching assignment a DELETE deleted.
+  void _recordTeachingAssignmentAnswer(
+    String method,
+    String rest,
+    String body,
+  ) {
+    if (method == 'DELETE') {
+      final match = _taItself.firstMatch(rest);
+      if (match != null) {
+        _teachingAssignmentsMade.remove(match.group(1)!.toLowerCase());
+      }
+      return;
+    }
+    if (method != 'POST') return;
+    final cluster = _clusterCreate.firstMatch(rest);
+    if (!_taCreate.hasMatch(rest) && cluster == null) return;
+    Object? answer;
+    try {
+      answer = jsonDecode(body);
+    } on FormatException {
+      return;
+    }
+    final id = answer is Map ? answer['id'] : null;
+    if (id is! String || id.isEmpty) return;
+    if (cluster == null) {
+      _teachingAssignmentsMade.add(id.toLowerCase());
+    } else {
+      _lessonClustersMade[id.toLowerCase()] = cluster.group(1)!.toLowerCase();
+    }
   }
 
   /// Smartschool's labels module (#228).
@@ -2048,9 +2282,17 @@ class LiveWireGuard extends Interceptor {
     int status,
     String body,
   ) {
-    if (options.method.toUpperCase() != 'POST') return;
     if (status < 200 || status >= 300) return;
     final rest = options.uri.path.substring(_lessonContentApi.length);
+    if (rest.startsWith(_teachingAssignments)) {
+      _recordTeachingAssignmentAnswer(
+        options.method.toUpperCase(),
+        rest.substring(_teachingAssignments.length),
+        body,
+      );
+      return;
+    }
+    if (options.method.toUpperCase() != 'POST') return;
     Object? answer;
     try {
       answer = jsonDecode(body);

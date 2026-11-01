@@ -1,6 +1,6 @@
 # Lesfiches
 
-The reference of `LessonContentService`, moved here from the README as pub.dev limits `README.md` to 256 KB (#199). The README keeps its overview, with a short example: [`LessonContentService`](../README.md#lessoncontentservice).
+The reference of `LessonContentService` and of the year plans, `TeachingAssignmentService` (#229), moved here from the README as pub.dev limits `README.md` to 256 KB (#199). The README keeps its overview, with a short example: [`LessonContentService`](../README.md#lessoncontentservice), [`TeachingAssignmentService`](../README.md#teachingassignmentservice).
 
 ## `LessonContentService`
 
@@ -53,7 +53,7 @@ The module gives its dates without an offset from UTC (`2025-09-01 19:51:25`, un
 - **A create answers with the new ID only** (`201` with `{"id"}`), so `createLesson` and `createAssignment` read the lesfiche back (`GET lessons/{id}`) and return its detail, which must show the name, courses, weblinks and attachments sent. The create carries everything, as the web client's does: the attachments are uploaded into a new upload directory first (the step Intradesk uploads and message attachments use), which goes out as `randomDir`, with each file's visibility by name in `visibilityOptions`. A body with only a name gets a bare `400`, so the service sends every list the web client sends (the goals and labels given, partner weblinks, deeplinks and mini-DB items empty). A name that is taken is kept: the module makes a second lesfiche of that name.
 - **A create is sent once**: never again after logging in again, since a second one makes a second lesfiche. The same for `addWeblink`, the take of `addAttachments` and `duplicate` (the module takes the files of a directory again every time it is told to, and keeps two attachments of the same name). The edits set a value, and the removals, the move to the trash and the restore name what they act on, so they are retried once after logging in again, as a read is.
 - **Checks before sending**: the module answers a bad name or address with a bare `400`, and stores a course it does not know without complaint. So the writes throw an `ArgumentError`, before anything is sent, for an empty name or one longer than 255 characters (the web client's field), an empty icon, a weblink without a name or with an address `normalizeWeblinkUrl` refuses, a visibility the web client does not offer, a file that does not exist or whose name Smartschool does not allow, two files of the same name in one call, an ID that is not a UUID, and a lesfiche of a kind the library does not know. A course ID that is not one of `getCourses`, and an assignment type that is not one of the module's, are refused the same way after reading those lists.
-- Not covered: changing or removing a label itself (its text, colour or position), the bulk label writes (`lesson-content/add-labels/bulk`, `delete-labels/bulk`), mini-database items (`change-minidb-items`), gathering the goals of several lesfiches (`harvest-goals`), merging, converting between lesson and assignment, sharing, year plans and lesson clusters, method lessons of publishers, printing and deleting for good (`lesson-content/delete/bulk`). Whether `planLessonContent` copies a lesfiche's attachments, weblinks and visibility into the planned lesson was not checked.
+- Not covered: changing or removing a label itself (its text, colour or position), the bulk label writes (`lesson-content/add-labels/bulk`, `delete-labels/bulk`), mini-database items (`change-minidb-items`), gathering the goals of several lesfiches (`harvest-goals`), merging, converting between lesson and assignment, sharing, year plans and lesson clusters (see [`TeachingAssignmentService`](#teachingassignmentservice), #229), method lessons of publishers, printing and deleting for good (`lesson-content/delete/bulk`). Whether `planLessonContent` copies a lesfiche's attachments, weblinks and visibility into the planned lesson was not checked.
 
 **Learning goals (#223).** A lesfiche stores its goals as references (`goals: [{"id", "leerplanId", "type"}]`), which `LessonContentDetail.goals` gives as `LearningGoalRef`s. A goal of the goal selector (`GoalService.getCurriculum`, see [`doc/goals.md`](goals.md)) gives its reference with `SelectableGoal.ref`; `GoalService.resolve` names stored ones.
 
@@ -111,3 +111,49 @@ fiche = await lessonContent.changeLabels(fiche, [...fiche.labels, mine]);
   }
   ```
 - `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once (for a create, without that retry). Nothing was changed. Calling the method again is enough: the client logs in before its next request (#134).
+
+## `TeachingAssignmentService`
+
+The year plans of the Lesfiches module (#229): a **teaching assignment** ("leeropdracht", `teaching-assignments`) is a named collection of a teacher's lesfiches, split into **lesson clusters** (`lesson-clusters`, the units of the year), each holding lesfiches and titles in order, with learning goals, info for pupils and for the teacher, and an estimate of its teaching hours. The planner plans a lesson cluster over a period for a class, keeping a link back to it (#230): a `LessonClusterRef` (`id`, `platformId`, `teachingAssignment`) names one, and every `LessonCluster` is one. All under `/lesson-content/api/v1/teaching-assignments`, tried live on 2026-11-01 in the own library; `{userId}` is the session's whole user ID (`authenticatedUser.id`).
+
+```dart
+final plans = TeachingAssignmentService(client);
+final plan = await plans.createTeachingAssignment(name: 'Informatica 5');
+final unit = await plans.addCluster(plan, name: 'Lussen');
+await plans.addTitle(unit, 'Week 1');
+await plans.addLessonContent(unit, [fiche]);         // lesfiches of getItems or getLessonContent
+await plans.changeClusterGoals(unit, [goal.ref]);   // a SelectableGoal of GoalService
+for (final entry in await plans.getClusterContent(unit)) {
+  switch (entry) {
+    case LessonClusterTitle(:final text):
+      print('# $text');
+    case LessonClusterLesfiche(:final item):
+      print('- ${item.name}');
+  }
+}
+await plans.deleteTeachingAssignment(plan);         // with its clusters; the lesfiches stay
+```
+
+### Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `getTeachingAssignments()` | `Future<List<TeachingAssignment>>` | The user's teaching assignments (`GET teaching-assignments/{userId}`; `[]` for a teacher without one). |
+| `getTeachingAssignment(ref)` | `Future<TeachingAssignment>` | One (`GET teaching-assignments/{platformId}/{id}`), with its clusters in short (ID, name, icon, position, visibility). A `404` is a `SmartschoolLessonContentError` with that status. |
+| `createTeachingAssignment({name, icon = 'box_curver_blue', contentFilter = all})` | `Future<TeachingAssignment>` | Makes one (`POST teaching-assignments/{userId}`, answered `201` with it), with the web client's body: `name`, `icon`, `contentFilter` (`{type, labels: [], labelFilterType: "oneOf", courses: [], courseFilterType: "oneOf", assignmentTypes: []}`), `privileges` (`{read, edit, delete}`), no collaborators and no publication. Sent once. |
+| `deleteTeachingAssignment(ref)` | `Future<void>` | Deletes it with its clusters (`DELETE teaching-assignments/{platformId}/{id}`, answered `204`); the lesfiches stay in the library. Not a trash: it is gone. Retried once after logging in again. |
+| `getLessonContent(ref)` | `Future<List<LessonContentItem>>` | The lesfiches it takes (`GET .../{platformId}/{id}/lesson-content`), as its content filter selects them: with `all`, the user's lesfiches. The owner comes as a user object there; `ownerId` is its `id`. No course names. |
+| `getClusters(ref)` | `Future<List<LessonCluster>>` | Its clusters with their counts, info and goals (`GET teaching-assignments/{userId}/{platformId}/{id}/lesson-clusters?includeMetadata=true`). |
+| `getCluster(clusterRef)` | `Future<LessonCluster>` | One cluster (`GET teaching-assignments/{taPlatformId}/{taId}/lesson-clusters/{platformId}/{id}`). |
+| `addCluster(ref, {name, icon = 'box_curver_blue', visible = true})` | `Future<LessonCluster>` | Adds a cluster (`POST teaching-assignments/{userId}/{platformId}/{id}/lesson-clusters` with `{name, icon, isVisible}`, answered `201` with it). Sent once. |
+| `getClusterContent(clusterRef)` | `Future<List<LessonClusterEntry>>` | Its entries in order (`GET .../lesson-cluster-content`): `LessonClusterTitle`s and `LessonClusterLesfiche`s (a lesfiche in the list shape, with its `position`, `teachingHoursEstimate` and `numberOfGoals`). |
+| `addLessonContent(clusterRef, items)` | `Future<List<LessonContentItem>>` | Adds lesfiches to the end of the cluster (`POST .../lesson-content-from-teaching-assignment` with `{"lessonContentIdentifiers": [{id, type, platformId}]}`, answered `201` with `{"lessonContent": [...], "exceptions": []}`). Sent once: the same lesfiche can be in a cluster twice, and a second send adds it again (seen live). |
+| `addTitle(clusterRef, text)` | `Future<LessonClusterTitle>` | Adds a title to the end of the cluster (`POST .../titles` with `{text}`, answered `200` with it). Sent once. |
+| `changeClusterGoals(clusterRef, goals)` | `Future<LessonCluster>` | Sets the cluster's goals (`POST .../change-goals` with `{"newGoals": [{id, goalId, leerplanId, type}]}`, as for a lesfiche, #223); the list replaces them, empty clears them. The answer must have exactly those. Retried once after logging in again. |
+| `getClusterGoals(clusterRef)` | `Future<List<LessonClusterGoal>>` | The cluster's goals with the module's `count` (`GET .../goals`, `[{id, leerplanId, type, count}]`). |
+
+- **The content filter decides which lesfiches can go in.** With `none`, the module refused each lesfiche added to a cluster with an exception keyed by the lesfiche (`{platformId}_lesson_{id}`) with the status `403`; with `all`, it took them (seen live). `addLessonContent` throws a `SmartschoolLessonContentWriteRefusedError` when it added none and each has such an exception (`400` to `499`): nothing was changed; a `SmartschoolLessonContentSaveUnconfirmedError` that names those added when it added only some, or its answer does not account for each. `createTeachingAssignment` makes `all` (the default) or `none`; `particular` (by labels, courses and assignment types) is read, not made.
+- **Checks before sending** (an `ArgumentError`): a name or title text that is empty or longer than `TeachingAssignmentService.maxNameLength` (50: the module answers one of 51 characters with a bare `400`, seen live for all three), an empty icon, an ID that is not a UUID, no lesfiches or a lesfiche of a kind the library does not know, and a goal that `LessonContentService.changeGoals` refuses.
+- **Sent once**: the creates and the adds are never sent again after logging in again; the goals and the delete are, as a read is.
+- The errors are those of `LessonContentService` (see [*Errors*](#errors)); a teaching assignment or cluster the module does not know is answered `404`: a `SmartschoolLessonContentError` from a read, a `SmartschoolLessonContentWriteRefusedError` from a write.
+- Not covered: sharing (collaborators, publication), export and import, partner teaching assignments, the old Jaarplannen module (`/yearplan/api/v1`) and its import, renaming, reordering or removing clusters and entries (`rename`, `reorder`, `remove/bulk`, `DELETE` of a cluster or title), their info, attachments and weblinks, their visibility, the teaching-hours estimates, and the planned clusters of a cluster (`planned-lesson-clusters`, #230).

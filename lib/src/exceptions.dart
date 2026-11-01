@@ -858,9 +858,9 @@ class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
 /// So a caller can tell "there is no such item" from a move that went
 /// through: Intradesk answers the move of an item that is in the trash
 /// already, of its own kind, with `204`, as the first move. An item deleted
-/// for good was not tried (the library never deletes for good), nor an item
-/// the user may not manage (`capabilities.canManage` false, #139), which may
-/// be answered otherwise.
+/// for good was not tried (the library never deletes for good). An item the
+/// user may not manage is answered with `403`: a
+/// [SmartschoolIntradeskAccessDeniedError] (#139).
 ///
 /// A [SmartschoolIntradeskWriteRefusedError] with [statusCode] `404` (and
 /// Intradesk's [violations], none seen), as a move to the trash answered
@@ -882,6 +882,36 @@ class SmartschoolIntradeskItemNotFoundError
     required this.id,
     super.violations,
   }) : super(statusCode: 404);
+}
+
+/// Thrown by `IntradeskService.trashFolder`, `trashWeblink` and `trashFile`
+/// when Intradesk refuses to move the item of that [kind] with that [id] to
+/// the trash with HTTP `403`: the user may not manage it (#139). **Nothing
+/// was moved to the trash.**
+///
+/// Seen live (2026-11-01) for a weblink whose `capabilities.canManage` was
+/// `false` (an account without Intradesk's admin rights): `403`, the
+/// weblink still in its folder after. Intradesk's web client does not offer
+/// the move for such an item; the library sends it, and Intradesk refuses
+/// it.
+///
+/// A [SmartschoolIntradeskWriteRefusedError] with [statusCode] `403` (and
+/// Intradesk's [violations], none seen), as a move to the trash answered
+/// `403` was before #139, so a `catch` of that type still catches it.
+class SmartschoolIntradeskAccessDeniedError
+    extends SmartschoolIntradeskWriteRefusedError {
+  /// The kind of item the move to the trash asked for.
+  final IntradeskItemKind kind;
+
+  /// The ID that was asked for.
+  final String id;
+
+  const SmartschoolIntradeskAccessDeniedError(
+    super.message, {
+    required this.kind,
+    required this.id,
+    super.violations,
+  }) : super(statusCode: 403);
 }
 
 /// Thrown by `IntradeskService.createFolder`, `createWeblink` and

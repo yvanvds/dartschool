@@ -928,12 +928,13 @@ class IntradeskService {
   /// gone through.
   ///
   /// Throws an [ArgumentError], without sending anything, when [folderId] is
-  /// not a UUID. Any other refusal by Intradesk (HTTP `400` to `499`) is a
-  /// plain [SmartschoolIntradeskWriteRefusedError], the class that
-  /// [SmartschoolIntradeskItemNotFoundError] extends; another answer than
-  /// `2xx`, a [SmartschoolIntradeskSaveUnconfirmedError]. The answer for an
-  /// item without the rights to it (`capabilities.canManage` false) was not
-  /// seen live (#139).
+  /// not a UUID. An item the user may not manage (`capabilities.canManage`
+  /// false) Intradesk refuses with HTTP `403`, and moves nothing (seen live
+  /// for a weblink, #139): a [SmartschoolIntradeskAccessDeniedError] (with
+  /// [IntradeskItemKind.folder]). Any other refusal by Intradesk (HTTP `400`
+  /// to `499`) is a plain [SmartschoolIntradeskWriteRefusedError], the class
+  /// both extend; another answer than `2xx`, a
+  /// [SmartschoolIntradeskSaveUnconfirmedError].
   Future<void> trashFolder(String folderId) =>
       _trash('trashFolder', IntradeskItemKind.folder, folderId, 'folderId');
 
@@ -1293,6 +1294,16 @@ class IntradeskService {
       throw SmartschoolIntradeskItemNotFoundError(
         '$operation: Intradesk has no $item with ID "$id" (HTTP 404): the ID '
         'is unknown, or it is the ID of a $others. Nothing was moved to the '
+        'trash.',
+        kind: kind,
+        id: id,
+        violations: parseViolations(response.data ?? ''),
+      );
+    }
+    if (status == 403) {
+      throw SmartschoolIntradeskAccessDeniedError(
+        '$operation: Intradesk refused the move of $item $id to the trash '
+        '(HTTP 403): the user may not manage it. Nothing was moved to the '
         'trash.',
         kind: kind,
         id: id,

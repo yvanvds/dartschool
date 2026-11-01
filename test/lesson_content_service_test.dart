@@ -653,6 +653,31 @@ void main() {
         });
       }
     });
+
+    test('lesfiches refused with HTTP 403 (a pupil account, seen live, #168) '
+        'are a SmartschoolLessonContentAccessDeniedError that quotes nothing '
+        'of the page', () async {
+      final (server, lessonContent) = await serve([
+        _json(_errorPage, status: 403),
+      ]);
+
+      await expectLater(
+        lessonContent.getItems(),
+        throwsA(
+          isA<SmartschoolLessonContentAccessDeniedError>()
+              .having((e) => e.statusCode, 'statusCode', 403)
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('refused the lesfiches to the account (HTTP 403)'),
+                  isNot(contains('<')),
+                ),
+              ),
+        ),
+      );
+      expect(server.log, [_list]);
+    });
   });
 
   // ---------------------------------------------------------------------------

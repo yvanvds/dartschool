@@ -2179,6 +2179,25 @@ class SmartschoolLessonContentError extends SmartschoolException {
       : '$runtimeType($statusCode): $message';
 }
 
+/// Thrown by `LessonContentService` when the Lesfiches module, or the
+/// school's course list, refuses a read to the account with HTTP `403`
+/// (Forbidden): seen live (#168) for the lesfiches (`getItems`) of a pupil
+/// account, answered with Smartschool's HTML page. The request was refused:
+/// no data came. From `PlannerService.planLessonContent` and the writes of
+/// `LessonContentService`, it comes from a read before the write: nothing
+/// was sent or changed.
+///
+/// A [SmartschoolLessonContentError] with [statusCode] `403`, so `catch`
+/// clauses for that type keep catching it. Its message names the read and
+/// quotes nothing of the answer. From `getItems`, a refusal of the course
+/// list after the lesfiches were read is a
+/// [SmartschoolLessonContentCourseListError] instead, which keeps them.
+class SmartschoolLessonContentAccessDeniedError
+    extends SmartschoolLessonContentError {
+  const SmartschoolLessonContentAccessDeniedError(super.message)
+    : super(statusCode: 403);
+}
+
 /// Thrown by `LessonContentService.getItems` when it read the lesfiches, but
 /// the school's course list, which it reads after them to name their courses
 /// (#101), answered with something the service cannot use (#118): another

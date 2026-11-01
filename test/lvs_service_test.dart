@@ -500,6 +500,29 @@ void main() {
       });
 
       test(
+        'more than two entries: read as the web client does (#168)',
+        () async {
+          final (_, lvs) = await _serve({
+            'file': _json('spotlight/pupil_file.json'),
+            'status': _json('status/three.json'),
+          });
+
+          final status = (await lvs.getPupilFile(
+            pupilId: 900001,
+            classId: 900101,
+          )).todayStatus;
+
+          // Every entry is kept, in the LVS's order, another partOfDay too.
+          expect(status.halfDays.map((h) => h.partOfDay), ['am', 'none', 'am']);
+          // The web client shows the last entry of a half-day.
+          expect(status.am?.code, 'TB');
+          expect(status.am?.color, 'red');
+          // It shows only am and pm: an entry of another partOfDay is neither.
+          expect(status.pm, isNull);
+        },
+      );
+
+      test(
         'a status the service cannot read is a SmartschoolLvsError',
         () async {
           for (final body in [

@@ -2824,11 +2824,17 @@ class SmartschoolLvsError extends SmartschoolException {
 /// start page (`/?module=Homepage`, as Skore does for an account without its
 /// rights, #91). The request was refused: no data came.
 ///
-/// **Not captured live** (#160): what the LVS answers a teacher without LVS
-/// rights and a pupil account. The two answers above are what the service
-/// takes for a refusal; any other answer it cannot read is a plain
-/// [SmartschoolLvsError], never an empty result. `LvsService.checkAccess`
-/// tells whether the account may use the LVS.
+/// For a pupil account (seen live, #168): the LVS sends a pupil search, a
+/// pupil's file, the reads of the results app and the absences of another
+/// user on to the start page. It answers the notes of another user with the
+/// pupil's own notes, under the pupil's own ID: `LvsService.getNotes` and
+/// `getAllNotes` throw this error for an answer about another pupil than the
+/// one asked for (its [statusCode] `200`), never that pupil's notes. A
+/// pupil's own notes and absences are not refused.
+///
+/// Any other answer the service cannot read is a plain [SmartschoolLvsError],
+/// never an empty result. `LvsService.checkAccess` tells whether the account
+/// may use the LVS.
 ///
 /// Its message names the read, and quotes nothing of the answer. A
 /// [SmartschoolLvsError], so `catch` clauses for that type keep catching it.

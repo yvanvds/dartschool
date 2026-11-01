@@ -546,9 +546,9 @@ void main() {
           '</content><content/>',
         ),
         'fewer than 10 parts': empty.replaceFirst('<viewType></viewType>', ''),
-        'another pupil': notes.replaceFirst(
+        'no pupilID': notes.replaceFirst(
           '<pupilID>900001</pupilID>',
-          '<pupilID>900002</pupilID>',
+          '<pupilID>Janssens</pupilID>',
         ),
         'another category': notes.replaceFirst(
           '<catID>900401</catID>',
@@ -726,6 +726,29 @@ void main() {
       }
     });
 
+    test('the notes of another pupil (a pupil account gets its own, under '
+        'its own ID, #168) are a SmartschoolLvsAccessDeniedError, never '
+        'their notes', () async {
+      final notes = _fixture('notes/category.xml');
+      final (_, lvs) = await _serve({
+        'notes': _text(
+          notes.replaceFirst(
+            '<pupilID>900001</pupilID>',
+            '<pupilID>900002</pupilID>',
+          ),
+        ),
+      });
+      await expectLater(
+        _notesOf(lvs),
+        throwsA(
+          isA<SmartschoolLvsAccessDeniedError>()
+              .having((e) => e.statusCode, 'statusCode', 200)
+              .having((e) => e.message, 'message', contains('another pupil'))
+              .having((e) => e.message, 'message', _quotesNothing),
+        ),
+      );
+    });
+
     test('an ID that is not positive, or a school year that ends before it '
         'starts, is an ArgumentError, before anything is sent', () async {
       final (server, lvs) = await _serve({});
@@ -839,6 +862,30 @@ void main() {
       expect(await _allNotesOf(lvs), isEmpty);
     });
 
+    test('the notes of another pupil (a pupil account gets its own, under '
+        'its own ID, #168) are a SmartschoolLvsAccessDeniedError, with or '
+        'without notes', () async {
+      for (final name in ['notes/all_notes.xml', 'notes/all_notes_empty.xml']) {
+        final (_, lvs) = await _serve({
+          'allNotes': _text(
+            _fixture(name).replaceFirst(
+              '<pupilID>900001</pupilID>',
+              '<pupilID>900002</pupilID>',
+            ),
+          ),
+        });
+        await expectLater(
+          _allNotesOf(lvs),
+          throwsA(
+            isA<SmartschoolLvsAccessDeniedError>()
+                .having((e) => e.statusCode, 'statusCode', 200)
+                .having((e) => e.message, 'message', _quotesNothing),
+          ),
+          reason: name,
+        );
+      }
+    });
+
     test('an answer the service cannot read is a SmartschoolLvsError that '
         'quotes nothing', () async {
       final all = _fixture('notes/all_notes.xml');
@@ -847,9 +894,9 @@ void main() {
           '<command>renderPupilAllNotes</command>',
           '<command>renderPupilNotes</command>',
         ),
-        'another pupil': all.replaceFirst(
+        'no pupilID': all.replaceFirst(
           '<pupilID>900001</pupilID>',
-          '<pupilID>900002</pupilID>',
+          '<pupilID></pupilID>',
         ),
         'dates not a list': all.replaceFirst(
           RegExp(r'\["n_900303".*?\]'),

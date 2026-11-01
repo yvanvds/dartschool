@@ -67,9 +67,11 @@ abstract final class LvsNoteAnswers {
   /// the category's own, never those of its sub-categories (#180), of any
   /// school year the LVS answers with.
   ///
-  /// Throws a [SmartschoolLvsPupilNotFoundError] for the LVS's placeholder
-  /// pupil, a [SmartschoolLvsCategoryNotFoundError] for a category it does
-  /// not know, and a [SmartschoolLvsError] for an unknown shape.
+  /// Throws a [SmartschoolLvsAccessDeniedError] for an answer about another
+  /// pupil (#168), a [SmartschoolLvsPupilNotFoundError] for the LVS's
+  /// placeholder pupil, a [SmartschoolLvsCategoryNotFoundError] for a
+  /// category it does not know, and a [SmartschoolLvsError] for an unknown
+  /// shape.
   static List<LvsNote> categoryNotes(
     XmlElement content, {
     required int pupilId,
@@ -81,9 +83,7 @@ abstract final class LvsNoteAnswers {
     if (parts.length < 10) {
       throw LvsWire.unknownShape(read, 'fewer than 10 parts');
     }
-    if (LvsWire.tryId(_text(parts[3])) != pupilId) {
-      throw LvsWire.unknownShape(read, 'the pupil is not the one asked for');
-    }
+    _checkPupil(_text(parts[3]), read, pupilId: pupilId);
     if (LvsWire.tryId(_text(parts[4])) != categoryId) {
       throw LvsWire.unknownShape(read, 'the category is not the one asked for');
     }
@@ -145,9 +145,7 @@ abstract final class LvsNoteAnswers {
     if (parts.length < 8) {
       throw LvsWire.unknownShape(read, 'fewer than 8 parts');
     }
-    if (LvsWire.tryId(_text(parts[3])) != pupilId) {
-      throw LvsWire.unknownShape(read, 'the pupil is not the one asked for');
-    }
+    _checkPupil(_text(parts[3]), read, pupilId: pupilId);
     if (!_hasData(parts[0], read)) return const [];
     final notes = _notes(parts[7], read, pupilId: pupilId);
     final order = <int, int>{};
@@ -162,6 +160,29 @@ abstract final class LvsNoteAnswers {
         return byOrder != 0 ? byOrder : a.$1.compareTo(b.$1);
       });
     return [for (final (_, note) in indexed) note];
+  }
+
+  /// Checks that the answer's `pupilID`, [answered], is [pupilId].
+  ///
+  /// A pupil account that asks for the notes of another user is not refused:
+  /// the LVS answers with the pupil's own notes, under the pupil's own ID
+  /// (seen live for a pupil account, #168). So another pupil ID in the answer
+  /// is a [SmartschoolLvsAccessDeniedError], never someone else's notes; an
+  /// answer without a pupil ID it can read is an unknown shape.
+  static void _checkPupil(
+    String answered,
+    LvsRead read, {
+    required int pupilId,
+  }) {
+    final id = LvsWire.tryId(answered);
+    if (id == null) throw LvsWire.unknownShape(read, 'no pupilID');
+    if (id != pupilId) {
+      throw SmartschoolLvsAccessDeniedError(
+        'The LVS refused ${read.what} to the account: it answered with '
+        'another pupil than the one asked for.',
+        statusCode: 200,
+      );
+    }
   }
 
   /// The note IDs of `dates`, in the order the web client walks it: a list

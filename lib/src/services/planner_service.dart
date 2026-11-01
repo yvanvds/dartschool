@@ -2089,6 +2089,11 @@ class PlannerService {
   }) {
     final status = response.statusCode;
     final body = (response.data ?? '').trimLeft();
+    if (status == 403 && !ok.contains(status)) {
+      throw SmartschoolPlannerAccessDeniedError(
+        'The planner refused $what to the account (HTTP 403).',
+      );
+    }
     if (!ok.contains(status)) {
       throw SmartschoolPlannerError(
         'The planner answered $what with HTTP $status: ${_preview(body)}',

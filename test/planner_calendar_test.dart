@@ -636,6 +636,41 @@ void main() {
       );
     });
 
+    test('a lookup refused with HTTP 403 (a pupil account, seen live, #168) '
+        'is a SmartschoolPlannerAccessDeniedError that quotes nothing of the '
+        'answer', () async {
+      final (_, planner) = await serve(
+        _Smartschool(
+          lookups: {
+            '4069_abc': _json(
+              '{"status":403,"title":"Forbidden","detail":"Testdetail",'
+              '"type":""}',
+              status: 403,
+            ),
+          },
+        ),
+      );
+
+      await expectLater(
+        planner.getCalendar(PlannerCalendar.group('4069_abc')),
+        throwsA(
+          isA<SmartschoolPlannerAccessDeniedError>()
+              .having((e) => e.statusCode, 'statusCode', 403)
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains(
+                    'refused the lookup of PlannerCalendar(group: 4069_abc)',
+                  ),
+                  contains('HTTP 403'),
+                  isNot(contains('Testdetail')),
+                ),
+              ),
+        ),
+      );
+    });
+
     test('an HTML page is a SmartschoolPlannerError', () async {
       final (_, planner) = await serve(
         _Smartschool(

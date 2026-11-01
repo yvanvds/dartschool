@@ -1946,6 +1946,24 @@ class SmartschoolPlannerError extends SmartschoolException {
       : '$runtimeType($statusCode): $message';
 }
 
+/// Thrown by `PlannerService` when the planner refuses a read to the account
+/// with HTTP `403` (Forbidden): seen live (#168) for the lookup of a
+/// calendar by its ID (`getCalendar`, `POST quick-search/planner/start`)
+/// from a pupil account, answered with
+/// `{"status":403,"title":"Forbidden","detail":"","type":""}`. The request
+/// was refused: no data came. From a write, it comes from a read before the
+/// save: nothing was sent. When the planner answers a save itself with
+/// `403`, the write throws a [SmartschoolPlannerSaveUnconfirmedError] with
+/// this error as its `cause`, as before.
+///
+/// A [SmartschoolPlannerError] with [statusCode] `403`, so `catch` clauses
+/// for that type keep catching it. Its message names the read and quotes
+/// nothing of the answer.
+class SmartschoolPlannerAccessDeniedError extends SmartschoolPlannerError {
+  const SmartschoolPlannerAccessDeniedError(super.message)
+    : super(statusCode: 403);
+}
+
 /// Thrown by `PlannerService.getPlannedElement` and `getDetail` when the
 /// planner answers `404`: it has no element of that type with that ID (#84).
 /// The ID is unknown, or the element was removed or moved to the trash (a

@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.2 - 2026-11-01
 
 ### Can break a build
 - `SkoreAccessArea` has a new value, `gradebook` (#168): a `switch` over it without a default must add it.

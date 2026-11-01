@@ -89,12 +89,17 @@ typedef _Courses = ({
 /// [addAttachments], [changeAttachmentVisibility] and [removeAttachment]
 /// change its weblinks and attachments; [changeGoals] sets its learning
 /// goals (#223), which the creates take too; [trash] moves lesfiches to the
-/// module's trash. All of them were tried live on 2026-10-05 (the goals on
+/// module's trash, [getTrash] reads it and [restore] takes lesfiches out of
+/// it again (#227); [duplicate] copies lesfiches (#227); [getLabels] reads
+/// the labels a lesfiche can get, [changeLabels] puts them on one, and
+/// [createUserLabel] makes an own label (#228). All of them were tried live
+/// on 2026-10-05 (the goals, the trash, the copies and the labels on
 /// 2026-11-01), in the own library, which is private to the teacher. The
 /// service never deletes a lesfiche for good (`lesson-content/delete/bulk`),
-/// never restores one, and does not cover labels, mini-database items,
-/// duplicating, merging or converting lesfiches, sharing, year plans, method
-/// lessons of publishers or printing.
+/// never changes or removes a label, and does not cover mini-database
+/// items, merging or converting lesfiches, sharing, year plans (those are
+/// `TeachingAssignmentService`, #229), method lessons of publishers or
+/// printing.
 ///
 /// What Smartschool answers, and what the service makes of it:
 /// - **A create answers with the ID only** (`201` with `{"id"}`), so the
@@ -104,9 +109,10 @@ typedef _Courses = ({
 /// - **A create is sent once**, never again after logging in again, nor
 ///   retried in any other way: a second one makes a second lesfiche (the
 ///   module keeps a name that is taken, seen live). The same for
-///   [addWeblink] and the last step of [addAttachments]. The edits set a
-///   value, the removals and the move to the trash name what they act on,
-///   so they are retried once after logging in again, as a read is.
+///   [addWeblink], the last step of [addAttachments] and [duplicate]. The
+///   edits set a value, the removals, the move to the trash and the restore
+///   name what they act on, so they are retried once after logging in
+///   again, as a read is.
 /// - **Checks before sending.** The module answers a bad name or address
 ///   with a bare HTTP `400` that does not say why, and stores a course it
 ///   does not know without complaint (seen live). So the writes refuse with
@@ -197,6 +203,42 @@ class LessonContentService {
 
   /// The longest name of a lesfiche the web client's name field takes.
   static const maxNameLength = 255;
+
+  /// Smartschool's labels module, which keeps the labels (#228).
+  static const _labelsPath = '/labels/api/v1';
+  static const _labelsModule = 'The labels module';
+
+  /// The longest text of a label the web client takes
+  /// (`DEFAULT_LABEL_MAX_AMOUNT_OF_CHARACTERS`); the labels module refuses a
+  /// longer one with a bare `400` (seen live, #228).
+  static const maxLabelLength = 50;
+
+  /// The colours of a label, as the web client's colour picker offers them
+  /// (`allColors`, #228).
+  static const labelColors = [
+    'aqua',
+    'black',
+    'blue',
+    'brown',
+    'grass',
+    'green',
+    'lavender',
+    'mint',
+    'olive',
+    'orange',
+    'pink',
+    'purple',
+    'red',
+    'silver',
+    'steel',
+    'tangerine',
+    'violet',
+    'yellow',
+  ];
+
+  /// The colour [createUserLabel] gives a label by default: the web
+  /// client's (`steel`).
+  static const defaultLabelColor = 'steel';
 
   /// Returns the lesfiches of the authenticated user in the Lesfiches
   /// module, lessons and assignments, in the order the module gives them.
@@ -390,8 +432,9 @@ class LessonContentService {
   /// by default), the courses [courseIds] (IDs of [getCourses]), the
   /// [weblinks] and the [attachments], each with when pupils see it, and the
   /// learning goals [goals] (#223; such as [SelectableGoal.ref] of a goal of
-  /// `GoalService.getCurriculum`): all in one create, as the web client
-  /// makes a lesfiche (seen live, 2026-10-05).
+  /// `GoalService.getCurriculum`) and the [labels] (#228, labels of
+  /// [getLabels]): all in one create, as the web client makes a lesfiche
+  /// (seen live, 2026-10-05; the labels on 2026-11-01).
   /// A name that is taken is kept: the module makes a second lesfiche of
   /// that name (seen live).
   ///
@@ -411,7 +454,8 @@ class LessonContentService {
   ///    the upload directory as `randomDir` (`null` without attachments), the
   ///    visibility of each attachment by its file name in
   ///    `visibilityOptions`, the goals as `goals` (`{id, goalId, leerplanId,
-  ///    type}`, as [changeGoals] sends them), and empty `labels`,
+  ///    type}`, as [changeGoals] sends them), the labels as `labels` (as
+  ///    [changeLabels] sends them), and empty
   ///    `partnerWeblinks`, `miniDBItems` and `deeplinks` (the module answers
   ///    a body with only a
   ///    name with a bare `400`, seen live). Sent **once**, never again after
@@ -419,7 +463,8 @@ class LessonContentService {
   /// 4. `GET lessons/{id}`: the detail of the new lesfiche ([getDetailById]),
   ///    which is returned, with its courses named when it has any. It must
   ///    show the name, the courses, every weblink and every attachment with
-  ///    the visibility sent, as it did live, and exactly the goals sent.
+  ///    the visibility sent, as it did live, and exactly the goals and the
+  ///    labels sent.
   ///
   /// Throws an [ArgumentError], without sending anything, for a name that is
   /// empty or longer than [maxNameLength], an empty icon, a course ID that is
@@ -428,8 +473,9 @@ class LessonContentService {
   /// offer, an attachment whose file does not exist or has a name
   /// Smartschool does not allow ([SmartschoolUploader.isAllowedName]), two
   /// attachments of the same name (their visibility is sent by name), an
-  /// attachment visibility the web client does not offer, or a goal that
-  /// [changeGoals] refuses. Throws it after
+  /// attachment visibility the web client does not offer, a goal that
+  /// [changeGoals] refuses, or a label that [changeLabels] refuses. Throws
+  /// it after
   /// reading the school's courses, still without sending anything, for a
   /// course ID that is not one of them.
   ///
@@ -446,6 +492,7 @@ class LessonContentService {
     List<NewLessonContentWeblink> weblinks = const [],
     List<NewLessonContentAttachment> attachments = const [],
     Iterable<LearningGoalRef> goals = const [],
+    Iterable<LessonContentLabel> labels = const [],
   }) => _create(
     'createLesson',
     LessonContentType.lesson,
@@ -457,6 +504,7 @@ class LessonContentService {
     weblinks: weblinks,
     attachments: attachments,
     goals: goals,
+    labels: labels,
   );
 
   /// Makes an assignment lesfiche of the assignment type [assignmentTypeId]
@@ -485,6 +533,7 @@ class LessonContentService {
     List<NewLessonContentWeblink> weblinks = const [],
     List<NewLessonContentAttachment> attachments = const [],
     Iterable<LearningGoalRef> goals = const [],
+    Iterable<LessonContentLabel> labels = const [],
   }) => _create(
     'createAssignment',
     LessonContentType.assignment,
@@ -497,6 +546,7 @@ class LessonContentService {
     weblinks: weblinks,
     attachments: attachments,
     goals: goals,
+    labels: labels,
   );
 
   /// Makes a lesfiche of [type]; see [createLesson].
@@ -512,9 +562,11 @@ class LessonContentService {
     required List<NewLessonContentWeblink> weblinks,
     required List<NewLessonContentAttachment> attachments,
     required Iterable<LearningGoalRef> goals,
+    required Iterable<LessonContentLabel> labels,
   }) async {
     final newName = _checkedName(name);
     final newGoals = GoalRefs.checked(goals);
+    final newLabels = _checkedLabels(labels);
     final newIcon = _checkedIcon(icon);
     final links = [for (final link in weblinks) _checkedWeblink(link)];
     final files = _checkedFiles(attachments);
@@ -557,7 +609,7 @@ class LessonContentService {
         'privateInfo': privateInfo,
         'courses': courses.wire,
         'goals': [for (final goal in newGoals) goal.toWire()],
-        'labels': const <Object>[],
+        'labels': [for (final label in newLabels) label.toWire()],
         'weblinks': [
           for (final link in links)
             {
@@ -621,6 +673,8 @@ class LessonContentService {
         'the courses sent (it has ${_ids(detail.courses.map((c) => c.id))})',
       if (!GoalRefs.same(detail.goals, newGoals))
         'the goals sent (it has ${GoalRefs.describe(detail.goals)})',
+      if (!_sameLabels(detail.labels, newLabels))
+        'the labels sent (it has ${_describeLabels(detail.labels)})',
       for (final link in links)
         if (!detail.weblinks.any(
           (w) =>
@@ -843,6 +897,314 @@ class LessonContentService {
       mismatch: (detail) =>
           detail.isVisible == visible ? null : 'isVisible ${detail.isVisible}',
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Labels (#228)
+  // ---------------------------------------------------------------------------
+
+  /// Returns the labels the authenticated user can put on a lesfiche: the
+  /// school's labels for the Lesfiches module first (such as `JAAR 6` or
+  /// `TRIMESTER 1`, [LessonContentLabel.isSchoolLabel]), then the user's own
+  /// ([LessonContentLabel.isUserLabel]), each in the order Smartschool gives
+  /// them (#228).
+  ///
+  /// Sends two reads to Smartschool's labels module (`/labels/api/v1`), as
+  /// the Lesfiches web client's label picker does: `GET
+  /// locations/lesson_content/platform-labels` (the school's labels whose
+  /// `locations` hold `lesson_content`) and `GET user-labels/{userId}` with
+  /// the session's whole user ID (`authenticatedUser.id`, such as
+  /// `4069_146_0`). Seen live (2026-11-01): both answer a JSON array of
+  /// labels (`{identifier, id, type, text, color, isVisible}`, with
+  /// `platformId` and `locations` for a school label and `userId` for an own
+  /// one). `GET platform-labels` is not it: the module answers that with its
+  /// web app.
+  ///
+  /// Put them on a lesfiche with [changeLabels], or give them to
+  /// [createLesson] / [createAssignment]. [createUserLabel] makes an own
+  /// label.
+  ///
+  /// Throws a [SmartschoolLessonContentError] when the labels module answers
+  /// with another status than `200`, an HTML page, invalid JSON or labels in
+  /// an unknown shape; a [SmartschoolParsingError] when the session's user
+  /// ID is not in the form above. See the class doc for the other errors.
+  Future<List<LessonContentLabel>> getLabels() async {
+    final school = parseLabels(
+      _decode(
+        await _client.getResponse(
+          '$_labelsPath/locations/lesson_content/platform-labels',
+        ),
+        "the school's labels",
+        _labelsModule,
+      ),
+    );
+    final userId = await _ownUserId();
+    final own = parseLabels(
+      _decode(
+        await _client.getResponse('$_labelsPath/user-labels/$userId'),
+        'the own labels',
+        _labelsModule,
+      ),
+    );
+    return List.unmodifiable([...school, ...own]);
+  }
+
+  /// Puts exactly the labels [labels] (such as those of [getLabels]) on the
+  /// lesfiche [item], and returns its detail (#228). The list replaces the
+  /// labels the lesfiche has: an empty one takes them all off.
+  ///
+  /// Sends `POST lessons/{id}/change-labels` (or `assignments/...`) with
+  /// `{"newLabels": [...]}`, each label as [LessonContentLabel.toWire]
+  /// gives it, which the module answers with `200` and the whole lesfiche
+  /// (seen live, 2026-11-01, with a school label and an own label, and with
+  /// an empty list). The answer must have exactly the labels sent (by ID).
+  /// A label given twice is sent once. Retried once after logging in again:
+  /// it sets a value. The module answers an own label without its `userId`,
+  /// and a school label with only its `id` and `type`, with a bare HTTP
+  /// `500` (seen live), so a label is sent with all it has; the labels of
+  /// [getLabels] and of a lesfiche's [LessonContentItem.labels] have it.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for a label with
+  /// an empty ID, of a kind that is not `platform` or `user`, or an own
+  /// label whose owner is not known ([LessonContentLabel.ownerId]); and as
+  /// [rename] does for [item]. See [rename] for the rest.
+  Future<LessonContentDetail> changeLabels(
+    LessonContentItem item,
+    Iterable<LessonContentLabel> labels,
+  ) async {
+    _checkItem(item);
+    final newLabels = _checkedLabels(labels);
+    return _edit(
+      'changeLabels',
+      item,
+      'change-labels',
+      {
+        'newLabels': [for (final label in newLabels) label.toWire()],
+      },
+      change:
+          'the change of the labels of ${_what(item)} to '
+          '${_describeLabels(newLabels)}',
+      mismatch: (detail) => _sameLabels(detail.labels, newLabels)
+          ? null
+          : 'the labels ${_describeLabels(detail.labels)}',
+    );
+  }
+
+  /// Makes a new own label of the authenticated user with the text [text]
+  /// (sent without the white space around it) and the colour [color] (one
+  /// of [labelColors]), and returns it (#228). The label is the user's own,
+  /// for the Lesfiches module and the other modules that show labels.
+  ///
+  /// Sends `POST /labels/api/v1/user-labels/{userId}` with `{"text",
+  /// "color", "isVisible": true}`, as the web client does, which the labels
+  /// module answers with `201` and the new label (seen live, 2026-11-01).
+  /// The answer must be an own label with the text sent. **Sent once**,
+  /// never again after logging in again, nor retried in any other way: it
+  /// makes a label.
+  ///
+  /// The labels module refuses a text one of the user's labels has (`400`
+  /// with `languageCode` `name.already.used`), and a text longer than
+  /// [maxLabelLength] (a bare `400`), seen live: both a
+  /// [SmartschoolLessonContentWriteRefusedError] (its
+  /// [SmartschoolLessonContentWriteRefusedError.violations] hold the
+  /// `languageCode` when there is one). Nothing was made.
+  ///
+  /// The library does not change or remove labels.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for a text that is
+  /// empty or longer than [maxLabelLength] (the web client's limit,
+  /// `DEFAULT_LABEL_MAX_AMOUNT_OF_CHARACTERS`), or a colour that is not one
+  /// of [labelColors]. An answer that is not the label, or a failure after
+  /// it was sent, is a [SmartschoolLessonContentSaveUnconfirmedError]: read
+  /// [getLabels] before trying again. See the class doc for the other
+  /// errors.
+  Future<LessonContentLabel> createUserLabel(
+    String text, {
+    String color = defaultLabelColor,
+  }) async {
+    const operation = 'createUserLabel';
+    final newText = text.trim();
+    if (newText.isEmpty) {
+      throw ArgumentError.value(text, 'text', 'is empty');
+    }
+    if (newText.length > maxLabelLength) {
+      throw ArgumentError.value(
+        text,
+        'text',
+        'is longer than $maxLabelLength characters',
+      );
+    }
+    if (!labelColors.contains(color)) {
+      throw ArgumentError.value(
+        color,
+        'color',
+        'is not one of the colours of a label (${labelColors.join(', ')})',
+      );
+    }
+    final userId = await _ownUserId();
+    final change = 'the creation of the own label "$newText"';
+    const unconfirmed =
+        'It may or may not have been made: look for it in the labels '
+        '(getLabels) before trying again; trying again makes no second one '
+        'of that text (the labels module refuses a text that is taken).';
+    final Response<String> response;
+    try {
+      response = await _client.postJsonResponse(
+        '$_labelsPath/user-labels/$userId',
+        data: {'text': newText, 'color': color, 'isVisible': true},
+        retryAfterLogin: false,
+      );
+    } on SmartschoolAuthenticationError {
+      rethrow;
+    } on Exception catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        SmartschoolLessonContentSaveUnconfirmedError(
+          '$operation: $change was sent, but no answer came in ($e). '
+          '$unconfirmed',
+          cause: e,
+        ),
+        stackTrace,
+      );
+    }
+    final status = response.statusCode ?? 0;
+    final body = (response.data ?? '').trim();
+    if (status >= 400 && status < 500) {
+      final code = _languageCode(body);
+      final why = code == 'name.already.used'
+          ? 'because one of the own labels has that text'
+          : code != null
+          ? '"$code"'
+          : 'without saying why (a text longer than $maxLabelLength '
+                'characters is answered so)';
+      throw SmartschoolLessonContentWriteRefusedError(
+        '$operation: $_labelsModule refused $change (HTTP $status), $why. '
+        'Nothing was made.',
+        statusCode: status,
+        violations: [?code],
+      );
+    }
+    if (status != 201 && status != 200) {
+      throw SmartschoolLessonContentSaveUnconfirmedError(
+        '$operation: $change was sent, but $_labelsModule answered with HTTP '
+        '$status${body.isEmpty ? '' : ' (${_preview(body)})'}. $unconfirmed',
+        statusCode: status,
+      );
+    }
+    Object? decoded;
+    try {
+      decoded = jsonDecode(body);
+    } on FormatException {
+      decoded = null;
+    }
+    LessonContentLabel? label;
+    if (decoded is Map<String, dynamic>) {
+      try {
+        label = LessonContentLabel.fromJson(decoded);
+      } on SmartschoolLessonContentError {
+        label = null;
+      }
+    }
+    if (label == null || !label.isUserLabel || label.text != newText) {
+      throw SmartschoolLessonContentSaveUnconfirmedError(
+        '$operation: $change was sent, but $_labelsModule answered with '
+        '${label == null ? 'something that is not a label' : 'another label ($label, ${label.type})'} '
+        '(HTTP $status: ${_preview(body)}). $unconfirmed',
+        statusCode: status,
+      );
+    }
+    return label;
+  }
+
+  /// Parses a list of labels of the labels module (a JSON array, #228), as
+  /// [getLabels] reads them.
+  static List<LessonContentLabel> parseLabels(dynamic json) {
+    if (json is! List) {
+      throw SmartschoolLessonContentError(
+        '$_labelsModule gave the labels as ${json.runtimeType} instead of a '
+        'list.',
+      );
+    }
+    return List.unmodifiable([
+      for (final (index, label) in json.indexed)
+        if (label is Map<String, dynamic>)
+          LessonContentLabel.fromJson(label)
+        else
+          throw SmartschoolLessonContentError(
+            '$_labelsModule gave label $index as ${label.runtimeType} '
+            'instead of an object.',
+          ),
+    ]);
+  }
+
+  /// The whole user ID of the session (`authenticatedUser.id`,
+  /// `{platformId}_{userId}_{coaccount}`), as the labels module names the
+  /// owner of an own label.
+  Future<String> _ownUserId() async {
+    final user = await _client.authenticatedUser;
+    final id = user['id'];
+    if (id is! String || !_wholeUserId.hasMatch(id)) {
+      throw SmartschoolParsingError(
+        'Could not read a user ID for the labels from authenticatedUser.id '
+        '"$id".',
+      );
+    }
+    return id;
+  }
+
+  static final _wholeUserId = RegExp(r'^\d+_\d+_\d+$');
+
+  /// The labels [labels] as a write sends them, after the checks: each ID
+  /// once.
+  static List<LessonContentLabel> _checkedLabels(
+    Iterable<LessonContentLabel> labels,
+  ) {
+    final seen = <String>{};
+    final checked = <LessonContentLabel>[];
+    for (final label in labels) {
+      if (label.id.trim().isEmpty) {
+        throw ArgumentError.value(label, 'labels', 'has a label without an ID');
+      }
+      if (!label.isSchoolLabel && !label.isUserLabel) {
+        throw ArgumentError.value(
+          label,
+          'labels',
+          'has label ${label.id} of the kind "${label.type}" (not platform '
+              'or user)',
+        );
+      }
+      final owner = label.ownerId;
+      if (label.isUserLabel && (owner == null || owner.isEmpty)) {
+        throw ArgumentError.value(
+          label,
+          'labels',
+          'has own label ${label.id} without its owner (userId)',
+        );
+      }
+      if (seen.add(label.id.toLowerCase())) checked.add(label);
+    }
+    return checked;
+  }
+
+  static bool _sameLabels(
+    Iterable<LessonContentLabel> a,
+    Iterable<LessonContentLabel> b,
+  ) => _sameIds(a.map((l) => l.id), b.map((l) => l.id));
+
+  static String _describeLabels(Iterable<LessonContentLabel> labels) =>
+      labels.isEmpty
+      ? 'no labels'
+      : labels.map((l) => '"${l.text}" (${l.id})').join(', ');
+
+  /// The `languageCode` of the labels module's problem answer [body], or
+  /// `null` when it has none (or an empty one).
+  static String? _languageCode(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      final code = decoded is Map ? decoded['languageCode'] : null;
+      return code is String && code.isNotEmpty ? code : null;
+    } on FormatException {
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1204,7 +1566,7 @@ class LessonContentService {
   }
 
   // ---------------------------------------------------------------------------
-  // Trash (#129)
+  // Trash (#129), restore and duplicate (#227)
   // ---------------------------------------------------------------------------
 
   /// Moves the lesfiches [items] to the module's trash (#129).
@@ -1213,10 +1575,10 @@ class LessonContentService {
   /// "type", "platformId"}]}`, as the web client does, which the module
   /// answers with `200` and `{"exceptions": []}` (seen live, 2026-10-05).
   /// The lesfiches then leave [getItems]; their detail is still answered,
-  /// and the web client lists them in its trash, from where it can restore
-  /// or delete them for good. The service does neither: it never deletes a
-  /// lesfiche for good. A lesfiche given twice is sent once. Retried once
-  /// after logging in again.
+  /// and [getTrash] lists them (#227), from where [restore] takes them out
+  /// again. The web client can also delete them for good there; the service
+  /// never does. A lesfiche given twice is sent once. Retried once after
+  /// logging in again.
   ///
   /// The module answers the move of a lesfiche that is in the trash already
   /// with a bare `500` (seen live), a
@@ -1229,18 +1591,7 @@ class LessonContentService {
   /// UUID. See the class doc for the other errors.
   Future<void> trash(Iterable<LessonContentItem> items) async {
     const operation = 'trash';
-    final fiches = <String, LessonContentItem>{};
-    for (final item in items) {
-      _checkItem(item, argument: 'items');
-      fiches.putIfAbsent(
-        '${item.typeName} ${item.id.toLowerCase()}',
-        () => item,
-      );
-    }
-    if (fiches.isEmpty) {
-      throw ArgumentError.value(items, 'items', 'is empty');
-    }
-    final list = fiches.values.toList();
+    final list = _checkedItems(items);
     final change = list.length == 1
         ? 'the move of ${_what(list.single)} to the trash'
         : 'the move of ${list.length} lesfiches to the trash';
@@ -1251,16 +1602,7 @@ class LessonContentService {
     final response = await _write(
       operation,
       path: '$_apiPath/lesson-content/trash/bulk',
-      body: {
-        'lessonContent': [
-          for (final item in list)
-            {
-              'id': item.id,
-              'type': item.typeName,
-              'platformId': item.platformId,
-            },
-        ],
-      },
+      body: _bulkBody(list),
       retryAfterLogin: true,
       change: change,
       unconfirmed: unconfirmed,
@@ -1276,20 +1618,236 @@ class LessonContentService {
       );
     }
     final json = _jsonObject(operation, response, change, unconfirmed);
-    final exceptions = json['exceptions'];
-    final failures = switch (exceptions) {
-      final List<Object?> list => list,
-      final Map<Object?, Object?> map => map.values.toList(),
-      _ => null,
+    _checkNoExceptions(operation, response, json, change, unconfirmed);
+  }
+
+  /// Returns the lesfiches in the module's trash, lessons and assignments,
+  /// in the order the module gives them (#227).
+  ///
+  /// Sends `GET lesson-content/trashed`, as the web client's trash does,
+  /// which the module answers with the lesfiches in the shape of [getItems]
+  /// (seen live, 2026-11-01); each one's [LessonContentItem.dateStateChanged]
+  /// is when it went to the trash. The web client's trash dialog says a
+  /// lesfiche can be restored "binnen 100 dagen". [restore] takes them out
+  /// again. Their courses are named as [getItems] names them, with
+  /// [withCourseNames]; see there, also for the errors.
+  Future<List<LessonContentItem>> getTrash({
+    bool withCourseNames = true,
+  }) async {
+    final response = await _client.getResponse(
+      '$_apiPath/lesson-content/trashed',
+    );
+    final json = _decode(response, 'the trash', _module);
+    final items = parseItems(json);
+    if (!withCourseNames || items.every((item) => item.courses.isEmpty)) {
+      return items;
+    }
+    final courses = await _coursesFor(items);
+    return parseItems(json, courses: courses);
+  }
+
+  /// Takes the lesfiches [items], such as those of [getTrash], out of the
+  /// module's trash, back into the own library (#227).
+  ///
+  /// Sends `POST lesson-content/restore/bulk` with the body of [trash]
+  /// (`{"lessonContent": [{"id", "type", "platformId"}]}`), as the web
+  /// client does, which the module answers with `200` and `{"exceptions":
+  /// []}` (seen live, 2026-11-01). The lesfiches are then listed by
+  /// [getItems] again, and no longer by [getTrash]. A lesfiche given twice
+  /// is sent once. Retried once after logging in again: it names what it
+  /// restores.
+  ///
+  /// The module answers the restore of a lesfiche that is not in the trash
+  /// with `200` and an exception for it, keyed by the lesfiche as sent, with
+  /// the status `404` (seen live): a
+  /// [SmartschoolLessonContentSaveUnconfirmedError] that names each
+  /// lesfiche with its exception (the others were restored). Check
+  /// [getTrash] before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for no lesfiches,
+  /// a lesfiche of a kind this library does not know, or an ID that is not a
+  /// UUID. See the class doc for the other errors.
+  Future<void> restore(Iterable<LessonContentItem> items) async {
+    const operation = 'restore';
+    final list = _checkedItems(items);
+    final change = list.length == 1
+        ? 'the restore of ${_what(list.single)} from the trash'
+        : 'the restore of ${list.length} lesfiches from the trash';
+    const unconfirmed =
+        'They may or may not have been restored: look for them in the trash '
+        '(getTrash) before trying again; the module answers the restore of '
+        'a lesfiche that is not in the trash with an exception (404).';
+    final item = list.length == 1 ? list.single : null;
+    final response = await _write(
+      operation,
+      path: '$_apiPath/lesson-content/restore/bulk',
+      body: _bulkBody(list),
+      retryAfterLogin: true,
+      change: change,
+      unconfirmed: unconfirmed,
+      item: item,
+    );
+    if (response.statusCode != 200) {
+      _throwFailure(operation, response, change, unconfirmed, item: item);
+    }
+    final json = _jsonObject(operation, response, change, unconfirmed);
+    _checkNoExceptions(operation, response, json, change, unconfirmed);
+  }
+
+  /// Makes a copy of each of the lesfiches [items] in the own library, and
+  /// returns the copies, in the order of [items] (#227): a variant of a
+  /// lesfiche for another class or year, without making it again.
+  ///
+  /// Sends `POST lesson-content/duplicate/bulk` with the body of [trash]
+  /// (`{"lessonContent": [{"id", "type", "platformId"}]}`), as the web
+  /// client does. The module answers with `200` and the copies, each in the
+  /// shape of [getDetail] and keyed by the lesfiche it copies as sent
+  /// (seen live, 2026-11-01): a copy of the same kind with a new ID, named
+  /// after the lesfiche with " - kopie" behind it, with its icon, public and
+  /// private info, visibility, courses, goals, weblinks (each with a new
+  /// ID) and attachments (the same file, as [downloadAttachment] gives it;
+  /// tried live with one). The copies' courses are named after those of
+  /// [items] (as [getItems] names them); no course list is read.
+  ///
+  /// **Sent once**, never again after logging in again, nor retried in any
+  /// other way: a second one makes more copies. A lesfiche given twice is
+  /// copied once.
+  ///
+  /// The module answers the duplicate of a lesfiche in the trash with `200`,
+  /// no copy and an exception for it with the status `403` (seen live).
+  /// When no copy was made and the module gave each lesfiche such an
+  /// exception (`400` to `499`), it throws a
+  /// [SmartschoolLessonContentWriteRefusedError] that names them: nothing
+  /// was changed. When some copies were made and others not, or the answer
+  /// does not name a copy or an exception for each lesfiche, it throws a
+  /// [SmartschoolLessonContentSaveUnconfirmedError] that names the copies
+  /// that were made: look for them with [getItems] before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for no lesfiches,
+  /// a lesfiche of a kind this library does not know, or an ID that is not a
+  /// UUID. See the class doc for the other errors.
+  Future<List<LessonContentDetail>> duplicate(
+    Iterable<LessonContentItem> items,
+  ) async {
+    const operation = 'duplicate';
+    final list = _checkedItems(items);
+    final change = list.length == 1
+        ? 'the duplicate of ${_what(list.single)}'
+        : 'the duplicate of ${list.length} lesfiches';
+    const unconfirmed =
+        'Copies may or may not have been made: look for them in the '
+        'lesfiches (getItems, named after the lesfiche with " - kopie" '
+        'behind it) before trying again; trying again makes more copies.';
+    final item = list.length == 1 ? list.single : null;
+    final response = await _write(
+      operation,
+      path: '$_apiPath/lesson-content/duplicate/bulk',
+      body: _bulkBody(list),
+      retryAfterLogin: false,
+      change: change,
+      unconfirmed: unconfirmed,
+      item: item,
+    );
+    final status = response.statusCode ?? 0;
+    if (status != 200) {
+      _throwFailure(operation, response, change, unconfirmed, item: item);
+    }
+    final json = _jsonObject(operation, response, change, unconfirmed);
+
+    Never unusable(String what) =>
+        throw SmartschoolLessonContentSaveUnconfirmedError(
+          '$operation: $change was sent, but $_module answered $what '
+          '(${_preview(response.data ?? '')}). $unconfirmed',
+          statusCode: status,
+          lessonContentId: item?.id,
+        );
+
+    final courseNames = {
+      for (final fiche in list)
+        for (final course in fiche.courses)
+          if (course.name != null) course.id: course.name!,
     };
-    if (failures == null || failures.isNotEmpty) {
-      throw SmartschoolLessonContentSaveUnconfirmedError(
-        '$operation: $change was sent, but $_module answered '
-        '${failures == null ? 'without its exceptions (${_preview(response.data ?? '')})' : 'with exceptions: ${failures.map(_describeException).join('; ')}'}. '
-        '$unconfirmed',
-        statusCode: 200,
+    final copiesJson = json['lessonContent'];
+    final copied = <String, LessonContentDetail>{};
+    final Iterable<MapEntry<Object?, Object?>> copyEntries =
+        switch (copiesJson) {
+          final Map<Object?, Object?> map => map.entries,
+          final List<Object?> list when list.isEmpty => const [],
+          _ => unusable('without its copies'),
+        };
+    for (final entry in copyEntries) {
+      final key = _refKey(entry.key);
+      final value = entry.value;
+      if (key == null || value is! Map<String, dynamic>) {
+        unusable('with a copy in an unknown shape');
+      }
+      final LessonContentDetail copy;
+      try {
+        copy = LessonContentDetail.fromJson(value, courseNames: courseNames);
+      } on SmartschoolLessonContentError catch (e) {
+        unusable('with a copy in an unknown shape: ${e.message}');
+      }
+      if (!_uuid.hasMatch(copy.id)) unusable('with a copy without its ID');
+      if (copy.typeName != key.split(' ').first) {
+        unusable('with a copy of another kind (${copy.typeName})');
+      }
+      copied[key] = copy;
+    }
+    final failed = <String, Object?>{};
+    switch (json['exceptions']) {
+      case final List<Object?> list when list.isEmpty:
+        break;
+      case final Map<Object?, Object?> map:
+        for (final entry in map.entries) {
+          final key = _refKey(entry.key);
+          if (key == null) unusable('with an exception in an unknown shape');
+          failed[key] = entry.value;
+        }
+      default:
+        unusable('without its exceptions');
+    }
+
+    final copies = <LessonContentDetail>[];
+    final notCopied = <String>[];
+    final unknown = <LessonContentItem>[];
+    for (final fiche in list) {
+      final key = _itemKey(fiche);
+      final copy = copied[key];
+      if (copy != null) {
+        copies.add(copy);
+      } else if (failed.containsKey(key)) {
+        notCopied.add('${_what(fiche)}: ${_describeException(failed[key])}');
+      } else {
+        unknown.add(fiche);
+      }
+    }
+    if (copies.length == list.length) return List.unmodifiable(copies);
+
+    final statuses = {
+      for (final exception in failed.values)
+        exception is Map && exception['status'] is int
+            ? exception['status'] as int
+            : 0,
+    };
+    if (copies.isEmpty &&
+        unknown.isEmpty &&
+        statuses.every((s) => s >= 400 && s < 500)) {
+      throw SmartschoolLessonContentWriteRefusedError(
+        '$operation: $_module refused $change, with exceptions: '
+        '${notCopied.join('; ')} (a lesfiche in the trash is answered with '
+        '403). Nothing was changed.',
+        statusCode: statuses.first,
       );
     }
+    throw SmartschoolLessonContentSaveUnconfirmedError(
+      '$operation: $change was sent, but $_module made '
+      '${copies.isEmpty ? 'no copies' : 'only the copies ${copies.map((c) => '${_what(c)} ("${c.name}")').join(', ')}, which exist: do not make them again'}'
+      '${notCopied.isEmpty ? '' : '; with exceptions: ${notCopied.join('; ')}'}'
+      '${unknown.isEmpty ? '' : '; it named no copy and no exception for ${unknown.map(_what).join(', ')}'}. '
+      '$unconfirmed',
+      statusCode: status,
+      lessonContentId: item?.id,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1880,7 +2438,91 @@ class LessonContentService {
     ]);
   }
 
-  /// One of the `exceptions` of a move to the trash, for a message: its
+  /// [items] (at least one) as a bulk write of the module takes them, after
+  /// checking each ([_checkItem]); a lesfiche given twice is kept once.
+  /// Throws an [ArgumentError] for `items` otherwise.
+  static List<LessonContentItem> _checkedItems(
+    Iterable<LessonContentItem> items,
+  ) {
+    final fiches = <String, LessonContentItem>{};
+    for (final item in items) {
+      _checkItem(item, argument: 'items');
+      fiches.putIfAbsent(_itemKey(item), () => item);
+    }
+    if (fiches.isEmpty) {
+      throw ArgumentError.value(items, 'items', 'is empty');
+    }
+    return fiches.values.toList();
+  }
+
+  /// The body of a bulk write of the module (`trash`, `restore`,
+  /// `duplicate`) for [items].
+  static Map<String, Object?> _bulkBody(List<LessonContentItem> items) => {
+    'lessonContent': [
+      for (final item in items)
+        {'id': item.id, 'type': item.typeName, 'platformId': item.platformId},
+    ],
+  };
+
+  /// [item] as a key: its kind and its ID (`lessons <id>`, lower case).
+  static String _itemKey(LessonContentItem item) =>
+      '${item.typeName} ${item.id.toLowerCase()}';
+
+  /// The key, as [_itemKey], of a lesfiche that an answer to a bulk write
+  /// names as it was sent (a JSON object `{"id","type","platformId"}` as a
+  /// string, seen live, #227), or `null` when [key] is not one.
+  static String? _refKey(Object? key) {
+    if (key is! String) return null;
+    final Object? ref;
+    try {
+      ref = jsonDecode(key);
+    } on FormatException {
+      return null;
+    }
+    if (ref is! Map || ref['id'] is! String || ref['type'] is! String) {
+      return null;
+    }
+    return '${ref['type']} ${(ref['id'] as String).toLowerCase()}';
+  }
+
+  /// Throws a [SmartschoolLessonContentSaveUnconfirmedError] that ends in
+  /// [unconfirmed] unless the answer [json] of a bulk write (`trash`,
+  /// `restore`) has an empty list of `exceptions`; it names each exception,
+  /// with the lesfiche it is for when the module keys it so.
+  static void _checkNoExceptions(
+    String operation,
+    Response<String> response,
+    Map<String, dynamic> json,
+    String change,
+    String unconfirmed,
+  ) {
+    final exceptions = json['exceptions'];
+    final failures = switch (exceptions) {
+      final List<Object?> list => [
+        for (final exception in list) _describeException(exception),
+      ],
+      final Map<Object?, Object?> map => [
+        for (final MapEntry(:key, :value) in map.entries)
+          switch (_refKey(key)) {
+            final String ref =>
+              '${_noun(LessonContentType.fromWire(ref.split(' ').first))} '
+                  '${ref.split(' ').last}: ${_describeException(value)}',
+            null => _describeException(value),
+          },
+      ],
+      _ => null,
+    };
+    if (failures == null || failures.isNotEmpty) {
+      throw SmartschoolLessonContentSaveUnconfirmedError(
+        '$operation: $change was sent, but $_module answered '
+        '${failures == null ? 'without its exceptions (${_preview(response.data ?? '')})' : 'with exceptions: ${failures.join('; ')}'}. '
+        '$unconfirmed',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  /// One of the `exceptions` of a bulk write, for a message: its
   /// `title`, `detail` and `violations` when it is a problem object.
   static String _describeException(Object? exception) {
     if (exception is! Map) return '"$exception"';
@@ -1890,7 +2532,9 @@ class LessonContentService {
           '${exception[key]}'.trim(),
       ..._violations(jsonEncode(exception)),
     ];
-    return parts.isEmpty ? jsonEncode(exception) : parts.join(': ');
+    if (parts.isEmpty) return jsonEncode(exception);
+    final status = exception['status'];
+    return '${parts.join(': ')}${status is int ? ' ($status)' : ''}';
   }
 
   // ---------------------------------------------------------------------------

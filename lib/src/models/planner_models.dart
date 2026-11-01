@@ -22,6 +22,7 @@ library;
 
 import '../exceptions.dart';
 import 'goal_models.dart';
+import 'teaching_assignment_models.dart';
 
 // ---------------------------------------------------------------------------
 // Calendars
@@ -321,7 +322,8 @@ String _parts(Object? value, String what) => [
 /// The type of a planned element (`plannedElementType`), as the planner's
 /// web client names them.
 ///
-/// Only [lesson], [assignment] and [placeholder] were seen on the live site;
+/// Only [lesson], [assignment], [placeholder], [lessonCluster] and
+/// [lessonClusterMoment] were seen on the live site (#230);
 /// the others are the web client's constants. A type this library does not
 /// know is [other]; [PlannedElement.typeName] keeps its name.
 enum PlannedElementType {
@@ -360,13 +362,19 @@ enum PlannedElementType {
   /// `planned-partner-elements`.
   partnerElement('planned-partner-elements'),
 
-  /// `planned-lesson-clusters`.
+  /// A lesson cluster of a teaching assignment planned for classes over a
+  /// period (`planned-lesson-clusters`, #230): a [PlannedLessonCluster].
   lessonCluster('planned-lesson-clusters'),
 
-  /// `planned-lesson-cluster-moments`.
+  /// A lesson hour in the period of a planned lesson cluster
+  /// (`planned-lesson-cluster-moments`, #230), which the calendar lists
+  /// instead of the timetable slot; its
+  /// [PlannedElement.plannedLessonClusters] names the planned clusters.
   lessonClusterMoment('planned-lesson-cluster-moments'),
 
-  /// `planned-lesson-cluster-lessons`.
+  /// A lesfiche of a planned lesson cluster
+  /// (`planned-lesson-cluster-lessons`, in its
+  /// [PlannedLessonCluster.plannedContent]).
   lessonClusterLesson('planned-lesson-cluster-lessons'),
 
   /// `planned-lesson-cluster-assignments`.
@@ -1097,6 +1105,12 @@ class PlannedElement {
   /// The colour the planner shows the element in (`aqua-200`), or `null`.
   final String? color;
 
+  /// For a moment of a planned lesson cluster
+  /// ([PlannedElementType.lessonClusterMoment], #230): the clusters planned
+  /// in it (`plannedLessonClusters`), in the short form (without
+  /// [PlannedLessonCluster.lessonCluster]); `null` for other elements.
+  final List<PlannedLessonCluster>? plannedLessonClusters;
+
   /// The element as the planner gave it (decoded JSON, read-only), for the
   /// fields these models do not cover.
   final Map<String, dynamic> raw;
@@ -1122,6 +1136,7 @@ class PlannedElement {
     this.pinned = false,
     this.unconfirmed = false,
     this.color,
+    this.plannedLessonClusters,
     this.raw = const {},
   });
 
@@ -1147,6 +1162,7 @@ class PlannedElement {
       pinned = element.pinned,
       unconfirmed = element.unconfirmed,
       color = element.color,
+      plannedLessonClusters = element.plannedLessonClusters,
       raw = element.raw;
 
   /// Parses an element as the planner gives it. Throws a
@@ -1219,6 +1235,11 @@ class PlannedElement {
       pinned: _bool(json['pinned']),
       unconfirmed: _bool(json['unconfirmed']),
       color: _optionalString(json['color']),
+      plannedLessonClusters: _optionalObjects(
+        json['plannedLessonClusters'],
+        'the planned lesson clusters of $what',
+        PlannedLessonCluster.fromJson,
+      ),
       raw: Map.unmodifiable(json),
     );
   }
@@ -1307,8 +1328,16 @@ class PlannedElementDetail extends PlannedElement {
   }) : super._copy();
 
   /// Parses the detail of an element as the planner gives it; see
-  /// [PlannedElement.fromJson].
-  factory PlannedElementDetail.fromJson(Map<String, dynamic> json) {
+  /// [PlannedElement.fromJson]. A planned lesson cluster
+  /// (`planned-lesson-clusters`) is a [PlannedLessonCluster] (#230).
+  factory PlannedElementDetail.fromJson(Map<String, dynamic> json) =>
+      json['plannedElementType'] == PlannedElementType.lessonCluster.wireName
+      ? PlannedLessonCluster.fromJson(json)
+      : _parse(json);
+
+  /// The detail of [json] as a plain [PlannedElementDetail], whatever its
+  /// type.
+  static PlannedElementDetail _parse(Map<String, dynamic> json) {
     final element = PlannedElement.fromJson(json);
     final what = 'planned element ${element.id}';
     final visibility = _optionalMap(
@@ -1365,6 +1394,125 @@ class PlannedElementDetail extends PlannedElement {
   @override
   String toString() =>
       'PlannedElementDetail($typeName $id${name == null ? '' : ' "$name"'}, '
+      '${period.from} - ${period.to})';
+}
+
+// ---------------------------------------------------------------------------
+// A lesson cluster planned for a class over a period
+// ---------------------------------------------------------------------------
+
+/// A lesson cluster of a teaching assignment planned for classes over a
+/// period (`planned-lesson-clusters`, #230), as the planner's "plan lesson
+/// cluster" makes it: an element of type [PlannedElementType.lessonCluster]
+/// with the [PlannedElementDetail] fields, and the link to the cluster it
+/// was planned from ([lessonCluster]).
+///
+/// Unlike a lesson planned from a lesfiche (a copy, without a link), a
+/// planned cluster **keeps its link** to the cluster of the Lesfiches
+/// library: `TeachingAssignmentService` reads the cluster with
+/// [lessonCluster], and `PlannerService.getPlannedLessonClustersOf` lists
+/// where a cluster was planned.
+///
+/// Its [period] is whole days (`wholeDay`), from the start of the first day
+/// to the end of the last (`23:59:59`). In that period the planner turns the
+/// lesson hours of its classes and courses into
+/// [PlannedElementType.lessonClusterMoment] elements, which
+/// `PlannerService.getPlannedElements` lists instead of the timetable slots
+/// ([PlannedElement.plannedLessonClusters] names the planned clusters of a
+/// moment).
+///
+/// Returned by `PlannerService.planLessonCluster`,
+/// `getPlannedLessonClusters` and `getPlannedLessonClustersOf`; `getDetail`
+/// of a planned cluster returns one too.
+class PlannedLessonCluster extends PlannedElementDetail {
+  /// The cluster it was planned from (`lessonClusterId`,
+  /// `lessonClusterPlatformId`, and its teaching assignment,
+  /// `teachingAssignmentId`, `teachingAssignmentPlatformId`); `null` in the
+  /// short form, which names no cluster (seen live, 2026-11-01): that of
+  /// `PlannerService.getPlannedLessonClusters` and of a moment's
+  /// [PlannedElement.plannedLessonClusters]. The detail (`getDetail`) and
+  /// the answer to `planLessonCluster` have it, and
+  /// `getPlannedLessonClustersOf` gives the short form with the cluster it
+  /// was asked for.
+  final LessonClusterRef? lessonCluster;
+
+  /// Whether it is planned across courses (`isCrossCurricular`); the
+  /// library only plans clusters that are not.
+  final bool isCrossCurricular;
+
+  /// What the planner planned of the cluster's content
+  /// (`plannedLessonClusterContent`), as it gave it (read-only): an object
+  /// per lesfiche of the cluster (`planned-lesson-cluster-lessons`, with
+  /// its `position`, `name` and the IDs of the planned cluster, seen live),
+  /// `[]` in the short form. How they are spread over the moments was not
+  /// studied yet.
+  final List<Object?> plannedContent;
+
+  PlannedLessonCluster._(
+    PlannedElementDetail super.element, {
+    required this.lessonCluster,
+    required this.isCrossCurricular,
+    required this.plannedContent,
+  }) : super._(
+         info: element.info,
+         privateInfo: element.privateInfo,
+         publicInfo: element.publicInfo,
+         isAnnounced: element.isAnnounced,
+         visibleFrom: element.visibleFrom,
+         hasLinkedEvaluation: element.hasLinkedEvaluation,
+         dateCreated: element.dateCreated,
+         labels: element.labels,
+         attachments: element.attachments,
+         weblinks: element.weblinks,
+         goals: element.goals,
+       );
+
+  /// Parses a planned lesson cluster as the planner gives it, in full or in
+  /// the short form. Throws a [SmartschoolPlannerError] for what
+  /// [PlannedElementDetail.fromJson] refuses, for another element type than
+  /// `planned-lesson-clusters`, and when it names its cluster
+  /// (`lessonClusterId`) without the platform of the cluster or the IDs of
+  /// its teaching assignment. [lessonCluster] is the cluster of one in the
+  /// short form, when the caller knows it.
+  factory PlannedLessonCluster.fromJson(
+    Map<String, dynamic> json, {
+    LessonClusterRef? lessonCluster,
+  }) {
+    final detail = PlannedElementDetail._parse(json);
+    final what = 'planned lesson cluster ${detail.id}';
+    if (detail.type != PlannedElementType.lessonCluster) {
+      throw SmartschoolPlannerError(
+        'The planner gave a ${detail.typeName} where it gives a planned '
+        'lesson cluster (planned-lesson-clusters).',
+      );
+    }
+    return PlannedLessonCluster._(
+      detail,
+      lessonCluster: json['lessonClusterId'] == null
+          ? lessonCluster
+          : LessonClusterRef(
+              id: _requiredString(json, 'lessonClusterId', what),
+              platformId: _requiredInt(json, 'lessonClusterPlatformId', what),
+              teachingAssignment: TeachingAssignmentRef(
+                id: _requiredString(json, 'teachingAssignmentId', what),
+                platformId: _requiredInt(
+                  json,
+                  'teachingAssignmentPlatformId',
+                  what,
+                ),
+              ),
+            ),
+      isCrossCurricular: _bool(json['isCrossCurricular']),
+      plannedContent: List.unmodifiable(
+        _list(json['plannedLessonClusterContent'], 'the content of $what'),
+      ),
+    );
+  }
+
+  @override
+  String toString() =>
+      'PlannedLessonCluster($id${name == null ? '' : ' "$name"'}'
+      '${lessonCluster == null ? '' : ' of cluster ${lessonCluster!.id}'}, '
       '${period.from} - ${period.to})';
 }
 
@@ -1616,7 +1764,8 @@ enum PlannerWriteRefusalReason {
   /// From every write that changes an element: `planLesson`,
   /// `planLessonContent`, `replaceWithLessonContent`,
   /// `planLessonContentInto`, `renameElement`, `changePublicInfo`,
-  /// `changePrivateInfo`, `clearLesson` and `trashAssignment`.
+  /// `changePrivateInfo`, `clearLesson`, `trashAssignment` and
+  /// `trashPlannedLessonCluster`.
   notOwn,
 
   /// The planner's capabilities of the element do not allow the change. The
@@ -1626,7 +1775,7 @@ enum PlannerWriteRefusalReason {
   /// `planLessonContentInto`); `canUserEdit` and `canUserRename`,
   /// `canUserChangePublicInfo` or `canUserChangePrivateInfo` to edit;
   /// `canUserEdit` to clear a lesson; `canUserTrash` to move an assignment
-  /// to the trash.
+  /// or a planned lesson cluster to the trash.
   notAllowed,
 
   /// The slot to fill (`planLesson`, `planLessonContent`) is no longer a
@@ -1680,6 +1829,12 @@ enum PlannerWriteRefusalReason {
   /// Skore evaluation ([PlannedElementDetail.hasLinkedEvaluation]): the
   /// trash of such an assignment was not tried.
   linkedEvaluation,
+
+  /// The lesson cluster to plan (`planLessonCluster`, #230) is not one the
+  /// Lesfiches module has: it answered the read of the cluster
+  /// (`TeachingAssignmentService.getCluster`, read first) with `404`. A new
+  /// planned cluster has no element yet: the error has no `element`.
+  unknownLessonCluster,
 }
 
 // ---------------------------------------------------------------------------

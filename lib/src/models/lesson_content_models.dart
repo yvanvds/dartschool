@@ -98,6 +98,10 @@ class LessonContentCourse {
 
 /// A label of a lesfiche: a school label (such as `JAAR 6` or `TRIMESTER 1`)
 /// or one of the teacher's own.
+///
+/// `LessonContentService.getLabels` lists those a teacher can put on a
+/// lesfiche, `LessonContentService.changeLabels` puts them on one, and
+/// `LessonContentService.createUserLabel` makes an own label (#228).
 class LessonContentLabel {
   /// The label ID (`id`): the platform ID and a UUID for a school label, the
   /// owner's whole user ID and a UUID for an own label.
@@ -117,12 +121,22 @@ class LessonContentLabel {
   /// Whether the label is visible.
   final bool isVisible;
 
+  /// The whole user ID of the owner of an own label (`userId`, such as
+  /// `4069_146_0`), or `null` when the label gave none (a school label).
+  final String? userId;
+
+  /// The platform ID of a school label (`platformId`), or `null` when the
+  /// label gave none (an own label).
+  final int? platformId;
+
   const LessonContentLabel({
     required this.id,
     required this.text,
     this.color,
     this.type = '',
     this.isVisible = true,
+    this.userId,
+    this.platformId,
   });
 
   factory LessonContentLabel.fromJson(Map<String, dynamic> json) =>
@@ -132,10 +146,46 @@ class LessonContentLabel {
         color: _optionalString(json['color']),
         type: _optionalString(json['type']) ?? '',
         isVisible: json['isVisible'] == null || _bool(json['isVisible']),
+        userId: _optionalString(json['userId']),
+        platformId: switch (json['platformId']) {
+          final int id => id,
+          final String id => int.tryParse(id.trim()),
+          _ => null,
+        },
       );
 
   /// Whether this is a label of the school (`type` `platform`).
   bool get isSchoolLabel => type == 'platform';
+
+  /// Whether this is one of the teacher's own labels (`type` `user`).
+  bool get isUserLabel => type == 'user';
+
+  /// The owner of an own label: [userId], or, when the label gave none, the
+  /// user ID its [id] starts with (`4069_146_0` of `4069_146_0_<uuid>`).
+  /// `null` for a school label.
+  String? get ownerId {
+    if (!isUserLabel) return null;
+    if (userId != null && userId!.isNotEmpty) return userId;
+    final cut = id.lastIndexOf('_');
+    return cut > 0 ? id.substring(0, cut) : null;
+  }
+
+  /// The label as the Lesfiches module takes it in `newLabels` and in the
+  /// `labels` of a create (#228): `identifier` and `id` (both the [id]),
+  /// `type`, `text`, `color` and `isVisible`, with the `userId` of an own
+  /// label and the `platformId` of a school label. Seen live: the module
+  /// answers an own label without its `userId`, and a school label with only
+  /// its `id` and `type`, with HTTP `500`.
+  Map<String, Object?> toWire() => {
+    'identifier': id,
+    'id': id,
+    'type': type,
+    'text': text,
+    'color': ?color,
+    'isVisible': isVisible,
+    if (isUserLabel) 'userId': ownerId,
+    if (isSchoolLabel) 'platformId': ?platformId,
+  };
 
   @override
   String toString() => 'LessonContentLabel($text)';
@@ -180,8 +230,9 @@ class LessonContentItem {
   final bool isVisible;
 
   /// The whole user ID of the owner (`owner`, `{platformId}_{userId}_
-  /// {coaccount}`, such as `4069_146_0`), or `null` when the module gave
-  /// none.
+  /// {coaccount}`, such as `4069_146_0`; the `id` of `owner` when the
+  /// module gives a user object there, as the lesfiches of a teaching
+  /// assignment have it, #229), or `null` when the module gave none.
   final String? ownerId;
 
   /// When the lesfiche was last changed (`dateLastChanged`), or `null` when
@@ -282,7 +333,12 @@ class LessonContentItem {
       icon: _optionalString(json['icon']),
       publicInfo: _optionalString(json['publicInfo']) ?? '',
       isVisible: json['isVisible'] == null || _bool(json['isVisible']),
-      ownerId: _optionalString(json['owner']),
+      // The lesfiches of a teaching assignment (#229) give the owner as a
+      // user object (`{"id", "name", ...}`); the others as its ID.
+      ownerId: switch (json['owner']) {
+        final Map<String, dynamic> owner => _optionalString(owner['id']),
+        final owner => _optionalString(owner),
+      },
       dateLastChanged: _optionalDateTime(
         json['dateLastChanged'],
         'the last change of $what',

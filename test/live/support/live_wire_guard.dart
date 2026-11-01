@@ -92,10 +92,18 @@
 //   write, delete, lock or publish (saveOwner, saveShared, deleteTeacher,
 //   saveEvaluation, saveGrade, deleteEvaluation, setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
-//   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
-//   only reads: the live suite changes nothing in the planner, whose POSTs
-//   also fill and clear lesson hours, add assignments and move a whole
-//   period to the trash;
+//   (`quick-search/planner/start`, PlannerService.getCalendar, #127) and
+//   its list of planned lesson clusters (`planned-lesson-clusters/list`,
+//   PlannerService.getPlannedLessonClusters, #230), which only read; and,
+//   for the opt-in live test of #230, the plan of a lesson cluster the run
+//   made (`planned-lesson-clusters/`, PlannerService.planLessonCluster) for
+//   groups, over at most a week of whole days that starts at least
+//   minPlanAheadDays from today, not across courses, without users, at most
+//   maxPlannedLessonClusters of them, and the move to the trash of a
+//   planned cluster the run made (`planned-lesson-clusters/{platformId}/
+//   {id}/trash`), until Smartschool answered it. The live suite changes
+//   nothing else in the planner, whose POSTs also fill and clear lesson
+//   hours, add assignments and move a whole period to the trash;
 // - any POST to the goal selector (`/goal/`) but its naming of a selection
 //   of goals (`goal/selector/api/v1/leerplannen/{location}/{date}` with
 //   `"isView": true`, GoalService.resolve, #222), which only reads: never a
@@ -123,22 +131,49 @@
 //   those only for lesfiches the run made itself, in the own library (a
 //   create makes a lesfiche there; nothing else does): the create of a
 //   lesson or an assignment named after the run ("[dartschool test] <run
-//   tag> ..."), without labels, partner weblinks, deeplinks, mini-DB items
-//   or a lesfiche it continues, with learning goals only as the library
+//   tag> ..."), without partner weblinks, deeplinks, mini-DB items or a
+//   lesfiche it continues, with labels only as the library sends them
+//   (#228: each `{identifier, id, type, text, color, isVisible}` with the
+//   `userId` of an own label, the label's ID, or the `platformId` of a
+//   school one), with learning goals only as the library
 //   sends them (#223: `{id, goalId, leerplanId, type}`, `goalId` the same as
 //   the UUID `id`), with at most one upload directory
 //   handed out through the guard and not yet taken; on a lesfiche the run
 //   made (as Smartschool answered its create) and did not move to the
 //   trash: a rename to a name after the run, a change of its icon, info,
 //   courses or visibility, a change of its goals (`change-goals`, #223,
-//   goals as in the create), the add or change of a weblink, the take of an
+//   goals as in the create) or of its labels (`change-labels`, #228, labels
+//   as in the create), the add or change of a weblink, the take of an
 //   upload directory as above, the change of an attachment's visibility,
 //   and the DELETE of one of its weblinks or attachments (the only DELETE
-//   the live suite sends); and the move to the trash
-//   (`lesson-content/trash/bulk`) of lesfiches the run made, of their kind,
-//   until Smartschool answered one for them. Never a label, a share,
-//   a duplicate, merge or conversion, a year plan, a restore, and never
-//   `lesson-content/delete/bulk` (deleted for good);
+//   the live suite sends); the duplicate (`lesson-content/duplicate/bulk`,
+//   #227) of such lesfiches, each copy counted as a create, whose copies
+//   (as Smartschool answered) count as made by the run; the move to the
+//   trash (`lesson-content/trash/bulk`) of lesfiches the run made, of their
+//   kind, until Smartschool answered one for them; and the restore
+//   (`lesson-content/restore/bulk`, #227) of lesfiches the run made and
+//   moved to the trash, after which they may be written again. Never a
+//   share, a merge or conversion, and never `lesson-content/delete/bulk`
+//   (deleted for good). Of the year plans (`teaching-assignments`, #229):
+//   the create of a teaching assignment named after the run, with the
+//   content filter `all` or `none` and no labels, courses, assignment
+//   types, collaborators or publication, at most
+//   maxTeachingAssignmentCreates of them; in a teaching assignment the run
+//   made (as Smartschool answered its create) and did not delete, the
+//   create of a lesson cluster named after the run, at most
+//   maxLessonClusterCreates; in a cluster the run made, the add of a title
+//   named after the run, of lesfiches the run made and did not move to the
+//   trash (`lesson-content-from-teaching-assignment`), and a change of its
+//   goals (goals as in the create of a lesfiche); and the DELETE of a
+//   teaching assignment the run made, once. Never a share, an export or
+//   import, a rename, reorder or removal in it;
+// - any request to the labels module (`/labels/`) that writes, but the
+//   create of an own label (`POST /labels/api/v1/user-labels/{userId}`,
+//   #228, `{text, color, isVisible}` only) whose text starts with the run's
+//   tag ("[dartschool test] <run tag>"), at most maxLabelCreates of them,
+//   and the DELETE (`/labels/api/v1/user/{id}`) of a label the run made, as
+//   Smartschool answered its create, once. Never a change of a label, nor
+//   the create or removal of any other;
 // - an upload (`/Upload/Upload/Index`) into another directory than the one
 //   of a compose form loaded through the guard or one handed out through it
 //   and not yet taken into Intradesk or a lesfiche, or of a file the live
@@ -210,8 +245,18 @@ class LiveWireGuard extends Interceptor {
     // and an upload (#128).
     this.maxIntradeskCreates = 6,
     // The creates of lesson_content_write_live_test.dart: a lesson and an
-    // assignment (#129).
+    // assignment (#129); of lesson_content_reuse_live_test.dart, a lesson
+    // and its copy (#227).
     this.maxLessonContentCreates = 2,
+    // The own label of lesson_content_labels_live_test.dart (#228).
+    this.maxLabelCreates = 1,
+    // The teaching assignment and its cluster of
+    // teaching_assignment_live_test.dart (#229).
+    this.maxTeachingAssignmentCreates = 1,
+    this.maxLessonClusterCreates = 1,
+    // The planned cluster of planner_lesson_cluster_live_test.dart (#230).
+    this.maxPlannedLessonClusters = 1,
+    this.minPlanAheadDays = 28,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -230,6 +275,23 @@ class LiveWireGuard extends Interceptor {
 
   /// How many lesfiches the run may make at most (#129).
   final int maxLessonContentCreates;
+
+  /// How many own labels the run may make at most (#228).
+  final int maxLabelCreates;
+
+  /// How many teaching assignments the run may make at most (#229).
+  final int maxTeachingAssignmentCreates;
+
+  /// How many lesson clusters the run may make at most (#229).
+  final int maxLessonClusterCreates;
+
+  /// How many lesson clusters the run may plan at most (#230).
+  final int maxPlannedLessonClusters;
+
+  /// How many days from today a planned lesson cluster must start at least
+  /// (#230): pupils see the moments of a planned cluster, so the run plans
+  /// in a week far ahead.
+  final int minPlanAheadDays;
 
   final void Function(LiveGuardViolation violation) _onViolation;
 
@@ -255,6 +317,18 @@ class LiveWireGuard extends Interceptor {
 
   /// How many lesfiche creates it let out (#129).
   int lessonContentCreates = 0;
+
+  /// How many creates of an own label it let out (#228).
+  int labelCreates = 0;
+
+  /// How many creates of a teaching assignment it let out (#229).
+  int teachingAssignmentCreates = 0;
+
+  /// How many creates of a lesson cluster it let out (#229).
+  int lessonClusterCreates = 0;
+
+  /// How many plans of a lesson cluster it let out (#230).
+  int plannedLessonClusters = 0;
 
   /// Whether a step of a login (the password, the 2FA code, the account
   /// verification answer) came through the guard in this run (#134). The
@@ -353,18 +427,48 @@ class LiveWireGuard extends Interceptor {
   /// Lesfiches module (a create, `attachments`, #129) take.
   final Set<String> _uploadDirsTaken = {};
 
-  /// The lesfiches the run made, as Smartschool answered their creates: the
-  /// kind (`lessons`, `assignments`) by ID (#129).
+  /// The lesfiches the run made, as Smartschool answered their creates and
+  /// duplicates (#227): the kind (`lessons`, `assignments`) by ID (#129).
   final Map<String, String> _lessonContentMade = {};
 
   /// The lesfiches the run made that Smartschool answered a move to the
-  /// trash for.
+  /// trash for, and not a restore after it (#227).
   final Set<String> _lessonContentTrashed = {};
 
   /// The IDs of the lesfiches the run made, as Smartschool answered their
   /// creates (#129).
   Set<String> get lessonContentMade =>
       Set.unmodifiable(_lessonContentMade.keys);
+
+  /// The own labels the run made, as Smartschool answered their creates, and
+  /// did not remove yet (#228): their IDs.
+  final Set<String> _labelsMade = {};
+
+  /// The IDs of the own labels the run made and did not remove (#228).
+  Set<String> get labelsMade => Set.unmodifiable(_labelsMade);
+
+  /// The teaching assignments the run made, as Smartschool answered their
+  /// creates, and did not delete (#229): their IDs, in lower case.
+  final Set<String> _teachingAssignmentsMade = {};
+
+  /// The IDs of the teaching assignments the run made and did not delete.
+  Set<String> get teachingAssignmentsMade =>
+      Set.unmodifiable(_teachingAssignmentsMade);
+
+  /// The lesson clusters the run made, as Smartschool answered their
+  /// creates (#229): the ID of their teaching assignment by their ID, both
+  /// in lower case.
+  final Map<String, String> _lessonClustersMade = {};
+
+  /// The lesson clusters the run planned, as Smartschool answered their
+  /// plans, and did not move to the trash yet (#230): their IDs, in lower
+  /// case.
+  final Set<String> _plannedLessonClustersMade = {};
+
+  /// The IDs of the planned lesson clusters the run made and did not move
+  /// to the trash (#230).
+  Set<String> get plannedLessonClustersMade =>
+      Set.unmodifiable(_plannedLessonClustersMade);
 
   /// Smartschool's answers to the moves to the trash out of a box, by
   /// (message ID, box), as they came in.
@@ -546,6 +650,9 @@ class LiveWireGuard extends Interceptor {
     if (method == 'DELETE' && uri.path.startsWith(_lessonContentApi)) {
       return _lessonContentDeleteRefusal(uri.path);
     }
+    if (method == 'DELETE' && uri.path.startsWith(_labelsApi)) {
+      return _labelDeleteRefusal(uri.path);
+    }
     if (method != 'POST') return 'the live suite sends no $method';
 
     final path = uri.path;
@@ -560,7 +667,9 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/modules/Skore/') || path.startsWith('/skore/')) {
       return _skoreRefusal(path, options.data);
     }
-    if (path.startsWith('/planner/')) return _plannerRefusal(path);
+    if (path.startsWith('/planner/')) {
+      return _plannerRefusal(path, options.data);
+    }
     if (path.startsWith('/goal/')) return _goalRefusal(path, options.data);
     if (path.startsWith('/intradesk/')) {
       return _intradeskRefusal(path, options.data);
@@ -568,6 +677,7 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/lesson-content/')) {
       return _lessonContentRefusal(path, options.data);
     }
+    if (path.startsWith('/labels/')) return _labelRefusal(path, options.data);
     if (path.startsWith('/LVS/') ||
         (path == '/' && uri.queryParameters['module'] == 'LVS')) {
       return _lvsRefusal(uri, options.data);
@@ -812,13 +922,160 @@ class LiveWireGuard extends Interceptor {
   /// lookup of a calendar by ID (PlannerService.getCalendar, #127).
   static const _plannerReads = {'/planner/api/v1/quick-search/planner/start'};
 
-  /// Why the planner POST to [path] may not go out, or `null`: only the
-  /// lookup goes out, never a write.
-  String? _plannerRefusal(String path) {
+  /// The planned lesson clusters of the planner (#230).
+  static const _plannedClusters = '/planner/api/v1/planned-lesson-clusters/';
+
+  /// The move to the trash of a planned lesson cluster: `{platformId}/{id}/
+  /// trash` after [_plannedClusters].
+  static final _plannedClusterTrash = RegExp(r'^\d+/([^/]+)/trash$');
+
+  /// A day as the planner takes a whole-day period: `yyyy-MM-dd`.
+  static final _plannerDay = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$');
+
+  /// Why the planner POST to [path] with the JSON body [data] may not go
+  /// out, or `null`: the lookup, the list of planned lesson clusters, and
+  /// the plan and trash of a planned lesson cluster of the run (#230).
+  String? _plannerRefusal(String path, Object? data) {
     if (_plannerReads.contains(path)) return null;
+    if (path.startsWith(_plannedClusters)) {
+      final rest = path.substring(_plannedClusters.length);
+      if (rest == 'list') {
+        if (data is! Map ||
+            data['type'] != 'user' ||
+            !data.keys.every(const {'id', 'type', 'period'}.contains)) {
+          return 'it lists planned lesson clusters of another calendar than '
+              'a user\'s';
+        }
+        return null;
+      }
+      if (rest.isEmpty) return _planClusterRefusal(data);
+      final trash = _plannedClusterTrash.firstMatch(rest);
+      if (trash != null) {
+        if (data is Map && data.isNotEmpty) return 'it carries a body';
+        return _plannedLessonClustersMade.contains(
+              trash.group(1)!.toLowerCase(),
+            )
+            ? null
+            : 'it moves planned lesson cluster ${trash.group(1)} to the '
+                  'trash, which this run did not plan (or trashed already)';
+      }
+    }
     return 'the live suite changes nothing in the planner: it sends no '
         'planner POST but the lookup of a calendar by ID, '
-        'quick-search/planner/start (#127)';
+        'quick-search/planner/start (#127), and the list, plan and trash of '
+        'a planned lesson cluster of the run (#230)';
+  }
+
+  /// Why the plan of a lesson cluster with the JSON body [data] may not go
+  /// out, or `null` (#230).
+  String? _planClusterRefusal(Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    const keys = {
+      'lessonClusterId',
+      'lessonClusterPlatformId',
+      'period',
+      'participants',
+      'courses',
+      'isCrossCurricular',
+    };
+    if (!data.keys.every(keys.contains)) {
+      return 'it plans a lesson cluster with more than its cluster, period, '
+          'participants and courses';
+    }
+    final cluster = data['lessonClusterId'];
+    if (cluster is! String ||
+        !_lessonClustersMade.containsKey(cluster.toLowerCase())) {
+      return 'it plans lesson cluster $cluster, which this run did not make';
+    }
+    if (data['isCrossCurricular'] != false) {
+      return 'it plans a lesson cluster across courses';
+    }
+    final participants = data['participants'];
+    final filters = participants is Map ? participants['groupFilters'] : null;
+    final groups = participants is Map ? participants['groups'] : null;
+    if (participants is! Map ||
+        !participants.keys.every(
+          const {'users', 'groups', 'groupFilters', 'excludedUsers'}.contains,
+        ) ||
+        [
+          participants['users'],
+          participants['excludedUsers'],
+          if (filters is Map) ...[
+            filters['additionalUsers'],
+            filters['filters'],
+          ] else
+            null,
+        ].any((list) => list is! List || list.isNotEmpty) ||
+        groups is! List ||
+        groups.isEmpty ||
+        groups.any((group) => group is! String)) {
+      return 'it plans a lesson cluster for others than groups';
+    }
+    final courses = data['courses'];
+    if (courses is! List || courses.isEmpty) {
+      return 'it plans a lesson cluster without courses';
+    }
+    final period = data['period'];
+    DateTime? day(Object? text) {
+      final match = text is String ? _plannerDay.firstMatch(text) : null;
+      if (match == null) return null;
+      return DateTime(
+        int.parse(match.group(1)!),
+        int.parse(match.group(2)!),
+        int.parse(match.group(3)!),
+      );
+    }
+
+    final from = period is Map ? day(period['dateTimeFrom']) : null;
+    final to = period is Map ? day(period['dateTimeTo']) : null;
+    if (period is! Map ||
+        period['wholeDay'] != true ||
+        from == null ||
+        to == null ||
+        to.isBefore(from) ||
+        to.difference(from).inDays > 6) {
+      return 'it plans a lesson cluster over another period than at most a '
+          'week of whole days';
+    }
+    final now = DateTime.now();
+    final earliest = DateTime(now.year, now.month, now.day + minPlanAheadDays);
+    if (from.isBefore(earliest)) {
+      return 'it plans a lesson cluster sooner than $minPlanAheadDays days '
+          'from today';
+    }
+    if (plannedLessonClusters >= maxPlannedLessonClusters) {
+      return 'the run planned $maxPlannedLessonClusters lesson clusters '
+          'already, its maximum';
+    }
+    plannedLessonClusters++;
+    return null;
+  }
+
+  /// Keeps what Smartschool's answer [body], with [status], to the planner
+  /// request [options] says (#230): the planned lesson cluster a plan made
+  /// (the `id` of its answer), and the one a trash moved to the trash.
+  void _recordPlannerAnswer(RequestOptions options, int status, String body) {
+    if (status < 200 || status >= 300) return;
+    if (options.method.toUpperCase() != 'POST') return;
+    final path = options.uri.path;
+    if (!path.startsWith(_plannedClusters)) return;
+    final rest = path.substring(_plannedClusters.length);
+    final trash = _plannedClusterTrash.firstMatch(rest);
+    if (trash != null) {
+      _plannedLessonClustersMade.remove(trash.group(1)!.toLowerCase());
+      return;
+    }
+    if (rest.isNotEmpty) return;
+    Object? answer;
+    try {
+      answer = jsonDecode(body);
+    } on FormatException {
+      return;
+    }
+    final id = answer is Map ? answer['id'] : null;
+    if (id is String && id.isNotEmpty) {
+      _plannedLessonClustersMade.add(id.toLowerCase());
+    }
   }
 
   /// The goal selector's naming of a selection of goals (#222):
@@ -1018,17 +1275,27 @@ class LiveWireGuard extends Interceptor {
     final rest = path.startsWith(_lessonContentApi)
         ? path.substring(_lessonContentApi.length)
         : null;
+    if (rest != null && rest.startsWith(_teachingAssignments)) {
+      return _teachingAssignmentRefusal(
+        rest.substring(_teachingAssignments.length),
+        data,
+      );
+    }
     switch (rest) {
       case 'lessons/' || 'assignments/':
         return _lessonContentCreateRefusal(data);
       case 'lesson-content/trash/bulk':
         return _lessonContentTrashRefusal(data);
+      case 'lesson-content/restore/bulk':
+        return _lessonContentRestoreRefusal(data);
+      case 'lesson-content/duplicate/bulk':
+        return _lessonContentDuplicateRefusal(data);
     }
     final action = rest == null ? null : _lessonContentAction.firstMatch(rest);
     if (action == null) {
       return 'the live suite sends no Lesfiches POST but the creates, edits, '
-          'weblinks, attachments and moves to the trash of lesfiches it '
-          'made (#129)';
+          'weblinks, attachments, duplicates, moves to the trash and '
+          'restores of lesfiches it made (#129, #227)';
     }
     final kind = action.group(1)!;
     final id = action.group(2)!;
@@ -1048,14 +1315,58 @@ class LiveWireGuard extends Interceptor {
     if (what == 'change-goals') {
       return _lessonContentGoalsRefusal(data['newGoals']);
     }
+    if (what == 'change-labels') {
+      return _lessonContentLabelsRefusal(data['newLabels']);
+    }
     if (_lessonContentEdits.contains(what) ||
         _lessonContentSubEdit.hasMatch(what)) {
       return null;
     }
     return 'the live suite sends no "$what" to a lesfiche: only renames, '
-        'changes of the icon, info, courses, goals and visibility, and its '
-        'weblinks and attachments; never labels, deeplinks or partner '
+        'changes of the icon, info, courses, goals, labels and visibility, '
+        'and its weblinks and attachments; never deeplinks or partner '
         'weblinks (#129)';
+  }
+
+  /// The keys of a label as the library sends it (#228).
+  static const _labelKeys = {
+    'identifier',
+    'id',
+    'type',
+    'text',
+    'color',
+    'isVisible',
+    'userId',
+    'platformId',
+  };
+
+  /// Why the labels [labels] of a create or a `change-labels` may not go
+  /// out, or `null` (#228): only a list of labels as the library sends them
+  /// (LessonContentLabel.toWire): no other keys, `identifier` the same as a
+  /// non-empty `id`, the kind `platform` or `user`, and an own label with
+  /// the `userId` its ID starts with.
+  static String? _lessonContentLabelsRefusal(Object? labels) {
+    if (labels is! List) return 'its labels are not a list';
+    for (final label in labels) {
+      final id = label is Map ? label['id'] : null;
+      final type = label is Map ? label['type'] : null;
+      final userId = label is Map ? label['userId'] : null;
+      if (label is! Map ||
+          !label.keys.every(_labelKeys.contains) ||
+          id is! String ||
+          id.isEmpty ||
+          label['identifier'] != id ||
+          (type != 'platform' && type != 'user') ||
+          (type == 'user' &&
+              (userId is! String ||
+                  userId.isEmpty ||
+                  !id.startsWith('${userId}_')))) {
+        return 'it sends a label that is not as the library sends one '
+            '({identifier, id, type, text, color, isVisible} with the userId '
+            'of an own label): $label';
+      }
+    }
+    return null;
   }
 
   /// A goal's ID (#223): a UUID.
@@ -1099,12 +1410,9 @@ class LiveWireGuard extends Interceptor {
     }
     final goals = _lessonContentGoalsRefusal(data['goals']);
     if (goals != null) return 'it makes a lesfiche with goals: $goals';
-    for (final key in const [
-      'labels',
-      'partnerWeblinks',
-      'deeplinks',
-      'miniDBItems',
-    ]) {
+    final labels = _lessonContentLabelsRefusal(data['labels']);
+    if (labels != null) return 'it makes a lesfiche with labels: $labels';
+    for (final key in const ['partnerWeblinks', 'deeplinks', 'miniDBItems']) {
       final value = data[key];
       if (value is! List || value.isNotEmpty) {
         return 'it makes a lesfiche with $key: the live suite sends none';
@@ -1180,17 +1488,332 @@ class LiveWireGuard extends Interceptor {
     return null;
   }
 
+  /// The lesfiches named in the JSON body [data] of a bulk write, as (kind,
+  /// ID), or `null` when it names none, or one it does not name as the
+  /// library does.
+  static List<(String, String)>? _bulkLessonContent(Object? data) {
+    final list = data is Map ? data['lessonContent'] : null;
+    if (list is! List || list.isEmpty) return null;
+    final refs = <(String, String)>[];
+    for (final entry in list) {
+      if (entry is! Map || entry['id'] is! String || entry['type'] is! String) {
+        return null;
+      }
+      refs.add((entry['type'] as String, entry['id'] as String));
+    }
+    return refs;
+  }
+
+  /// Why the restore with the JSON body [data] may not go out, or `null`
+  /// (#227): only lesfiches the run made, of their kind, that it moved to
+  /// the trash (as Smartschool answered).
+  String? _lessonContentRestoreRefusal(Object? data) {
+    final refs = _bulkLessonContent(data);
+    if (refs == null) return 'it restores no lesfiche that it names';
+    for (final (kind, id) in refs) {
+      final made = _lessonContentMade[id.toLowerCase()];
+      if (made == null) {
+        return 'it restores lesfiche $id, which this run did not make';
+      }
+      if (made != kind) {
+        return 'it restores lesfiche $id as one of the $kind, but the run '
+            'made it as one of the $made';
+      }
+      if (!_lessonContentTrashed.contains(id.toLowerCase())) {
+        return 'it restores lesfiche $id, which this run did not move to '
+            'the trash';
+      }
+    }
+    return null;
+  }
+
+  /// Why the duplicate with the JSON body [data] may not go out, or `null`
+  /// (#227): only lesfiches the run made, of their kind, not in the trash,
+  /// each copy counted as a create.
+  String? _lessonContentDuplicateRefusal(Object? data) {
+    final refs = _bulkLessonContent(data);
+    if (refs == null) return 'it duplicates no lesfiche that it names';
+    for (final (kind, id) in refs) {
+      final made = _madeLessonContentRefusal(kind, id);
+      if (made != null) return made;
+    }
+    if (lessonContentCreates + refs.length > maxLessonContentCreates) {
+      return 'its copies would make more than the run\'s maximum of '
+          '$maxLessonContentCreates lesfiches';
+    }
+    lessonContentCreates += refs.length;
+    return null;
+  }
+
   /// Why the DELETE of [path] may not go out, or `null`: only of a weblink
   /// or an attachment of a lesfiche the run made (#129). Never a lesfiche
   /// itself.
   String? _lessonContentDeleteRefusal(String path) {
     final rest = path.substring(_lessonContentApi.length);
+    if (rest.startsWith(_teachingAssignments)) {
+      return _teachingAssignmentDeleteRefusal(
+        rest.substring(_teachingAssignments.length),
+      );
+    }
     final action = _lessonContentAction.firstMatch(rest);
     if (action == null || !_lessonContentRemoval.hasMatch(action.group(3)!)) {
       return 'the live suite sends no DELETE but of a weblink or an '
           'attachment of a lesfiche it made (#129)';
     }
     return _madeLessonContentRefusal(action.group(1)!, action.group(2)!);
+  }
+
+  /// The year plans of the Lesfiches module (#229).
+  static const _teachingAssignments = 'teaching-assignments/';
+
+  /// The create of a teaching assignment: `{userId}`.
+  static final _taCreate = RegExp(r'^\d+_\d+_\d+$');
+
+  /// The create of a lesson cluster: `{userId}/{platformId}/{id}/
+  /// lesson-clusters`.
+  static final _clusterCreate = RegExp(
+    r'^\d+_\d+_\d+/\d+/([^/]+)/lesson-clusters$',
+  );
+
+  /// A write in a lesson cluster: `{taPlatformId}/{taId}/lesson-clusters/
+  /// {platformId}/{id}/{action}`.
+  static final _clusterAction = RegExp(
+    r'^\d+/([^/]+)/lesson-clusters/\d+/([^/]+)/([^/]+)$',
+  );
+
+  /// A teaching assignment itself: `{platformId}/{id}`.
+  static final _taItself = RegExp(r'^\d+/([^/]+)$');
+
+  /// Why the POST to the teaching assignments' [rest] with the JSON body
+  /// [data] may not go out, or `null` (#229).
+  String? _teachingAssignmentRefusal(String rest, Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    if (_taCreate.hasMatch(rest)) return _taCreateRefusal(data);
+    final cluster = _clusterCreate.firstMatch(rest);
+    if (cluster != null) {
+      final made = _madeTeachingAssignmentRefusal(cluster.group(1)!);
+      if (made != null) return made;
+      if (!data.keys.every(const {'name', 'icon', 'isVisible'}.contains)) {
+        return 'it makes a lesson cluster with more than its name, icon and '
+            'visibility';
+      }
+      final name = data['name'];
+      if (name is! String || !name.startsWith(_lessonContentTagged)) {
+        return 'the name of the lesson cluster does not start with '
+            '"$_lessonContentTagged"';
+      }
+      if (lessonClusterCreates >= maxLessonClusterCreates) {
+        return 'the run made $maxLessonClusterCreates lesson clusters '
+            'already, its maximum';
+      }
+      lessonClusterCreates++;
+      return null;
+    }
+    final action = _clusterAction.firstMatch(rest);
+    if (action == null) {
+      return 'the live suite sends no teaching assignments POST but the '
+          'creates of a teaching assignment and a lesson cluster, and the '
+          'adds and goals of a cluster it made (#229)';
+    }
+    final made = _madeTeachingAssignmentRefusal(action.group(1)!);
+    if (made != null) return made;
+    final clusterId = action.group(2)!.toLowerCase();
+    if (_lessonClustersMade[clusterId] != action.group(1)!.toLowerCase()) {
+      return 'it writes to lesson cluster $clusterId, which this run did not '
+          'make in that teaching assignment';
+    }
+    switch (action.group(3)) {
+      case 'titles':
+        final text = data['text'];
+        if (data.length != 1 ||
+            text is! String ||
+            !text.startsWith(_lessonContentTagged)) {
+          return 'it adds a title that is not only a text starting with '
+              '"$_lessonContentTagged"';
+        }
+        return null;
+      case 'change-goals':
+        if (data.length != 1) return 'it changes more than the goals';
+        return _lessonContentGoalsRefusal(data['newGoals']);
+      case 'lesson-content-from-teaching-assignment':
+        final list = data['lessonContentIdentifiers'];
+        if (data.length != 1 || list is! List || list.isEmpty) {
+          return 'it adds no lesfiches that it names';
+        }
+        for (final entry in list) {
+          if (entry is! Map ||
+              entry['id'] is! String ||
+              entry['type'] is! String) {
+            return 'it adds a lesfiche that it does not name';
+          }
+          final fiche = _madeLessonContentRefusal(
+            entry['type'] as String,
+            entry['id'] as String,
+          );
+          if (fiche != null) return fiche;
+        }
+        return null;
+    }
+    return 'the live suite sends no "${action.group(3)}" to a lesson cluster: '
+        'only titles, lesfiches and goals (#229)';
+  }
+
+  /// Why the create of a teaching assignment with the JSON body [data] may
+  /// not go out, or `null` (#229).
+  String? _taCreateRefusal(Map<dynamic, dynamic> data) {
+    final name = data['name'];
+    if (name is! String || !name.startsWith(_lessonContentTagged)) {
+      return 'the name of the teaching assignment does not start with '
+          '"$_lessonContentTagged"';
+    }
+    final filter = data['contentFilter'];
+    if (filter is! Map ||
+        (filter['type'] != 'all' && filter['type'] != 'none') ||
+        [
+          filter['labels'],
+          filter['courses'],
+          filter['assignmentTypes'],
+        ].any((list) => list is! List || list.isNotEmpty)) {
+      return 'it makes a teaching assignment with another content filter '
+          'than all or none, without labels, courses and assignment types';
+    }
+    final collaborators = data['collaborators'];
+    if (collaborators is! Map ||
+        collaborators.values.any((list) => list is! List || list.isNotEmpty) ||
+        data['publication'] != null) {
+      return 'it shares the teaching assignment (collaborators or a '
+          'publication)';
+    }
+    if (teachingAssignmentCreates >= maxTeachingAssignmentCreates) {
+      return 'the run made $maxTeachingAssignmentCreates teaching '
+          'assignments already, its maximum';
+    }
+    teachingAssignmentCreates++;
+    return null;
+  }
+
+  /// Why a write in the teaching assignment [id] may not go out, or `null`:
+  /// only one the run made and did not delete (#229).
+  String? _madeTeachingAssignmentRefusal(String id) =>
+      _teachingAssignmentsMade.contains(id.toLowerCase())
+      ? null
+      : 'it writes to teaching assignment $id, which this run did not make '
+            '(or deleted already)';
+
+  /// Why the DELETE of the teaching assignments' [rest] may not go out, or
+  /// `null` (#229): only of a teaching assignment the run made, once.
+  String? _teachingAssignmentDeleteRefusal(String rest) {
+    final match = _taItself.firstMatch(rest);
+    if (match == null) {
+      return 'the live suite sends no teaching assignments DELETE but of a '
+          'teaching assignment it made (#229)';
+    }
+    return _madeTeachingAssignmentRefusal(match.group(1)!);
+  }
+
+  /// Keeps what Smartschool's answer [body] to the teaching assignments
+  /// request [method] of [rest] (a `2xx`) says (#229): the teaching
+  /// assignment or cluster a create made (the `id` of its answer), and the
+  /// teaching assignment a DELETE deleted.
+  void _recordTeachingAssignmentAnswer(
+    String method,
+    String rest,
+    String body,
+  ) {
+    if (method == 'DELETE') {
+      final match = _taItself.firstMatch(rest);
+      if (match != null) {
+        _teachingAssignmentsMade.remove(match.group(1)!.toLowerCase());
+      }
+      return;
+    }
+    if (method != 'POST') return;
+    final cluster = _clusterCreate.firstMatch(rest);
+    if (!_taCreate.hasMatch(rest) && cluster == null) return;
+    Object? answer;
+    try {
+      answer = jsonDecode(body);
+    } on FormatException {
+      return;
+    }
+    final id = answer is Map ? answer['id'] : null;
+    if (id is! String || id.isEmpty) return;
+    if (cluster == null) {
+      _teachingAssignmentsMade.add(id.toLowerCase());
+    } else {
+      _lessonClustersMade[id.toLowerCase()] = cluster.group(1)!.toLowerCase();
+    }
+  }
+
+  /// Smartschool's labels module (#228).
+  static const _labelsApi = '/labels/api/v1/';
+
+  /// The create of an own label: `user-labels/{userId}`.
+  static final _labelCreate = RegExp(r'^user-labels/(\d+_\d+_\d+)$');
+
+  /// Why the labels POST to [path] with the JSON body [data] may not go
+  /// out, or `null` (#228): only the create of an own label named after the
+  /// run, `{text, color, isVisible}`, up to [maxLabelCreates].
+  String? _labelRefusal(String path, Object? data) {
+    final rest = path.startsWith(_labelsApi)
+        ? path.substring(_labelsApi.length)
+        : null;
+    if (rest == null || !_labelCreate.hasMatch(rest)) {
+      return 'the live suite sends no labels POST but the create of an own '
+          'label named after the run (#228)';
+    }
+    if (data is! Map) return 'it carries no JSON body';
+    if (!data.keys.every(const {'text', 'color', 'isVisible'}.contains)) {
+      return 'it makes a label with more than its text, colour and '
+          'visibility';
+    }
+    final text = data['text'];
+    if (text is! String || !text.startsWith(_lessonContentTagged)) {
+      return 'it makes a label whose text does not start with '
+          '"$_lessonContentTagged"';
+    }
+    if (labelCreates >= maxLabelCreates) {
+      return 'the run made $maxLabelCreates labels already, its maximum';
+    }
+    labelCreates++;
+    return null;
+  }
+
+  /// Why the labels DELETE of [path] may not go out, or `null` (#228): only
+  /// the removal (`user/{id}`) of an own label the run made, once.
+  String? _labelDeleteRefusal(String path) {
+    final rest = path.substring(_labelsApi.length);
+    if (!rest.startsWith('user/')) {
+      return 'the live suite sends no labels DELETE but of an own label it '
+          'made (#228)';
+    }
+    final id = rest.substring('user/'.length);
+    if (!_labelsMade.contains(id)) {
+      return 'it removes label $id, which this run did not make (or removed '
+          'already)';
+    }
+    return null;
+  }
+
+  /// Keeps what Smartschool's answer [body], with [status], to the labels
+  /// request [options] says (#228): the own label a create made (the `id`
+  /// of its answer), and the one a DELETE removed (a `2xx`).
+  void _recordLabelAnswer(RequestOptions options, int status, String body) {
+    if (status < 200 || status >= 300) return;
+    final method = options.method.toUpperCase();
+    final rest = options.uri.path.substring(_labelsApi.length);
+    if (method == 'DELETE' && rest.startsWith('user/')) {
+      _labelsMade.remove(rest.substring('user/'.length));
+      return;
+    }
+    if (method != 'POST' || !_labelCreate.hasMatch(rest)) return;
+    try {
+      final answer = jsonDecode(body);
+      final id = answer is Map ? answer['id'] : null;
+      if (id is String && id.isNotEmpty) _labelsMade.add(id);
+    } on FormatException {
+      return;
+    }
   }
 
   /// The XML commands that only read.
@@ -1566,6 +2189,14 @@ class LiveWireGuard extends Interceptor {
       _recordLessonContentAnswer(options, response.statusCode ?? 0, body);
       return null;
     }
+    if (uri.path.startsWith(_labelsApi)) {
+      _recordLabelAnswer(options, response.statusCode ?? 0, body);
+      return null;
+    }
+    if (uri.path.startsWith('/planner/')) {
+      _recordPlannerAnswer(options, response.statusCode ?? 0, body);
+      return null;
+    }
     if (uri.path != '/' || query['module'] != 'Messages') return null;
     switch ((options.method.toUpperCase(), query['file'], query['function'])) {
       case ('GET', 'index', 'main'):
@@ -1836,9 +2467,17 @@ class LiveWireGuard extends Interceptor {
     int status,
     String body,
   ) {
-    if (options.method.toUpperCase() != 'POST') return;
     if (status < 200 || status >= 300) return;
     final rest = options.uri.path.substring(_lessonContentApi.length);
+    if (rest.startsWith(_teachingAssignments)) {
+      _recordTeachingAssignmentAnswer(
+        options.method.toUpperCase(),
+        rest.substring(_teachingAssignments.length),
+        body,
+      );
+      return;
+    }
+    if (options.method.toUpperCase() != 'POST') return;
     Object? answer;
     try {
       answer = jsonDecode(body);
@@ -1855,7 +2494,8 @@ class LiveWireGuard extends Interceptor {
       }
       return;
     }
-    if (rest == 'lesson-content/trash/bulk') {
+    if (rest == 'lesson-content/trash/bulk' ||
+        rest == 'lesson-content/restore/bulk') {
       final exceptions = answer is Map ? answer['exceptions'] : null;
       final data = options.data;
       final list = data is Map ? data['lessonContent'] : null;
@@ -1864,7 +2504,26 @@ class LiveWireGuard extends Interceptor {
       }
       for (final entry in list) {
         if (entry is Map && entry['id'] is String) {
-          _lessonContentTrashed.add((entry['id'] as String).toLowerCase());
+          final id = (entry['id'] as String).toLowerCase();
+          if (rest == 'lesson-content/trash/bulk') {
+            _lessonContentTrashed.add(id);
+          } else {
+            _lessonContentTrashed.remove(id);
+          }
+        }
+      }
+      return;
+    }
+    if (rest == 'lesson-content/duplicate/bulk') {
+      // The copies, keyed by the lesfiche they copy (#227).
+      final copies = answer is Map ? answer['lessonContent'] : null;
+      if (copies is! Map) return;
+      for (final copy in copies.values) {
+        if (copy is Map &&
+            copy['id'] is String &&
+            (copy['type'] == 'lessons' || copy['type'] == 'assignments')) {
+          _lessonContentMade[(copy['id'] as String).toLowerCase()] =
+              copy['type'] as String;
         }
       }
     }

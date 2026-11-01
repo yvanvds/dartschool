@@ -1137,7 +1137,8 @@ void main() {
       );
     });
 
-    test('PlannerWriteRefusalReason has the reasons of the issue (#100)', () {
+    test('PlannerWriteRefusalReason has the reasons of the issue (#100), '
+        'and the unknown lesson cluster of #230', () {
       expect(PlannerWriteRefusalReason.values.map((r) => r.name), [
         'notOwn',
         'notAllowed',
@@ -1149,6 +1150,7 @@ void main() {
         'notALessonLessonContent',
         'unknownAssignmentType',
         'linkedEvaluation',
+        'unknownLessonCluster',
       ]);
     });
 

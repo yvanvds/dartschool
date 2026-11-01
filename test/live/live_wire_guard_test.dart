@@ -502,6 +502,69 @@ class _Smartschool implements HttpClientAdapter {
         line,
   ];
 
+  /// The school label of the fake labels module (#228).
+  static const schoolLabel = {
+    'identifier': '49_aaaa0001-0000-4000-8000-000000000000',
+    'id': '49_aaaa0001-0000-4000-8000-000000000000',
+    'type': 'platform',
+    'text': 'TRIMESTER 1',
+    'color': 'yellow',
+    'isVisible': true,
+    'platformId': 49,
+    'locations': ['lesson_content'],
+  };
+
+  /// The own labels of the fake labels module, by ID (#228).
+  final Map<String, Map<String, Object?>> labels = {};
+
+  /// A label as the Lesfiches module keeps it on a lesfiche: as the labels
+  /// module has it.
+  Map<String, Object?> _storedLabel(Object? sent) {
+    final id = (sent! as Map)['id'];
+    return id == schoolLabel['id'] ? schoolLabel : labels[id]!;
+  }
+
+  /// Each labels module write that reached it, as `METHOD <path>` (#228).
+  List<String> get labelWrites => [
+    for (final line in log)
+      if (line.startsWith('POST /labels/') ||
+          line.startsWith('DELETE /labels/'))
+        line,
+  ];
+
+  /// Answers a request to the labels module (#228) as it does: the school
+  /// labels, the own labels, a create with the new label, a removal with
+  /// `204`.
+  ResponseBody _labelsAnswer(RequestOptions options) {
+    const json = 'application/json';
+    final path = options.uri.path.substring('/labels/api/v1/'.length);
+    if (path == 'locations/lesson_content/platform-labels') {
+      return _answer(jsonEncode([schoolLabel]), contentType: json);
+    }
+    if (options.method == 'DELETE' && path.startsWith('user/')) {
+      labels.remove(path.substring('user/'.length));
+      return _answer('', status: 204);
+    }
+    if (path == 'user-labels/49_777_0') {
+      if (options.method == 'GET') {
+        return _answer(jsonEncode(labels.values.toList()), contentType: json);
+      }
+      final body = options.data as Map;
+      final id = '49_777_0_${_uuid()}';
+      labels[id] = {
+        'identifier': id,
+        'type': 'user',
+        'text': body['text'],
+        'color': body['color'],
+        'isVisible': body['isVisible'],
+        'id': id,
+        'userId': '49_777_0',
+      };
+      return _answer(jsonEncode(labels[id]), contentType: json, status: 201);
+    }
+    return _answer('<html></html>');
+  }
+
   /// A new UUID of the fake.
   String _uuid() =>
       'dddd${(++_made).toString().padLeft(4, '0')}-0000-4000-8000-000000000000';
@@ -511,11 +574,216 @@ class _Smartschool implements HttpClientAdapter {
   /// detail of a lesfiche, an edit with the lesfiche, a weblink with the
   /// weblink, a removal with `204`, and a move to the trash with no
   /// exceptions.
+  /// The teaching assignments it made (#229), by ID.
+  final Map<String, Map<String, Object?>> teachingAssignments = {};
+
+  /// The lesson clusters it made (#229), by ID, and their entries.
+  final Map<String, Map<String, Object?>> lessonClusters = {};
+  final Map<String, List<Object?>> clusterEntries = {};
+
+  /// The planned lesson clusters it made (#230), by ID, in full; and the
+  /// IDs of those moved to the trash.
+  final Map<String, Map<String, Object?>> plannedClusters = {};
+  final Set<String> trashedClusters = {};
+
+  /// The planner requests about planned lesson clusters that reached it
+  /// (#230), `METHOD path`.
+  final List<String> plannerClusterRequests = [];
+
+  /// Answers a request about planned lesson clusters (#230) as the planner
+  /// does (in short): the plan with the planned cluster in full, its
+  /// detail (`404` once trashed), the list and the trash.
+  ResponseBody _plannedClusterAnswer(RequestOptions options) {
+    const json = 'application/json';
+    const api = '/planner/api/v1/planned-lesson-clusters/';
+    final path = options.uri.path;
+    plannerClusterRequests.add('${options.method} $path');
+    final rest = path.substring(api.length);
+    final body = options.data is Map ? options.data as Map : const {};
+    if (options.method == 'POST' && rest.isEmpty) {
+      final id = _uuid();
+      final cluster = lessonClusters[body['lessonClusterId']]!;
+      final period = body['period'] as Map;
+      plannedClusters[id] = {
+        'id': id,
+        'platformId': 49,
+        'name': cluster['name'],
+        'period': {
+          'dateTimeFrom': '${period['dateTimeFrom']}T00:00:00+01:00',
+          'dateTimeTo': '${period['dateTimeTo']}T23:59:59+01:00',
+          'wholeDay': true,
+          'deadline': false,
+        },
+        'organisers': {
+          'users': [
+            {'id': '49_777_0', 'name': <String, String>{}},
+          ],
+        },
+        'participants': {
+          'users': [],
+          'groups': [
+            for (final group in (body['participants'] as Map)['groups'] as List)
+              {'id': group, 'platformId': 49, 'name': '6A1'},
+          ],
+        },
+        'courses': [],
+        'capabilities': {'canUserTrash': true},
+        'plannedElementType': 'planned-lesson-clusters',
+        'lessonClusterId': cluster['id'],
+        'lessonClusterPlatformId': 49,
+        'teachingAssignmentId': cluster['teachingAssignmentId'],
+        'teachingAssignmentPlatformId': 49,
+        'plannedLessonClusterContent': [],
+        'isCrossCurricular': false,
+      };
+      return _answer(
+        jsonEncode(plannedClusters[id]),
+        contentType: json,
+        status: 201,
+      );
+    }
+    if (rest == 'list') {
+      return _answer(
+        jsonEncode([
+          for (final MapEntry(:key, :value) in plannedClusters.entries)
+            if (!trashedClusters.contains(key)) value,
+        ]),
+        contentType: json,
+      );
+    }
+    final id = RegExp(r'^49/([^/]+)').firstMatch(rest)?.group(1);
+    if (rest.endsWith('/trash')) {
+      trashedClusters.add(id!);
+      return _answer('[]', contentType: json);
+    }
+    final planned = plannedClusters[id];
+    if (planned == null || trashedClusters.contains(id)) {
+      return _answer('{"status":404}', contentType: json, status: 404);
+    }
+    return _answer(jsonEncode(planned), contentType: json);
+  }
+
+  /// Answers a request to the teaching assignments (#229) of the Lesfiches
+  /// module as it does (in short).
+  ResponseBody _teachingAssignmentAnswer(String rest, RequestOptions options) {
+    const json = 'application/json';
+    final body = options.data is Map ? options.data as Map : const {};
+    final method = options.method;
+    if (method == 'POST' && rest == '49_777_0') {
+      final id = _uuid();
+      teachingAssignments[id] = {
+        'id': id,
+        'platformId': 49,
+        'owner': {'id': '49_777_0'},
+        'name': body['name'],
+        'icon': body['icon'],
+        'collaborators': [
+          {
+            'user': {'id': '49_777_0'},
+            'contentFilter': {'type': (body['contentFilter'] as Map)['type']},
+          },
+        ],
+        'publication': null,
+        'lessonClusters': [],
+        'visibility': true,
+        'favourite': false,
+      };
+      return _answer(
+        jsonEncode(teachingAssignments[id]),
+        contentType: json,
+        status: 201,
+      );
+    }
+    final create = RegExp(
+      r'^49_777_0/49/([^/]+)/lesson-clusters$',
+    ).firstMatch(rest);
+    if (method == 'POST' && create != null) {
+      final id = _uuid();
+      lessonClusters[id] = {
+        'id': id,
+        'platformId': 49,
+        'teachingAssignmentId': create.group(1),
+        'teachingAssignmentPlatformId': 49,
+        'name': body['name'],
+        'icon': body['icon'],
+        'isVisible': true,
+        'position': 0,
+        'goals': [],
+      };
+      clusterEntries[id] = [];
+      return _answer(
+        jsonEncode(lessonClusters[id]),
+        contentType: json,
+        status: 201,
+      );
+    }
+    if (method == 'DELETE') {
+      teachingAssignments.remove(rest.split('/').last);
+      return _answer('', status: 204);
+    }
+    final read = RegExp(
+      r'^49/[^/]+/lesson-clusters/49/([^/]+)$',
+    ).firstMatch(rest);
+    if (method == 'GET' && read != null) {
+      final cluster = lessonClusters[read.group(1)];
+      return cluster == null
+          ? _answer('{}', contentType: json, status: 404)
+          : _answer(jsonEncode(cluster), contentType: json);
+    }
+    final action = RegExp(
+      r'^49/[^/]+/lesson-clusters/49/([^/]+)/(.+)$',
+    ).firstMatch(rest);
+    final cluster = lessonClusters[action?.group(1)];
+    if (cluster == null) return _answer('[]', contentType: json);
+    final entries = clusterEntries[cluster['id']]!;
+    switch (action!.group(2)) {
+      case 'titles':
+        final title = {
+          'id': _uuid(),
+          'platformId': 49,
+          'lessonClusterId': cluster['id'],
+          'position': entries.length,
+          'text': body['text'],
+          'type': 'titles',
+        };
+        entries.add(title);
+        return _answer(jsonEncode(title), contentType: json);
+      case 'lesson-content-from-teaching-assignment':
+        final added = [
+          for (final entry in body['lessonContentIdentifiers'] as List)
+            lessonContent[(entry as Map)['id']],
+        ];
+        entries.addAll(added);
+        return _answer(
+          jsonEncode({'lessonContent': added, 'exceptions': []}),
+          contentType: json,
+          status: 201,
+        );
+      case 'change-goals':
+        cluster['goals'] = [
+          for (final goal in body['newGoals'] as List)
+            {
+              'id': (goal as Map)['id'],
+              'leerplanId': goal['leerplanId'],
+              'type': goal['type'],
+            },
+        ];
+        return _answer(jsonEncode(cluster), contentType: json);
+    }
+    return _answer('[]', contentType: json);
+  }
+
   ResponseBody _lessonContentAnswer(RequestOptions options) {
     const api = '/lesson-content/api/v1/';
     const json = 'application/json';
     final path = options.uri.path.substring(api.length);
     final body = options.data is Map ? options.data as Map : const {};
+    if (path.startsWith('teaching-assignments/')) {
+      return _teachingAssignmentAnswer(
+        path.substring('teaching-assignments/'.length),
+        options,
+      );
+    }
     if (path == 'lessons/' || path == 'assignments/') {
       final id = _uuid();
       lessonContent[id] = {
@@ -536,7 +804,9 @@ class _Smartschool implements HttpClientAdapter {
               'type': goal['type'],
             },
         ],
-        'labels': [],
+        'labels': [
+          for (final label in body['labels'] as List) _storedLabel(label),
+        ],
         'weblinks': [
           for (final link in body['weblinks'] as List)
             {...link as Map, 'id': _uuid()},
@@ -550,8 +820,27 @@ class _Smartschool implements HttpClientAdapter {
       };
       return _answer('{"id":"$id"}', contentType: json, status: 201);
     }
-    if (path == 'lesson-content/trash/bulk') {
+    if (path == 'lesson-content/trash/bulk' ||
+        path == 'lesson-content/restore/bulk') {
       return _answer('{"exceptions":[]}', contentType: json);
+    }
+    if (path == 'lesson-content/duplicate/bulk') {
+      // Each copy keyed by the lesfiche as sent (#227).
+      final copies = <String, Object?>{};
+      for (final entry in body['lessonContent'] as List) {
+        final source = lessonContent[(entry as Map)['id']]!;
+        final id = _uuid();
+        lessonContent[id] = {
+          ...source,
+          'id': id,
+          'name': '${source['name']} - kopie',
+        };
+        copies[jsonEncode(entry)] = lessonContent[id];
+      }
+      return _answer(
+        jsonEncode({'lessonContent': copies, 'exceptions': []}),
+        contentType: json,
+      );
     }
     if (path == 'assignments/applicable-assignment-types') {
       return _answer(
@@ -583,6 +872,10 @@ class _Smartschool implements HttpClientAdapter {
         fiche['name'] = body['newName'];
       case 'mark-as-visible' || 'mark-as-invisible':
         fiche['isVisible'] = action == 'mark-as-visible';
+      case 'change-labels':
+        fiche['labels'] = [
+          for (final label in body['newLabels'] as List) _storedLabel(label),
+        ];
       case 'change-goals':
         fiche['goals'] = [
           for (final goal in body['newGoals'] as List)
@@ -728,6 +1021,9 @@ class _Smartschool implements HttpClientAdapter {
         );
       case (true, _plannerLookup, _, _):
         return _answer(_plannerLookupAnswer, contentType: 'application/json');
+      case (_, final path, _, _)
+          when path.startsWith('/planner/api/v1/planned-lesson-clusters/'):
+        return _plannedClusterAnswer(options);
       case (true, final path, _, _) when path.startsWith('/goal/selector/'):
         return _answer('[]', contentType: 'application/json');
       case (false, '/course-list/api/v1/courses', _, _):
@@ -741,6 +1037,8 @@ class _Smartschool implements HttpClientAdapter {
       case (_, final path, _, _)
           when path.startsWith('/lesson-content/api/v1/'):
         return _lessonContentAnswer(options);
+      case (_, final path, _, _) when path.startsWith('/labels/api/v1/'):
+        return _labelsAnswer(options);
       case (false, '/', 'index', 'main'):
         final folder = archiveFolder;
         return _answer(
@@ -2194,6 +2492,555 @@ void main() {
       ]);
       expect(guard.violations, isEmpty);
     });
+
+    test('the duplicate of a lesfiche the run made, whose copy then counts '
+        'as made; the restore of one it moved to the trash, which may then be '
+        'written again; a duplicate past the maximum, or of a lesfiche in '
+        'the trash, is refused (#227)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+
+      final made = await lessonContent.createLesson(name: _lessonName('les'));
+      final copy = (await lessonContent.duplicate([made])).single;
+      await lessonContent.rename(copy, _lessonName('kopie'));
+      // Two lesfiches made: the maximum.
+      await refused(lessonContent.duplicate([copy]));
+      await lessonContent.trash([made, copy]);
+      await refused(lessonContent.rename(copy, _lessonName('x')));
+      await lessonContent.restore([copy]);
+      await lessonContent.rename(copy, _lessonName('terug'));
+      await lessonContent.trash([copy]);
+
+      const api = '/lesson-content/api/v1';
+      expect(copy.name, '${_lessonName('les')} - kopie');
+      expect(server.lessonContentWrites, [
+        'POST $api/lessons/',
+        'POST $api/lesson-content/duplicate/bulk',
+        'POST $api/lessons/${copy.id}/rename',
+        'POST $api/lesson-content/trash/bulk',
+        'POST $api/lesson-content/restore/bulk',
+        'POST $api/lessons/${copy.id}/rename',
+        'POST $api/lesson-content/trash/bulk',
+      ]);
+      expect(guard.lessonContentCreates, 2);
+      expect(guard.lessonContentMade, {made.id, copy.id});
+      expect(_violations(guard), [
+        contains('more than the run\'s maximum of 2 lesfiches'),
+        contains('moved to the trash already'),
+      ]);
+    });
+
+    test('a duplicate of a lesfiche the run moved to the trash', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+
+      final made = await lessonContent.createLesson(name: _lessonName('les'));
+      await lessonContent.trash([made]);
+      await expectLater(lessonContent.duplicate([made]), throwsA(anything));
+
+      expect(guard.lessonContentCreates, 1);
+      expect(_violations(guard), [contains('moved to the trash already')]);
+    });
+  });
+
+  group('labels (#228)', () {
+    const api = '/lesson-content/api/v1';
+
+    test('lets out a create with labels, a change of the labels of a '
+        'lesfiche the run made, the create of an own label named after the '
+        'run, and its removal', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+
+      final school = (await lessonContent.getLabels()).single;
+      final made = await lessonContent.createLesson(
+        name: _lessonName('les'),
+        labels: [school],
+      );
+      final own = await lessonContent.createUserLabel(_lessonName(''));
+      final changed = await lessonContent.changeLabels(made, [school, own]);
+      final cleared = await lessonContent.changeLabels(made, const []);
+      expect(guard.labelsMade, {own.id});
+      await client.deleteResponse('/labels/api/v1/user/${own.id}');
+
+      expect(made.labels.map((l) => l.id), [school.id]);
+      expect(changed.labels.map((l) => l.id), [school.id, own.id]);
+      expect(cleared.labels, isEmpty);
+      expect(server.lessonContentWrites, [
+        'POST $api/lessons/',
+        'POST $api/lessons/${made.id}/change-labels',
+        'POST $api/lessons/${made.id}/change-labels',
+      ]);
+      expect(server.labelWrites, [
+        'POST /labels/api/v1/user-labels/49_777_0',
+        'DELETE /labels/api/v1/user/${own.id}',
+      ]);
+      expect(server.labels, isEmpty);
+      expect(guard.labelCreates, 1);
+      expect(guard.labelsMade, isEmpty);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('refuses labels not as the library sends them, a label without the '
+        'run\'s tag, a second label, another labels write, and the removal '
+        'of a label the run did not make or removed already', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+
+      final made = await lessonContent.createLesson(name: _lessonName('les'));
+      final fiche = '$api/lessons/${made.id}';
+      const id = '49_777_0_aaaa0002-0000-4000-8000-000000000000';
+      for (final label in <Object?>[
+        'x',
+        {'identifier': id, 'id': id, 'type': 'user'},
+        {'identifier': id, 'id': id, 'type': 'user', 'userId': '49_778_0'},
+        {'identifier': 'x', 'id': id, 'type': 'user', 'userId': '49_777_0'},
+        {'identifier': id, 'id': id, 'type': 'group', 'userId': '49_777_0'},
+        {
+          'identifier': id,
+          'id': id,
+          'type': 'user',
+          'userId': '49_777_0',
+          'extra': 1,
+        },
+      ]) {
+        await refused(
+          dio.post<String>(
+            '$fiche/change-labels',
+            data: {
+              'newLabels': [label],
+            },
+          ),
+        );
+      }
+      await refused(lessonContent.createUserLabel('Toets'));
+      final own = await lessonContent.createUserLabel(_lessonName(''));
+      await refused(lessonContent.createUserLabel(_lessonName('2')));
+      await refused(
+        dio.post<String>(
+          '/labels/api/v1/user-labels/49_777_0',
+          data: {'text': _lessonName(''), 'color': 'steel', 'x': 1},
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '/labels/api/v1/user-labels/${own.id}/change-text',
+          data: {'newText': _lessonName('x')},
+        ),
+      );
+      await refused(client.deleteResponse('/labels/api/v1/user/$id'));
+      await refused(
+        client.deleteResponse('/labels/api/v1/user-labels/${own.id}'),
+      );
+      await client.deleteResponse('/labels/api/v1/user/${own.id}');
+      await refused(client.deleteResponse('/labels/api/v1/user/${own.id}'));
+
+      expect(server.lessonContentWrites, ['POST $api/lessons/']);
+      expect(server.labelWrites, [
+        'POST /labels/api/v1/user-labels/49_777_0',
+        'DELETE /labels/api/v1/user/${own.id}',
+      ]);
+      expect(_violations(guard), [
+        for (var i = 0; i < 6; i++)
+          contains('a label that is not as the library sends one'),
+        contains('whose text does not start with'),
+        contains('1 labels already'),
+        contains('more than its text, colour and visibility'),
+        contains('no labels POST but the create of an own label'),
+        contains('which this run did not make'),
+        contains('no labels DELETE but of an own label'),
+        contains('which this run did not make (or removed already)'),
+      ]);
+    });
+  });
+
+  group('year plans (#229)', () {
+    const api = '/lesson-content/api/v1/teaching-assignments';
+    const goal = LearningGoalRef(
+      id: 'aaaa0003-0000-4000-8000-000000000000',
+      leerplanId: 'aaaa0004-0000-4000-8000-000000000000',
+      type: 'miniDB',
+    );
+
+    test('lets out the create of a teaching assignment and a cluster named '
+        'after the run, the add of a title, a lesfiche of the run and goals '
+        'in that cluster, and the delete of the teaching assignment', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final plans = TeachingAssignmentService(client);
+
+      final fiche = await lessonContent.createLesson(name: _lessonName('les'));
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      expect(guard.teachingAssignmentsMade, {plan.id});
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      await plans.addTitle(unit, _lessonName('week'));
+      await plans.addLessonContent(unit, [fiche]);
+      await plans.changeClusterGoals(unit, [goal]);
+      await plans.changeClusterGoals(unit, const []);
+      await plans.deleteTeachingAssignment(plan);
+
+      final cluster = 'POST $api/49/${plan.id}/lesson-clusters/49/${unit.id}';
+      expect(server.lessonContentWrites.where((w) => w.contains('teaching')), [
+        'POST $api/49_777_0',
+        'POST $api/49_777_0/49/${plan.id}/lesson-clusters',
+        '$cluster/titles',
+        '$cluster/lesson-content-from-teaching-assignment',
+        '$cluster/change-goals',
+        '$cluster/change-goals',
+        'DELETE $api/49/${plan.id}',
+      ]);
+      expect(server.teachingAssignments, isEmpty);
+      expect(guard.teachingAssignmentCreates, 1);
+      expect(guard.lessonClusterCreates, 1);
+      expect(guard.teachingAssignmentsMade, isEmpty);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('refuses a teaching assignment or cluster without the run\'s tag, '
+        'shared, with another filter or over the maximum, writes in one the '
+        'run did not make or deleted, a lesfiche the run did not make, '
+        'goals not as the library sends them, and other writes', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final plans = TeachingAssignmentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+      Map<String, Object?> create(
+        String name, {
+        String type = 'all',
+        List<Object?> labels = const [],
+        List<Object?> users = const [],
+        Object? publication,
+      }) => {
+        'name': name,
+        'icon': 'box_curver_blue',
+        'contentFilter': {
+          'type': type,
+          'labels': labels,
+          'courses': [],
+          'assignmentTypes': [],
+        },
+        'collaborators': {'users': users, 'groups': []},
+        'publication': publication,
+      };
+      const otherId = 'aaaa0009-0000-4000-8000-000000000000';
+
+      await refused(plans.createTeachingAssignment(name: 'Informatica'));
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), type: 'particular'),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), labels: ['x']),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), users: ['49_778_0']),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49_777_0',
+          data: create(_lessonName('a'), publication: {}),
+        ),
+      );
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      await refused(plans.createTeachingAssignment(name: _lessonName('2')));
+      await refused(
+        plans.addCluster(
+          TeachingAssignmentRef(id: otherId, platformId: 49),
+          name: _lessonName('unit'),
+        ),
+      );
+      await refused(plans.addCluster(plan, name: 'Lussen'));
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      await refused(plans.addCluster(plan, name: _lessonName('2')));
+      await refused(plans.addTitle(unit, 'Week 1'));
+      final other = LessonClusterRef(
+        id: otherId,
+        platformId: 49,
+        teachingAssignment: plan,
+      );
+      await refused(plans.addTitle(other, _lessonName('week')));
+      final notMade = LessonContentItem.fromJson({
+        'id': otherId,
+        'platformId': 49,
+        'type': 'lessons',
+      });
+      await refused(plans.addLessonContent(unit, [notMade]));
+      final fiche = await lessonContent.createLesson(name: _lessonName('les'));
+      await lessonContent.trash([fiche]);
+      await refused(plans.addLessonContent(unit, [fiche]));
+      final path = '$api/49/${plan.id}/lesson-clusters/49/${unit.id}';
+      await refused(
+        dio.post<String>(
+          '$path/change-goals',
+          data: {
+            'newGoals': [
+              {'id': goal.id},
+            ],
+          },
+        ),
+      );
+      await refused(
+        dio.post<String>('$path/rename', data: {'newName': _lessonName('x')}),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/49/${plan.id}/duplicate',
+          data: <String, Object?>{},
+        ),
+      );
+      await refused(
+        plans.deleteTeachingAssignment(
+          TeachingAssignmentRef(id: otherId, platformId: 49),
+        ),
+      );
+      await plans.deleteTeachingAssignment(plan);
+      await refused(plans.deleteTeachingAssignment(plan));
+      await refused(plans.addTitle(unit, _lessonName('week')));
+
+      expect(_violations(guard), [
+        contains('the name of the teaching assignment does not start with'),
+        for (var i = 0; i < 2; i++)
+          contains('another content filter than all or none'),
+        for (var i = 0; i < 2; i++) contains('it shares the teaching'),
+        contains('1 teaching assignments already'),
+        contains('which this run did not make'),
+        contains('the name of the lesson cluster does not start with'),
+        contains('1 lesson clusters already'),
+        contains('adds a title that is not only a text starting with'),
+        contains('which this run did not make in that teaching assignment'),
+        contains('which this run did not make'),
+        contains('was moved to the trash already'),
+        contains('a goal that is not as the library sends one'),
+        contains('no "rename" to a lesson cluster'),
+        contains('no teaching assignments POST but'),
+        contains('which this run did not make'),
+        contains('(or deleted already)'),
+        contains('(or deleted already)'),
+      ]);
+    });
+  });
+
+  group('planned lesson clusters (#230)', () {
+    const api = '/planner/api/v1/planned-lesson-clusters';
+
+    /// The day [days] from today, as the planner takes it.
+    String day(int days) {
+      final now = DateTime.now();
+      return PlannerService.formatDate(
+        DateTime(now.year, now.month, now.day + days),
+      );
+    }
+
+    /// The body of a plan as the library sends it, for [cluster], with
+    /// [extra] keys over it.
+    Map<String, Object?> body(
+      String cluster, {
+      String? from,
+      String? to,
+      Map<String, Object?> extra = const {},
+      Map<String, Object?> participants = const {},
+    }) => {
+      'lessonClusterId': cluster,
+      'lessonClusterPlatformId': 49,
+      'period': {
+        'dateTimeFrom': from ?? day(35),
+        'dateTimeTo': to ?? day(39),
+        'wholeDay': true,
+      },
+      'participants': {
+        'users': <Object>[],
+        'groups': ['49_2001'],
+        'groupFilters': {'additionalUsers': <Object>[], 'filters': <Object>[]},
+        'excludedUsers': <Object>[],
+        ...participants,
+      },
+      'courses': [
+        {'id': 'cccc0001-0000-4000-8000-000000000000', 'platformId': '49'},
+      ],
+      'isCrossCurricular': false,
+      ...extra,
+    };
+
+    test('lets out the plan of a cluster the run made, over a week far '
+        'ahead, the list, and the trash of that planned cluster', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final plans = TeachingAssignmentService(client);
+      final planner = PlannerService(client);
+      final now = DateTime.now();
+      final from = DateTime(now.year, now.month, now.day + 35);
+      final to = DateTime(now.year, now.month, now.day + 39);
+
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      final planned = await planner.planLessonCluster(
+        cluster: unit,
+        from: from,
+        to: to,
+        groupIds: ['49_2001'],
+        courses: const [
+          PlannerCourse(
+            id: 'cccc0001-0000-4000-8000-000000000000',
+            platformId: 49,
+            name: 'informatica',
+          ),
+        ],
+      );
+      expect(guard.plannedLessonClustersMade, {planned.id});
+      final listed = await planner.getPlannedLessonClusters(from: from, to: to);
+      expect(listed.map((c) => c.id), [planned.id]);
+      await planner.trashPlannedLessonCluster(planned);
+      await plans.deleteTeachingAssignment(plan);
+
+      final path = '$api/49/${planned.id}';
+      expect(server.plannerClusterRequests, [
+        'POST $api/',
+        'POST $api/list',
+        'GET $path',
+        'POST $path/trash',
+        'GET $path',
+      ]);
+      expect(guard.plannedLessonClusters, 1);
+      expect(guard.plannedLessonClustersMade, isEmpty);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('refuses a plan of a cluster the run did not make, across courses, '
+        'for users, sooner than four weeks ahead, over more than a week, '
+        'with more keys or over the maximum; the trash of a planned cluster '
+        'the run did not make or trashed already; a list of another '
+        'calendar; and other planned-cluster writes', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final plans = TeachingAssignmentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+      const otherId = 'aaaa0009-0000-4000-8000-000000000000';
+
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      final cluster = unit.id;
+
+      await refused(dio.post<String>('$api/', data: body(otherId)));
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(cluster, extra: {'isCrossCurricular': true}),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(
+            cluster,
+            participants: {
+              'users': ['49_778_0'],
+            },
+          ),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(cluster, participants: {'groups': <Object>[]}),
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/', data: body(cluster, extra: {'courses': []})),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(cluster, from: day(3), to: day(5)),
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/', data: body(cluster, to: day(50))),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(
+            cluster,
+            extra: {
+              'period': {
+                'dateTimeFrom': day(35),
+                'dateTimeTo': day(36),
+                'wholeDay': false,
+              },
+            },
+          ),
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/', data: body(cluster, extra: {'name': 'x'})),
+      );
+      final made = await dio.post<String>('$api/', data: body(cluster));
+      final id = (jsonDecode(made.data!) as Map)['id'] as String;
+      await refused(dio.post<String>('$api/', data: body(cluster)));
+      await refused(dio.post<String>('$api/49/$otherId/trash'));
+      await refused(
+        dio.post<String>(
+          '$api/list',
+          data: {'id': '49_2001', 'type': 'group', 'period': {}},
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/49/$id/reschedule', data: <String, Object?>{}),
+      );
+      await dio.post<String>('$api/49/$id/trash');
+      await refused(dio.post<String>('$api/49/$id/trash'));
+
+      expect(server.plannerClusterRequests, [
+        'POST $api/',
+        'POST $api/49/$id/trash',
+      ]);
+      expect(_violations(guard), [
+        contains('which this run did not make'),
+        contains('across courses'),
+        for (var i = 0; i < 2; i++) contains('for others than groups'),
+        contains('without courses'),
+        contains('sooner than 28 days from today'),
+        for (var i = 0; i < 2; i++)
+          contains('another period than at most a week of whole days'),
+        contains('more than its cluster, period, participants and courses'),
+        contains('1 lesson clusters already'),
+        contains('which this run did not plan (or trashed already)'),
+        contains('of another calendar than a user\'s'),
+        contains('changes nothing in the planner'),
+        contains('which this run did not plan (or trashed already)'),
+      ]);
+    });
   });
 
   group('refuses before it reaches Smartschool (Lesfiches, #129)', () {
@@ -2414,6 +3261,12 @@ void main() {
           data: {'lessonContent': <Object>[]},
         ),
       );
+      // A restore of a lesfiche that is not in the trash, or not the run's
+      // (#227).
+      await refused(lessonContent.restore([made]));
+      await refused(lessonContent.restore([otherItem]));
+      // A duplicate of a lesfiche the run did not make (#227).
+      await refused(lessonContent.duplicate([otherItem]));
       // After its move to the trash.
       await lessonContent.trash([made]);
       await refused(lessonContent.trash([made]));
@@ -2433,13 +3286,17 @@ void main() {
           'the lessons',
         ),
         contains('to a name that does not start with'),
-        for (var i = 0; i < 3; i++) contains('to a lesfiche: only renames'),
+        contains('its labels are not a list'),
+        for (var i = 0; i < 2; i++) contains('to a lesfiche: only renames'),
         contains('its goals are not a list'),
         for (var i = 0; i < 6; i++)
           contains('a goal that is not as the library sends one'),
         contains('sends no DELETE but of a weblink or an attachment'),
         contains('sends no Lesfiches POST but'),
-        contains('sends no Lesfiches POST but'),
+        contains('restores no lesfiche that it names'),
+        contains('which this run did not move to the trash'),
+        contains('which this run did not make'),
+        contains('which this run did not make'),
         contains('moved to the trash already'),
         contains('moved to the trash already'),
       ]);

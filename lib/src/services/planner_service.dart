@@ -9,6 +9,7 @@ import '../models/planner_models.dart';
 import '../session.dart';
 import 'goal_refs.dart';
 import 'lesson_content_service.dart';
+import 'teaching_assignment_service.dart';
 
 export '../models/planner_models.dart';
 
@@ -32,8 +33,12 @@ export '../models/planner_models.dart';
 /// again ([trashAssignment]); it changes the name and info of an own
 /// lesson or assignment ([renameElement], [changePublicInfo],
 /// [changePrivateInfo]), and the learning goals of an own lesson
-/// ([changeGoals], read in [PlannedElementDetail.goals]). See *Writes*
-/// below.
+/// ([changeGoals], read in [PlannedElementDetail.goals]); and it plans a
+/// lesson cluster of a teaching assignment for classes over a period
+/// ([planLessonCluster], linked to the cluster, #230), reads the planned
+/// clusters back ([getPlannedLessonClusters], [getPlannedLessonClustersOf])
+/// and moves one to the planner's trash ([trashPlannedLessonCluster]). See
+/// *Writes* below.
 ///
 /// For the planner's workload view ("werkbelasting") it reads the school's
 /// assignment types ([getAssignmentTypes]), the assignments of classes in a
@@ -106,8 +111,9 @@ export '../models/planner_models.dart';
 /// Only [planLesson], [planLessonContent], [replaceWithLessonContent],
 /// [planLessonContentInto], [clearLesson], [planAssignment],
 /// [trashAssignment], [renameElement], [changePublicInfo],
-/// [changePrivateInfo] and [changeGoals] change the planner, each with one POST for one
-/// element ([planLessonContentInto]: one POST for all its hours);
+/// [changePrivateInfo], [changeGoals], [planLessonCluster] and
+/// [trashPlannedLessonCluster] change the planner, each with one POST for
+/// one element ([planLessonContentInto]: one POST for all its hours);
 /// [saveAsLessonContent] adds a lesfiche to the Lesfiches library through
 /// the planner, with one POST, and leaves the lesson as it is:
 ///
@@ -166,7 +172,8 @@ export '../models/planner_models.dart';
 /// after logging in again, as a read is. A write that went out without the
 /// planner's answer confirming it throws a
 /// [SmartschoolPlannerSaveUnconfirmedError]. Of the planner's trash the
-/// service only uses the move of one own assignment ([trashAssignment]); it
+/// service only uses the move of one own assignment ([trashAssignment]) or
+/// planned lesson cluster ([trashPlannedLessonCluster]); it
 /// never uses its permanent delete
 /// (`DELETE {plannedElementType}/{platformId}/{id}`), its restore, or its
 /// bulk endpoints but `planned-elements/replace-with-lesson-content`
@@ -222,7 +229,9 @@ export '../models/planner_models.dart';
 /// - [SmartschoolLessonContentError]: [planLessonContent],
 ///   [replaceWithLessonContent], [planLessonContentInto] or
 ///   [saveAsLessonContent] could not read the lesfiches before it sent
-///   anything. Nothing was sent.
+///   anything, or [planLessonCluster] the lesson cluster (other than a
+///   `404`, which is a [SmartschoolPlannerWriteRefusedError]). Nothing was
+///   sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
 ///   planner's answer does not confirm it. It may or may not have been
 ///   made: read the element again (for a new assignment, the calendar of
@@ -231,8 +240,8 @@ export '../models/planner_models.dart';
 ///   session, also after the client logged in again and retried the request
 ///   once; for the fill of a slot, the replace of a lesson, the plan of a
 ///   lesfiche into several hours, the save of a lesson as a lesfiche, the
-///   clear of a lesson, and the create and trash of an assignment, which
-///   are not retried, at once. The request was
+///   clear of a lesson, the create and trash of an assignment, and the plan
+///   and trash of a lesson cluster, which are not retried, at once. The request was
 ///   not carried out: call the method again, the client logs in before its
 ///   next request (#134).
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
@@ -265,7 +274,11 @@ class PlannerService {
   /// `planned-assignments/{platformId}/{id}/trash` ([trashAssignment]), and
   /// `{plannedElementType}/{platformId}/{id}/rename`,
   /// `.../change-public-info` and `.../change-private-info` (the edits), and
-  /// `planned-lessons/{platformId}/{id}/change-goals` ([changeGoals]). The
+  /// `planned-lessons/{platformId}/{id}/change-goals` ([changeGoals]),
+  /// `planned-lesson-clusters/` ([planLessonCluster]) and
+  /// `planned-lesson-clusters/{platformId}/{id}/trash`
+  /// ([trashPlannedLessonCluster]); and `planned-lesson-clusters/list`
+  /// ([getPlannedLessonClusters]), which only reads. The
   /// planner also answers POSTs on it that change the planner or the user's
   /// settings and that the service never sends: the favourites of the search
   /// (`quick-search/planner/mark-as-favourite` and `discard-as-favourite`),
@@ -1857,9 +1870,336 @@ class PlannerService {
       );
     }
 
+    await _trash(operation, current, kind: 'assignment');
+  }
+
+  // ---------------------------------------------------------------------------
+  // Writes: a lesson cluster planned for classes over a period
+  // ---------------------------------------------------------------------------
+
+  /// Plans the lesson cluster [cluster] of a teaching assignment (#229) for
+  /// the classes [groupIds] and the courses [courses] over the days from
+  /// [from] to [to], as the planner's "plan lesson cluster" does (#230).
+  /// Returns the planned cluster: a new element of type
+  /// [PlannedElementType.lessonCluster], organised by the authenticated
+  /// user, over whole days, that **keeps its link** to [cluster]
+  /// ([PlannedLessonCluster.lessonCluster]): unlike a lesson planned from a
+  /// lesfiche, which is a copy.
+  ///
+  /// In the period, the planner turns the lesson hours of those classes and
+  /// courses in the authenticated user's planner into
+  /// [PlannedElementType.lessonClusterMoment] elements, which
+  /// [getPlannedElements] lists instead of the timetable slots (tried live,
+  /// 2026-11-01: two hours of a class and course in a week of thirteen).
+  /// **Pupils of the classes see the moments.** [trashPlannedLessonCluster]
+  /// gives the hours back.
+  ///
+  /// - [cluster] is a cluster of one of the user's teaching assignments (a
+  ///   [LessonCluster] of `TeachingAssignmentService`, or a
+  ///   [LessonClusterRef] kept by its IDs);
+  /// - [from] and [to] are days: only their date counts (in the local time
+  ///   of this machine), and they go out as `yyyy-MM-dd`, the whole days;
+  /// - [groupIds] are class IDs `{platformId}_{groupId}` (a class
+  ///   calendar's [PlannerCalendar.id], a [PlannerGroup.id] of a timetable
+  ///   slot), each sent once;
+  /// - [courses] are the courses, such as the [PlannedElement.courses] of a
+  ///   timetable slot of those classes, each sent once.
+  ///
+  /// Before it sends anything, it reads the cluster
+  /// (`TeachingAssignmentService.getCluster`): one the Lesfiches module
+  /// answers with `404` is refused with a
+  /// [SmartschoolPlannerWriteRefusedError]
+  /// ([PlannerWriteRefusalReason.unknownLessonCluster]); another failure of
+  /// that read is its [SmartschoolLessonContentError]. Nothing was sent
+  /// then.
+  ///
+  /// Sends `POST planned-lesson-clusters/` with the body the planner's web
+  /// client builds: `{"lessonClusterId", "lessonClusterPlatformId",
+  /// "period": {"dateTimeFrom", "dateTimeTo", "wholeDay": true},
+  /// "participants": {"users": [], "groups", "groupFilters":
+  /// {"additionalUsers": [], "filters": []}, "excludedUsers": []},
+  /// "courses": [{"id", "platformId"}], "isCrossCurricular": false}`, with
+  /// a course's `platformId` as a **string** (tried live, 2026-11-01: the
+  /// planner answered `201` with the planned cluster). It is sent **once**,
+  /// never again after logging in again: a second one would plan the
+  /// cluster twice. When the answer is not a planned cluster of [cluster]
+  /// over the days from [from] to [to], organised by the authenticated user
+  /// (or no usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: look for it with
+  /// [getPlannedLessonClusters] or [getPlannedLessonClustersOf] before
+  /// trying again.
+  ///
+  /// Not covered: a cluster planned across courses (`isCrossCurricular`,
+  /// with users), rescheduling, clearing a moment, and the planning of the
+  /// cluster's assignments.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [groupIds]
+  /// is empty or holds an ID that is not a group ID, [courses] is empty or
+  /// holds a course with an empty ID, [to] is a day before [from], or [from]
+  /// and [to] are in different school years (1 September to 31 August).
+  Future<PlannedLessonCluster> planLessonCluster({
+    required LessonClusterRef cluster,
+    required DateTime from,
+    required DateTime to,
+    required Iterable<String> groupIds,
+    required Iterable<PlannerCourse> courses,
+  }) async {
+    const operation = 'planLessonCluster';
+    final groups = _checkedGroupIds(groupIds);
+    final courseList = <PlannerCourse>[];
+    for (final course in courses) {
+      if (course.id.trim().isEmpty) {
+        throw ArgumentError.value(courses, 'courses', 'holds an empty ID');
+      }
+      if (!courseList.any(
+        (known) =>
+            known.id.toLowerCase() == course.id.toLowerCase() &&
+            known.platformId == course.platformId,
+      )) {
+        courseList.add(course);
+      }
+    }
+    if (courseList.isEmpty) {
+      throw ArgumentError.value(courses, 'courses', 'is empty');
+    }
+    final firstDay = DateTime(from.year, from.month, from.day);
+    final lastDay = DateTime(to.year, to.month, to.day);
+    if (lastDay.isBefore(firstDay)) {
+      throw ArgumentError.value(to, 'to', 'is a day before from ($from)');
+    }
+    if (_schoolYear(firstDay) != _schoolYear(lastDay)) {
+      throw ArgumentError.value(
+        to,
+        'to',
+        'is in another school year than from ($from); a school year runs '
+            'from 1 September to 31 August',
+      );
+    }
+
+    final me = await _ownUserId();
+    try {
+      await TeachingAssignmentService(_client).getCluster(cluster);
+    } on SmartschoolLessonContentError catch (e) {
+      if (e.statusCode != 404) rethrow;
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: the Lesfiches module has no lesson cluster ${cluster.id} '
+        'in teaching assignment ${cluster.teachingAssignment.id} (HTTP 404). '
+        'Nothing was sent.',
+        reason: PlannerWriteRefusalReason.unknownLessonCluster,
+      );
+    }
+
+    final dayFrom = formatDate(firstDay);
+    final dayTo = formatDate(lastDay);
+    final what =
+        'lesson cluster ${cluster.id} for ${groups.join(', ')} from $dayFrom '
+        'to $dayTo';
+    final answer = await _write(
+      operation,
+      path: '$_apiPath/planned-lesson-clusters/',
+      ok: const {200, 201},
+      body: {
+        'lessonClusterId': cluster.id,
+        'lessonClusterPlatformId': cluster.platformId,
+        'period': {
+          'dateTimeFrom': dayFrom,
+          'dateTimeTo': dayTo,
+          'wholeDay': true,
+        },
+        'participants': {
+          'users': const <Object>[],
+          'groups': groups,
+          'groupFilters': {
+            'additionalUsers': const <Object>[],
+            'filters': const <Object>[],
+          },
+          'excludedUsers': const <Object>[],
+        },
+        'courses': [
+          for (final course in courseList)
+            {'id': course.id, 'platformId': '${course.platformId}'},
+        ],
+        'isCrossCurricular': false,
+      },
+      change: 'the plan of $what',
+      retryAfterLogin: false,
+      unconfirmed:
+          'It may or may not have been planned: look for it '
+          '(getPlannedLessonClusters, getPlannedLessonClustersOf) before '
+          'trying again; trying again plans the cluster a second time if it '
+          'was planned.',
+      problemOf: (answer) {
+        if (answer is! PlannedLessonCluster) {
+          return 'a ${answer.typeName} instead of a planned lesson cluster';
+        }
+        final planned = answer.lessonCluster;
+        if (planned == null ||
+            planned.id.toLowerCase() != cluster.id.toLowerCase()) {
+          return 'a planned cluster of lesson cluster ${planned?.id}';
+        }
+        if (_periodDay(answer, 'dateTimeFrom') != dayFrom ||
+            _periodDay(answer, 'dateTimeTo') != dayTo) {
+          return 'a planned cluster from ${answer.period.from} to '
+              '${answer.period.to}';
+        }
+        if (!_organisedBy(answer, me)) {
+          return 'a planned cluster that is not organised by $me';
+        }
+        return null;
+      },
+    );
+    return answer as PlannedLessonCluster;
+  }
+
+  /// Returns the lesson clusters planned in the authenticated user's planner
+  /// in the days from [from] to [to] (#230), in the planner's order: those
+  /// that [planLessonCluster] made, and those planned in the web client.
+  /// The planner gives them in the short form: name, period, classes,
+  /// courses and capabilities, without the info, the content or the cluster
+  /// they were planned from ([PlannedLessonCluster.lessonCluster] is
+  /// `null`); [getDetail] of one reads it in full.
+  ///
+  /// Sends `POST planned-lesson-clusters/list` with `{"id", "type": "user",
+  /// "period": {"dateTimeFrom", "dateTimeTo", "wholeDay": true}}` (the
+  /// authenticated user's whole ID, the days as `yyyy-MM-dd`), which only
+  /// reads (tried live, 2026-11-01); retried once after logging in again,
+  /// as a read is.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [to] is a day
+  /// before [from].
+  Future<List<PlannedLessonCluster>> getPlannedLessonClusters({
+    required DateTime from,
+    required DateTime to,
+  }) async {
+    final firstDay = DateTime(from.year, from.month, from.day);
+    final lastDay = DateTime(to.year, to.month, to.day);
+    if (lastDay.isBefore(firstDay)) {
+      throw ArgumentError.value(to, 'to', 'is a day before from ($from)');
+    }
+    final me = await _ownUserId();
+    final what =
+        'the planned lesson clusters from ${formatDate(firstDay)} to '
+        '${formatDate(lastDay)}';
+    final response = await _client.postJsonResponse(
+      '$_apiPath/planned-lesson-clusters/list',
+      data: {
+        'id': me,
+        'type': PlannerCalendarType.user.wireName,
+        'period': {
+          'dateTimeFrom': formatDate(firstDay),
+          'dateTimeTo': formatDate(lastDay),
+          'wholeDay': true,
+        },
+      },
+    );
+    return parsePlannedLessonClusters(_decode(response, what));
+  }
+
+  /// Returns where the lesson cluster [cluster] was planned (#230): its
+  /// planned clusters, as the Lesfiches module lists them for the cluster,
+  /// in the module's order, in the short form of
+  /// [getPlannedLessonClusters], with [cluster] as their
+  /// [PlannedLessonCluster.lessonCluster]. A planned cluster moved to the
+  /// planner's trash is not listed (tried live).
+  ///
+  /// Sends `GET /lesson-content/api/v1/teaching-assignments/{taPlatformId}/
+  /// {taId}/lesson-clusters/{platformId}/{id}/planned-lesson-clusters`
+  /// (tried live, 2026-11-01). An answer the service cannot use is a
+  /// [SmartschoolPlannerError], as for the other reads; a cluster the
+  /// module does not know a [SmartschoolPlannerError] with its
+  /// [SmartschoolPlannerError.statusCode].
+  ///
+  /// Throws an [ArgumentError], without sending anything, when an ID of
+  /// [cluster] or its teaching assignment is empty.
+  Future<List<PlannedLessonCluster>> getPlannedLessonClustersOf(
+    LessonClusterRef cluster,
+  ) async {
+    if (cluster.id.trim().isEmpty) {
+      throw ArgumentError.value(cluster, 'cluster', 'has an empty ID');
+    }
+    final plan = cluster.teachingAssignment;
+    if (plan.id.trim().isEmpty) {
+      throw ArgumentError.value(
+        cluster,
+        'cluster',
+        'has a teaching assignment with an empty ID',
+      );
+    }
+    final what = 'the planned lesson clusters of lesson cluster ${cluster.id}';
+    final response = await _client.getResponse(
+      '$_lessonContentPath/teaching-assignments/${plan.platformId}/'
+      '${Uri.encodeComponent(plan.id)}/lesson-clusters/${cluster.platformId}/'
+      '${Uri.encodeComponent(cluster.id)}/planned-lesson-clusters',
+    );
+    return parsePlannedLessonClusters(
+      _decode(response, what),
+      lessonCluster: cluster,
+    );
+  }
+
+  /// Moves [planned], a lesson cluster planned in the authenticated user's
+  /// own planner ([planLessonCluster]), to the planner's trash, as the
+  /// planner's "delete" of a planned cluster does (#230). Afterwards the
+  /// planner answers its detail with `404`, [getPlannedLessonClusters] no
+  /// longer lists it, and its period shows the timetable slots again
+  /// (tried live, 2026-11-01). The cluster in the Lesfiches library stays
+  /// as it is. The planner keeps what is in its trash for 30 days; the
+  /// service does not read or restore the trash.
+  ///
+  /// Before it sends anything, it reads the planned cluster again (its
+  /// detail) and refuses with a [SmartschoolPlannerWriteRefusedError] one
+  /// that is not organised by the authenticated user
+  /// ([PlannerWriteRefusalReason.notOwn]) or that the planner does not let
+  /// the user trash (`canUserTrash`, [PlannerWriteRefusalReason.notAllowed]).
+  /// One that is gone (also one trashed already) throws a
+  /// [SmartschoolPlannedElementNotFoundError].
+  ///
+  /// Sends `POST planned-lesson-clusters/{platformId}/{id}/trash` without a
+  /// body (answered `200` with `[]`; the planner's `DELETE` of a planned
+  /// cluster answered `404`, and the service never sends it), **once**:
+  /// never again after logging in again. It then reads the detail again and
+  /// returns when the planner answers it with `404`; else, or when the
+  /// answer is not a list, this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read it again ([getDetail])
+  /// before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [planned] is
+  /// not a [PlannedElementType.lessonCluster] (a moment of a planned
+  /// cluster, [PlannedElementType.lessonClusterMoment], is not one).
+  Future<void> trashPlannedLessonCluster(PlannedElement planned) async {
+    const operation = 'trashPlannedLessonCluster';
+    if (planned.type != PlannedElementType.lessonCluster) {
+      throw ArgumentError.value(
+        planned,
+        'planned',
+        'is a ${planned.typeName}, not a planned lesson cluster '
+            '(planned-lesson-clusters)',
+      );
+    }
+    final me = await _ownUserId();
+    final current = await _detail(
+      planned.typeName,
+      planned.platformId,
+      planned.id,
+    );
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const ['canUserTrash']);
+    await _trash(operation, current, kind: 'planned lesson cluster');
+  }
+
+  /// Moves [current], an element read again and checked, to the planner's
+  /// trash with `POST {plannedElementType}/{platformId}/{id}/trash`, sent
+  /// once, and returns once its detail is gone (`404`). [kind] names the
+  /// element in the messages.
+  Future<void> _trash(
+    String operation,
+    PlannedElementDetail current, {
+    required String kind,
+  }) async {
+    final what = _describe(current);
     final change = 'the move of $what to the trash';
-    const unconfirmed =
-        'It may or may not be in the trash: read the assignment again '
+    final unconfirmed =
+        'It may or may not be in the trash: read the $kind again '
         '(getDetail; the planner answers 404 once it was trashed) before '
         'trying again.';
     final response = await _send(
@@ -1894,8 +2234,8 @@ class PlannerService {
       );
     }
 
-    // The trash answers with a list (empty in the try live); the detail
-    // tells whether the assignment is gone.
+    // The trash answers with a list (empty in the tries live); the detail
+    // tells whether the element is gone.
     try {
       await _detail(current.typeName, current.platformId, current.id);
     } on SmartschoolPlannedElementNotFoundError {
@@ -1904,7 +2244,7 @@ class PlannerService {
       Error.throwWithStackTrace(
         SmartschoolPlannerSaveUnconfirmedError(
           '$operation: $change was sent and answered, but reading the '
-          'assignment again failed ($e). $unconfirmed',
+          '$kind again failed ($e). $unconfirmed',
           statusCode: response.statusCode,
           cause: e,
         ),
@@ -1913,7 +2253,7 @@ class PlannerService {
     }
     throw SmartschoolPlannerSaveUnconfirmedError(
       '$operation: $change was sent and answered, but the planner still has '
-      'the assignment. $unconfirmed',
+      'the $kind. $unconfirmed',
       statusCode: response.statusCode,
     );
   }
@@ -2473,6 +2813,41 @@ class PlannerService {
         '${pad(minutes % 60)}';
   }
 
+  /// The day of [day] as the planner takes a whole-day period
+  /// (`yyyy-MM-dd`, #230): its date as [day] holds it, in its own time zone
+  /// (the local time of this machine for a local [DateTime]).
+  static String formatDate(DateTime day) {
+    String pad(int n, [int width = 2]) => '$n'.padLeft(width, '0');
+    return '${pad(day.year, 4)}-${pad(day.month)}-${pad(day.day)}';
+  }
+
+  /// Parses a list of planned lesson clusters (#230): a JSON array of
+  /// planned clusters, as `planned-lesson-clusters/list` and the Lesfiches
+  /// module's `.../planned-lesson-clusters` give them.
+  /// [lessonCluster] is the cluster of those in the short form (which names
+  /// none), when the caller knows it.
+  static List<PlannedLessonCluster> parsePlannedLessonClusters(
+    dynamic json, {
+    LessonClusterRef? lessonCluster,
+  }) {
+    if (json is! List) {
+      throw SmartschoolPlannerError(
+        'The planner gave the planned lesson clusters as ${json.runtimeType} '
+        'instead of a list.',
+      );
+    }
+    return List.unmodifiable([
+      for (final (index, item) in json.indexed)
+        if (item is Map<String, dynamic>)
+          PlannedLessonCluster.fromJson(item, lessonCluster: lessonCluster)
+        else
+          throw SmartschoolPlannerError(
+            'The planner gave planned lesson cluster $index as '
+            '${item.runtimeType} instead of an object.',
+          ),
+    ]);
+  }
+
   /// Parses the planner's answer to the plan of a lesfiche into several
   /// hours (`planned-elements/replace-with-lesson-content`, #224):
   /// `{"plannedElements": [...], "exceptions": [] | {...}}`. Returns the
@@ -2737,6 +3112,28 @@ class PlannerService {
     }
     return groups;
   }
+
+  /// The year in which the school year of [day] starts: a school year runs
+  /// from 1 September to 31 August.
+  static int _schoolYear(DateTime day) =>
+      day.month >= DateTime.september ? day.year : day.year - 1;
+
+  /// The day of the start (`dateTimeFrom`) or end (`dateTimeTo`) of the
+  /// period of [element], as the planner wrote it: the date in the
+  /// planner's own offset (`2027-01-11T00:00:00+01:00` is `2027-01-11`),
+  /// whatever the time zone of this machine (#230). An answer without a
+  /// written date gives the date of the parsed period in local time.
+  static String _periodDay(PlannedElement element, String key) {
+    final period = element.raw['period'];
+    final text = period is Map ? period[key] : null;
+    final match = text is String ? _leadingDay.firstMatch(text.trim()) : null;
+    if (match != null) return match.group(1)!;
+    return formatDate(
+      key == 'dateTimeFrom' ? element.period.from : element.period.to,
+    );
+  }
+
+  static final _leadingDay = RegExp(r'^(\d{4}-\d{2}-\d{2})');
 
   static void _checkPeriod(DateTime from, DateTime to) {
     if (to.isBefore(from)) {

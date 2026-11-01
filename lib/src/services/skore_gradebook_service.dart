@@ -60,16 +60,18 @@ export '../models/skore_gradebook_models.dart';
 ///
 /// The only changes it makes in Skore are [createEvaluation], the grades
 /// of [saveGrade] and [saveGrades], the user's own feedback of
-/// [saveFeedback], and the course comment of [saveReportComment] and
-/// [clearReportComment], which check the gradebook, the period or report,
-/// the evaluation and the values first, and read Skore again to check the
-/// save. **It never publishes**: a
+/// [saveFeedback], the course comment of [saveReportComment] and
+/// [clearReportComment], and the ratings of pupils in a project of
+/// [saveProjectRating] and [saveProjectRatings] (#204), which check the
+/// gradebook, the period, report or project, the evaluation and the values
+/// first, and read Skore again to check the save. **It never publishes**: a
 /// new evaluation goes out unpublished, and teachers publish it in
-/// Smartschool themselves; grades and feedback go into an evaluation that
-/// is published or scheduled only when the caller asks for it
-/// (`allowPublished`). Nothing in the service publishes, deletes or moves an
-/// evaluation, nor deletes or changes another teacher's feedback; and it
-/// never closes, unlocks, calculates or publishes a report.
+/// Smartschool themselves; grades and feedback go into an evaluation, and
+/// ratings into a project, that is published or scheduled only when the
+/// caller asks for it (`allowPublished`). Nothing in the service publishes,
+/// deletes or moves an evaluation, makes, publishes or removes a project,
+/// nor deletes or changes another teacher's feedback; and it never closes,
+/// unlocks, calculates or publishes a report.
 ///
 /// ### The endpoint
 /// Every call is an RPC call to Skore's gradebook service
@@ -143,8 +145,9 @@ export '../models/skore_gradebook_models.dart';
 ///   before anything is sent.
 /// - [SmartschoolSkoreChangeRefusedError] (a [SmartschoolSkoreError]): a
 ///   check of [createEvaluation], [saveGrade], [saveGrades],
-///   [saveFeedback], [saveReportComment] or [clearReportComment] refused
-///   the change before the save. Nothing was saved; its message says why. A
+///   [saveFeedback], [saveReportComment], [clearReportComment],
+///   [saveProjectRating] or [saveProjectRatings] refused the change before
+///   the save. Nothing was saved; its message says why. A
 ///   [SmartschoolSkoreGradebookReadOnlyError] (a subtype) for a gradebook
 ///   shared with the user to read only (#191); a
 ///   [SmartschoolSkoreEvaluationPublishedError] (another subtype) from
@@ -153,7 +156,10 @@ export '../models/skore_gradebook_models.dart';
 ///   [saveFeedback], a [SmartschoolSkoreFeedbackAmbiguousError] for more
 ///   than one feedback of the user's own for the pupil, and a
 ///   [SmartschoolSkoreFeedbackNotEditableError] for the user's feedback
-///   that Skore does not let them change (two more subtypes, #158).
+///   that Skore does not let them change (two more subtypes, #158); from
+///   [saveProjectRating] and [saveProjectRatings], a
+///   [SmartschoolSkoreProjectPublishedError] for a project that is
+///   published or scheduled, without `allowPublished` (#204).
 /// - [SmartschoolSkoreEvaluationCreateUnconfirmedError] (a
 ///   [SmartschoolSkoreSaveUnconfirmedError], not a [SmartschoolSkoreError]):
 ///   [createEvaluation] sent the save, but could not confirm it. The
@@ -168,6 +174,10 @@ export '../models/skore_gradebook_models.dart';
 ///   [saveReportComment] sent the course comment, or [clearReportComment]
 ///   its clear, but could not confirm it. Saving or clearing it again is
 ///   harmless.
+/// - [SmartschoolSkoreProjectRatingSaveUnconfirmedError] (the same):
+///   [saveProjectRating] or [saveProjectRatings] sent the ratings, but
+///   could not confirm all of them; it says which ones are confirmed.
+///   Saving a rating again is harmless.
 /// - [SmartschoolSkoreEvaluationPublicError] (neither): [createEvaluation]
 ///   created the evaluation, but Skore shows it as public. It was created;
 ///   check its publication in Smartschool.
@@ -925,18 +935,25 @@ class SkoreGradebookService {
   static const _projectPath = '/Gradebook/Main';
 
   /// The only methods of Skore's project sheet (`/Gradebook/Main/<method>`)
-  /// that the service calls, all reads; it refuses every other one before
-  /// sending ([checkProjectMethod], #204).
+  /// that the service calls; it refuses every other one before sending
+  /// ([checkProjectMethod], #204).
   ///
-  /// The same API also saves ratings (`saveCategoryGrades`), makes, changes
-  /// and removes projects (`saveProject`, `removeProject`) and saves the
-  /// sheet's filters (`saveTemplateFilter`, `registerUsedFilter`, ...):
-  /// none of them is here. The library does not write in a project.
+  /// The reads, and one write: `saveCategoryGrades`, the ratings (and their
+  /// `info`) of pupils in a project, which [saveProjectRating] and
+  /// [saveProjectRatings] send. The same API also makes, changes and
+  /// removes projects (`saveProject`, `removeProject`) and saves the
+  /// sheet's filters (`saveTemplateFilter`, `registerUsedFilter`, ...): none
+  /// of them is here. The library never publishes a project, and never
+  /// makes or removes one.
   static const Set<String> projectMethods = {
     'getTemplateList',
+    'getGradebookConfig',
     'getCategoriesList',
     'getProjectList',
     'getCategoryGradesByProject',
+    'getPupilTree',
+    // #204: the ratings of pupils in a project (the only write).
+    'saveCategoryGrades',
   };
 
   /// Throws an [ArgumentError] when [method] is not one of
@@ -1105,6 +1122,547 @@ class SkoreGradebookService {
     );
   }
 
+  /// The most cells Skore's project sheet sends in one `saveCategoryGrades`
+  /// (its code splits a larger save into requests of 30); so does the
+  /// service.
+  static const projectRatingChunk = 30;
+
+  /// Saves one change of a pupil's rating in [project] (from [getProjects])
+  /// of [gradebook], and returns the pupil's cell as Skore lists it right
+  /// after the save (#204).
+  ///
+  /// [saveProjectRatings] for one change: the same checks, the same save
+  /// and the same errors; see there.
+  Future<SkoreProjectRating> saveProjectRating(
+    SkoreGradebook gradebook,
+    SkoreProject project,
+    SkoreProjectRatingChange change, {
+    bool allowPublished = false,
+  }) async => (await _saveProjectRatings(
+    'saveProjectRating',
+    gradebook,
+    project,
+    [change],
+    allowPublished: allowPublished,
+  )).single;
+
+  /// Saves [changes] of pupils' ratings of learning goals in [project] (from
+  /// [getProjects]) of [gradebook]: a level of the template's scale, or none
+  /// to clear the rating ([SkoreProjectRatingChange.clear]), and optionally
+  /// the cell's `info` (the feedback text; `""` clears it, `null` keeps
+  /// it). Returns each pupil's cell as Skore lists it right after the save,
+  /// in the order of [changes] (#204). For empty [changes], nothing is read
+  /// or sent.
+  ///
+  /// A cleared rating stays a cell, without a level (Skore's `ratingId`
+  /// `null`; seen live). The cell's grade is sent as Skore has it: the
+  /// library does not save grades in a project (the templates seen live do
+  /// not take them).
+  ///
+  /// **Published projects.** A rating in a published project is visible to
+  /// its pupils. So a project that is published or scheduled (Skore's
+  /// `isPublic`, or a `publicDateTime`, as Skore lists it right before the
+  /// save) is refused unless [allowPublished] is `true`, with a
+  /// [SmartschoolSkoreProjectPublishedError] that carries the project as
+  /// listed then.
+  ///
+  /// Before the first save, it reads Skore again and refuses with a
+  /// [SmartschoolSkoreChangeRefusedError], saving nothing:
+  /// - a pupil ID that is not positive, a blank learning goal, a level ID
+  ///   that is not positive, or two changes of the same pupil and goal
+  ///   (before anything is sent); a gradebook shared with the user to read
+  ///   only ([SmartschoolSkoreGradebookReadOnlyError], before anything is
+  ///   sent);
+  /// - a gradebook that is not one of the user's own gradebooks of Skore's
+  ///   current school year, nor one shared with them to write (#191), as
+  ///   [saveGrade] refuses it;
+  /// - a project period that is not one of the gradebook's
+  ///   ([getProjectPeriods]), or that is closed;
+  /// - a gradebook Skore shows read-only in the period
+  ///   (`getGradebookContext`: `writable` not 1, or coordinator mode), or
+  ///   whose project sheet is read-only to the user (`getGradebookConfig`:
+  ///   `rights.readonly`, or no `rights`), as Skore's web client checks it;
+  /// - a project Skore no longer lists in its period, or one that is not of
+  ///   the gradebook's class and course (its `owners`);
+  /// - a published or scheduled project, without [allowPublished], with a
+  ///   [SmartschoolSkoreProjectPublishedError];
+  /// - a level that is not one of the template's scale, or a template
+  ///   without ratings;
+  /// - a learning goal that is not one of the template's, or that is not
+  ///   enabled, a heading or the course's root;
+  /// - a pupil that is not in the project sheet's pupils of the gradebook's
+  ///   class (its `getPupilTree`), or that is not enabled there, or whose
+  ///   `enabledCourses`, when not empty, do not hold the gradebook's course;
+  /// - a clear of a rating the pupil does not have (nothing to clear).
+  ///
+  /// All changes are checked first: one refused change saves none.
+  ///
+  /// Then it sends Skore's `saveCategoryGrades {context, grades}`, as the
+  /// project sheet sends it: the cells as Skore gave them
+  /// ([getProjectRatings], read again), with the new `ratingId` (`-1` to
+  /// clear) and `info`, and a new cell with the `id` `null` and the pupil
+  /// as the sheet's pupil tree gives it (the pupils it shows as columns,
+  /// which its web client puts on a new cell); at most
+  /// [projectRatingChunk] cells per request. Checked live (2026-11-01, on
+  /// the developer's go-ahead, in an unpublished test project): Skore
+  /// answered with the cells saved (a new one with its ID), and reading the
+  /// ratings again showed them. A request with only cells Skore has is
+  /// sent again after a new login when Smartschool refuses the session for
+  /// it; one with a new cell is sent once. When Smartschool refuses the
+  /// first request, this throws that [SmartschoolSessionExpiredError] (or
+  /// other [SmartschoolAuthenticationError]): nothing was saved. A failed
+  /// request does not stop the others; after a refused session, the rest
+  /// are not sent.
+  ///
+  /// Afterwards it reads the project's ratings again, once: each change's
+  /// cell must show the level sent (none for a clear) and the `info` sent
+  /// (none for `""`; the cell's own when `null`). When a request failed, or
+  /// that read fails or shows something else, this throws a
+  /// [SmartschoolSkoreProjectRatingSaveUnconfirmedError] that tells, per
+  /// change, which are confirmed and why the others are not. Saving a
+  /// rating again is harmless.
+  ///
+  /// The library never publishes, makes or removes a project. The checks
+  /// and the saves are separate requests: do not change the same project
+  /// from two places at once.
+  Future<List<SkoreProjectRating>> saveProjectRatings(
+    SkoreGradebook gradebook,
+    SkoreProject project,
+    List<SkoreProjectRatingChange> changes, {
+    bool allowPublished = false,
+  }) => _saveProjectRatings(
+    'saveProjectRatings',
+    gradebook,
+    project,
+    changes,
+    allowPublished: allowPublished,
+  );
+
+  Future<List<SkoreProjectRating>> _saveProjectRatings(
+    String operation,
+    SkoreGradebook gradebook,
+    SkoreProject project,
+    List<SkoreProjectRatingChange> changes, {
+    required bool allowPublished,
+  }) async {
+    if (changes.isEmpty) return const [];
+    // Before anything is sent.
+    _refuseReadOnly(operation, gradebook);
+    final periodId = project.periodId;
+    if (periodId <= 0) _refuse(operation, '$periodId is not a period ID');
+    final wrong = <String>[];
+    final seen = <(int, String)>{};
+    for (final change in changes) {
+      final goal = change.learningGoalId.trim();
+      final ratingId = change.ratingId;
+      if (change.pupilId <= 0) {
+        wrong.add('${change.pupilId} is not a pupil ID');
+      } else if (goal.isEmpty) {
+        wrong.add('the learning goal of pupil ${change.pupilId} is blank');
+      } else if (ratingId != null && ratingId <= 0) {
+        wrong.add(
+          '$ratingId is not a level ID (for pupil ${change.pupilId}, goal '
+          '$goal; use SkoreProjectRatingChange.clear to clear a rating)',
+        );
+      } else if (!seen.add((change.pupilId, goal))) {
+        wrong.add('pupil ${change.pupilId} has two changes of goal $goal');
+      }
+    }
+    if (wrong.isNotEmpty) _refuse(operation, wrong.join('; '));
+
+    // The gradebook, the period and the user's rights in it.
+    final (:userId, workyear: _, gradebook: book) = await _checkListed(
+      operation,
+      gradebook,
+    );
+    final scope = _scope(book, userId);
+    final sheet = _parseInit(
+      book,
+      await _rpc(
+        'init',
+        [
+          ['${book.courseId}'],
+          ['${book.gradebookId}'],
+          scope.teacher,
+          _pathIds(book),
+          1, // pageObj: the projects
+          scope.restriction,
+        ],
+        scope: scope,
+        workyearId: book.workyearId,
+      ),
+    );
+    final gradebookId = book.gradebookId;
+    final period = sheet.periods.where((p) => p.id == periodId).firstOrNull;
+    if (period == null) {
+      _refuse(
+        operation,
+        'project period $periodId is not one of gradebook $gradebookId (it '
+        'has ${sheet.periods.isEmpty ? 'none' : sheet.periods.map((p) => '${p.name} (${p.id})').join(', ')})',
+      );
+    }
+    if (!period.isOpen) {
+      _refuse(
+        operation,
+        'project period ${period.name} ($periodId) of gradebook $gradebookId '
+        'is closed',
+      );
+    }
+    final contextMap = _checkProjectContext(
+      book,
+      periodId,
+      await _readContext(book, periodId, userId),
+    );
+    if (SkoreRpc.tryId(contextMap['writable']) != 1 ||
+        SkoreRpc.tryId(contextMap['coordinator']) == 1) {
+      _refuse(
+        operation,
+        'Skore shows gradebook $gradebookId read-only to you in project '
+        'period ${period.name} ($periodId) '
+        '(${SkoreRpc.tryId(contextMap['coordinator']) == 1 ? 'coordinator mode' : 'writable ${contextMap['writable']}'})',
+      );
+    }
+    final context = jsonEncode(contextMap);
+
+    // The project as Skore lists it now, and its template.
+    final listedTemplate = project.json['template'];
+    if (listedTemplate is! Map) {
+      _refuse(operation, 'project ${project.id} has no template to read it by');
+    }
+    final templateJson = jsonEncode(listedTemplate);
+    final current = parseProjects(
+      await _projectJson('getProjectList', {
+        'context': context,
+        'template': templateJson,
+      }, 'the projects of template ${project.templateId}'),
+      periodId: periodId,
+      templateId: project.templateId,
+    ).where((p) => p.id == project.id).firstOrNull;
+    final inPeriod =
+        'project period ${period.name} ($periodId) of gradebook $gradebookId';
+    if (current == null) {
+      _refuse(
+        operation,
+        'Skore no longer lists project ${project.id} in $inPeriod',
+      );
+    }
+    final where = 'project ${current.id} ("${current.title}") in $inPeriod';
+    final owners = current.json['owners'];
+    if (owners is! List ||
+        !owners.any(
+          (o) =>
+              o is Map &&
+              SkoreRpc.tryId(o['classId']) == book.classId &&
+              SkoreRpc.tryId(o['courseId']) == book.courseId,
+        )) {
+      _refuse(
+        operation,
+        '$where is not one of class ${book.classId} and course '
+        '${book.courseId} (its owners: ${SkoreRpc.jsonPreview(owners)})',
+      );
+    }
+    if ((current.isPublic || current.publicAt != null) && !allowPublished) {
+      final scheduled = !current.isPublic;
+      _refuse(
+        operation,
+        '$where is ${scheduled ? 'scheduled to be published (publicDateTime ${current.publicAt!.toIso8601String()})' : 'published'}: '
+        'its pupils see its ratings ${scheduled ? 'from then on' : 'at once'}. '
+        'Pass allowPublished: true to write in it anyway',
+        error: (message) =>
+            SmartschoolSkoreProjectPublishedError(message, project: current),
+      );
+    }
+    final template = _projectTemplate(current.json['template']);
+    final config = await _projectJson('getGradebookConfig', {
+      'context': context,
+      'template': jsonEncode(current.json['template']),
+    }, 'the settings of template ${template.id}');
+    final rights = config is Map ? config['rights'] : null;
+    if (rights is! Map || rights['readonly'] != false) {
+      _refuse(
+        operation,
+        'Skore shows the project sheet of template ${template.id} read-only '
+        'to you in $inPeriod (rights ${SkoreRpc.jsonPreview(rights)})',
+      );
+    }
+    final goals = {
+      for (final g in parseLearningGoals(
+        await _projectJson('getCategoriesList', {
+          'context': context,
+          'template': jsonEncode(current.json['template']),
+        }, 'the learning goals of template ${template.id}'),
+      ))
+        g.id: g,
+    };
+
+    // The cells as Skore has them now.
+    final rows = await _projectJson('getCategoryGradesByProject', {
+      'context': context,
+      'project': jsonEncode(current.json),
+    }, 'the ratings of project ${current.id}');
+    parseProjectRatings(rows, projectId: current.id, classId: book.classId);
+    final cells = <(int, String), Map<dynamic, dynamic>>{};
+    for (final row in rows as List) {
+      final r = row as Map;
+      final pupil = r['pupil'] as Map;
+      if (SkoreRpc.tryId(pupil['classId']) != book.classId) continue;
+      final pupilId = SkoreRpc.id(pupil['userId'], 'a pupil');
+      cells[(pupilId, _text(r['categoryId']))] = r;
+    }
+
+    // The pupils as the project sheet has them (its pupil tree): a new cell
+    // goes out with the pupil as the tree gives it, as the web client sends
+    // it.
+    final pupils = _classPupils(
+      await _projectJson('getPupilTree', {
+        'context': context,
+      }, 'the pupils of $inPeriod'),
+      book.classId,
+    );
+
+    final scale = template.scale;
+    final sent = <Map<String, Object?>>[];
+    for (final change in changes) {
+      final pupilId = change.pupilId;
+      final goalId = change.learningGoalId.trim();
+      final ratingId = change.ratingId;
+      final goal = goals[goalId];
+      final cell = cells[(pupilId, goalId)];
+      final info = change.info?.trim();
+      if (ratingId != null &&
+          (!template.isRatingAllowed || scale?.levelOf(ratingId) == null)) {
+        wrong.add(
+          template.isRatingAllowed && scale != null
+              ? 'level $ratingId is not one of the scale of template '
+                    '${template.id} (it has ${scale.levels.map((l) => '${l.id} ${l.description}').join(', ')})'
+              : 'template ${template.id} takes no ratings',
+        );
+      } else if (goal == null) {
+        wrong.add(
+          'learning goal $goalId is not one of template ${template.id}',
+        );
+      } else if (goal.isCourse || goal.isTitle || !goal.isEnabled) {
+        wrong.add(
+          'learning goal $goalId (${goal.number.isEmpty ? goal.description : goal.number}) '
+          'is ${goal.isCourse
+              ? 'the course\'s root'
+              : goal.isTitle
+              ? 'a heading'
+              : 'not enabled in the template'}',
+        );
+      } else if (!pupils.containsKey(pupilId)) {
+        wrong.add(
+          'pupil $pupilId is not one of class ${book.classId} in the project '
+          'sheet\'s pupils',
+        );
+      } else if (SkoreRpc.tryId(pupils[pupilId]!['enabled']) != 1) {
+        wrong.add('pupil $pupilId is not enabled in the project sheet');
+      } else if (!_takesCourse(pupils[pupilId]!, book.courseId)) {
+        wrong.add(
+          'pupil $pupilId does not take course ${book.courseId} (the project '
+          'sheet\'s enabledCourses: '
+          '${SkoreRpc.jsonPreview(pupils[pupilId]!['enabledCourses'])})',
+        );
+      } else if (cell == null && ratingId == null) {
+        if (info == null || info.isEmpty) {
+          wrong.add('pupil $pupilId has no rating of goal $goalId to clear');
+        } else {
+          wrong.add(
+            'pupil $pupilId has no cell of goal $goalId to put the info on '
+            'without a level',
+          );
+        }
+      } else {
+        sent.add(
+          cell != null
+              ? {
+                  for (final e in cell.entries) '${e.key}': e.value,
+                  'ratingId': ratingId ?? -1,
+                  'info': info ?? cell['info'],
+                }
+              : {
+                  'options': <Object?>[],
+                  'projectId': current.id,
+                  'categoryId': goalId,
+                  'grade': null,
+                  'ratingId': ratingId,
+                  'info': info,
+                  'id': null,
+                  'pupil': pupils[pupilId],
+                },
+        );
+      }
+    }
+    if (wrong.isNotEmpty) _refuse(operation, 'in $where, ${wrong.join('; ')}');
+
+    // The saves, at most projectRatingChunk cells each.
+    final failures = <int, String>{}; // by index in changes
+    Exception? cause;
+    var handled = false;
+    for (var start = 0; start < sent.length; start += projectRatingChunk) {
+      final end = start + projectRatingChunk < sent.length
+          ? start + projectRatingChunk
+          : sent.length;
+      final chunk = sent.sublist(start, end);
+      final hasNew = chunk.any((c) => c['id'] == null);
+      try {
+        final answer = await _projectJson(
+          'saveCategoryGrades',
+          {'context': context, 'grades': jsonEncode(chunk)},
+          'the ratings of project ${current.id}',
+          retryAfterLogin: !hasNew,
+        );
+        handled = true;
+        if (answer is! List) {
+          for (var i = start; i < end; i++) {
+            failures[i] =
+                'Skore answered ${SkoreRpc.jsonPreview(answer)} instead of '
+                'the cells saved';
+          }
+        }
+      } on SmartschoolAuthenticationError catch (e) {
+        if (!handled) rethrow;
+        cause ??= e;
+        for (var i = start; i < end; i++) {
+          failures[i] = 'Smartschool did not accept the session ($e)';
+        }
+        for (var i = end; i < sent.length; i++) {
+          failures[i] =
+              'not sent, as Smartschool did not accept the session for an '
+              'earlier save';
+        }
+        break;
+      } on Exception catch (e) {
+        handled = true;
+        cause ??= e;
+        for (var i = start; i < end; i++) {
+          failures[i] = 'no usable answer came in ($e)';
+        }
+      }
+    }
+
+    // The check: the ratings read again, once.
+    List<SkoreProjectRating>? after;
+    Exception? readFailure;
+    try {
+      after = parseProjectRatings(
+        await _projectJson('getCategoryGradesByProject', {
+          'context': context,
+          'project': jsonEncode(current.json),
+        }, 'the ratings of project ${current.id}'),
+        projectId: current.id,
+        classId: book.classId,
+      );
+    } on Exception catch (e) {
+      readFailure = e;
+    }
+    final confirmed = <SkoreProjectRatingChange, SkoreProjectRating>{};
+    final unconfirmed = <SkoreProjectRatingChange, String>{};
+    for (var i = 0; i < changes.length; i++) {
+      final change = changes[i];
+      final goalId = change.learningGoalId.trim();
+      final cell = sent[i];
+      final expectedInfo = _infoOf(cell['info']);
+      final row = after
+          ?.where(
+            (r) => r.pupilId == change.pupilId && r.learningGoalId == goalId,
+          )
+          .firstOrNull;
+      final shows = readFailure != null
+          ? 'reading the ratings again to check it failed ($readFailure)'
+          : row == null
+          ? 'reading the ratings again shows no cell for it'
+          : 'reading the ratings again shows '
+                '${row.ratingId == null ? 'no level' : 'level ${row.ratingId}'} '
+                'and ${row.info == null ? 'no info' : 'info of ${row.info!.length} characters'}';
+      final failure = failures[i];
+      if (failure != null) {
+        unconfirmed[change] = '$failure; $shows';
+      } else if (row != null &&
+          row.ratingId == change.ratingId &&
+          _infoOf(row.info) == expectedInfo) {
+        confirmed[change] = row;
+      } else {
+        unconfirmed[change] = shows;
+      }
+    }
+    if (unconfirmed.isEmpty) return [for (final c in changes) confirmed[c]!];
+
+    final count = changes.length;
+    final what = count == 1 ? 'the rating' : '$count ratings';
+    final which = confirmed.isNotEmpty
+        ? '${unconfirmed.length} of them'
+        : count == 1
+        ? 'it'
+        : 'any of them';
+    final reasons = [
+      for (final MapEntry(key: change, value: why) in unconfirmed.entries)
+        'pupil ${change.pupilId}, goal ${change.learningGoalId} '
+            '(${change.clears ? 'clear' : 'level ${change.ratingId}'}): $why',
+    ];
+    throw SmartschoolSkoreProjectRatingSaveUnconfirmedError(
+      '$operation: $what in $where went out, but Skore does not confirm '
+      '$which: ${reasons.join('; ')}. '
+      '${confirmed.isEmpty ? '' : 'The others are confirmed. '}'
+      'Saving a rating again is harmless: read the ratings again '
+      '(getProjectRatings) and save the ones that differ.',
+      cause: cause ?? readFailure,
+      gradebookId: gradebookId,
+      projectId: current.id,
+      changes: List.unmodifiable(changes),
+      confirmed: confirmed,
+      unconfirmed: unconfirmed,
+    );
+  }
+
+  /// A cell's `info` as compared after a save: trimmed, `null` for none or
+  /// blank (Skore reads `""` back as `null`; seen live).
+  static String? _infoOf(Object? info) {
+    final text = info == null ? '' : '$info'.trim();
+    return text.isEmpty ? null : text;
+  }
+
+  /// The pupils of class [classId] in the answer of the project sheet's
+  /// `getPupilTree` ([tree]), by their Smartschool user ID (`userId`), each
+  /// as Skore gave it.
+  ///
+  /// The answer is a list of groups, `[{id, name, icon, classes: [{id,
+  /// name, icon, pupils: [...]}]}]`, each pupil with the keys of the
+  /// `pupil` of a rating (`id`, `userId`, `classId`, `enabled`,
+  /// `enabledCourses`, ...; seen live). Anything not in this shape is
+  /// refused with a [SmartschoolSkoreError]; a class the tree does not hold
+  /// has no pupils.
+  static Map<int, Map<dynamic, dynamic>> _classPupils(
+    dynamic tree,
+    int classId,
+  ) {
+    const what = "the project sheet's pupil tree";
+    final pupils = <int, Map<dynamic, dynamic>>{};
+    for (final group in _list(tree, what)) {
+      final g = _object(group, 'a group of $what');
+      for (final skoreClass in _list(g['classes'], 'the classes of $what')) {
+        final c = _object(skoreClass, 'a class of $what');
+        final id = SkoreRpc.id(c['id'], 'a class of $what');
+        final list = _list(c['pupils'], 'the pupils of class $id in $what');
+        if (id != classId) continue;
+        for (final pupil in list) {
+          final p = _object(pupil, 'a pupil of class $id in $what');
+          pupils[SkoreRpc.id(p['userId'], 'a pupil of class $id in $what')] = p;
+        }
+      }
+    }
+    return pupils;
+  }
+
+  /// Whether the pupil tree's [pupil] takes course [courseId]: its
+  /// `enabledCourses` holds it, or is empty (the cells of a rating have it
+  /// empty; seen live).
+  static bool _takesCourse(Map<dynamic, dynamic> pupil, int courseId) {
+    final courses = pupil['enabledCourses'];
+    if (courses is! List || courses.isEmpty) return true;
+    return courses.any((c) => SkoreRpc.tryId(c) == courseId);
+  }
+
   static void _checkProjectPeriod(int periodId) {
     if (periodId <= 0) {
       throw ArgumentError.value(
@@ -1122,7 +1680,23 @@ class SkoreGradebookService {
   /// [SmartschoolSkoreError].
   Future<String> _projectContext(SkoreGradebook gradebook, int periodId) async {
     final userId = (await _client.getCurrentUser()).id;
-    final context = await _readContext(gradebook, periodId, userId);
+    return jsonEncode(
+      _checkProjectContext(
+        gradebook,
+        periodId,
+        await _readContext(gradebook, periodId, userId),
+      ),
+    );
+  }
+
+  /// [context], the `result` of `getGradebookContext` for project period
+  /// [periodId] of [gradebook], when it names the gradebook, its class and
+  /// the period; anything else is refused with a [SmartschoolSkoreError].
+  static Map<dynamic, dynamic> _checkProjectContext(
+    SkoreGradebook gradebook,
+    int periodId,
+    dynamic context,
+  ) {
     final owners = context is Map ? context['owners'] : null;
     final period = context is Map ? context['periodId'] : null;
     if (context is! Map ||
@@ -1136,7 +1710,7 @@ class SkoreGradebookService {
         '${SkoreRpc.jsonPreview(context)}.',
       );
     }
-    return jsonEncode(context);
+    return context;
   }
 
   /// The decoded JSON answer of Skore's project sheet to [method] with the
@@ -1148,12 +1722,14 @@ class SkoreGradebookService {
   Future<dynamic> _projectJson(
     String method,
     Map<String, String> fields,
-    String what,
-  ) async {
+    String what, {
+    bool retryAfterLogin = true,
+  }) async {
     checkProjectMethod(method);
     final response = await _client.postFormResponse(
       '$_projectPath/$method',
       fields,
+      retryAfterLogin: retryAfterLogin,
     );
     if (SkoreRpc.sentToStartPage(response)) {
       throw SmartschoolSkoreAccessDeniedError(

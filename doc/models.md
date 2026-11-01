@@ -199,6 +199,9 @@ Returned by `SkoreGradebookService.getLearningGoals()` (#204). A row of the proj
 ### `SkoreProject` / `SkoreProjectRating`
 Returned by `SkoreGradebookService.getProjects()` and `getProjectRatings()` (#204). A project: `id`, `periodId`, `templateId`, `title`, `shortName` (or `null`), `date` (the day), `max`, `evalType` (`ratings`), `isPublic`, `publicAt` (UTC, or `null`), `inCount`, `componentId`, `groupContext`, `json` (as Skore gave it). A rating: `id`, `projectId`, `learningGoalId`, `pupilId` (the Smartschool user ID), `skorePupilId` (Skore's own), `classId`, `ratingId` (a level of the template's scale, or `null`), `grade` and `info` (`null` when none).
 
+### `SkoreProjectRatingChange`
+Passed to `SkoreGradebookService.saveProjectRating()` and `saveProjectRatings()` (#204): `pupilId`, `learningGoalId`, `ratingId` (a level of the template's scale; `null` with `SkoreProjectRatingChange.clear`, which clears the rating), `info` (`""` clears it, `null` keeps it), `clears`.
+
 ### `SkoreFeedback`
 Returned by `SkoreGradebookService.getFeedback()` (and, as a `SkoreSavedFeedback`, by `saveFeedback()`). `id` (a UUID), `text`, `pupilId`, `teacherId` / `teacherName`, `createdAt` / `changedAt` (UTC), `attachments` (`SkoreFeedbackAttachment`: `id`, `name`, `size`, and Skore's `json`) and `canEdit`.
 

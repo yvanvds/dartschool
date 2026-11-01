@@ -362,3 +362,59 @@ class SkoreProjectRating {
       'SkoreProjectRating(projectId: $projectId, learningGoalId: '
       '$learningGoalId, pupilId: $pupilId, ratingId: $ratingId)';
 }
+
+/// A change of a pupil's rating of a learning goal in a project, for
+/// `SkoreGradebookService.saveProjectRatings` (#204): the pupil, the goal,
+/// the level to give (or none, to clear the rating) and, optionally, the
+/// cell's `info` (the feedback text).
+class SkoreProjectRatingChange {
+  /// The pupil's Smartschool user ID ([SkoreProjectRating.pupilId]).
+  final int pupilId;
+
+  /// The learning goal ([SkoreLearningGoal.id]).
+  final String learningGoalId;
+
+  /// The level to give (a [SkoreProjectRatingLevel.id] of the template's
+  /// scale), or `null` to clear the rating. Skore keeps the cell, without a
+  /// rating.
+  final int? ratingId;
+
+  /// The cell's `info` (the feedback text) to save: `""` clears it, `null`
+  /// keeps the one the cell has.
+  final String? info;
+
+  /// Gives the pupil level [ratingId] for the learning goal.
+  const SkoreProjectRatingChange({
+    required this.pupilId,
+    required this.learningGoalId,
+    required int this.ratingId,
+    this.info,
+  });
+
+  /// Clears the pupil's rating of the learning goal.
+  const SkoreProjectRatingChange.clear({
+    required this.pupilId,
+    required this.learningGoalId,
+    this.info,
+  }) : ratingId = null;
+
+  /// Whether the change clears the rating.
+  bool get clears => ratingId == null;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SkoreProjectRatingChange &&
+      other.pupilId == pupilId &&
+      other.learningGoalId == learningGoalId &&
+      other.ratingId == ratingId &&
+      other.info == info;
+
+  @override
+  int get hashCode => Object.hash(pupilId, learningGoalId, ratingId, info);
+
+  @override
+  String toString() =>
+      'SkoreProjectRatingChange(pupilId: $pupilId, learningGoalId: '
+      '$learningGoalId, ${clears ? 'clear' : 'ratingId: $ratingId'}'
+      '${info == null ? '' : ', info: ${info!.length} characters'})';
+}

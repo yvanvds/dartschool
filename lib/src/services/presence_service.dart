@@ -138,7 +138,10 @@ class PresenceService {
   /// Cached after the first call; pass [forceRefresh] to re-fetch. An
   /// answer it cannot read is a [SmartschoolPresenceUnreadableAnswerError]
   /// (#137), also a JSON answer with an HTTP status outside `200`–`299`
-  /// (#143); nothing is cached from it.
+  /// (#143); nothing is cached from it. A pupil account gets such an error
+  /// too: the module answers it with HTTP `200` and an empty body (seen
+  /// live, #168), which the library does not take for a refusal, since it
+  /// does not say why.
   Future<PresenceConfig> getConfig({bool forceRefresh = false}) async {
     if (_config != null && !forceRefresh) return _config!;
     final response = await _client.postFormResponse(_getConfigPath, const {});

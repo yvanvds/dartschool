@@ -502,6 +502,69 @@ class _Smartschool implements HttpClientAdapter {
         line,
   ];
 
+  /// The school label of the fake labels module (#228).
+  static const schoolLabel = {
+    'identifier': '49_aaaa0001-0000-4000-8000-000000000000',
+    'id': '49_aaaa0001-0000-4000-8000-000000000000',
+    'type': 'platform',
+    'text': 'TRIMESTER 1',
+    'color': 'yellow',
+    'isVisible': true,
+    'platformId': 49,
+    'locations': ['lesson_content'],
+  };
+
+  /// The own labels of the fake labels module, by ID (#228).
+  final Map<String, Map<String, Object?>> labels = {};
+
+  /// A label as the Lesfiches module keeps it on a lesfiche: as the labels
+  /// module has it.
+  Map<String, Object?> _storedLabel(Object? sent) {
+    final id = (sent! as Map)['id'];
+    return id == schoolLabel['id'] ? schoolLabel : labels[id]!;
+  }
+
+  /// Each labels module write that reached it, as `METHOD <path>` (#228).
+  List<String> get labelWrites => [
+    for (final line in log)
+      if (line.startsWith('POST /labels/') ||
+          line.startsWith('DELETE /labels/'))
+        line,
+  ];
+
+  /// Answers a request to the labels module (#228) as it does: the school
+  /// labels, the own labels, a create with the new label, a removal with
+  /// `204`.
+  ResponseBody _labelsAnswer(RequestOptions options) {
+    const json = 'application/json';
+    final path = options.uri.path.substring('/labels/api/v1/'.length);
+    if (path == 'locations/lesson_content/platform-labels') {
+      return _answer(jsonEncode([schoolLabel]), contentType: json);
+    }
+    if (options.method == 'DELETE' && path.startsWith('user/')) {
+      labels.remove(path.substring('user/'.length));
+      return _answer('', status: 204);
+    }
+    if (path == 'user-labels/49_777_0') {
+      if (options.method == 'GET') {
+        return _answer(jsonEncode(labels.values.toList()), contentType: json);
+      }
+      final body = options.data as Map;
+      final id = '49_777_0_${_uuid()}';
+      labels[id] = {
+        'identifier': id,
+        'type': 'user',
+        'text': body['text'],
+        'color': body['color'],
+        'isVisible': body['isVisible'],
+        'id': id,
+        'userId': '49_777_0',
+      };
+      return _answer(jsonEncode(labels[id]), contentType: json, status: 201);
+    }
+    return _answer('<html></html>');
+  }
+
   /// A new UUID of the fake.
   String _uuid() =>
       'dddd${(++_made).toString().padLeft(4, '0')}-0000-4000-8000-000000000000';
@@ -536,7 +599,9 @@ class _Smartschool implements HttpClientAdapter {
               'type': goal['type'],
             },
         ],
-        'labels': [],
+        'labels': [
+          for (final label in body['labels'] as List) _storedLabel(label),
+        ],
         'weblinks': [
           for (final link in body['weblinks'] as List)
             {...link as Map, 'id': _uuid()},
@@ -602,6 +667,10 @@ class _Smartschool implements HttpClientAdapter {
         fiche['name'] = body['newName'];
       case 'mark-as-visible' || 'mark-as-invisible':
         fiche['isVisible'] = action == 'mark-as-visible';
+      case 'change-labels':
+        fiche['labels'] = [
+          for (final label in body['newLabels'] as List) _storedLabel(label),
+        ];
       case 'change-goals':
         fiche['goals'] = [
           for (final goal in body['newGoals'] as List)
@@ -760,6 +829,8 @@ class _Smartschool implements HttpClientAdapter {
       case (_, final path, _, _)
           when path.startsWith('/lesson-content/api/v1/'):
         return _lessonContentAnswer(options);
+      case (_, final path, _, _) when path.startsWith('/labels/api/v1/'):
+        return _labelsAnswer(options);
       case (false, '/', 'index', 'main'):
         final folder = archiveFolder;
         return _answer(
@@ -2268,6 +2339,122 @@ void main() {
     });
   });
 
+  group('labels (#228)', () {
+    const api = '/lesson-content/api/v1';
+
+    test('lets out a create with labels, a change of the labels of a '
+        'lesfiche the run made, the create of an own label named after the '
+        'run, and its removal', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+
+      final school = (await lessonContent.getLabels()).single;
+      final made = await lessonContent.createLesson(
+        name: _lessonName('les'),
+        labels: [school],
+      );
+      final own = await lessonContent.createUserLabel(_lessonName(''));
+      final changed = await lessonContent.changeLabels(made, [school, own]);
+      final cleared = await lessonContent.changeLabels(made, const []);
+      expect(guard.labelsMade, {own.id});
+      await client.deleteResponse('/labels/api/v1/user/${own.id}');
+
+      expect(made.labels.map((l) => l.id), [school.id]);
+      expect(changed.labels.map((l) => l.id), [school.id, own.id]);
+      expect(cleared.labels, isEmpty);
+      expect(server.lessonContentWrites, [
+        'POST $api/lessons/',
+        'POST $api/lessons/${made.id}/change-labels',
+        'POST $api/lessons/${made.id}/change-labels',
+      ]);
+      expect(server.labelWrites, [
+        'POST /labels/api/v1/user-labels/49_777_0',
+        'DELETE /labels/api/v1/user/${own.id}',
+      ]);
+      expect(server.labels, isEmpty);
+      expect(guard.labelCreates, 1);
+      expect(guard.labelsMade, isEmpty);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('refuses labels not as the library sends them, a label without the '
+        'run\'s tag, a second label, another labels write, and the removal '
+        'of a label the run did not make or removed already', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+
+      final made = await lessonContent.createLesson(name: _lessonName('les'));
+      final fiche = '$api/lessons/${made.id}';
+      const id = '49_777_0_aaaa0002-0000-4000-8000-000000000000';
+      for (final label in <Object?>[
+        'x',
+        {'identifier': id, 'id': id, 'type': 'user'},
+        {'identifier': id, 'id': id, 'type': 'user', 'userId': '49_778_0'},
+        {'identifier': 'x', 'id': id, 'type': 'user', 'userId': '49_777_0'},
+        {'identifier': id, 'id': id, 'type': 'group', 'userId': '49_777_0'},
+        {
+          'identifier': id,
+          'id': id,
+          'type': 'user',
+          'userId': '49_777_0',
+          'extra': 1,
+        },
+      ]) {
+        await refused(
+          dio.post<String>(
+            '$fiche/change-labels',
+            data: {
+              'newLabels': [label],
+            },
+          ),
+        );
+      }
+      await refused(lessonContent.createUserLabel('Toets'));
+      final own = await lessonContent.createUserLabel(_lessonName(''));
+      await refused(lessonContent.createUserLabel(_lessonName('2')));
+      await refused(
+        dio.post<String>(
+          '/labels/api/v1/user-labels/49_777_0',
+          data: {'text': _lessonName(''), 'color': 'steel', 'x': 1},
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '/labels/api/v1/user-labels/${own.id}/change-text',
+          data: {'newText': _lessonName('x')},
+        ),
+      );
+      await refused(client.deleteResponse('/labels/api/v1/user/$id'));
+      await refused(
+        client.deleteResponse('/labels/api/v1/user-labels/${own.id}'),
+      );
+      await client.deleteResponse('/labels/api/v1/user/${own.id}');
+      await refused(client.deleteResponse('/labels/api/v1/user/${own.id}'));
+
+      expect(server.lessonContentWrites, ['POST $api/lessons/']);
+      expect(server.labelWrites, [
+        'POST /labels/api/v1/user-labels/49_777_0',
+        'DELETE /labels/api/v1/user/${own.id}',
+      ]);
+      expect(_violations(guard), [
+        for (var i = 0; i < 6; i++)
+          contains('a label that is not as the library sends one'),
+        contains('whose text does not start with'),
+        contains('1 labels already'),
+        contains('more than its text, colour and visibility'),
+        contains('no labels POST but the create of an own label'),
+        contains('which this run did not make'),
+        contains('no labels DELETE but of an own label'),
+        contains('which this run did not make (or removed already)'),
+      ]);
+    });
+  });
+
   group('refuses before it reaches Smartschool (Lesfiches, #129)', () {
     const api = '/lesson-content/api/v1';
 
@@ -2511,7 +2698,8 @@ void main() {
           'the lessons',
         ),
         contains('to a name that does not start with'),
-        for (var i = 0; i < 3; i++) contains('to a lesfiche: only renames'),
+        contains('its labels are not a list'),
+        for (var i = 0; i < 2; i++) contains('to a lesfiche: only renames'),
         contains('its goals are not a list'),
         for (var i = 0; i < 6; i++)
           contains('a goal that is not as the library sends one'),

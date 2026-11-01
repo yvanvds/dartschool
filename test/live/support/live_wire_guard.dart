@@ -123,15 +123,19 @@
 //   those only for lesfiches the run made itself, in the own library (a
 //   create makes a lesfiche there; nothing else does): the create of a
 //   lesson or an assignment named after the run ("[dartschool test] <run
-//   tag> ..."), without labels, partner weblinks, deeplinks, mini-DB items
-//   or a lesfiche it continues, with learning goals only as the library
+//   tag> ..."), without partner weblinks, deeplinks, mini-DB items or a
+//   lesfiche it continues, with labels only as the library sends them
+//   (#228: each `{identifier, id, type, text, color, isVisible}` with the
+//   `userId` of an own label, the label's ID, or the `platformId` of a
+//   school one), with learning goals only as the library
 //   sends them (#223: `{id, goalId, leerplanId, type}`, `goalId` the same as
 //   the UUID `id`), with at most one upload directory
 //   handed out through the guard and not yet taken; on a lesfiche the run
 //   made (as Smartschool answered its create) and did not move to the
 //   trash: a rename to a name after the run, a change of its icon, info,
 //   courses or visibility, a change of its goals (`change-goals`, #223,
-//   goals as in the create), the add or change of a weblink, the take of an
+//   goals as in the create) or of its labels (`change-labels`, #228, labels
+//   as in the create), the add or change of a weblink, the take of an
 //   upload directory as above, the change of an attachment's visibility,
 //   and the DELETE of one of its weblinks or attachments (the only DELETE
 //   the live suite sends); the duplicate (`lesson-content/duplicate/bulk`,
@@ -141,8 +145,15 @@
 //   kind, until Smartschool answered one for them; and the restore
 //   (`lesson-content/restore/bulk`, #227) of lesfiches the run made and
 //   moved to the trash, after which they may be written again. Never a
-//   label, a share, a merge or conversion, a year plan, and never
+//   share, a merge or conversion, a year plan, and never
 //   `lesson-content/delete/bulk` (deleted for good);
+// - any request to the labels module (`/labels/`) that writes, but the
+//   create of an own label (`POST /labels/api/v1/user-labels/{userId}`,
+//   #228, `{text, color, isVisible}` only) whose text starts with the run's
+//   tag ("[dartschool test] <run tag>"), at most maxLabelCreates of them,
+//   and the DELETE (`/labels/api/v1/user/{id}`) of a label the run made, as
+//   Smartschool answered its create, once. Never a change of a label, nor
+//   the create or removal of any other;
 // - an upload (`/Upload/Upload/Index`) into another directory than the one
 //   of a compose form loaded through the guard or one handed out through it
 //   and not yet taken into Intradesk or a lesfiche, or of a file the live
@@ -217,6 +228,8 @@ class LiveWireGuard extends Interceptor {
     // assignment (#129); of lesson_content_reuse_live_test.dart, a lesson
     // and its copy (#227).
     this.maxLessonContentCreates = 2,
+    // The own label of lesson_content_labels_live_test.dart (#228).
+    this.maxLabelCreates = 1,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -235,6 +248,9 @@ class LiveWireGuard extends Interceptor {
 
   /// How many lesfiches the run may make at most (#129).
   final int maxLessonContentCreates;
+
+  /// How many own labels the run may make at most (#228).
+  final int maxLabelCreates;
 
   final void Function(LiveGuardViolation violation) _onViolation;
 
@@ -260,6 +276,9 @@ class LiveWireGuard extends Interceptor {
 
   /// How many lesfiche creates it let out (#129).
   int lessonContentCreates = 0;
+
+  /// How many creates of an own label it let out (#228).
+  int labelCreates = 0;
 
   /// Whether a step of a login (the password, the 2FA code, the account
   /// verification answer) came through the guard in this run (#134). The
@@ -370,6 +389,13 @@ class LiveWireGuard extends Interceptor {
   /// creates (#129).
   Set<String> get lessonContentMade =>
       Set.unmodifiable(_lessonContentMade.keys);
+
+  /// The own labels the run made, as Smartschool answered their creates, and
+  /// did not remove yet (#228): their IDs.
+  final Set<String> _labelsMade = {};
+
+  /// The IDs of the own labels the run made and did not remove (#228).
+  Set<String> get labelsMade => Set.unmodifiable(_labelsMade);
 
   /// Smartschool's answers to the moves to the trash out of a box, by
   /// (message ID, box), as they came in.
@@ -551,6 +577,9 @@ class LiveWireGuard extends Interceptor {
     if (method == 'DELETE' && uri.path.startsWith(_lessonContentApi)) {
       return _lessonContentDeleteRefusal(uri.path);
     }
+    if (method == 'DELETE' && uri.path.startsWith(_labelsApi)) {
+      return _labelDeleteRefusal(uri.path);
+    }
     if (method != 'POST') return 'the live suite sends no $method';
 
     final path = uri.path;
@@ -573,6 +602,7 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/lesson-content/')) {
       return _lessonContentRefusal(path, options.data);
     }
+    if (path.startsWith('/labels/')) return _labelRefusal(path, options.data);
     if (path.startsWith('/LVS/') ||
         (path == '/' && uri.queryParameters['module'] == 'LVS')) {
       return _lvsRefusal(uri, options.data);
@@ -1057,14 +1087,58 @@ class LiveWireGuard extends Interceptor {
     if (what == 'change-goals') {
       return _lessonContentGoalsRefusal(data['newGoals']);
     }
+    if (what == 'change-labels') {
+      return _lessonContentLabelsRefusal(data['newLabels']);
+    }
     if (_lessonContentEdits.contains(what) ||
         _lessonContentSubEdit.hasMatch(what)) {
       return null;
     }
     return 'the live suite sends no "$what" to a lesfiche: only renames, '
-        'changes of the icon, info, courses, goals and visibility, and its '
-        'weblinks and attachments; never labels, deeplinks or partner '
+        'changes of the icon, info, courses, goals, labels and visibility, '
+        'and its weblinks and attachments; never deeplinks or partner '
         'weblinks (#129)';
+  }
+
+  /// The keys of a label as the library sends it (#228).
+  static const _labelKeys = {
+    'identifier',
+    'id',
+    'type',
+    'text',
+    'color',
+    'isVisible',
+    'userId',
+    'platformId',
+  };
+
+  /// Why the labels [labels] of a create or a `change-labels` may not go
+  /// out, or `null` (#228): only a list of labels as the library sends them
+  /// (LessonContentLabel.toWire): no other keys, `identifier` the same as a
+  /// non-empty `id`, the kind `platform` or `user`, and an own label with
+  /// the `userId` its ID starts with.
+  static String? _lessonContentLabelsRefusal(Object? labels) {
+    if (labels is! List) return 'its labels are not a list';
+    for (final label in labels) {
+      final id = label is Map ? label['id'] : null;
+      final type = label is Map ? label['type'] : null;
+      final userId = label is Map ? label['userId'] : null;
+      if (label is! Map ||
+          !label.keys.every(_labelKeys.contains) ||
+          id is! String ||
+          id.isEmpty ||
+          label['identifier'] != id ||
+          (type != 'platform' && type != 'user') ||
+          (type == 'user' &&
+              (userId is! String ||
+                  userId.isEmpty ||
+                  !id.startsWith('${userId}_')))) {
+        return 'it sends a label that is not as the library sends one '
+            '({identifier, id, type, text, color, isVisible} with the userId '
+            'of an own label): $label';
+      }
+    }
+    return null;
   }
 
   /// A goal's ID (#223): a UUID.
@@ -1108,12 +1182,9 @@ class LiveWireGuard extends Interceptor {
     }
     final goals = _lessonContentGoalsRefusal(data['goals']);
     if (goals != null) return 'it makes a lesfiche with goals: $goals';
-    for (final key in const [
-      'labels',
-      'partnerWeblinks',
-      'deeplinks',
-      'miniDBItems',
-    ]) {
+    final labels = _lessonContentLabelsRefusal(data['labels']);
+    if (labels != null) return 'it makes a lesfiche with labels: $labels';
+    for (final key in const ['partnerWeblinks', 'deeplinks', 'miniDBItems']) {
       final value = data[key];
       if (value is! List || value.isNotEmpty) {
         return 'it makes a lesfiche with $key: the live suite sends none';
@@ -1257,6 +1328,77 @@ class LiveWireGuard extends Interceptor {
           'attachment of a lesfiche it made (#129)';
     }
     return _madeLessonContentRefusal(action.group(1)!, action.group(2)!);
+  }
+
+  /// Smartschool's labels module (#228).
+  static const _labelsApi = '/labels/api/v1/';
+
+  /// The create of an own label: `user-labels/{userId}`.
+  static final _labelCreate = RegExp(r'^user-labels/(\d+_\d+_\d+)$');
+
+  /// Why the labels POST to [path] with the JSON body [data] may not go
+  /// out, or `null` (#228): only the create of an own label named after the
+  /// run, `{text, color, isVisible}`, up to [maxLabelCreates].
+  String? _labelRefusal(String path, Object? data) {
+    final rest = path.startsWith(_labelsApi)
+        ? path.substring(_labelsApi.length)
+        : null;
+    if (rest == null || !_labelCreate.hasMatch(rest)) {
+      return 'the live suite sends no labels POST but the create of an own '
+          'label named after the run (#228)';
+    }
+    if (data is! Map) return 'it carries no JSON body';
+    if (!data.keys.every(const {'text', 'color', 'isVisible'}.contains)) {
+      return 'it makes a label with more than its text, colour and '
+          'visibility';
+    }
+    final text = data['text'];
+    if (text is! String || !text.startsWith(_lessonContentTagged)) {
+      return 'it makes a label whose text does not start with '
+          '"$_lessonContentTagged"';
+    }
+    if (labelCreates >= maxLabelCreates) {
+      return 'the run made $maxLabelCreates labels already, its maximum';
+    }
+    labelCreates++;
+    return null;
+  }
+
+  /// Why the labels DELETE of [path] may not go out, or `null` (#228): only
+  /// the removal (`user/{id}`) of an own label the run made, once.
+  String? _labelDeleteRefusal(String path) {
+    final rest = path.substring(_labelsApi.length);
+    if (!rest.startsWith('user/')) {
+      return 'the live suite sends no labels DELETE but of an own label it '
+          'made (#228)';
+    }
+    final id = rest.substring('user/'.length);
+    if (!_labelsMade.contains(id)) {
+      return 'it removes label $id, which this run did not make (or removed '
+          'already)';
+    }
+    return null;
+  }
+
+  /// Keeps what Smartschool's answer [body], with [status], to the labels
+  /// request [options] says (#228): the own label a create made (the `id`
+  /// of its answer), and the one a DELETE removed (a `2xx`).
+  void _recordLabelAnswer(RequestOptions options, int status, String body) {
+    if (status < 200 || status >= 300) return;
+    final method = options.method.toUpperCase();
+    final rest = options.uri.path.substring(_labelsApi.length);
+    if (method == 'DELETE' && rest.startsWith('user/')) {
+      _labelsMade.remove(rest.substring('user/'.length));
+      return;
+    }
+    if (method != 'POST' || !_labelCreate.hasMatch(rest)) return;
+    try {
+      final answer = jsonDecode(body);
+      final id = answer is Map ? answer['id'] : null;
+      if (id is String && id.isNotEmpty) _labelsMade.add(id);
+    } on FormatException {
+      return;
+    }
   }
 
   /// The XML commands that only read.
@@ -1630,6 +1772,10 @@ class LiveWireGuard extends Interceptor {
     }
     if (uri.path.startsWith(_lessonContentApi)) {
       _recordLessonContentAnswer(options, response.statusCode ?? 0, body);
+      return null;
+    }
+    if (uri.path.startsWith(_labelsApi)) {
+      _recordLabelAnswer(options, response.statusCode ?? 0, body);
       return null;
     }
     if (uri.path != '/' || query['module'] != 'Messages') return null;

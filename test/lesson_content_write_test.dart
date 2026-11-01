@@ -44,8 +44,20 @@
 // and for a lesfiche in the trash `{"lessonContent": [], "exceptions":
 // {<the lesfiche>: {status 403, ...}}}`.
 //
+// The labels (#228, seen live on 2026-11-01, made-up IDs and texts here):
+// the labels module's `GET locations/lesson_content/platform-labels` and
+// `GET user-labels/{userId}` answer arrays of labels (`{identifier, id,
+// type, text, color, isVisible}` with `platformId` or `userId`); `POST
+// .../change-labels` with `{"newLabels": [...]}` answers `200` with the whole
+// lesfiche, its labels replaced by the list (an own label without its
+// `userId`: a bare `500`); `POST user-labels/{userId}` with `{"text",
+// "color", "isVisible"}` answers `201` with the new label, a text that is
+// taken `400` with `languageCode` `name.already.used`, a text of 51
+// characters a bare `400`.
+//
 // The live test of the same writes is
-// test/live/lesson_content_write_live_test.dart.
+// test/live/lesson_content_write_live_test.dart (the labels:
+// test/live/lesson_content_labels_live_test.dart).
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -114,6 +126,57 @@ const _trash = 'POST $_api/lesson-content/trash/bulk';
 const _trashed = 'GET $_api/lesson-content/trashed';
 const _restore = 'POST $_api/lesson-content/restore/bulk';
 const _duplicate = 'POST $_api/lesson-content/duplicate/bulk';
+
+/// The fake user of the tests, as Smartschool's whole user ID.
+const _me = '4069_1001_0';
+
+/// The course list, which the client reads once for the platform ID when it
+/// reads the session user (`authenticatedUser`), as the labels need it.
+final _session = {
+  _courses: [_json(_courseList)],
+};
+
+/// The labels module (#228).
+const _labels = '/labels/api/v1';
+const _schoolLabels = 'GET $_labels/locations/lesson_content/platform-labels';
+const _ownLabels = 'GET $_labels/user-labels/$_me';
+const _createLabel = 'POST $_labels/user-labels/$_me';
+
+/// A school label and two own labels (#228, made-up IDs).
+const _schoolLabelId = '4069_a0000000-0000-4000-8000-000000000061';
+const _ownLabelId = '${_me}_a0000000-0000-4000-8000-000000000071';
+const _newLabelId = '${_me}_a0000000-0000-4000-8000-000000000072';
+
+/// A school label as the labels module gives it (trimmed capture, #228).
+Map<String, Object?> _schoolLabelJson({
+  String id = _schoolLabelId,
+  String text = 'TRIMESTER 1',
+}) => {
+  'identifier': id,
+  'type': 'platform',
+  'text': text,
+  'color': 'yellow',
+  'isVisible': true,
+  'id': id,
+  'platformId': 4069,
+  'ssId': 4069,
+  'locations': ['navigator', 'lesson_content', 'planner'],
+};
+
+/// An own label as the labels module gives it (trimmed capture, #228).
+Map<String, Object?> _ownLabelJson({
+  String id = _ownLabelId,
+  String text = 'Herhaling',
+  String color = 'steel',
+}) => {
+  'identifier': id,
+  'type': 'user',
+  'text': text,
+  'color': color,
+  'isVisible': true,
+  'id': id,
+  'userId': _me,
+};
 
 /// The copies of the lesson and the assignment lesfiche (#227).
 const _lessonCopyId = 'b0000000-0000-4000-8000-000000000021';
@@ -202,6 +265,7 @@ Map<String, Object?> _detailJson({
   List<Map<String, Object?>>? weblinks,
   List<Map<String, Object?>>? attachments,
   List<LearningGoalRef> goals = const [],
+  List<Map<String, Object?>> labels = const [],
 }) => {
   'id': id,
   'platformId': 4069,
@@ -226,7 +290,7 @@ Map<String, Object?> _detailJson({
   'courses': [
     for (final course in courses) {'platformId': 4069, 'id': course},
   ],
-  'labels': [],
+  'labels': labels,
   'uploadFolder': null,
   'weblinks': weblinks ?? [_weblinkJson()],
   'partnerWeblinks': [],
@@ -284,8 +348,16 @@ const _loginPage = '''
 </body></html>
 ''';
 
+/// Smartschool's home page, trimmed to the script that holds the
+/// authenticated user (`vars.authenticatedUser`), whose whole ID names the
+/// owner of the own labels (#228).
 const _homePage =
-    '<!DOCTYPE html><html><head><title>Smartschool</title></head><body>'
+    '<!DOCTYPE html><html><head><title>Smartschool</title></head><body>\n'
+    '<script>\n'
+    'APP.extend(APP.vars || {}, JSON.parse(\'{"vars":{"authenticatedUser":'
+    '{"id":"$_me","name":{"startingWithFirstName":"Jan Janssens",'
+    '"startingWithLastName":"Janssens Jan"}}}}\'));\n'
+    '</script>\n'
     '</body></html>';
 
 typedef _Answer = ({int status, String body, String contentType});
@@ -2507,6 +2579,430 @@ void main() {
   // Trash
   // ---------------------------------------------------------------------------
 
+  group('labels (#228)', () {
+    const changeLabels = 'POST $_lesson/change-labels';
+    final school = LessonContentLabel.fromJson(_schoolLabelJson());
+    final own = LessonContentLabel.fromJson(_ownLabelJson());
+
+    /// The labels as the library sends them.
+    final schoolWire = {
+      'identifier': _schoolLabelId,
+      'id': _schoolLabelId,
+      'type': 'platform',
+      'text': 'TRIMESTER 1',
+      'color': 'yellow',
+      'isVisible': true,
+      'platformId': 4069,
+    };
+    final ownWire = {
+      'identifier': _ownLabelId,
+      'id': _ownLabelId,
+      'type': 'user',
+      'text': 'Herhaling',
+      'color': 'steel',
+      'isVisible': true,
+      'userId': _me,
+    };
+
+    test('getLabels reads the school labels for the Lesfiches module, then '
+        'the own labels of the session user', () async {
+      final (server, lessonContent) = await serve({
+        ..._session,
+        _schoolLabels: [
+          _json([_schoolLabelJson()]),
+        ],
+        _ownLabels: [
+          _json([
+            _ownLabelJson(),
+            _ownLabelJson(id: _newLabelId, text: 'Toets', color: 'aqua'),
+          ]),
+        ],
+      });
+
+      final labels = await lessonContent.getLabels();
+
+      expect(server.calls, [_schoolLabels, _courses, _ownLabels]);
+      expect(
+        [for (final l in labels) (l.id, l.text, l.color, l.type)],
+        [
+          (_schoolLabelId, 'TRIMESTER 1', 'yellow', 'platform'),
+          (_ownLabelId, 'Herhaling', 'steel', 'user'),
+          (_newLabelId, 'Toets', 'aqua', 'user'),
+        ],
+      );
+      expect(labels.first.isSchoolLabel, isTrue);
+      expect(labels.first.platformId, 4069);
+      expect(labels.first.ownerId, isNull);
+      expect(labels[1].isUserLabel, isTrue);
+      expect(labels[1].userId, _me);
+      expect(labels[1].ownerId, _me);
+    });
+
+    test('getLabels: an HTML page, a list in an unknown shape and a 500 are '
+        'a SmartschoolLessonContentError', () async {
+      final (_, lessonContent) = await serve({
+        ..._session,
+        _schoolLabels: [
+          (status: 200, body: '<!DOCTYPE html><html></html>', contentType: ''),
+          _json('{"labels":[]}'),
+          _json([_schoolLabelJson()]),
+        ],
+        _ownLabels: [_serverError],
+      });
+
+      for (final what in ['HTML page', 'instead of a list', 'HTTP 500']) {
+        await expectLater(
+          lessonContent.getLabels(),
+          throwsA(
+            isA<SmartschoolLessonContentError>().having(
+              (e) => e.message,
+              'message',
+              allOf(contains('The labels module'), contains(what)),
+            ),
+          ),
+        );
+      }
+    });
+
+    test('changeLabels sends each label once as newLabels, with the userId of '
+        'an own label (from its ID when it has none) and the platformId of a '
+        'school label, and returns the lesfiche with its labels', () async {
+      final (server, lessonContent) = await serve({
+        changeLabels: [
+          _json(_detailJson(labels: [_schoolLabelJson(), _ownLabelJson()])),
+        ],
+      });
+      // An own label without its userId: the owner is in its ID.
+      const bare = LessonContentLabel(
+        id: _ownLabelId,
+        text: 'Herhaling',
+        color: 'steel',
+        type: 'user',
+      );
+
+      final detail = await lessonContent.changeLabels(_lessonItem, [
+        school,
+        bare,
+        own,
+      ]);
+
+      expect(server.calls, [changeLabels]);
+      expect(server.bodiesOf(changeLabels), [
+        {
+          'newLabels': [schoolWire, ownWire],
+        },
+      ]);
+      expect(detail.labels.map((l) => l.id), [_schoolLabelId, _ownLabelId]);
+    });
+
+    test('changeLabels with no labels sends an empty list (takes them all '
+        'off); an assignment goes to assignments/{id}', () async {
+      final (server, lessonContent) = await serve({
+        changeLabels: [_json(_detailJson())],
+        'POST $_api/assignments/$_assignmentId/change-labels': [
+          _json(
+            _detailJson(
+              id: _assignmentId,
+              type: 'assignments',
+              labels: [_ownLabelJson()],
+            ),
+          ),
+        ],
+      });
+
+      final cleared = await lessonContent.changeLabels(_lessonItem, const []);
+      final assignment = await lessonContent.changeLabels(_assignmentItem, [
+        own,
+      ]);
+
+      expect(server.bodiesOf(changeLabels), [
+        {'newLabels': <Object>[]},
+      ]);
+      expect(cleared.labels, isEmpty);
+      expect(assignment.labels.single.id, _ownLabelId);
+    });
+
+    test('an answer without the labels sent: unconfirmed; a 404: not found; '
+        'a bare 500 (seen live for a label sent without its userId): '
+        'unconfirmed; retried once after logging in again', () async {
+      final (server, lessonContent) = await serve({
+        changeLabels: [
+          _json(_detailJson(labels: [_schoolLabelJson()])),
+          _notFound,
+          _serverError,
+          _unauthorized,
+          _json(_detailJson(labels: [_ownLabelJson()])),
+        ],
+      });
+
+      await expectLater(
+        lessonContent.changeLabels(_lessonItem, [school, own]),
+        throwsA(
+          _unconfirmed(
+            allOf(
+              contains('the labels "TRIMESTER 1" ($_schoolLabelId)'),
+              contains('sending the change again is harmless'),
+            ),
+            statusCode: 200,
+            lessonContentId: _lessonId,
+          ),
+        ),
+      );
+      await expectLater(
+        lessonContent.changeLabels(_lessonItem, [own]),
+        throwsA(isA<SmartschoolLessonContentNotFoundError>()),
+      );
+      await expectLater(
+        lessonContent.changeLabels(_lessonItem, [own]),
+        throwsA(_unconfirmed(contains('HTTP 500'), statusCode: 500)),
+      );
+      final detail = await lessonContent.changeLabels(_lessonItem, [own]);
+
+      expect(detail.labels.single.id, _ownLabelId);
+      expect(server.log, contains('POST /login'));
+      expect(server.writes, List.filled(5, changeLabels));
+    });
+
+    test('refuses bad labels before any request, in changeLabels and in the '
+        'creates', () async {
+      final (server, lessonContent) = await serve({});
+      final bad = <(String, LessonContentLabel)>[
+        ('without an ID', const LessonContentLabel(id: ' ', text: 'x')),
+        (
+          'of the kind ""',
+          const LessonContentLabel(id: _ownLabelId, text: 'x'),
+        ),
+        (
+          'without its owner',
+          const LessonContentLabel(id: 'nounderscore', text: 'x', type: 'user'),
+        ),
+      ];
+      for (final (why, label) in bad) {
+        final matcher = throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains(why),
+          ),
+        );
+        await expectLater(
+          lessonContent.changeLabels(_lessonItem, [label]),
+          matcher,
+          reason: why,
+        );
+        await expectLater(
+          lessonContent.createLesson(name: 'Lussen', labels: [label]),
+          matcher,
+          reason: why,
+        );
+        await expectLater(
+          lessonContent.createAssignment(
+            name: 'Taak',
+            assignmentTypeId: _typeId,
+            labels: [label],
+          ),
+          matcher,
+          reason: why,
+        );
+      }
+      expect(server.log, isEmpty);
+    });
+
+    test('createLesson sends the labels in the create, and checks them in '
+        'the read-back', () async {
+      final (server, lessonContent) = await serve({
+        _createLesson: [
+          _json('{"id":"$_lessonId"}', status: 201),
+          _json('{"id":"$_lessonId"}', status: 201),
+        ],
+        _getLesson: [
+          _json(
+            _detailJson(
+              courses: [],
+              weblinks: [],
+              attachments: [],
+              labels: [_schoolLabelJson(), _ownLabelJson()],
+            ),
+          ),
+          _json(
+            _detailJson(
+              courses: [],
+              weblinks: [],
+              attachments: [],
+              labels: [_schoolLabelJson()],
+            ),
+          ),
+        ],
+      });
+
+      final detail = await lessonContent.createLesson(
+        name: 'Lussen',
+        labels: [school, own],
+      );
+      final body = server.bodiesOf(_createLesson).first! as Map;
+      expect(body['labels'], [schoolWire, ownWire]);
+      expect(detail.labels.map((l) => l.id), [_schoolLabelId, _ownLabelId]);
+
+      await expectLater(
+        lessonContent.createLesson(name: 'Lussen', labels: [school, own]),
+        throwsA(
+          _unconfirmed(
+            contains('the labels sent (it has "TRIMESTER 1"'),
+            lessonContentId: _lessonId,
+          ),
+        ),
+      );
+    });
+
+    test('createUserLabel sends the text and the colour once, and returns the '
+        'new label', () async {
+      final (server, lessonContent) = await serve({
+        ..._session,
+        _createLabel: [
+          _json(
+            _ownLabelJson(id: _newLabelId, text: 'Toets', color: 'aqua'),
+            status: 201,
+          ),
+        ],
+      });
+
+      final label = await lessonContent.createUserLabel(
+        '  Toets ',
+        color: 'aqua',
+      );
+
+      expect(server.calls, [_courses, _createLabel]);
+      expect(server.bodiesOf(_createLabel), [
+        {'text': 'Toets', 'color': 'aqua', 'isVisible': true},
+      ]);
+      expect(
+        (label.id, label.text, label.color, label.isUserLabel, label.ownerId),
+        (_newLabelId, 'Toets', 'aqua', true, _me),
+      );
+    });
+
+    test('createUserLabel: the default colour is steel; a text that is taken '
+        'and a bare 400 (a text too long, seen live): refused; a 500, an '
+        'answer that is not the label: unconfirmed', () async {
+      final (server, lessonContent) = await serve({
+        ..._session,
+        _createLabel: [
+          _json(_ownLabelJson(id: _newLabelId, text: 'Toets'), status: 201),
+          (
+            status: 400,
+            body: jsonEncode({
+              'status': 400,
+              'title': 'Bad Request',
+              'detail': '',
+              'type': '',
+              'languageCode': 'name.already.used',
+              'parameters': {'text': 'Toets'},
+            }),
+            contentType: 'application/problem+json',
+          ),
+          (
+            status: 400,
+            body: jsonEncode({
+              'status': 400,
+              'title': 'Bad Request',
+              'detail': '',
+              'type': '',
+              'languageCode': '',
+            }),
+            contentType: 'application/problem+json',
+          ),
+          _serverError,
+          _json(_ownLabelJson(id: _newLabelId, text: 'Andere'), status: 201),
+          _json(_schoolLabelJson(text: 'Toets'), status: 201),
+        ],
+      });
+
+      expect((await lessonContent.createUserLabel('Toets')).text, 'Toets');
+      expect(server.bodiesOf(_createLabel).single, {
+        'text': 'Toets',
+        'color': 'steel',
+        'isVisible': true,
+      });
+
+      Matcher refused(Object? violations, String why) =>
+          isA<SmartschoolLessonContentWriteRefusedError>()
+              .having((e) => e.statusCode, 'statusCode', 400)
+              .having((e) => e.violations, 'violations', violations)
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(contains(why), contains('Nothing was made')),
+              );
+      await expectLater(
+        lessonContent.createUserLabel('Toets'),
+        throwsA(refused(['name.already.used'], 'has that text')),
+      );
+      await expectLater(
+        lessonContent.createUserLabel('Toets'),
+        throwsA(refused(isEmpty, 'without saying why')),
+      );
+      await expectLater(
+        lessonContent.createUserLabel('Toets'),
+        throwsA(_unconfirmed(contains('HTTP 500'), statusCode: 500)),
+      );
+      await expectLater(
+        lessonContent.createUserLabel('Toets'),
+        throwsA(_unconfirmed(contains('another label'))),
+      );
+      await expectLater(
+        lessonContent.createUserLabel('Toets'),
+        throwsA(_unconfirmed(contains('another label'))),
+      );
+    });
+
+    test('createUserLabel is not retried after logging in again, and a '
+        'dropped connection is unconfirmed', () async {
+      final (server, lessonContent) = await serve({
+        ..._session,
+        _createLabel: [_unauthorized],
+      });
+      await expectLater(
+        lessonContent.createUserLabel('Toets'),
+        throwsA(_notRetried),
+      );
+      expect(server.writes, [_createLabel]);
+
+      final (_, dropping) = await serve(
+        _session,
+        failures: {_createLabel: _dropped},
+      );
+      await expectLater(
+        dropping.createUserLabel('Toets'),
+        throwsA(_unconfirmed(contains('getLabels'))),
+      );
+    });
+
+    test('createUserLabel refuses an empty text, one longer than 50 '
+        'characters and a colour the web client does not offer, before any '
+        'request', () async {
+      final (server, lessonContent) = await serve({});
+      for (final (text, color, why) in [
+        ('  ', 'steel', 'is empty'),
+        ('x' * 51, 'steel', 'longer than 50'),
+        ('Toets', 'teal', 'not one of the colours'),
+      ]) {
+        await expectLater(
+          lessonContent.createUserLabel(text, color: color),
+          throwsA(
+            isA<ArgumentError>().having(
+              (e) => e.message,
+              'message',
+              contains(why),
+            ),
+          ),
+        );
+      }
+      expect(LessonContentService.maxLabelLength, 50);
+      expect(LessonContentService.labelColors, contains('steel'));
+      expect(server.log, isEmpty);
+    });
+  });
+
   group('trash', () {
     test('sends each lesfiche once with its kind and platform, answered '
         'with no exceptions', () async {
@@ -3083,6 +3579,54 @@ void main() {
           {'id': _lessonCopyId, 'type': 'lessons', 'platformId': 4069},
         ],
       },
+    ]);
+  });
+
+  test('the flow of #228: make an own label, find it among the labels, put '
+      'it and a school label on a lesfiche, and take them off again', () async {
+    final (server, lessonContent) = await serve({
+      ..._session,
+      _createLabel: [
+        _json(_ownLabelJson(id: _newLabelId, text: 'Toets'), status: 201),
+      ],
+      _schoolLabels: [
+        _json([_schoolLabelJson()]),
+      ],
+      _ownLabels: [
+        _json([_ownLabelJson(), _ownLabelJson(id: _newLabelId, text: 'Toets')]),
+      ],
+      'POST $_lesson/change-labels': [
+        _json(
+          _detailJson(
+            labels: [
+              _schoolLabelJson(),
+              _ownLabelJson(id: _newLabelId, text: 'Toets'),
+            ],
+          ),
+        ),
+        _json(_detailJson()),
+      ],
+    });
+
+    final made = await lessonContent.createUserLabel('Toets');
+    final labels = await lessonContent.getLabels();
+    final trimester = labels.firstWhere((l) => l.isSchoolLabel);
+    final toets = labels.singleWhere((l) => l.id == made.id);
+    final labelled = await lessonContent.changeLabels(_lessonItem, [
+      trimester,
+      toets,
+    ]);
+    final cleared = await lessonContent.changeLabels(labelled, const []);
+
+    expect(labelled.labels.map((l) => l.text), ['TRIMESTER 1', 'Toets']);
+    expect(cleared.labels, isEmpty);
+    expect(server.calls, [
+      _courses,
+      _createLabel,
+      _schoolLabels,
+      _ownLabels,
+      'POST $_lesson/change-labels',
+      'POST $_lesson/change-labels',
     ]);
   });
 }

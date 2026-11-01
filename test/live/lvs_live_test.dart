@@ -941,11 +941,21 @@ void main() {
           expect(sections.every((s) => s.type.isNotEmpty), isTrue);
           expect(sections.every((s) => s.name.isNotEmpty), isTrue);
           expect(file.teachers.every((t) => t.id > 0), isTrue);
-          expect(file.todayStatus.halfDays.length, lessThanOrEqualTo(2));
+          // Today's status can hold more than one entry per half-day, and
+          // entries of another partOfDay (#168): print how many of each,
+          // the shape the capture on a school day is for. A partOfDay is
+          // printed only as a lower-case word (an enum-like value, as
+          // tool/lvs_har_shapes.dart shows it), never as it comes.
+          final parts = <String, int>{};
+          for (final halfDay in file.todayStatus.halfDays) {
+            final part = RegExp(r'^[a-z]{1,12}$').hasMatch(halfDay.partOfDay)
+                ? halfDay.partOfDay
+                : '<other>';
+            parts[part] = (parts[part] ?? 0) + 1;
+          }
+          print("today's status by partOfDay: $parts");
           expect(
-            file.todayStatus.halfDays.every(
-              (h) => h.partOfDay == 'am' || h.partOfDay == 'pm',
-            ),
+            file.todayStatus.halfDays.every((h) => h.partOfDay.isNotEmpty),
             isTrue,
           );
 

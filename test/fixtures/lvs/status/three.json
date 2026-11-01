@@ -1,0 +1,26 @@
+[
+  {
+    "partOfDay": "am",
+    "code": {
+      "name": "Testcode",
+      "code": "TA",
+      "color": "green"
+    }
+  },
+  {
+    "partOfDay": "none",
+    "code": {
+      "name": "Testcode",
+      "code": "TC",
+      "color": "yellow"
+    }
+  },
+  {
+    "partOfDay": "am",
+    "code": {
+      "name": "Testcode",
+      "code": "TB",
+      "color": "red"
+    }
+  }
+]

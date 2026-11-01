@@ -304,9 +304,16 @@ class LvsSection {
 
 /// A pupil's attendance today, as the LVS shows it on a pupil's file
 /// (`getStatusInfo`): the code of each half-day that has one.
+///
+/// The answer can hold more entries than two: three were seen on a school
+/// day (#168). [am] and [pm] read it as the web client does: of the entries
+/// with that `partOfDay`, the last one counts, and an entry of another
+/// `partOfDay` is neither.
 class LvsTodayStatus {
-  /// The half-days that have a code, in the LVS's order. Empty when today
-  /// has none (no school, or nothing registered yet).
+  /// Every entry of the answer, in the LVS's order. Empty when today has
+  /// none (no school, or nothing registered yet). Mostly one per half-day,
+  /// but a half-day can come more than once, and an entry can have another
+  /// `partOfDay` than `am` or `pm` ([LvsHalfDayStatus.partOfDay]).
   final List<LvsHalfDayStatus> halfDays;
 
   const LvsTodayStatus(this.halfDays);
@@ -314,14 +321,16 @@ class LvsTodayStatus {
   /// No half-day with a code.
   static const none = LvsTodayStatus([]);
 
-  /// The morning's code (`partOfDay` `am`), or `null`.
+  /// The morning's code: the last entry with `partOfDay` `am`, or `null`.
   LvsHalfDayStatus? get am => _of('am');
 
-  /// The afternoon's code (`partOfDay` `pm`), or `null`.
+  /// The afternoon's code: the last entry with `partOfDay` `pm`, or `null`.
   LvsHalfDayStatus? get pm => _of('pm');
 
+  /// The last entry of [partOfDay]: the web client walks the whole list and
+  /// shows the last one it finds of each half-day.
   LvsHalfDayStatus? _of(String partOfDay) {
-    for (final halfDay in halfDays) {
+    for (final halfDay in halfDays.reversed) {
       if (halfDay.partOfDay == partOfDay) return halfDay;
     }
     return null;
@@ -335,7 +344,9 @@ class LvsTodayStatus {
 /// The attendance code of a half-day of today, on a pupil's file in the LVS.
 class LvsHalfDayStatus {
   /// The half-day as the LVS names it (`partOfDay`): `am` (morning) or `pm`
-  /// (afternoon); another value is kept as it comes.
+  /// (afternoon); another value is kept as it comes. The web client shows
+  /// only `am` and `pm`. Presence also has rows per lesson, with `partOfDay`
+  /// `none`; whether this answer holds those is not known yet (#168).
   final String partOfDay;
 
   /// The short code (`code.code`), as the school's Presence codes name it.

@@ -36,6 +36,7 @@ export 'src/models/user_models.dart';
 export 'src/models/presence_models.dart';
 export 'src/models/skore_models.dart';
 export 'src/models/skore_gradebook_models.dart';
+export 'src/models/skore_project_models.dart';
 export 'src/models/planner_models.dart';
 export 'src/models/lesson_content_models.dart';
 export 'src/models/lvs_models.dart';

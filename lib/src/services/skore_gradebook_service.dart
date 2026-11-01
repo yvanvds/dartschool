@@ -6,6 +6,7 @@ import 'package:html/parser.dart' as html_parser;
 
 import '../exceptions.dart';
 import '../models/skore_gradebook_models.dart';
+import '../models/skore_project_models.dart';
 import '../models/skore_models.dart' show SkoreAccessArea;
 import '../session.dart';
 import 'skore_rpc.dart';
@@ -829,10 +830,17 @@ class SkoreGradebookService {
   /// [SmartschoolSkoreCourseNotOnReportError] (#204), a
   /// [SmartschoolSkoreError]: Skore answers it with HTTP 404 and "Course not
   /// found in source!" (seen live, also for an open report Skore lists for
-  /// the gradebook, whose course is on it through a project), which its web
-  /// client shows as an error too. For the same course and report, an
+  /// the gradebook of a project course), which its web client shows as an
+  /// error too. For the same course and report, an
   /// account without Skore's admin rights gets HTTP 404 and "No courses
-  /// found in results!" (seen live, #168): the same error. Not an empty
+  /// found in results!" (seen live, #168): the same error. A project
+  /// course ("Projecten", #204) is not on the gradebook's reports, by
+  /// design: Skore's web client does not list a project gradebook under
+  /// "Rapporten", and `getReportsResults` answers it with HTTP 404 ("Course
+  /// not found in source!" or "No courses found in results!", also with a
+  /// rated project; seen live), this error. There is no report comment to
+  /// write from the gradebook for a project course; its ratings are read
+  /// with [getProjectRatings]. Not an empty
   /// report, which would read as one without pupils: an app that walks the
   /// reports of its gradebooks catches it and goes on. Only a `404` whose
   /// `message` holds "Course not found" or "No courses found" (in any case)
@@ -906,6 +914,517 @@ class SkoreGradebookService {
     return lower.contains('course not found') ||
         lower.contains('no courses found');
   }
+
+  // ---------------------------------------------------------------------------
+  // Project gradebooks (#204)
+  // ---------------------------------------------------------------------------
+
+  /// The API of Skore's project sheet: the page `/Gradebook` that Skore's
+  /// gradebook opens for a project period ("Projecten"), with the answer of
+  /// `getGradebookContext` for the period as its `context`.
+  static const _projectPath = '/Gradebook/Main';
+
+  /// The only methods of Skore's project sheet (`/Gradebook/Main/<method>`)
+  /// that the service calls, all reads; it refuses every other one before
+  /// sending ([checkProjectMethod], #204).
+  ///
+  /// The same API also saves ratings (`saveCategoryGrades`), makes, changes
+  /// and removes projects (`saveProject`, `removeProject`) and saves the
+  /// sheet's filters (`saveTemplateFilter`, `registerUsedFilter`, ...):
+  /// none of them is here. The library does not write in a project.
+  static const Set<String> projectMethods = {
+    'getTemplateList',
+    'getCategoriesList',
+    'getProjectList',
+    'getCategoryGradesByProject',
+  };
+
+  /// Throws an [ArgumentError] when [method] is not one of
+  /// [projectMethods]: the check every request of the service to Skore's
+  /// project sheet goes through before it is sent. Exposed for testing.
+  static void checkProjectMethod(String method) {
+    if (!projectMethods.contains(method)) {
+      throw ArgumentError.value(
+        method,
+        'method',
+        'not one SkoreGradebookService calls on $_projectPath (only '
+            '${projectMethods.join(', ')}); nothing was sent',
+      );
+    }
+  }
+
+  /// Returns the project periods of [gradebook] (Skore's "Projecten", #204),
+  /// in Skore's order: the periods its projects are made in, not its
+  /// evaluation periods ([SkoreGradebookSheet.periods]). Empty for a
+  /// gradebook without project periods.
+  ///
+  /// One request, for the gradebook's school year: Skore's `init` with the
+  /// page `1` (the projects), as the web client opens the gradebook's tab
+  /// "Projecten"; it answers the project periods as `periods`, with the
+  /// pupils and report periods as for the evaluations. Seen live
+  /// (2026-11-01): a project gradebook ("Digitale vaardigheden") had one
+  /// project period and no evaluation periods. Its `categoryMode` was `1`,
+  /// with which Skore's web client opens the project sheet that
+  /// [getProjectTemplates], [getLearningGoals], [getProjects] and
+  /// [getProjectRatings] read; a project period in another mode opens the
+  /// older project sheet, which the library does not read (not seen).
+  ///
+  /// An answer about another gradebook or class is refused with a
+  /// [SmartschoolSkoreError]. A gradebook shared with the user (#191) is
+  /// read in the name of its teacher, as the web client opens it (not seen
+  /// live for projects).
+  Future<List<SkoreGradebookPeriod>> getProjectPeriods(
+    SkoreGradebook gradebook,
+  ) async {
+    final scope = _scope(gradebook, (await _client.getCurrentUser()).id);
+    final init = await _rpc(
+      'init',
+      [
+        ['${gradebook.courseId}'],
+        ['${gradebook.gradebookId}'],
+        scope.teacher,
+        _pathIds(gradebook),
+        1, // pageObj: the projects
+        scope.restriction,
+      ],
+      scope: scope,
+      workyearId: gradebook.workyearId,
+    );
+    return _parseInit(gradebook, init).periods;
+  }
+
+  /// Returns the templates of project period [periodId] of [gradebook] (a
+  /// [SkoreGradebookPeriod.id] of [getProjectPeriods]), each with its
+  /// rating scale (#204): what Skore's project sheet offers in its selector
+  /// "Project:". A template holds the period's learning goals
+  /// ([getLearningGoals]) and projects ([getProjects]).
+  ///
+  /// Two requests, as Skore's web client opens a project period:
+  /// `getGradebookContext` for the period (whose answer is the `context` of
+  /// the project sheet) and the sheet's `getTemplateList {context}`. Seen
+  /// live (2026-11-01): one template, with ratings on a scale of two levels
+  /// and without grades.
+  ///
+  /// A [periodId] that is not positive is refused with an [ArgumentError]
+  /// before anything is sent; a context about another gradebook, class or
+  /// period with a [SmartschoolSkoreError].
+  Future<List<SkoreProjectTemplate>> getProjectTemplates(
+    SkoreGradebook gradebook,
+    int periodId,
+  ) async {
+    _checkProjectPeriod(periodId);
+    final context = await _projectContext(gradebook, periodId);
+    return parseProjectTemplates(
+      await _projectJson('getTemplateList', {
+        'context': context,
+      }, 'the templates of project period $periodId'),
+    );
+  }
+
+  /// Returns the learning goals of [template] (one of
+  /// [getProjectTemplates]) in project period [periodId] of [gradebook]: the
+  /// rows of Skore's project sheet ("rubrieken"), in Skore's order, from the
+  /// course's root down (#204). [SkoreLearningGoal.parentId] gives the tree.
+  ///
+  /// Two requests: `getGradebookContext` for the period and the sheet's
+  /// `getCategoriesList {context, template}`, the template as Skore gave it
+  /// ([SkoreProjectTemplate.json]), as the web client sends them.
+  ///
+  /// A [periodId] that is not positive is refused with an [ArgumentError]
+  /// before anything is sent.
+  Future<List<SkoreLearningGoal>> getLearningGoals(
+    SkoreGradebook gradebook,
+    int periodId,
+    SkoreProjectTemplate template,
+  ) async {
+    _checkProjectPeriod(periodId);
+    final context = await _projectContext(gradebook, periodId);
+    return parseLearningGoals(
+      await _projectJson('getCategoriesList', {
+        'context': context,
+        'template': jsonEncode(template.json),
+      }, 'the learning goals of template ${template.id}'),
+    );
+  }
+
+  /// Returns the projects of [template] (one of [getProjectTemplates]) in
+  /// project period [periodId] of [gradebook], in Skore's order (#204):
+  /// the columns of ratings made in Skore's project sheet. Empty when none
+  /// was made (seen live).
+  ///
+  /// Two requests: `getGradebookContext` for the period and the sheet's
+  /// `getProjectList {context, template}`, as the web client sends them.
+  ///
+  /// A [periodId] that is not positive is refused with an [ArgumentError]
+  /// before anything is sent; a project of another period or template with
+  /// a [SmartschoolSkoreError].
+  Future<List<SkoreProject>> getProjects(
+    SkoreGradebook gradebook,
+    int periodId,
+    SkoreProjectTemplate template,
+  ) async {
+    _checkProjectPeriod(periodId);
+    final context = await _projectContext(gradebook, periodId);
+    return parseProjects(
+      await _projectJson('getProjectList', {
+        'context': context,
+        'template': jsonEncode(template.json),
+      }, 'the projects of template ${template.id}'),
+      periodId: periodId,
+      templateId: template.id,
+    );
+  }
+
+  /// Returns the ratings of [project] (one of [getProjects]) of the pupils
+  /// of [gradebook]'s class: one per pupil and learning goal that holds
+  /// something, in Skore's order (#204). [SkoreProjectScale.levelOf] of the
+  /// template's scale gives the level of a [SkoreProjectRating.ratingId].
+  ///
+  /// Two requests: `getGradebookContext` for the project's period and the
+  /// sheet's `getCategoryGradesByProject {context, project}`, the project
+  /// as Skore gave it ([SkoreProject.json]), as the web client sends them.
+  /// Seen live (2026-11-01): a project not yet published, with a rating of
+  /// two learning goals for each pupil, and neither grades nor `info`.
+  /// Rows of pupils of other classes (a project of the group of classes,
+  /// not seen) are left out.
+  ///
+  /// A rating of another project is refused with a [SmartschoolSkoreError].
+  Future<List<SkoreProjectRating>> getProjectRatings(
+    SkoreGradebook gradebook,
+    SkoreProject project,
+  ) async {
+    _checkProjectPeriod(project.periodId);
+    final context = await _projectContext(gradebook, project.periodId);
+    return parseProjectRatings(
+      await _projectJson('getCategoryGradesByProject', {
+        'context': context,
+        'project': jsonEncode(project.json),
+      }, 'the ratings of project ${project.id}'),
+      projectId: project.id,
+      classId: gradebook.classId,
+    );
+  }
+
+  static void _checkProjectPeriod(int periodId) {
+    if (periodId <= 0) {
+      throw ArgumentError.value(
+        periodId,
+        'periodId',
+        'not a period ID; nothing was sent',
+      );
+    }
+  }
+
+  /// The `context` of Skore's project sheet for project period [periodId]
+  /// of [gradebook], as its web client hands it to the sheet: the `result`
+  /// of `getGradebookContext` for the period, as JSON. It must name the
+  /// gradebook, its class and the period; anything else is refused with a
+  /// [SmartschoolSkoreError].
+  Future<String> _projectContext(SkoreGradebook gradebook, int periodId) async {
+    final userId = (await _client.getCurrentUser()).id;
+    final context = await _readContext(gradebook, periodId, userId);
+    final owners = context is Map ? context['owners'] : null;
+    final period = context is Map ? context['periodId'] : null;
+    if (context is! Map ||
+        SkoreRpc.tryId(context['classId']) != gradebook.classId ||
+        owners is! List ||
+        !owners.any((o) => SkoreRpc.tryId(o) == gradebook.gradebookId) ||
+        (period != null && SkoreRpc.tryId(period) != periodId)) {
+      throw SmartschoolSkoreError(
+        'Skore answered getGradebookContext for project period $periodId of '
+        'gradebook ${gradebook.gradebookId} (class ${gradebook.classId}) with '
+        '${SkoreRpc.jsonPreview(context)}.',
+      );
+    }
+    return jsonEncode(context);
+  }
+
+  /// The decoded JSON answer of Skore's project sheet to [method] with the
+  /// form [fields], about [what]. Skore's refusal to an account without a
+  /// gradebook (it sends the request on to the start page) is a
+  /// [SmartschoolSkoreAccessDeniedError]; any other status than `200`, or
+  /// an answer that is not JSON, a [SmartschoolSkoreError] that names the
+  /// JSON `message` of the answer, when it has one.
+  Future<dynamic> _projectJson(
+    String method,
+    Map<String, String> fields,
+    String what,
+  ) async {
+    checkProjectMethod(method);
+    final response = await _client.postFormResponse(
+      '$_projectPath/$method',
+      fields,
+    );
+    if (SkoreRpc.sentToStartPage(response)) {
+      throw SmartschoolSkoreAccessDeniedError(
+        "Skore refused the read of $what to the account (it sent the request "
+        "on to Smartschool's start page): it has no gradebook in Skore.",
+        area: SkoreAccessArea.gradebook,
+      );
+    }
+    final status = response.statusCode;
+    if (status != 200) {
+      final message = _message(response.data);
+      throw SmartschoolSkoreError(
+        'Skore answered $what ($method) with HTTP $status'
+        '${SkoreRpc.redirectNote(response)}'
+        '${message == null ? '' : ': $message'}.',
+      );
+    }
+    return SkoreRpc.decodeJson(
+      response.data ?? '',
+      '$what ($method)',
+      page: SkoreRpc.pageOf(response),
+    );
+  }
+
+  /// Parses the answer of `getTemplateList`: a list of templates (see
+  /// [SkoreProjectTemplate]), each with its `scale` (see
+  /// [SkoreProjectScale]). Anything not in this shape is refused with a
+  /// [SmartschoolSkoreError].
+  static List<SkoreProjectTemplate> parseProjectTemplates(dynamic answer) => [
+    for (final t in _list(answer, 'the templates of a project period'))
+      _projectTemplate(t),
+  ];
+
+  static SkoreProjectTemplate _projectTemplate(Object? template) {
+    final t = _object(template, 'a template of a project period');
+    final id = SkoreRpc.id(t['id'], 'a template of a project period');
+    final scale = t['scale'];
+    final creator = t['creator'];
+    return SkoreProjectTemplate(
+      id: id,
+      title: _text(t['title']),
+      description: _text(t['descr']),
+      info: _text(t['info']),
+      templateType: SkoreRpc.tryId(t['templateType']) ?? 0,
+      componentId: SkoreRpc.tryId(t['componentId']) ?? 0,
+      isRatingAllowed: _flag(t['isRatingAllowed']),
+      isGradesAllowed: _flag(t['isGradesAllowed']),
+      isRubricsEnabled: _flag(t['isRubricsEnabled']),
+      isComponentRequired: _flag(t['isComponentRequired']),
+      isComponentForbidden: _flag(t['isComponentForbidden']),
+      creatorId: creator is Map ? SkoreRpc.tryId(creator['id']) : null,
+      scale: scale == null ? null : _projectScale(scale, id),
+      json: {for (final e in t.entries) '${e.key}': e.value},
+    );
+  }
+
+  static SkoreProjectScale _projectScale(Object? scale, int templateId) {
+    final what = 'the scale of template $templateId';
+    final s = _object(scale, what);
+    return SkoreProjectScale(
+      id: SkoreRpc.id(s['id'], what),
+      name: _text(s['name']),
+      description: _text(s['description']),
+      levels: [
+        for (final level in _list(s['ratings'], 'the levels of $what'))
+          _ratingLevel(level, what),
+      ],
+    );
+  }
+
+  static SkoreProjectRatingLevel _ratingLevel(Object? level, String scale) {
+    final what = 'a level of $scale';
+    final l = _object(level, what);
+    return SkoreProjectRatingLevel(
+      id: SkoreRpc.id(l['id'], what),
+      description: _text(l['description']),
+      symbol: _text(l['symbol']),
+      min: SkoreRpc.tryId(l['min']) ?? 0,
+      max: SkoreRpc.tryId(l['max']) ?? 0,
+      scaleValue: SkoreRpc.tryId(l['scaleValue']) ?? 0,
+      color: _text(l['color']),
+      iconName: _text(l['iconName']),
+    );
+  }
+
+  /// Parses the answer of `getCategoriesList`: a list of learning goals
+  /// (see [SkoreLearningGoal]). A goal without its ID or course, or anything
+  /// else not in this shape, is refused with a [SmartschoolSkoreError].
+  static List<SkoreLearningGoal> parseLearningGoals(dynamic answer) => [
+    for (final g in _list(answer, 'the learning goals of a template'))
+      _learningGoal(g),
+  ];
+
+  static SkoreLearningGoal _learningGoal(Object? goal) {
+    final g = _object(goal, 'a learning goal of a template');
+    final id = _text(g['id']);
+    if (id.isEmpty) {
+      throw SmartschoolSkoreError(
+        'Skore gave a learning goal without its ID: '
+        '${SkoreRpc.jsonPreview(goal)}.',
+      );
+    }
+    final parent = _text(g['parentId']);
+    return SkoreLearningGoal(
+      id: id,
+      parentId: parent.isEmpty || parent == '0' ? null : parent,
+      description: _text(g['description']),
+      number: _text(g['number']),
+      level: SkoreRpc.tryId(g['level']) ?? 0,
+      isTitle: _flag(g['isTitle']),
+      isCourse: _flag(g['isCourse']),
+      isEnabled: _flag(g['enabled']),
+      courseId: SkoreRpc.id(g['courseInstanceId'], 'learning goal $id'),
+    );
+  }
+
+  /// Parses the answer of `getProjectList` for the template [templateId] in
+  /// project period [periodId]: a list of projects (see [SkoreProject]). A
+  /// project of another period or template, or anything else not in this
+  /// shape, is refused with a [SmartschoolSkoreError].
+  static List<SkoreProject> parseProjects(
+    dynamic answer, {
+    required int periodId,
+    required int templateId,
+  }) => [
+    for (final p in _list(answer, 'the projects of project period $periodId'))
+      _project(p, periodId, templateId),
+  ];
+
+  static SkoreProject _project(Object? project, int periodId, int templateId) {
+    final p = _object(project, 'a project of project period $periodId');
+    final id = SkoreRpc.id(p['id'], 'a project');
+    final template = p['template'];
+    final projectPeriod = SkoreRpc.tryId(p['periodId']);
+    final projectTemplate = template is Map
+        ? SkoreRpc.tryId(template['id'])
+        : null;
+    if (projectPeriod != periodId || projectTemplate != templateId) {
+      throw SmartschoolSkoreError(
+        'Skore answered the projects of template $templateId in project '
+        'period $periodId with project $id of period $projectPeriod and '
+        'template $projectTemplate.',
+      );
+    }
+    final short = _text(p['short']);
+    final max = p['max'];
+    return SkoreProject(
+      id: id,
+      periodId: periodId,
+      templateId: templateId,
+      title: _text(p['title']),
+      shortName: short.isEmpty ? null : short,
+      date: _projectDay(p['date'], id),
+      max: max is num ? max : num.tryParse('${max ?? ''}'),
+      evalType: _text(p['evalType']),
+      isPublic: _flag(p['isPublic']),
+      publicAt: _projectTime(p['publicDateTime'], id),
+      inCount: _flag(p['inCount']),
+      componentId: SkoreRpc.tryId(p['componentId']) ?? 0,
+      groupContext: _flag(p['groupContext']),
+      json: {for (final e in p.entries) '${e.key}': e.value},
+    );
+  }
+
+  /// The day of project [id] from its `date` (`"2026-10-30T00:00:00+0100"`),
+  /// at midnight local time, or `null` when it is empty; one that does not
+  /// start with a date is refused with a [SmartschoolSkoreError].
+  static DateTime? _projectDay(Object? date, int id) {
+    final text = _text(date);
+    if (text.isEmpty) return null;
+    final day = text.length >= 10
+        ? RegExp(r'^(\d{4})-(\d{2})-(\d{2})').firstMatch(text)
+        : null;
+    if (day == null) {
+      throw SmartschoolSkoreError(
+        'Skore gave project $id the date "$text", which is not a date.',
+      );
+    }
+    return DateTime(int.parse(day[1]!), int.parse(day[2]!), int.parse(day[3]!));
+  }
+
+  /// The publication time of project [id] (its `publicDateTime`) in UTC,
+  /// or `null` when it is empty; one that is not a date and time with its
+  /// offset is refused with a [SmartschoolSkoreError].
+  static DateTime? _projectTime(Object? time, int id) {
+    final text = _text(time);
+    if (text.isEmpty) return null;
+    final parsed = DateTime.tryParse(text);
+    if (parsed == null || !parsed.isUtc) {
+      throw SmartschoolSkoreError(
+        'Skore gave project $id the publication time "$text", which is not '
+        'a date and time with its offset.',
+      );
+    }
+    return parsed;
+  }
+
+  /// Parses the answer of `getCategoryGradesByProject` for project
+  /// [projectId]: a list of ratings (see [SkoreProjectRating]). Rows of
+  /// pupils of another class than [classId] are left out. A rating of
+  /// another project, without its learning goal or pupil, or anything else
+  /// not in this shape, is refused with a [SmartschoolSkoreError].
+  static List<SkoreProjectRating> parseProjectRatings(
+    dynamic answer, {
+    required int projectId,
+    required int classId,
+  }) {
+    final ratings = <SkoreProjectRating>[];
+    for (final row in _list(answer, 'the ratings of project $projectId')) {
+      final r = _object(row, 'a rating of project $projectId');
+      final id = SkoreRpc.id(r['id'], 'a rating of project $projectId');
+      final what = 'rating $id of project $projectId';
+      if (SkoreRpc.tryId(r['projectId']) != projectId) {
+        throw SmartschoolSkoreError(
+          'Skore answered the ratings of project $projectId with $what of '
+          'project ${SkoreRpc.jsonPreview(r['projectId'])}.',
+        );
+      }
+      final pupil = _object(r['pupil'], 'the pupil of $what');
+      final pupilClass = SkoreRpc.id(pupil['classId'], 'the class of $what');
+      if (pupilClass != classId) continue;
+      final goal = _text(r['categoryId']);
+      if (goal.isEmpty) {
+        throw SmartschoolSkoreError(
+          'Skore gave $what without its learning goal.',
+        );
+      }
+      final grade = r['grade'];
+      final info = r['info'];
+      ratings.add(
+        SkoreProjectRating(
+          id: id,
+          projectId: projectId,
+          learningGoalId: goal,
+          pupilId: SkoreRpc.id(pupil['userId'], 'the pupil of $what'),
+          skorePupilId: SkoreRpc.id(pupil['id'], 'the pupil of $what'),
+          classId: pupilClass,
+          ratingId: SkoreRpc.tryId(r['ratingId']),
+          grade: grade == null ? null : '$grade',
+          info: info == null ? null : '$info',
+        ),
+      );
+    }
+    return ratings;
+  }
+
+  /// [value] as a list; anything else is a [SmartschoolSkoreError] about
+  /// [what].
+  static List<dynamic> _list(Object? value, String what) {
+    if (value is List) return value;
+    throw SmartschoolSkoreError(
+      'Skore gave $what as ${SkoreRpc.jsonPreview(value)} instead of a list.',
+    );
+  }
+
+  /// [value] as an object; anything else is a [SmartschoolSkoreError] about
+  /// [what].
+  static Map<dynamic, dynamic> _object(Object? value, String what) {
+    if (value is Map) return value;
+    throw SmartschoolSkoreError(
+      'Skore gave $what as ${SkoreRpc.jsonPreview(value)} instead of an '
+      'object.',
+    );
+  }
+
+  /// [value] as trimmed text; `""` for `null`.
+  static String _text(Object? value) => '${value ?? ''}'.trim();
+
+  /// Whether Skore's flag [value] is set: `true`, `1` or `"1"`.
+  static bool _flag(Object? value) =>
+      value == true || SkoreRpc.tryId(value) == 1;
 
   /// The page of Skore's gradebook, which hands its frame the start-up
   /// secret.

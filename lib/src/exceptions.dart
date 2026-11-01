@@ -1739,10 +1739,14 @@ class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
 /// is not on the report (#204): Skore answers its `getReportsResults` with
 /// HTTP 404 and `{"message": "Course not found in source!"}`. Seen live
 /// (2026-10-27, #195, #204) for gradebooks whose report Skore lists
-/// (`SkoreGradebookSheet.reports`), open: one of them a course that is on
-/// the report through a project ("Projecten"), not through evaluation
-/// results, which the library does not read. Skore's web client shows the
-/// answer as an error too.
+/// (`SkoreGradebookSheet.reports`), open: one of them a project course
+/// ("Projecten"). A project course is not on the
+/// gradebook's reports, by design: Skore's web client does not list a
+/// project gradebook under "Rapporten", and Skore answers this for it
+/// (also "No courses found in results!", and also with a rated project,
+/// seen live 2026-11-01). There is no report comment to write from the
+/// gradebook for a project course (`SkoreGradebookService.getProjectRatings`
+/// reads its ratings).
 ///
 /// It is not an answer the library cannot use, and not an empty report
 /// either (which would read as a report without pupils or comments): an app

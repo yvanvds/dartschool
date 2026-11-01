@@ -64,18 +64,20 @@ class _Attempts extends Interceptor {
 const _noSuchId = '00000000-0000-4000-8000-000000000000';
 
 /// An element of [type] with [_noSuchId], at [from], that the planner does
-/// not have: for a check that refuses before the element is read (#224).
-PlannedElement _unread(PlannedElementType type, DateTime from) =>
-    PlannedElement(
-      id: _noSuchId,
-      platformId: 0,
-      type: type,
-      typeName: type.wireName!,
-      period: PlannerPeriod(
-        from: from,
-        to: from.add(const Duration(minutes: 50)),
-      ),
-    );
+/// not have: for a check that refuses before the element is read (#224),
+/// or, on the own [platformId], one that the planner answers with `404`
+/// (#225).
+PlannedElement _unread(
+  PlannedElementType type,
+  DateTime from, {
+  int platformId = 0,
+}) => PlannedElement(
+  id: _noSuchId,
+  platformId: platformId,
+  type: type,
+  typeName: type.wireName!,
+  period: PlannerPeriod(from: from, to: from.add(const Duration(minutes: 50))),
+);
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -367,6 +369,35 @@ void main() {
         expect(
           refused.element!.period.from.isAtSameMomentAs(hour.period.from),
           isTrue,
+        );
+      });
+
+      test('saveAsLessonContent of a lesson the planner does not have: '
+          'SmartschoolPlannedElementNotFoundError, before the lesfiches '
+          'are read; the save is not sent (#225)', () async {
+        // On the own platform: the planner answers a lesson of platform 0
+        // with 400, not 404.
+        final lesson = _unread(
+          PlannedElementType.lesson,
+          from,
+          platformId: int.parse(own.id.split('_').first),
+        );
+        final mark = attempts.requests.length;
+        final violations = run.guard.violations.length;
+
+        await expectLater(
+          planner.saveAsLessonContent(lesson, name: '[dartschool test] no'),
+          throwsA(isA<SmartschoolPlannedElementNotFoundError>()),
+        );
+
+        expect(attempts.writesSince(mark), isEmpty, reason: 'nothing sent');
+        expect(run.guard.violations, hasLength(violations));
+        expect(
+          attempts.requests
+              .skip(mark)
+              .where((r) => r.contains(' /lesson-content/')),
+          isEmpty,
+          reason: 'the lesfiches are read only for a lesson that may be saved',
         );
       });
 

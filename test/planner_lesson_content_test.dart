@@ -968,6 +968,7 @@ void main() {
   });
 
   _issue224(serve);
+  _issue225(serve);
 
   // ---------------------------------------------------------------------------
   // The whole flow
@@ -1951,5 +1952,513 @@ void _issue224(
         );
       }
     });
+  });
+}
+
+// -----------------------------------------------------------------------------
+// #225: save an own lesson as a new lesfiche ("Opslaan in Lesfiches")
+// -----------------------------------------------------------------------------
+//
+// Tried live on 2026-11-01 (the developer's own planner, cleared again; the
+// lesfiche moved to the trash): `POST planned-lessons/{platformId}/{id}/
+// save-in-source-module` with `{"newName"}` -> 200 with `{}`. The answer
+// does not name the lesfiche: there was exactly one new one in the list, a
+// lesson lesfiche named `newName` with the lesson's info, goals and icon;
+// the lesson was unchanged. The answers below are made from the ones above,
+// in that shape.
+
+/// The lesfiche the save of [_typed] makes.
+const _savedFicheId = 'b0000000-0000-4000-8000-000000000003';
+const _savedName = 'Lussen: for en while';
+
+const _savePath = '$_typedPath/save-in-source-module';
+const _save = 'POST $_savePath';
+const _readSavedFiche = 'GET /lesson-content/api/v1/lessons/$_savedFicheId';
+
+/// The new lesfiche as the module lists it, named [name], with [id].
+Map<String, dynamic> _savedItem({
+  String id = _savedFicheId,
+  String name = _savedName,
+  String type = 'lessons',
+}) => (jsonDecode(_fiches) as List).first as Map<String, dynamic>
+  ..['id'] = id
+  ..['name'] = name
+  ..['type'] = type
+  ..['isVisible'] = true
+  ..['labels'] = <Object>[]
+  ..['publicInfo'] = '<p>Breng je laptop mee.</p>';
+
+/// [_fiches] with [added] after them.
+String _fichesPlus(List<Map<String, dynamic>> added) =>
+    jsonEncode([...(jsonDecode(_fiches) as List), ...added]);
+
+/// The new lesfiche's detail: the lesson's info and goals.
+final _savedDetail = jsonEncode(
+  _savedItem()
+    ..['privateInfo'] = '<p>Oefening 3 overslaan.</p>'
+    ..['goals'] = [
+      {
+        'id': '90000000-0000-4000-8000-000000000001',
+        'goalId': '90000000-0000-4000-8000-000000000001',
+        'leerplanId': '90000000-0000-4000-8000-000000000010',
+        'type': 'llinkid',
+      },
+    ],
+);
+
+void _issue225(
+  Future<(_Smartschool, PlannerService, SmartschoolClient)> Function(
+    Map<String, List<_Answer>> answers, {
+    Map<String, Object Function(RequestOptions options)> failures,
+    _Answer? Function(String label, Object? body)? respond,
+  })
+  serve,
+) {
+  group('PlannerService.saveAsLessonContent (#225)', () {
+    const op = 'saveAsLessonContent';
+
+    test('reads the lesson and the lesfiches, sends the save once with '
+        '{"newName"} (the lesson\'s name), and returns the one new lesson '
+        'lesfiche of that name, read in full', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_typed)],
+        _readFiches: [
+          _json(_fiches),
+          _json(_fichesPlus([_savedItem()])),
+        ],
+        _save: [_json('{}')],
+        _readSavedFiche: [_json(_savedDetail)],
+      });
+
+      final fiche = await planner.saveAsLessonContent(_listed(_typed));
+
+      expect(server.moduleLog, [
+        _readTyped,
+        _readFiches,
+        _save,
+        _readFiches,
+        _readSavedFiche,
+      ]);
+      expect(server.bodyOf(_save), {'newName': _savedName});
+      expect(fiche.id, _savedFicheId);
+      expect(fiche.type, LessonContentType.lesson);
+      expect(fiche.name, _savedName);
+      expect(fiche.privateInfo, '<p>Oefening 3 overslaan.</p>');
+      expect(fiche.goals.map((g) => g.id), [
+        '90000000-0000-4000-8000-000000000001',
+      ]);
+      // The courses are named, as getDetail names them.
+      expect(fiche.courses.single.name, 'informatica');
+    });
+
+    test('a name of its own, sent without the white space around it; a '
+        'lesfiche of that name already there is no matter: the new ID '
+        'is', () async {
+      const name = 'Herhaling: lussen'; // the name of lesfiche _ficheId
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_typed)],
+        _readFiches: [
+          _json(_fiches),
+          _json(_fichesPlus([_savedItem(name: name)])),
+        ],
+        _save: [_json('{}')],
+        _readSavedFiche: [
+          _json(
+            jsonEncode(
+              (jsonDecode(_savedDetail) as Map<String, dynamic>)
+                ..['name'] = name,
+            ),
+          ),
+        ],
+      });
+
+      final fiche = await planner.saveAsLessonContent(
+        _listed(_typed),
+        name: '  $name\n',
+      );
+
+      expect(server.bodyOf(_save), {'newName': name});
+      expect(fiche.id, _savedFicheId);
+      expect(fiche.name, name);
+    });
+
+    test('an element that is not a lesson, or an empty name: an '
+        'ArgumentError before any request', () async {
+      final (server, planner, _) = await serve({});
+
+      expect(
+        () => planner.saveAsLessonContent(_listed(_slot)),
+        throwsArgumentError,
+      );
+      expect(
+        () => planner.saveAsLessonContent(_listed(_typed), name: ' \t'),
+        throwsArgumentError,
+      );
+      expect(server.moduleLog, isEmpty);
+    });
+
+    test(
+      'no name given and a lesson without one: an ArgumentError after '
+      'reading it, before the lesfiches are read or anything is sent',
+      () async {
+        final unnamed = _with(_typed, changes: {'name': null});
+        final (server, planner, _) = await serve({
+          _readTyped: [_json(unnamed)],
+        });
+
+        await expectLater(
+          planner.saveAsLessonContent(_listed(_typed)),
+          throwsArgumentError,
+        );
+        expect(server.moduleLog, [_readTyped]);
+      },
+    );
+
+    test("a colleague's lesson: notOwn, nothing read of the lesfiches, "
+        'nothing sent', () async {
+      final colleagues = _with(
+        _typed,
+        changes: {
+          'organisers': {
+            'users': [_colleague],
+            'groups': <Object>[],
+          },
+        },
+      );
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(colleagues)],
+      });
+
+      await expectLater(
+        planner.saveAsLessonContent(_listed(_typed)),
+        throwsA(
+          _refusedBy(
+            op,
+            reason: PlannerWriteRefusalReason.notOwn,
+            element: _typedId,
+          ),
+        ),
+      );
+      expect(server.moduleLog, [_readTyped]);
+    });
+
+    test('a lesson without canUserSaveInSourceModule: notAllowed, with the '
+        'flag', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [
+          _json(
+            _with(_typed, capabilities: {'canUserSaveInSourceModule': false}),
+          ),
+        ],
+      });
+
+      await expectLater(
+        planner.saveAsLessonContent(_listed(_typed)),
+        throwsA(
+          _refusedBy(
+            op,
+            reason: PlannerWriteRefusalReason.notAllowed,
+            element: _typedId,
+            flags: ['canUserSaveInSourceModule'],
+          ),
+        ),
+      );
+      expect(server.moduleLog, [_readTyped]);
+    });
+
+    test('a lesson that is gone: SmartschoolPlannedElementNotFoundError, '
+        'nothing sent', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_notFound, status: 404)],
+      });
+
+      await expectLater(
+        planner.saveAsLessonContent(_listed(_typed)),
+        throwsA(isA<SmartschoolPlannedElementNotFoundError>()),
+      );
+      expect(server.moduleLog, [_readTyped]);
+    });
+
+    test('lesfiches that cannot be read first: the '
+        'SmartschoolLessonContentError of getItems, nothing sent', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_typed)],
+        _readFiches: [_json(_errorPage)],
+      });
+
+      await expectLater(
+        planner.saveAsLessonContent(_listed(_typed)),
+        throwsA(isA<SmartschoolLessonContentError>()),
+      );
+      expect(server.moduleLog, [_readTyped, _readFiches]);
+    });
+
+    group('sent, but not confirmed:', () {
+      Future<void> expectUnconfirmed(
+        Map<String, List<_Answer>> answers,
+        Object? message, {
+        Map<String, Object Function(RequestOptions options)> failures =
+            const {},
+        Object? statusCode = anything,
+        Object? cause = anything,
+      }) async {
+        final (server, planner, _) = await serve({
+          _readTyped: [_json(_typed)],
+          ...answers,
+        }, failures: failures);
+        await expectLater(
+          planner.saveAsLessonContent(_listed(_typed)),
+          throwsA(
+            allOf(
+              _unconfirmedBy(op, message),
+              isA<SmartschoolPlannerSaveUnconfirmedError>()
+                  .having((e) => e.message, 'message', contains('getItems'))
+                  .having((e) => e.statusCode, 'statusCode', statusCode)
+                  .having((e) => e.cause, 'cause', cause),
+            ),
+          ),
+        );
+        // Sent once, whatever came of it.
+        expect(server.moduleLog.where((l) => l == _save), hasLength(1));
+      }
+
+      test('no new lesfiche in the list', () async {
+        await expectUnconfirmed({
+          _readFiches: [_json(_fiches)],
+          _save: [_json('{}')],
+        }, contains('no new lesson lesfiche of that name (0 new lesfiches)'));
+      });
+
+      test('a new lesfiche of another name, or an assignment one', () async {
+        await expectUnconfirmed({
+          _readFiches: [
+            _json(_fiches),
+            _json(
+              _fichesPlus([
+                _savedItem(name: 'iets anders'),
+                _savedItem(
+                  id: 'b0000000-0000-4000-8000-000000000004',
+                  type: 'assignments',
+                ),
+              ]),
+            ),
+          ],
+          _save: [_json('{}')],
+        }, contains('(2 new lesfiches)'));
+      });
+
+      test('two new lesson lesfiches of that name', () async {
+        await expectUnconfirmed(
+          {
+            _readFiches: [
+              _json(_fiches),
+              _json(
+                _fichesPlus([
+                  _savedItem(),
+                  _savedItem(id: 'b0000000-0000-4000-8000-000000000004'),
+                ]),
+              ),
+            ],
+            _save: [_json('{}')],
+          },
+          allOf(
+            contains('2 new lesson lesfiches of that name'),
+            contains(_savedFicheId),
+          ),
+        );
+      });
+
+      test('another status than 200, with nothing new: the status', () async {
+        await expectUnconfirmed(
+          {
+            _readFiches: [_json(_fiches)],
+            _save: [_json('{"status":400,"title":"Bad Request"}', status: 400)],
+          },
+          contains('HTTP 400'),
+          statusCode: 400,
+        );
+      });
+
+      test('the lesfiches cannot be read again', () async {
+        await expectUnconfirmed(
+          {
+            _readFiches: [_json(_fiches), _json(_errorPage)],
+            _save: [_json('{}')],
+          },
+          contains('reading the lesfiches again failed'),
+          cause: isA<SmartschoolLessonContentError>(),
+        );
+      });
+
+      test('the new lesfiche\'s detail cannot be read', () async {
+        await expectUnconfirmed(
+          {
+            _readFiches: [
+              _json(_fiches),
+              _json(_fichesPlus([_savedItem()])),
+            ],
+            _save: [_json('{}')],
+            _readSavedFiche: [_json(_errorPage)],
+          },
+          contains('reading the detail of lesfiche $_savedFicheId'),
+          cause: isA<SmartschoolLessonContentError>(),
+        );
+      });
+
+      test('no answer: the connection drops after the save went out', () async {
+        await expectUnconfirmed(
+          {
+            _readFiches: [_json(_fiches)],
+          },
+          contains('no answer came in'),
+          failures: {_save: _dropped},
+          statusCode: isNull,
+          cause: isNotNull,
+        );
+      });
+    });
+
+    test('a session refused for the save is not retried after logging in '
+        'again: no login, no second save', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_typed)],
+        _readFiches: [_json(_fiches)],
+        _save: [_toLogin, _json('{}')],
+      });
+
+      await expectLater(
+        planner.saveAsLessonContent(_listed(_typed)),
+        throwsA(isA<SmartschoolSessionExpiredError>()),
+      );
+      expect(server.log, isNot(contains('GET /login')));
+      expect(server.moduleLog.where((l) => l == _save), hasLength(1));
+    });
+  });
+
+  test('the flow of #225 against a planner and a library that keep their '
+      'state: find a lesson typed in by hand in the own week, save it as a '
+      'lesfiche, find the lesfiche in the library, plan it into an empty '
+      'hour, and find the typed lesson as it was', () async {
+    final elements = <String, Map<String, dynamic>>{
+      _typedId: jsonDecode(_typed) as Map<String, dynamic>,
+      _slot2Id: jsonDecode(_slot2) as Map<String, dynamic>,
+    };
+    final library = [
+      for (final item in jsonDecode(_fiches) as List)
+        item as Map<String, dynamic>,
+    ];
+    final details = <String, Map<String, dynamic>>{};
+    var nextFiche = 50;
+    var nextLesson = 60;
+
+    _Answer? smartschool(String label, Object? body) {
+      if (label == _readFiches) return _json(jsonEncode(library));
+      if (label == 'GET $_ownWeekPath') {
+        return _json(jsonEncode(elements.values.toList()));
+      }
+      final ficheRead = RegExp(
+        r'^GET /lesson-content/api/v1/lessons/([0-9a-f-]+)$',
+      ).firstMatch(label);
+      if (ficheRead != null) {
+        final detail = details[ficheRead[1]];
+        return detail == null
+            ? _json(_notFound, status: 404)
+            : _json(jsonEncode(detail));
+      }
+      final read = RegExp(
+        r'^GET /planner/api/v1/(planned-[a-z-]+)/4069/([0-9a-f-]+)$',
+      ).firstMatch(label);
+      if (read != null) {
+        final element = elements[read[2]];
+        return element == null || element['plannedElementType'] != read[1]
+            ? _json(_notFound, status: 404)
+            : _json(jsonEncode(element));
+      }
+      final save = RegExp(
+        r'^POST /planner/api/v1/planned-lessons/4069/([0-9a-f-]+)/'
+        r'save-in-source-module$',
+      ).firstMatch(label);
+      if (save != null) {
+        // The lesson's info, goals and icon, under the new name; the lesson
+        // stays as it is.
+        final lesson = elements[save[1]]!;
+        final id = 'b0000000-0000-4000-8000-0000000000${nextFiche++}';
+        final item =
+            _savedItem(id: id, name: (body! as Map)['newName'] as String)
+              ..['icon'] = lesson['icon']
+              ..['publicInfo'] = lesson['publicInfo'];
+        library.add(item);
+        details[id] = {
+          ...item,
+          'privateInfo': lesson['privateInfo'],
+          'goals': lesson['goals'],
+        };
+        return _json('{}');
+      }
+      final fill = RegExp(
+        r'^POST /planner/api/v1/planned-placeholders/4069/([0-9a-f-]+)/'
+        r'replace/planned-lessons$',
+      ).firstMatch(label);
+      if (fill != null) {
+        final slot = elements.remove(fill[1])!;
+        final fiche = details[(body! as Map)['sourceId']]!;
+        final id = 'e0000000-0000-4000-8000-0000000000${nextLesson++}';
+        final lesson = jsonDecode(_planned) as Map<String, dynamic>
+          ..['id'] = id
+          ..['period'] = slot['period']
+          ..['name'] = fiche['name']
+          ..['privateInfo'] = fiche['privateInfo']
+          ..['info'] = fiche['privateInfo']
+          ..['publicInfo'] = fiche['publicInfo']
+          ..['goals'] = fiche['goals'];
+        return _json(jsonEncode(elements[id] = lesson));
+      }
+      return null;
+    }
+
+    final (server, service, client) = await serve({}, respond: smartschool);
+    Future<List<PlannedElement>> week() async => service.getPlannedElements(
+      await service.ownCalendar(),
+      from: DateTime.utc(2026, 11, 16),
+      to: DateTime.utc(2026, 11, 20, 22, 59, 59),
+    );
+    final typed = (await week()).singleWhere(
+      (e) => e.type == PlannedElementType.lesson,
+    );
+    final typedBefore = await service.getDetail(typed);
+
+    final fiche = await service.saveAsLessonContent(typed);
+    expect(fiche.name, typed.name);
+    expect(fiche.type, LessonContentType.lesson);
+    expect(fiche.privateInfo, typedBefore.privateInfo);
+    expect(fiche.publicInfo, typedBefore.publicInfo);
+
+    // The library lists it; the lesson is as it was.
+    final listed = await LessonContentService(client).getItems();
+    expect(listed.where((f) => f.id == fiche.id), hasLength(1));
+    expect(
+      jsonEncode((await service.getDetail(typed)).raw),
+      jsonEncode(typedBefore.raw),
+    );
+
+    // Planned into the other hour, it brings the lesson's content along.
+    final hour = (await week()).singleWhere(
+      (e) => e.type == PlannedElementType.placeholder,
+    );
+    final planned = await service.planLessonContent(
+      placeholder: hour,
+      lessonContentId: fiche.id,
+    );
+    expect(planned.name, typed.name);
+    expect(planned.privateInfo, typedBefore.privateInfo);
+    expect(planned.publicInfo, typedBefore.publicInfo);
+
+    final after = await week();
+    expect(after.map((e) => e.type), everyElement(PlannedElementType.lesson));
+    expect(after.map((e) => e.id), containsAll([typed.id, planned.id]));
+    expect(server.moduleLog.where((l) => l.startsWith('POST')), [
+      _save,
+      'POST $_api/planned-placeholders/4069/$_slot2Id/replace/planned-lessons',
+    ]);
   });
 }

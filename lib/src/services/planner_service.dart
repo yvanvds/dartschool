@@ -23,8 +23,9 @@ export '../models/planner_models.dart';
 /// new lesson ([planLesson]) or with a lesfiche of the Lesfiches library
 /// ([planLessonContent], the lesfiches read with `LessonContentService`),
 /// replaces a lesson by a lesfiche ([replaceWithLessonContent]), plans one
-/// lesfiche into several hours at once ([planLessonContentInto]) and clears
-/// the hour again ([clearLesson]); it adds an assignment (a test, a
+/// lesfiche into several hours at once ([planLessonContentInto]), saves a
+/// lesson as a new lesfiche ([saveAsLessonContent]) and clears the hour
+/// again ([clearLesson]); it adds an assignment (a test, a
 /// task) for classes ([planAssignment]) and moves it to the planner's trash
 /// again ([trashAssignment]); and it changes the name and info of an own
 /// lesson or assignment ([renameElement], [changePublicInfo],
@@ -102,7 +103,9 @@ export '../models/planner_models.dart';
 /// [planLessonContentInto], [clearLesson], [planAssignment],
 /// [trashAssignment], [renameElement], [changePublicInfo] and
 /// [changePrivateInfo] change the planner, each with one POST for one
-/// element ([planLessonContentInto]: one POST for all its hours):
+/// element ([planLessonContentInto]: one POST for all its hours);
+/// [saveAsLessonContent] adds a lesfiche to the Lesfiches library through
+/// the planner, with one POST, and leaves the lesson as it is:
 ///
 /// ```dart
 /// final me = await planner.ownCalendar();
@@ -168,7 +171,8 @@ export '../models/planner_models.dart';
 /// `planned-elements/replace-with-...`, or
 /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
 /// moves everything in a period to the trash; nor an assignment's
-/// `announce`, nor `update-in-source-module`.
+/// `announce`, nor `update-in-source-module` (its `save-in-source-module`
+/// is [saveAsLessonContent]'s).
 ///
 /// [PlannedElementDetail.privateInfo] is not private to the teacher: other
 /// teachers who can read the element see it too (see below). Pupils see the
@@ -212,8 +216,9 @@ export '../models/planner_models.dart';
 ///   [SmartschoolPlannerWriteRefusedError.element] is the element as read
 ///   again, so an app can say why in its own words.
 /// - [SmartschoolLessonContentError]: [planLessonContent],
-///   [replaceWithLessonContent] or [planLessonContentInto] could not read
-///   the lesfiches before it planned one. Nothing was sent.
+///   [replaceWithLessonContent], [planLessonContentInto] or
+///   [saveAsLessonContent] could not read the lesfiches before it sent
+///   anything. Nothing was sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
 ///   planner's answer does not confirm it. It may or may not have been
 ///   made: read the element again (for a new assignment, the calendar of
@@ -221,8 +226,9 @@ export '../models/planner_models.dart';
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
 ///   once; for the fill of a slot, the replace of a lesson, the plan of a
-///   lesfiche into several hours, the clear of a lesson, and the create and
-///   trash of an assignment, which are not retried, at once. The request was
+///   lesfiche into several hours, the save of a lesson as a lesfiche, the
+///   clear of a lesson, and the create and trash of an assignment, which
+///   are not retried, at once. The request was
 ///   not carried out: call the method again, the client logs in before its
 ///   next request (#134).
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
@@ -1120,6 +1126,161 @@ class PlannerService {
       ]),
       raw: raw,
     );
+  }
+
+  /// Saves [lesson], a lesson of the authenticated user's own planner (one
+  /// typed in with [planLesson], say), as a new lesfiche in the Lesfiches
+  /// library, as the planner's "Opslaan in Lesfiches" does (#225). Returns
+  /// the new lesfiche as `LessonContentService.getDetailById` reads it: a
+  /// lesson lesfiche ([LessonContentType.lesson]) named [name], with the
+  /// lesson's icon, public and private info and goals (tried live,
+  /// 2026-11-01). Whether the lesson's attachments, weblinks and labels are
+  /// copied too was not seen. The lesfiche is the teacher's own; it can then
+  /// be planned into other hours ([planLessonContent],
+  /// [replaceWithLessonContent], [planLessonContentInto]), and is moved to
+  /// the module's trash with `LessonContentService.trash`.
+  ///
+  /// The lesson itself is left as it is (its name, info, goals,
+  /// attachments, weblinks, labels and icon were the same before and after,
+  /// tried live), and keeps no link to the lesfiche.
+  ///
+  /// [name] is the lesfiche's name, sent without the white space around it;
+  /// `null` (the default) takes the lesson's name as reading it again gives
+  /// it. The module keeps two lesfiches of one name (#129): a name that is
+  /// taken makes another lesfiche of that name.
+  ///
+  /// Before it sends anything, it reads the lesson again (its detail) and
+  /// refuses with a [SmartschoolPlannerWriteRefusedError] a lesson that is
+  /// not organised by the authenticated user
+  /// ([PlannerWriteRefusalReason.notOwn]), or whose capabilities do not
+  /// allow saving it (`canUserSaveInSourceModule`,
+  /// [PlannerWriteRefusalReason.notAllowed]); a lesson that is gone throws a
+  /// [SmartschoolPlannedElementNotFoundError]. It then reads the lesfiches
+  /// (`LessonContentService.getItems`, without the course names: one
+  /// request); when they cannot be read, the [SmartschoolLessonContentError]
+  /// of `getItems` is thrown: nothing was sent.
+  ///
+  /// Sends `POST planned-lessons/{platformId}/{id}/save-in-source-module`
+  /// with `{"newName": name}` (as the lesson's own save in the planner's web
+  /// client does: no `sourceId`), **once**: never again after logging in
+  /// again, since a second send makes a second lesfiche. The planner answers
+  /// `{}` (tried live): the answer does not name the new lesfiche, so the
+  /// call reads the lesfiches again and takes the one lesson lesfiche named
+  /// [name] that was not there before. When there is none, or more than one,
+  /// or the lesfiches or the new lesfiche's detail cannot be read, this
+  /// throws a [SmartschoolPlannerSaveUnconfirmedError]: look in the
+  /// lesfiches (`LessonContentService.getItems`) before trying again, or the
+  /// lesson ends up in the library twice.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [lesson] is
+  /// not a [PlannedElementType.lesson] (an assignment was not tried), or
+  /// [name] is empty; and, after reading the lesson again but before
+  /// sending, when [name] is `null` and the lesson has no name.
+  Future<LessonContentDetail> saveAsLessonContent(
+    PlannedElement lesson, {
+    String? name,
+  }) async {
+    const operation = 'saveAsLessonContent';
+    if (lesson.type != PlannedElementType.lesson) {
+      throw ArgumentError.value(
+        lesson,
+        'lesson',
+        'is a ${lesson.typeName}, not a lesson (planned-lessons); the save '
+            'of another kind of element was not tried',
+      );
+    }
+    if (name != null && name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'is empty');
+    }
+    final me = await _ownUserId();
+    final current = await _detail(
+      lesson.typeName,
+      lesson.platformId,
+      lesson.id,
+    );
+    final what = _describe(current);
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const [
+      'canUserSaveInSourceModule',
+    ]);
+    final title = (name ?? current.name ?? '').trim();
+    if (title.isEmpty) {
+      throw ArgumentError.value(
+        name,
+        'name',
+        'is null and $what has no name: give the lesfiche one',
+      );
+    }
+
+    final library = LessonContentService(_client);
+    final before = {
+      for (final item in await library.getItems(withCourseNames: false))
+        item.id.toLowerCase(),
+    };
+
+    final change = 'the save of $what as lesfiche "$title"';
+    const unconfirmed =
+        'A lesfiche may or may not have been made: look in the lesfiches '
+        '(LessonContentService.getItems) before trying again, or the lesson '
+        'ends up in the library twice.';
+    final response = await _send(
+      operation,
+      path:
+          '$_apiPath/${Uri.encodeComponent(current.typeName)}/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}/'
+          'save-in-source-module',
+      body: {'newName': title},
+      change: change,
+      retryAfterLogin: false,
+      unconfirmed: unconfirmed,
+    );
+    final status = response.statusCode;
+    final answered = status == 200
+        ? 'answered'
+        : 'answered with HTTP $status (${_preview(response.data ?? '')})';
+    Never unconfirmedBy(String problem, {Object? cause}) =>
+        throw SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent and $answered, but $problem. '
+          '$unconfirmed',
+          statusCode: status,
+          cause: cause,
+        );
+
+    // The answer (`{}`) does not name the lesfiche: the list does.
+    final List<LessonContentItem> after;
+    try {
+      after = await library.getItems(withCourseNames: false);
+    } on Exception catch (e) {
+      unconfirmedBy('reading the lesfiches again failed ($e)', cause: e);
+    }
+    final added = [
+      for (final item in after)
+        if (!before.contains(item.id.toLowerCase())) item,
+    ];
+    final made = [
+      for (final item in added)
+        if (item.type == LessonContentType.lesson && item.name.trim() == title)
+          item,
+    ];
+    if (made.length != 1) {
+      unconfirmedBy(
+        made.isEmpty
+            ? 'the lesfiches hold no new lesson lesfiche of that name '
+                  '(${added.length} new '
+                  '${added.length == 1 ? 'lesfiche' : 'lesfiches'})'
+            : 'the lesfiches hold ${made.length} new lesson lesfiches of '
+                  'that name (${[for (final item in made) item.id].join(', ')})',
+      );
+    }
+    try {
+      return await library.getDetail(made.single);
+    } on Exception catch (e) {
+      unconfirmedBy(
+        'reading the detail of lesfiche ${made.single.id}, which is new '
+        'and of that name, failed ($e)',
+        cause: e,
+      );
+    }
   }
 
   /// Renames [element], an element of the authenticated user's own planner

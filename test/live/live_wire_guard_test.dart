@@ -528,6 +528,14 @@ class _Smartschool implements HttpClientAdapter {
         'isVisible': true,
         'owner': '49_777_0',
         'courses': body['courses'],
+        'goals': [
+          for (final goal in body['goals'] as List)
+            {
+              'id': (goal as Map)['id'],
+              'leerplanId': goal['leerplanId'],
+              'type': goal['type'],
+            },
+        ],
         'labels': [],
         'weblinks': [
           for (final link in body['weblinks'] as List)
@@ -575,6 +583,15 @@ class _Smartschool implements HttpClientAdapter {
         fiche['name'] = body['newName'];
       case 'mark-as-visible' || 'mark-as-invisible':
         fiche['isVisible'] = action == 'mark-as-visible';
+      case 'change-goals':
+        fiche['goals'] = [
+          for (final goal in body['newGoals'] as List)
+            {
+              'id': (goal as Map)['id'],
+              'leerplanId': goal['leerplanId'],
+              'type': goal['type'],
+            },
+        ];
       case 'weblinks':
         final link = {
           'id': _uuid(),
@@ -2142,6 +2159,41 @@ void main() {
       expect(guard.lessonContentMade, {made.id});
       expect(guard.violations, isEmpty);
     });
+
+    test('the create of a lesfiche with learning goals, and the change of '
+        'its goals, as the library sends them (#223)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      const goal = LearningGoalRef(
+        id: 'd0000000-0000-4000-8000-000000000041',
+        leerplanId: 'd0000000-0000-4000-8000-000000000040',
+        type: 'eindtermen-derde-graad-doorstroom',
+      );
+      const other = LearningGoalRef(
+        id: 'd0000000-0000-4000-8000-000000000051',
+        leerplanId: 'd0000000-0000-4000-8000-000000000050',
+        type: 'miniDB',
+      );
+
+      final made = await lessonContent.createLesson(
+        name: _lessonName('les'),
+        goals: [goal],
+      );
+      final changed = await lessonContent.changeGoals(made, [goal, other]);
+      final cleared = await lessonContent.changeGoals(made, const []);
+
+      const api = '/lesson-content/api/v1';
+      expect(made.goals, [goal]);
+      expect(changed.goals, [goal, other]);
+      expect(cleared.goals, isEmpty);
+      expect(server.lessonContentWrites, [
+        'POST $api/lessons/',
+        'POST $api/lessons/${made.id}/change-goals',
+        'POST $api/lessons/${made.id}/change-goals',
+      ]);
+      expect(guard.violations, isEmpty);
+    });
   });
 
   group('refuses before it reaches Smartschool (Lesfiches, #129)', () {
@@ -2309,11 +2361,41 @@ void main() {
       await refused(lessonContent.rename(made, 'Lussen'));
       for (final action in [
         'change-labels',
-        'change-goals',
         'deeplinks',
         'partner-weblinks/bulk',
       ]) {
         await refused(dio.post<String>('$fiche/$action', data: {'x': 1}));
+      }
+      // Goals not as the library sends them (#223).
+      const goalId = 'd0000000-0000-4000-8000-000000000041';
+      for (final newGoals in <Object?>[
+        null,
+        ['x'],
+        [
+          {'id': goalId, 'leerplanId': 'l', 'type': 't'},
+        ],
+        [
+          {'id': goalId, 'goalId': 'other', 'leerplanId': 'l', 'type': 't'},
+        ],
+        [
+          {'id': 'x', 'goalId': 'x', 'leerplanId': 'l', 'type': 't'},
+        ],
+        [
+          {'id': goalId, 'goalId': goalId, 'leerplanId': '', 'type': 't'},
+        ],
+        [
+          {
+            'id': goalId,
+            'goalId': goalId,
+            'leerplanId': 'l',
+            'type': 't',
+            'extra': 1,
+          },
+        ],
+      ]) {
+        await refused(
+          dio.post<String>('$fiche/change-goals', data: {'newGoals': newGoals}),
+        );
       }
       await refused(dio.delete<String>(fiche));
       await refused(
@@ -2351,7 +2433,10 @@ void main() {
           'the lessons',
         ),
         contains('to a name that does not start with'),
-        for (var i = 0; i < 4; i++) contains('to a lesfiche: only renames'),
+        for (var i = 0; i < 3; i++) contains('to a lesfiche: only renames'),
+        contains('its goals are not a list'),
+        for (var i = 0; i < 6; i++)
+          contains('a goal that is not as the library sends one'),
         contains('sends no DELETE but of a weblink or an attachment'),
         contains('sends no Lesfiches POST but'),
         contains('sends no Lesfiches POST but'),

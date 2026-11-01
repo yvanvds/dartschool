@@ -25,7 +25,7 @@ The eindtermen have headings with goals under them, the goals in HTML with their
 
 `Curriculum.goals` lists the nodes the selector lets a user pick (`selectableTypes`), depth first, deprecated ones too: each a `SelectableGoal` with its `node`, the `path` of nodes above it, `titles` (the plain-text titles of the path and the goal) and `ref`, the `LearningGoalRef` to store. `Curriculum.goal(id)` finds one.
 
-A `LearningGoalRef` (`id`, `leerplanId`, `type`) is how a lesfiche or a planned lesson stores a goal: `fromJson` and `toJson` read and write that, `toWire` adds the `goalId` (the same as `id`) that the web clients send. For a goal of the selector, `type` is the curriculum's `leerplanType`; goals of other sources have their source there (`llinkid`, `zill`, ...).
+A `LearningGoalRef` (`id`, `leerplanId`, `type`) is how a lesfiche or a planned lesson stores a goal: `fromJson` and `toJson` read and write that, `toWire` adds the `goalId` (the same as `id`) that the web clients send. `LessonContentService.changeGoals` and the creates of lesfiches send them, and `LessonContentDetail.goals` reads them (#223, see [`doc/lesson-content.md`](lesson-content.md#lessoncontentservice)). For a goal of the selector, `type` is the curriculum's `leerplanType`; goals of other sources have their source there (`llinkid`, `zill`, ...).
 
 The service does not mark curricula as favourites, keep the selector's settings, or read goals of LLinkid, Zill, OVSG, POV, GO! Navigator or Op Stap.
 

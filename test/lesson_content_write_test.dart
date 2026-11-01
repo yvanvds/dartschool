@@ -26,6 +26,12 @@
 // - `POST lesson-content/trash/bulk` answers `{"exceptions":[]}`, and a
 //   lesfiche in the trash already a bare `500`.
 //
+// The goals of a lesfiche (#223, seen live on 2026-11-01): the detail has
+// `goals` as `[{id, leerplanId, type}]`; `POST .../change-goals` with
+// `{"newGoals": [{id, goalId, leerplanId, type}]}` answers `200` with the
+// whole lesfiche, its goals replaced by the list. The goal IDs here are
+// made up.
+//
 // The live test of the same writes is
 // test/live/lesson_content_write_live_test.dart.
 import 'dart:convert';
@@ -70,6 +76,19 @@ const _newAttachmentId = 'f0000000-0000-4000-8000-000000000032';
 
 /// The school's assignment type `Kleine Taak`.
 const _typeId = 'a0000000-0000-4000-8000-000000000004';
+
+/// Learning goals (#223): one of the eindtermen and one of a school
+/// mini-database, as the goal selector gives them.
+const _eindtermen = LearningGoalRef(
+  id: 'd0000000-0000-4000-8000-000000000041',
+  leerplanId: 'd0000000-0000-4000-8000-000000000040',
+  type: 'eindtermen-derde-graad-doorstroom',
+);
+const _miniGoal = LearningGoalRef(
+  id: 'd0000000-0000-4000-8000-000000000051',
+  leerplanId: 'd0000000-0000-4000-8000-000000000050',
+  type: 'miniDB',
+);
 
 const _lesson = '$_api/lessons/$_lessonId';
 const _getLesson = 'GET $_lesson';
@@ -124,6 +143,7 @@ Map<String, Object?> _detailJson({
   List<String> courses = const [_informatica],
   List<Map<String, Object?>>? weblinks,
   List<Map<String, Object?>>? attachments,
+  List<LearningGoalRef> goals = const [],
 }) => {
   'id': id,
   'platformId': 4069,
@@ -144,7 +164,7 @@ Map<String, Object?> _detailJson({
   'publicInfo': publicInfo,
   'isVisible': visible,
   'owner': '4069_1001_0',
-  'goals': [],
+  'goals': [for (final goal in goals) goal.toJson()],
   'courses': [
     for (final course in courses) {'platformId': 4069, 'id': course},
   ],
@@ -2097,6 +2117,331 @@ void main() {
             .map((h) => '${h.value}');
         expect(accept, isNot(contains(contains('application/json'))));
       }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Goals (#223)
+  // ---------------------------------------------------------------------------
+
+  group('goals', () {
+    const changeGoals = 'POST $_lesson/change-goals';
+
+    test('the detail reads its goals; without them, none; a goal in an '
+        'unknown shape is a SmartschoolLessonContentError', () {
+      final detail = LessonContentService.parseDetail(
+        _detailJson(goals: [_eindtermen, _miniGoal]),
+      );
+      expect(detail.goals, [_eindtermen, _miniGoal]);
+      expect(
+        LessonContentService.parseDetail(_detailJson()..remove('goals')).goals,
+        isEmpty,
+      );
+      expect(
+        () => LessonContentService.parseDetail({
+          ..._detailJson(),
+          'goals': [
+            {'id': _eindtermen.id, 'leerplanId': _eindtermen.leerplanId},
+          ],
+        }),
+        throwsA(
+          isA<SmartschoolLessonContentError>().having(
+            (e) => e.message,
+            'message',
+            contains('"type"'),
+          ),
+        ),
+      );
+      expect(
+        () => LessonContentService.parseDetail({
+          ..._detailJson(),
+          'goals': {'id': _eindtermen.id},
+        }),
+        throwsA(isA<SmartschoolLessonContentError>()),
+      );
+    });
+
+    test('changeGoals sends the whole list as newGoals, with goalId filled '
+        'from id, and returns the lesfiche with its goals', () async {
+      final (server, lessonContent) = await serve({
+        changeGoals: [
+          _json(_detailJson(goals: [_miniGoal, _eindtermen])),
+        ],
+      });
+
+      final detail = await lessonContent.changeGoals(_lessonItem, [
+        _eindtermen,
+        _miniGoal,
+        _eindtermen,
+      ]);
+
+      expect(server.calls, [changeGoals]);
+      expect(server.bodiesOf(changeGoals), [
+        {
+          'newGoals': [
+            {
+              'id': _eindtermen.id,
+              'goalId': _eindtermen.id,
+              'leerplanId': _eindtermen.leerplanId,
+              'type': 'eindtermen-derde-graad-doorstroom',
+            },
+            {
+              'id': _miniGoal.id,
+              'goalId': _miniGoal.id,
+              'leerplanId': _miniGoal.leerplanId,
+              'type': 'miniDB',
+            },
+          ],
+        },
+      ]);
+      expect(detail.goals, [_miniGoal, _eindtermen]);
+    });
+
+    test('changeGoals with no goals sends an empty list (clears them); an '
+        'assignment goes to assignments/{id}', () async {
+      final (server, lessonContent) = await serve({
+        changeGoals: [_json(_detailJson())],
+        'POST $_api/assignments/$_assignmentId/change-goals': [
+          _json(
+            _detailJson(
+              id: _assignmentId,
+              type: 'assignments',
+              goals: [_miniGoal],
+            ),
+          ),
+        ],
+      });
+
+      final cleared = await lessonContent.changeGoals(_lessonItem, const []);
+      final assignment = await lessonContent.changeGoals(_assignmentItem, [
+        _miniGoal,
+      ]);
+
+      expect(server.bodiesOf(changeGoals), [
+        {'newGoals': <Object>[]},
+      ]);
+      expect(cleared.goals, isEmpty);
+      expect(assignment.goals, [_miniGoal]);
+    });
+
+    test('an answer without the goals sent: unconfirmed; a 404: not found; '
+        'a bare 400: refused', () async {
+      final (_, lessonContent) = await serve({
+        changeGoals: [
+          _json(_detailJson(goals: [_eindtermen])),
+          _json(
+            _detailJson(
+              goals: [
+                LearningGoalRef(
+                  id: _miniGoal.id,
+                  leerplanId: _miniGoal.leerplanId,
+                  type: 'noType',
+                ),
+              ],
+            ),
+          ),
+          _notFound,
+          _badRequest,
+        ],
+      });
+
+      await expectLater(
+        lessonContent.changeGoals(_lessonItem, [_eindtermen, _miniGoal]),
+        throwsA(
+          _unconfirmed(
+            allOf(
+              contains('the goals [${_eindtermen.id}]'),
+              contains('sending the change again is harmless'),
+            ),
+            statusCode: 200,
+            lessonContentId: _lessonId,
+          ),
+        ),
+      );
+      await expectLater(
+        lessonContent.changeGoals(_lessonItem, [_miniGoal]),
+        throwsA(_unconfirmed(contains('the goals [${_miniGoal.id}]'))),
+      );
+      await expectLater(
+        lessonContent.changeGoals(_lessonItem, [_miniGoal]),
+        throwsA(isA<SmartschoolLessonContentNotFoundError>()),
+      );
+      await expectLater(
+        lessonContent.changeGoals(_lessonItem, [_miniGoal]),
+        throwsA(_refused(status: 400)),
+      );
+    });
+
+    test('changeGoals is retried once after logging in again: it sets a '
+        'value', () async {
+      final (server, lessonContent) = await serve({
+        changeGoals: [
+          _unauthorized,
+          _json(_detailJson(goals: [_miniGoal])),
+        ],
+      });
+
+      await lessonContent.changeGoals(_lessonItem, [_miniGoal]);
+
+      expect(server.log, contains('POST /login'));
+      expect(server.writes, [changeGoals, changeGoals]);
+    });
+
+    test('refuses bad goals before any request, in changeGoals and in the '
+        'creates', () async {
+      final (server, lessonContent) = await serve({});
+      final bad = <(String, LearningGoalRef)>[
+        (
+          'not a UUID',
+          LearningGoalRef(
+            id: '42',
+            leerplanId: _miniGoal.leerplanId,
+            type: 'miniDB',
+          ),
+        ),
+        (
+          'empty leerplanId',
+          LearningGoalRef(id: _miniGoal.id, leerplanId: ' ', type: 'miniDB'),
+        ),
+        (
+          'empty type',
+          LearningGoalRef(
+            id: _miniGoal.id,
+            leerplanId: _miniGoal.leerplanId,
+            type: '',
+          ),
+        ),
+        (
+          'white space around type',
+          LearningGoalRef(
+            id: _miniGoal.id,
+            leerplanId: _miniGoal.leerplanId,
+            type: 'miniDB ',
+          ),
+        ),
+        (
+          'the same id in another curriculum',
+          LearningGoalRef(
+            id: _miniGoal.id.toUpperCase(),
+            leerplanId: _eindtermen.leerplanId,
+            type: 'miniDB',
+          ),
+        ),
+      ];
+      for (final (reason, goal) in bad) {
+        await expectLater(
+          lessonContent.changeGoals(_lessonItem, [_miniGoal, goal]),
+          throwsA(
+            isA<ArgumentError>().having((e) => e.name, 'name', 'goals[1]'),
+          ),
+          reason: reason,
+        );
+        await expectLater(
+          lessonContent.createLesson(name: 'Lussen', goals: [_miniGoal, goal]),
+          throwsArgumentError,
+          reason: reason,
+        );
+        await expectLater(
+          lessonContent.createAssignment(
+            name: 'Taak',
+            assignmentTypeId: _typeId,
+            goals: [_miniGoal, goal],
+          ),
+          throwsArgumentError,
+          reason: reason,
+        );
+      }
+      await expectLater(
+        lessonContent.changeGoals(
+          LessonContentItem.fromJson(const {
+            'id': _lessonId,
+            'platformId': 4069,
+            'type': 'method-lessons',
+          }),
+          [_miniGoal],
+        ),
+        throwsArgumentError,
+      );
+      expect(server.log, isEmpty);
+    });
+
+    test('createLesson sends the goals in the create, and checks them in the '
+        'read-back', () async {
+      final (server, lessonContent) = await serve({
+        _createLesson: [_json('{"id":"$_lessonId"}', status: 201)],
+        _getLesson: [
+          _json(
+            _detailJson(
+              courses: [],
+              weblinks: [],
+              attachments: [],
+              goals: [_eindtermen, _miniGoal],
+            ),
+          ),
+        ],
+      });
+
+      final detail = await lessonContent.createLesson(
+        name: 'Lussen',
+        goals: [_eindtermen, _miniGoal],
+      );
+
+      final body = server.bodiesOf(_createLesson).single! as Map;
+      expect(body['goals'], [_eindtermen.toWire(), _miniGoal.toWire()]);
+      expect(detail.goals, [_eindtermen, _miniGoal]);
+    });
+
+    test('createAssignment sends the goals too', () async {
+      final (server, lessonContent) = await serve({
+        _types: [_json(_typeList)],
+        _createAssignment: [_json('{"id":"$_assignmentId"}', status: 201)],
+        'GET $_api/assignments/$_assignmentId': [
+          _json(
+            _detailJson(
+              id: _assignmentId,
+              type: 'assignments',
+              courses: [],
+              weblinks: [],
+              attachments: [],
+              goals: [_miniGoal],
+            ),
+          ),
+        ],
+      });
+
+      final detail = await lessonContent.createAssignment(
+        name: 'Lussen',
+        assignmentTypeId: _typeId,
+        goals: [_miniGoal],
+      );
+
+      final body = server.bodiesOf(_createAssignment).single! as Map;
+      expect(body['goals'], [_miniGoal.toWire()]);
+      expect(detail.goals, [_miniGoal]);
+    });
+
+    test('a create whose read-back lacks the goals sent: unconfirmed, with '
+        'the ID of the lesfiche that was made', () async {
+      final (server, lessonContent) = await serve({
+        _createLesson: [_json('{"id":"$_lessonId"}', status: 201)],
+        _getLesson: [
+          _json(_detailJson(courses: [], weblinks: [], attachments: [])),
+        ],
+      });
+
+      await expectLater(
+        lessonContent.createLesson(name: 'Lussen', goals: [_miniGoal]),
+        throwsA(
+          _unconfirmed(
+            allOf(
+              contains('the goals sent (it has none)'),
+              contains('was made with ID $_lessonId'),
+            ),
+            lessonContentId: _lessonId,
+          ),
+        ),
+      );
+      expect(server.writes, [_createLesson]);
     });
   });
 

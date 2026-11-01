@@ -11,6 +11,7 @@
 library;
 
 import '../exceptions.dart';
+import 'goal_models.dart';
 import 'planner_models.dart';
 
 /// The kind of a lesfiche (`type`): a lesson or an assignment.
@@ -225,8 +226,9 @@ class LessonContentItem {
   final Map<String, bool> capabilities;
 
   /// The lesfiche as the module gave it (decoded JSON, read-only), for the
-  /// fields this model does not cover (the goals, for instance; the
-  /// weblinks and attachments themselves are in a [LessonContentDetail]).
+  /// fields this model does not cover (the mini-database items, for
+  /// instance; the weblinks, attachments and goals themselves are in a
+  /// [LessonContentDetail]).
   final Map<String, dynamic> raw;
 
   const LessonContentItem({
@@ -622,6 +624,11 @@ class LessonContentDetail extends LessonContentItem {
   /// file name).
   final List<LessonContentAttachment> attachments;
 
+  /// The learning goals of the lesfiche (`goals`, #223), in the module's
+  /// order: references to name with `GoalService.resolve`. Set with
+  /// `LessonContentService.changeGoals`, or in the create.
+  final List<LearningGoalRef> goals;
+
   LessonContentDetail({
     required super.id,
     required super.platformId,
@@ -640,6 +647,7 @@ class LessonContentDetail extends LessonContentItem {
     super.assignmentType,
     this.weblinks = const [],
     this.attachments = const [],
+    this.goals = const [],
     super.partnerWeblinkCount,
     super.deeplinkCount,
     super.capabilities,
@@ -687,6 +695,16 @@ class LessonContentDetail extends LessonContentItem {
         'the attachments of $what',
         LessonContentAttachment.fromJson,
       ),
+      goals: _objects(json['goals'], 'the goals of $what', (goal) {
+        try {
+          return LearningGoalRef.fromJson(goal);
+        } on FormatException catch (e) {
+          throw SmartschoolLessonContentError(
+            'The Lesfiches module gave one of the goals of $what in an '
+            'unknown shape: ${e.message}',
+          );
+        }
+      }),
       partnerWeblinkCount: item.partnerWeblinkCount,
       deeplinkCount: item.deeplinkCount,
       capabilities: item.capabilities,

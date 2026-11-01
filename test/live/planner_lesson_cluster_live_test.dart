@@ -216,10 +216,15 @@ void main() {
         expect(made.lessonCluster, cluster);
         expect(made.isCrossCurricular, isFalse);
         expect(made.period.wholeDay, isTrue);
-        expect(made.period.from, monday);
+        // The days as the planner writes them, in the school's offset.
+        final period = made.raw['period'] as Map;
         expect(
-          made.period.to,
-          DateTime(friday.year, friday.month, friday.day, 23, 59, 59),
+          period['dateTimeFrom'],
+          startsWith('${PlannerService.formatDate(monday)}T00:00:00'),
+        );
+        expect(
+          period['dateTimeTo'],
+          startsWith('${PlannerService.formatDate(friday)}T23:59:59'),
         );
         expect(
           made.participantGroups.map((g) => g.id).toSet(),

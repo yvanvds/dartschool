@@ -512,8 +512,20 @@ void main() {
       );
       expect(planned.isCrossCurricular, isFalse);
       expect(planned.period.wholeDay, isTrue);
-      expect(planned.period.from, DateTime(2027, 1, 11));
-      expect(planned.period.to, DateTime(2027, 1, 15, 23, 59, 59));
+      // The school's midnight and end of day (+01:00), whatever the time
+      // zone of the machine that runs the test.
+      expect(
+        planned.period.from.isAtSameMomentAs(
+          DateTime.parse('2027-01-11T00:00:00+01:00'),
+        ),
+        isTrue,
+      );
+      expect(
+        planned.period.to.isAtSameMomentAs(
+          DateTime.parse('2027-01-15T23:59:59+01:00'),
+        ),
+        isTrue,
+      );
       expect(planned.participantGroups.single.id, '4069_2001');
       expect(planned.organiserUsers.single.id, _me);
       expect(planned.plannedContent, hasLength(1));

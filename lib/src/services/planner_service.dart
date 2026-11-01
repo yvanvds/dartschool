@@ -2037,8 +2037,8 @@ class PlannerService {
             planned.id.toLowerCase() != cluster.id.toLowerCase()) {
           return 'a planned cluster of lesson cluster ${planned?.id}';
         }
-        if (!_sameDay(answer.period.from, firstDay) ||
-            !_sameDay(answer.period.to, lastDay)) {
+        if (_periodDay(answer, 'dateTimeFrom') != dayFrom ||
+            _periodDay(answer, 'dateTimeTo') != dayTo) {
           return 'a planned cluster from ${answer.period.from} to '
               '${answer.period.to}';
         }
@@ -3118,13 +3118,22 @@ class PlannerService {
   static int _schoolYear(DateTime day) =>
       day.month >= DateTime.september ? day.year : day.year - 1;
 
-  /// Whether [time] falls on the date of [day], in local time.
-  static bool _sameDay(DateTime time, DateTime day) {
-    final local = time.toLocal();
-    return local.year == day.year &&
-        local.month == day.month &&
-        local.day == day.day;
+  /// The day of the start (`dateTimeFrom`) or end (`dateTimeTo`) of the
+  /// period of [element], as the planner wrote it: the date in the
+  /// planner's own offset (`2027-01-11T00:00:00+01:00` is `2027-01-11`),
+  /// whatever the time zone of this machine (#230). An answer without a
+  /// written date gives the date of the parsed period in local time.
+  static String _periodDay(PlannedElement element, String key) {
+    final period = element.raw['period'];
+    final text = period is Map ? period[key] : null;
+    final match = text is String ? _leadingDay.firstMatch(text.trim()) : null;
+    if (match != null) return match.group(1)!;
+    return formatDate(
+      key == 'dateTimeFrom' ? element.period.from : element.period.to,
+    );
   }
+
+  static final _leadingDay = RegExp(r'^(\d{4}-\d{2}-\d{2})');
 
   static void _checkPeriod(DateTime from, DateTime to) {
     if (to.isBefore(from)) {

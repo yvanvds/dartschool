@@ -4,8 +4,10 @@ import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html_parser;
 
 import '../exceptions.dart';
+import '../models/goal_models.dart';
 import '../models/planner_models.dart';
 import '../session.dart';
+import 'goal_refs.dart';
 import 'lesson_content_service.dart';
 
 export '../models/planner_models.dart';
@@ -27,9 +29,11 @@ export '../models/planner_models.dart';
 /// lesson as a new lesfiche ([saveAsLessonContent]) and clears the hour
 /// again ([clearLesson]); it adds an assignment (a test, a
 /// task) for classes ([planAssignment]) and moves it to the planner's trash
-/// again ([trashAssignment]); and it changes the name and info of an own
+/// again ([trashAssignment]); it changes the name and info of an own
 /// lesson or assignment ([renameElement], [changePublicInfo],
-/// [changePrivateInfo]). See *Writes* below.
+/// [changePrivateInfo]), and the learning goals of an own lesson
+/// ([changeGoals], read in [PlannedElementDetail.goals]). See *Writes*
+/// below.
 ///
 /// For the planner's workload view ("werkbelasting") it reads the school's
 /// assignment types ([getAssignmentTypes]), the assignments of classes in a
@@ -101,8 +105,8 @@ export '../models/planner_models.dart';
 /// ### Writes
 /// Only [planLesson], [planLessonContent], [replaceWithLessonContent],
 /// [planLessonContentInto], [clearLesson], [planAssignment],
-/// [trashAssignment], [renameElement], [changePublicInfo] and
-/// [changePrivateInfo] change the planner, each with one POST for one
+/// [trashAssignment], [renameElement], [changePublicInfo],
+/// [changePrivateInfo] and [changeGoals] change the planner, each with one POST for one
 /// element ([planLessonContentInto]: one POST for all its hours);
 /// [saveAsLessonContent] adds a lesfiche to the Lesfiches library through
 /// the planner, with one POST, and leaves the lesson as it is:
@@ -260,12 +264,14 @@ class PlannerService {
   /// `planned-assignments/blanco?waitForRefresh=true` ([planAssignment]),
   /// `planned-assignments/{platformId}/{id}/trash` ([trashAssignment]), and
   /// `{plannedElementType}/{platformId}/{id}/rename`,
-  /// `.../change-public-info` and `.../change-private-info` (the edits). The
+  /// `.../change-public-info` and `.../change-private-info` (the edits), and
+  /// `planned-lessons/{platformId}/{id}/change-goals` ([changeGoals]). The
   /// planner also answers POSTs on it that change the planner or the user's
   /// settings and that the service never sends: the favourites of the search
   /// (`quick-search/planner/mark-as-favourite` and `discard-as-favourite`),
   /// the restore from the trash (`.../trash/restore`), an assignment's
-  /// `announce` and `remove-announcement`, `update-in-source-module`, the
+  /// `announce` and `remove-announcement`, `update-in-source-module`,
+  /// `apply-curriculum-concordance`, `change-minidb-items`, the
   /// other bulk endpoints (`planned-elements/trash`,
   /// `planned-elements/delete`, `planned-elements/bulk/...`, the other
   /// `planned-elements/replace-with-...`), and
@@ -1389,6 +1395,106 @@ class PlannerService {
     value: newInfo,
     same: _sameHtml,
   );
+
+  /// Sets the learning goals of [lesson], a lesson of the authenticated
+  /// user's own planner, to [goals] (empty clears them), and returns the
+  /// lesson as the planner holds it after the change (#226). Meant for a
+  /// lesson filled in by hand ([planLesson]); a lesson planned from a
+  /// lesfiche gets the lesfiche's goals, and can be changed the same way.
+  ///
+  /// The list replaces the goals the lesson had, as in the planner's web
+  /// client, which sends the whole selection every time: to add a goal, send
+  /// [PlannedElementDetail.goals] with it (`[...?detail.goals, goal]`). A
+  /// goal of `GoalService.getCurriculum` gives its reference with
+  /// [SelectableGoal.ref]; `GoalService.resolve` names the goals of the
+  /// answer. Pupils see a lesson's goals.
+  ///
+  /// Before it sends anything, it reads the lesson again (its detail) and
+  /// refuses with a [SmartschoolPlannerWriteRefusedError] a lesson that is
+  /// not organised by the authenticated user
+  /// ([PlannerWriteRefusalReason.notOwn]), or whose capabilities do not
+  /// allow the change (`canUserEdit` and `canUserChangeGoals`,
+  /// [PlannerWriteRefusalReason.notAllowed]); a lesson that is gone throws a
+  /// [SmartschoolPlannedElementNotFoundError]. When the lesson already has
+  /// exactly these goals (in any order), it sends nothing and returns the
+  /// lesson as read.
+  ///
+  /// Sends `POST planned-lessons/{platformId}/{id}/change-goals` with
+  /// `{"goals": [{id, goalId, leerplanId, type}]}` (`goalId` the same as
+  /// `id`, [LearningGoalRef.toWire]; the key is `goals` here, `newGoals` in
+  /// the Lesfiches module), which the planner answers with `200` and the
+  /// whole lesson (tried live, 2026-11-01, with a goal of a school
+  /// mini-database on a lesson filled in by hand). A goal given twice is
+  /// sent once. The change sets a value, so it is retried once after logging
+  /// in again, as a read is. When the answer is not the lesson with exactly
+  /// the goals sent (or no usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read the lesson again before
+  /// trying again. The planner, like the Lesfiches module, is not known to
+  /// check that a goal exists: name the goals with `GoalService.resolve`
+  /// when that matters.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [lesson] is
+  /// not a [PlannedElementType.lesson] (the goals of an assignment were not
+  /// tried), or for a goal whose `id` is not a UUID, with an empty
+  /// `leerplanId` or `type` (or white space around one), or with the `id` of
+  /// another goal of the list in another curriculum or of another type.
+  Future<PlannedElementDetail> changeGoals(
+    PlannedElement lesson,
+    Iterable<LearningGoalRef> goals,
+  ) async {
+    const operation = 'changeGoals';
+    if (lesson.type != PlannedElementType.lesson) {
+      throw ArgumentError.value(
+        lesson,
+        'lesson',
+        'is a ${lesson.typeName}, not a lesson (planned-lessons); the goals '
+            'of another kind of element were not tried',
+      );
+    }
+    final newGoals = GoalRefs.checked(goals);
+    final me = await _ownUserId();
+    final current = await _detail(
+      lesson.typeName,
+      lesson.platformId,
+      lesson.id,
+    );
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const [
+      'canUserEdit',
+      'canUserChangeGoals',
+    ]);
+    final held = current.goals;
+    if (held != null && GoalRefs.same(held, newGoals)) return current;
+    final what = _describe(current);
+    return _write(
+      operation,
+      path:
+          '$_apiPath/${Uri.encodeComponent(current.typeName)}/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}/'
+          'change-goals',
+      body: {
+        'goals': [for (final goal in newGoals) goal.toWire()],
+      },
+      change:
+          'the change of the goals of $what to '
+          '${GoalRefs.describe(newGoals)}',
+      retryAfterLogin: true,
+      unconfirmed:
+          'They may or may not have been changed: read the lesson again '
+          '(getDetail) before trying again.',
+      problemOf: (answer) {
+        if (answer.id.toLowerCase() != current.id.toLowerCase()) {
+          return 'element ${answer.id}';
+        }
+        final answered = answer.goals;
+        if (answered == null) return 'no goals';
+        if (!GoalRefs.same(answered, newGoals)) {
+          return 'the goals ${GoalRefs.describe(answered)}';
+        }
+        return null;
+      },
+    );
+  }
 
   /// Clears [lesson], a lesson in a lesson hour of the authenticated user's
   /// own planner: the hour is an empty timetable slot again, as the

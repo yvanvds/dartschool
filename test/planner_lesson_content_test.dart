@@ -969,6 +969,7 @@ void main() {
 
   _issue224(serve);
   _issue225(serve);
+  _issue226(serve);
 
   // ---------------------------------------------------------------------------
   // The whole flow
@@ -2460,5 +2461,507 @@ void _issue225(
       _save,
       'POST $_api/planned-placeholders/4069/$_slot2Id/replace/planned-lessons',
     ]);
+  });
+}
+
+// -----------------------------------------------------------------------------
+// #226: set and read the learning goals of an own planned lesson
+// -----------------------------------------------------------------------------
+//
+// Tried live on 2026-11-01 (the developer's own planner, a lesson filled in
+// by hand, cleared again): `POST planned-lessons/{platformId}/{id}/
+// change-goals` with `{"goals": [{id, goalId, leerplanId, type}]}` (the key
+// `goals`, not the Lesfiches module's `newGoals`) -> 200 with the whole
+// lesson, whose `goals` are `[{id, leerplanId, type}]` (no `goalId`), and
+// the detail read after the same. Tried with a goal of a school
+// mini-database (`miniDB`). The answers below are made from [_typed], in
+// that shape; the goals are fakes.
+
+const _changeGoalsPath = '$_typedPath/change-goals';
+const _changeGoals = 'POST $_changeGoalsPath';
+const _changeLessonGoals = 'POST $_lessonPath/change-goals';
+
+/// Two goals of a school mini-database, and one of another curriculum.
+const _goal1 = LearningGoalRef(
+  id: '90000000-0000-4000-8000-000000000101',
+  leerplanId: '90000000-0000-4000-8000-000000000100',
+  type: 'miniDB',
+);
+const _goal2 = LearningGoalRef(
+  id: '90000000-0000-4000-8000-000000000102',
+  leerplanId: '90000000-0000-4000-8000-000000000100',
+  type: 'miniDB',
+);
+const _goal3 = LearningGoalRef(
+  id: '90000000-0000-4000-8000-000000000201',
+  leerplanId: '90000000-0000-4000-8000-000000000200',
+  type: 'eindtermen-derde-graad-doorstroom',
+);
+
+/// [_typed] with [goals], as the planner stores them (no `goalId`).
+String _typedWithGoals(List<LearningGoalRef> goals) => _with(
+  _typed,
+  changes: {
+    'goals': [for (final goal in goals) goal.toJson()],
+  },
+);
+
+void _issue226(
+  Future<(_Smartschool, PlannerService, SmartschoolClient)> Function(
+    Map<String, List<_Answer>> answers, {
+    Map<String, Object Function(RequestOptions options)> failures,
+    _Answer? Function(String label, Object? body)? respond,
+  })
+  serve,
+) {
+  group('PlannedElementDetail.goals (#226)', () {
+    PlannedElementDetail detail(String json) =>
+        PlannedElementDetail.fromJson(jsonDecode(json) as Map<String, dynamic>);
+
+    test('a lesson\'s goals as LearningGoalRefs, in the planner\'s order; '
+        '[] for a lesson without; null where the planner gives none', () {
+      expect(detail(_planned).goals?.map((g) => g.toJson()), [
+        {
+          'id': '90000000-0000-4000-8000-000000000001',
+          'leerplanId': '90000000-0000-4000-8000-000000000010',
+          'type': 'llinkid',
+        },
+        {
+          'id': '90000000-0000-4000-8000-000000000002',
+          'leerplanId': '90000000-0000-4000-8000-000000000010',
+          'type': 'llinkid',
+        },
+      ]);
+      expect(detail(_typed).goals, isEmpty);
+      expect(detail(_slot).goals, isNull);
+      expect(
+        detail(jsonEncode(_short(_typedId, '11:10', '12:00'))).goals,
+        isNull,
+      );
+      // A `goalId` next to them, as the web clients send it, is no matter.
+      expect(
+        detail(
+          _with(
+            _typed,
+            changes: {
+              'goals': [_goal1.toWire()],
+            },
+          ),
+        ).goals?.single.toJson(),
+        _goal1.toJson(),
+      );
+    });
+
+    test('a goal in another shape, or goals that are not a list: a '
+        'SmartschoolPlannerError', () {
+      for (final goals in [
+        'x',
+        ['x'],
+        [
+          {'id': _goal1.id, 'type': 'miniDB'},
+        ],
+        [
+          {'id': '', 'leerplanId': _goal1.leerplanId, 'type': 'miniDB'},
+        ],
+      ]) {
+        expect(
+          () => detail(_with(_typed, changes: {'goals': goals})),
+          throwsA(isA<SmartschoolPlannerError>()),
+          reason: '$goals',
+        );
+      }
+    });
+  });
+
+  group('PlannerService.changeGoals (#226)', () {
+    const op = 'changeGoals';
+
+    test('reads the lesson again, sends {"goals": [{id, goalId, leerplanId, '
+        'type}]} (a goal given twice once), and returns the lesson as the '
+        'planner answers it', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_typed)],
+        _changeGoals: [
+          _json(_typedWithGoals([_goal1, _goal3])),
+        ],
+      });
+
+      final lesson = await planner.changeGoals(_listed(_typed), [
+        _goal1,
+        _goal3,
+        LearningGoalRef(
+          id: _goal1.id.toUpperCase(),
+          leerplanId: _goal1.leerplanId,
+          type: _goal1.type,
+        ),
+      ]);
+
+      expect(server.moduleLog, [_readTyped, _changeGoals]);
+      expect(server.bodyOf(_changeGoals), {
+        'goals': [_goal1.toWire(), _goal3.toWire()],
+      });
+      expect(server.bodyOf(_changeGoals), isNot(contains('newGoals')));
+      expect(lesson.id, _typedId);
+      expect(lesson.goals?.map((g) => g.id), [_goal1.id, _goal3.id]);
+    });
+
+    test('an empty list clears the goals: {"goals": []}', () async {
+      final (server, planner, _) = await serve({
+        _readLesson: [_json(_planned)],
+        _changeLessonGoals: [
+          _json(_with(_planned, changes: {'goals': <Object>[]})),
+        ],
+      });
+
+      final lesson = await planner.changeGoals(_listed(_planned), const []);
+
+      expect(server.moduleLog, [_readLesson, _changeLessonGoals]);
+      expect(server.bodyOf(_changeLessonGoals), {'goals': <Object>[]});
+      expect(lesson.goals, isEmpty);
+    });
+
+    test('the goals the lesson has already, in any order: nothing sent, the '
+        'lesson returned as read', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [
+          _json(_typedWithGoals([_goal1, _goal2])),
+        ],
+      });
+
+      final lesson = await planner.changeGoals(_listed(_typed), [
+        _goal2,
+        _goal1,
+      ]);
+
+      expect(server.moduleLog, [_readTyped]);
+      expect(lesson.goals?.map((g) => g.id), [_goal1.id, _goal2.id]);
+
+      // So is an empty list for a lesson without goals.
+      final (other, planner2, _) = await serve({
+        _readTyped: [_json(_typed)],
+      });
+      await planner2.changeGoals(_listed(_typed), const []);
+      expect(other.moduleLog, [_readTyped]);
+    });
+
+    test('an element that is not a lesson, or a goal the checks refuse: an '
+        'ArgumentError before any request', () async {
+      final (server, planner, _) = await serve({});
+
+      for (final (element, goals) in [
+        (_slot, [_goal1]),
+        (
+          _typed,
+          [
+            const LearningGoalRef(
+              id: 'not-a-uuid',
+              leerplanId: 'x',
+              type: 'miniDB',
+            ),
+          ],
+        ),
+        (
+          _typed,
+          [LearningGoalRef(id: _goal1.id, leerplanId: '', type: 'miniDB')],
+        ),
+        (
+          _typed,
+          [
+            LearningGoalRef(
+              id: _goal1.id,
+              leerplanId: _goal1.leerplanId,
+              type: ' miniDB',
+            ),
+          ],
+        ),
+        (
+          _typed,
+          [
+            _goal1,
+            LearningGoalRef(
+              id: _goal1.id,
+              leerplanId: _goal3.leerplanId,
+              type: _goal3.type,
+            ),
+          ],
+        ),
+      ]) {
+        expect(
+          () => planner.changeGoals(_listed(element), goals),
+          throwsArgumentError,
+          reason: '$goals',
+        );
+      }
+      expect(server.moduleLog, isEmpty);
+    });
+
+    test("a colleague's lesson: notOwn, nothing sent", () async {
+      final colleagues = _with(
+        _typed,
+        changes: {
+          'organisers': {
+            'users': [_colleague],
+            'groups': <Object>[],
+          },
+        },
+      );
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(colleagues)],
+      });
+
+      await expectLater(
+        planner.changeGoals(_listed(_typed), [_goal1]),
+        throwsA(
+          _refusedBy(
+            op,
+            reason: PlannerWriteRefusalReason.notOwn,
+            element: _typedId,
+          ),
+        ),
+      );
+      expect(server.moduleLog, [_readTyped]);
+    });
+
+    for (final flag in ['canUserChangeGoals', 'canUserEdit']) {
+      test('a lesson without $flag: notAllowed, with the flag', () async {
+        final (server, planner, _) = await serve({
+          _readTyped: [
+            _json(_with(_typed, capabilities: {flag: false})),
+          ],
+        });
+
+        await expectLater(
+          planner.changeGoals(_listed(_typed), [_goal1]),
+          throwsA(
+            _refusedBy(
+              op,
+              reason: PlannerWriteRefusalReason.notAllowed,
+              element: _typedId,
+              flags: [flag],
+            ),
+          ),
+        );
+        expect(server.moduleLog, [_readTyped]);
+      });
+    }
+
+    test('a lesson that is gone: SmartschoolPlannedElementNotFoundError, '
+        'nothing sent', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_notFound, status: 404)],
+      });
+
+      await expectLater(
+        planner.changeGoals(_listed(_typed), [_goal1]),
+        throwsA(isA<SmartschoolPlannedElementNotFoundError>()),
+      );
+      expect(server.moduleLog, [_readTyped]);
+    });
+
+    group('sent, but not confirmed:', () {
+      Future<void> expectUnconfirmed(
+        List<_Answer> answers,
+        Object? message, {
+        Map<String, Object Function(RequestOptions options)> failures =
+            const {},
+      }) async {
+        final (server, planner, _) = await serve({
+          _readTyped: [_json(_typed)],
+          _changeGoals: answers,
+        }, failures: failures);
+        await expectLater(
+          planner.changeGoals(_listed(_typed), [_goal1, _goal2]),
+          throwsA(
+            allOf(
+              _unconfirmedBy(op, message),
+              isA<SmartschoolPlannerSaveUnconfirmedError>().having(
+                (e) => e.message,
+                'message',
+                contains('read the lesson again'),
+              ),
+            ),
+          ),
+        );
+        expect(server.moduleLog.where((l) => l == _changeGoals), hasLength(1));
+      }
+
+      test('an answer with other goals', () async {
+        await expectUnconfirmed([
+          _json(_typedWithGoals([_goal1])),
+        ], contains('the goals [${_goal1.id}]'));
+      });
+
+      test('an answer without goals', () async {
+        await expectUnconfirmed([
+          _json(_with(_typed, changes: {'goals': null})),
+        ], contains('no goals'));
+      });
+
+      test('an answer of another element', () async {
+        await expectUnconfirmed([
+          _json(
+            _with(
+              _typedWithGoals([_goal1, _goal2]),
+              changes: {'id': _lessonId},
+            ),
+          ),
+        ], contains('element $_lessonId'));
+      });
+
+      test('another status than 200', () async {
+        await expectUnconfirmed([
+          _json('{"status":400,"title":"Bad Request"}', status: 400),
+        ], contains('HTTP 400'));
+      });
+
+      test('no answer: the connection drops after the change went '
+          'out', () async {
+        await expectUnconfirmed(
+          const [],
+          contains('no answer came in'),
+          failures: {_changeGoals: _dropped},
+        );
+      });
+    });
+
+    test('a session refused for the change: logs in again and sends it once '
+        'more, as the other edits', () async {
+      final (server, planner, _) = await serve({
+        _readTyped: [_json(_typed)],
+        _changeGoals: [
+          _toLogin,
+          _json(_typedWithGoals([_goal1])),
+        ],
+      });
+
+      final lesson = await planner.changeGoals(_listed(_typed), [_goal1]);
+
+      expect(server.log, contains('GET /login'));
+      expect(server.moduleLog.where((l) => l == _changeGoals), hasLength(2));
+      expect(lesson.goals?.single.id, _goal1.id);
+    });
+  });
+
+  test('the flow of #226 against a planner and a library that keep their '
+      'state: find a lesson typed in by hand in the own week, give it a '
+      'goal, add a second one to those it has, find them in its detail, '
+      'save the lesson as a lesfiche with them, and clear them '
+      'again', () async {
+    final elements = <String, Map<String, dynamic>>{
+      _typedId: jsonDecode(_typed) as Map<String, dynamic>,
+      _slot2Id: jsonDecode(_slot2) as Map<String, dynamic>,
+    };
+    final library = [
+      for (final item in jsonDecode(_fiches) as List)
+        item as Map<String, dynamic>,
+    ];
+    final details = <String, Map<String, dynamic>>{};
+
+    _Answer? smartschool(String label, Object? body) {
+      if (label == _readFiches) return _json(jsonEncode(library));
+      if (label == 'GET $_ownWeekPath') {
+        return _json(jsonEncode(elements.values.toList()));
+      }
+      final ficheRead = RegExp(
+        r'^GET /lesson-content/api/v1/lessons/([0-9a-f-]+)$',
+      ).firstMatch(label);
+      if (ficheRead != null) {
+        final detail = details[ficheRead[1]];
+        return detail == null
+            ? _json(_notFound, status: 404)
+            : _json(jsonEncode(detail));
+      }
+      final read = RegExp(
+        r'^GET /planner/api/v1/(planned-[a-z-]+)/4069/([0-9a-f-]+)$',
+      ).firstMatch(label);
+      if (read != null) {
+        final element = elements[read[2]];
+        return element == null || element['plannedElementType'] != read[1]
+            ? _json(_notFound, status: 404)
+            : _json(jsonEncode(element));
+      }
+      final change = RegExp(
+        r'^POST /planner/api/v1/planned-lessons/4069/([0-9a-f-]+)/'
+        r'change-goals$',
+      ).firstMatch(label);
+      if (change != null) {
+        // Stored without the goalId, as seen live.
+        final lesson = elements[change[1]]!;
+        lesson['goals'] = [
+          for (final goal in (body! as Map)['goals'] as List)
+            Map<String, dynamic>.of(goal as Map<String, dynamic>)
+              ..remove('goalId'),
+        ];
+        return _json(jsonEncode(lesson));
+      }
+      final save = RegExp(
+        r'^POST /planner/api/v1/planned-lessons/4069/([0-9a-f-]+)/'
+        r'save-in-source-module$',
+      ).firstMatch(label);
+      if (save != null) {
+        // The lesson's goals came along live.
+        final lesson = elements[save[1]]!;
+        final item = _savedItem(name: (body! as Map)['newName'] as String);
+        library.add(item);
+        details[_savedFicheId] = {
+          ...item,
+          'privateInfo': lesson['privateInfo'],
+          'goals': lesson['goals'],
+        };
+        return _json('{}');
+      }
+      return null;
+    }
+
+    final (server, service, _) = await serve({}, respond: smartschool);
+    final typed = (await service.getPlannedElements(
+      await service.ownCalendar(),
+      from: DateTime.utc(2026, 11, 16),
+      to: DateTime.utc(2026, 11, 20, 22, 59, 59),
+    )).singleWhere((e) => e.type == PlannedElementType.lesson);
+    expect((await service.getDetail(typed)).goals, isEmpty);
+
+    final one = await service.changeGoals(typed, [_goal1]);
+    expect(one.goals?.map((g) => g.id), [_goal1.id]);
+
+    final two = await service.changeGoals(typed, [...?one.goals, _goal2]);
+    expect(two.goals?.map((g) => g.id), [_goal1.id, _goal2.id]);
+    final read = await service.getDetail(typed);
+    expect(read.goals?.map((g) => g.toJson()), [
+      _goal1.toJson(),
+      _goal2.toJson(),
+    ]);
+
+    // The same goals again: nothing sent.
+    await service.changeGoals(typed, [_goal2, _goal1]);
+
+    final fiche = await service.saveAsLessonContent(typed);
+    expect(fiche.goals.map((g) => g.id), [_goal1.id, _goal2.id]);
+
+    final cleared = await service.changeGoals(typed, const []);
+    expect(cleared.goals, isEmpty);
+    expect((await service.getDetail(typed)).goals, isEmpty);
+
+    expect(server.moduleLog.where((l) => l.startsWith('POST')), [
+      _changeGoals,
+      _changeGoals,
+      _save,
+      _changeGoals,
+    ]);
+    expect(
+      [
+        for (final r in server.requests)
+          if (r.label == _changeGoals) r.body,
+      ],
+      [
+        {
+          'goals': [_goal1.toWire()],
+        },
+        {
+          'goals': [_goal1.toWire(), _goal2.toWire()],
+        },
+        {'goals': <Object>[]},
+      ],
+    );
   });
 }

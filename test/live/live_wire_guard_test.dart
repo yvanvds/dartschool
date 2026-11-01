@@ -3539,12 +3539,15 @@ void main() {
         final dio = _dio(server, guard);
 
         // The search (which only reads, but the live suite does not send it),
-        // a change of the user's favourites, the clear of a lesson hour, and
+        // a change of the user's favourites, the clear of a lesson hour, the
+        // change of a lesson's learning goals (#226: pupils see them), and
         // the move of a whole period to the trash.
         final others = [
           '/planner/api/v1/quick-search/planner/search',
           '/planner/api/v1/quick-search/planner/mark-as-favourite',
           '/planner/api/v1/planned-elements/clear',
+          '/planner/api/v1/planned-lessons/4069/'
+              'e0000000-0000-4000-8000-000000000011/change-goals',
           '/planner/api/v1/planned-elements/user/4069_1001_0/trash'
               '?from=2026-10-05&to=2026-10-09',
         ];

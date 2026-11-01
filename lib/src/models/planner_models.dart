@@ -21,6 +21,7 @@
 library;
 
 import '../exceptions.dart';
+import 'goal_models.dart';
 
 // ---------------------------------------------------------------------------
 // Calendars
@@ -1236,8 +1237,9 @@ class PlannedElement {
 /// is up to date at once after a change in the planner; the calendar list
 /// may still show the old state for a few seconds.
 ///
-/// The partner weblinks, deeplinks and goals of the element are only in
-/// [raw] (`partnerWeblinks`, `deeplinks`, `goals`).
+/// The partner weblinks and deeplinks of the element are only in [raw]
+/// (`partnerWeblinks`, `deeplinks`); its learning goals are in [goals]
+/// (#226).
 class PlannedElementDetail extends PlannedElement {
   /// The old name of [privateInfo]: it held the same text in every answer
   /// seen. HTML; `""` when empty.
@@ -1282,6 +1284,13 @@ class PlannedElementDetail extends PlannedElement {
   /// element (it gives none for a timetable slot).
   final List<PlannerWeblink>? weblinks;
 
+  /// The learning goals of the element (`goals`, #226), in the planner's
+  /// order: references to name with `GoalService.resolve`. `[]` when it has
+  /// none, `null` when the planner gave no goals for the element. A lesson
+  /// planned from a lesfiche gets the lesfiche's goals; an own lesson's are
+  /// set with `PlannerService.changeGoals`.
+  final List<LearningGoalRef>? goals;
+
   PlannedElementDetail._(
     super.element, {
     required this.info,
@@ -1294,6 +1303,7 @@ class PlannedElementDetail extends PlannedElement {
     this.labels,
     this.attachments,
     this.weblinks,
+    this.goals,
   }) : super._copy();
 
   /// Parses the detail of an element as the planner gives it; see
@@ -1339,6 +1349,16 @@ class PlannedElementDetail extends PlannedElement {
         'the weblinks of $what',
         PlannerWeblink.fromJson,
       ),
+      goals: _optionalObjects(json['goals'], 'the goals of $what', (goal) {
+        try {
+          return LearningGoalRef.fromJson(goal);
+        } on FormatException catch (e) {
+          throw SmartschoolPlannerError(
+            'The planner gave one of the goals of $what in an unknown shape: '
+            '${e.message}',
+          );
+        }
+      }),
     );
   }
 

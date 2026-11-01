@@ -429,18 +429,26 @@ void main() {
       expect(server.fromRpc, _loginAndRetry);
     });
 
-    test('to the start page in a session Smartschool accepts: a '
-        'SmartschoolSkoreError that names it, without a login', () async {
+    test('to the start page in a session Smartschool accepts: Skore\'s '
+        'refusal (a pupil account, seen live, #168), a '
+        'SmartschoolSkoreAccessDeniedError for the gradebook, without a '
+        'login', () async {
       final server = _Smartschool(initRedirect: '/?module=Homepage');
       final gradebooks = await serve(server);
 
       await expectLater(
         gradebooks.getGradebook(_gedrag),
         throwsA(
-          _skoreError(
-            'Skore answered the RPC call init of its gradebook with HTTP '
-            '302, a redirect to /?module=Homepage.',
-          ),
+          isA<SmartschoolSkoreAccessDeniedError>()
+              .having((e) => e.area, 'area', SkoreAccessArea.gradebook)
+              .having(
+                (e) => e.message,
+                'message',
+                allOf(
+                  contains('refused the RPC call init of its gradebook'),
+                  contains("Smartschool's start page"),
+                ),
+              ),
         ),
       );
       expect(server.fromRpc, ['RPC init']);

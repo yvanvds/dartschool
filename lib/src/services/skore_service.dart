@@ -1139,7 +1139,7 @@ class SkoreService {
   ///
   /// A [SmartschoolSkoreAccessDeniedError]:
   /// - an answer that sends the request on to Smartschool's start page
-  ///   ([_sentToStartPage]): Skore's answer to every request of a teacher
+  ///   ([SkoreRpc.sentToStartPage]): Skore's answer to every request of a teacher
   ///   without the rights (seen live, #91);
   /// - an answer with `403` (Forbidden): HTTP's answer for a request the
   ///   server refuses to the account (#83; not seen from Skore).
@@ -1160,7 +1160,7 @@ class SkoreService {
         area: area,
       );
     }
-    if (_sentToStartPage(response)) {
+    if (SkoreRpc.sentToStartPage(response)) {
       throw SmartschoolSkoreAccessDeniedError(
         'Skore refused $what to the account (it sent the request on to '
         "Smartschool's start page): it lacks the rights for "
@@ -1181,44 +1181,13 @@ class SkoreService {
     return response.data ?? '';
   }
 
-  /// Whether [response] sends its request on to Smartschool's start page,
-  /// `/?module=Homepage` on the same host: Skore's answer to a request of a
-  /// teacher without the rights for that part of Skore (#91).
-  ///
-  /// Seen live (2026-10-04) for every request of the service: a `302` with
-  /// `Location: /?module=Homepage` (an empty `text/html` body). The client
-  /// follows the redirect of a GET, which then ends on the start page with
-  /// `200` (its [Response.redirects] and [Response.realUri] say so); it does
-  /// not follow that of a POST, which comes as the `302` itself.
-  ///
-  /// A redirect elsewhere is not one: the client handles one to its login
-  /// pages, and another is an answer the service cannot use.
-  static bool _sentToStartPage(Response<String> response) {
-    final request = response.requestOptions.uri;
-    final status = response.statusCode ?? 0;
-    final location = Uri.tryParse(
-      response.headers.value('location')?.trim() ?? '',
-    );
-    final Uri target;
-    if (status >= 300 && status < 400 && location != null) {
-      target = request.resolveUri(location);
-    } else if (response.redirects.isNotEmpty) {
-      target = request.resolveUri(response.realUri);
-    } else {
-      return false;
-    }
-    return target.host == request.host &&
-        (target.path == '/' || target.path.isEmpty) &&
-        target.queryParameters['module'] == 'Homepage';
-  }
-
   /// Whether [response] is the answer to a GET that the client followed to
   /// the root of the site, `/` on the same host without a query, where
   /// Smartschool serves its start page (seen live, #194): Skore's redirect
   /// for a session it does not accept (#192).
   ///
   /// Skore's refusal to a teacher without the rights sends the request on to
-  /// the start page with a query (`/?module=Homepage`, [_sentToStartPage]),
+  /// the start page with a query (`/?module=Homepage`, [SkoreRpc.sentToStartPage]),
   /// so it is not one.
   static bool _sentToSiteRoot(Response<String> response) {
     if (response.redirects.isEmpty) return false;
@@ -1235,6 +1204,7 @@ class SkoreService {
       "Skore's report management (Rapporten > Modellen)",
     SkoreAccessArea.gradebookManagement =>
       "Skore's gradebook management (Puntenboeken)",
+    SkoreAccessArea.gradebook => "Skore's gradebook (Puntenboek)",
   };
 
   /// Decodes [body], the JSON answer to [what], at [page] (see

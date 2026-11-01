@@ -1726,6 +1726,10 @@ class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
 /// anything is sent, with a [SmartschoolSkoreChangeRefusedError] that says
 /// the course is not on the report, not with this error.
 ///
+/// Skore answers an account without its admin rights for the same course
+/// and report with HTTP `404` and "No courses found in results!" (seen live,
+/// #168): this error too.
+///
 /// A [SmartschoolSkoreError], so `catch` clauses for that type keep catching
 /// it. Its message names the course, the gradebook and the report by their
 /// IDs, and Skore's status and `message`, as the plain error did, and

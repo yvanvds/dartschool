@@ -218,6 +218,12 @@ enum SkoreAccessArea {
   /// whom they are shared with. What `getGradebookShares` reads, and what
   /// `shareGradebook` and `unshareGradebook` read and save.
   gradebookManagement,
+
+  /// The teacher's own gradebook (Puntenboek): what `SkoreGradebookService`
+  /// reads and saves. Skore sends its calls of an account without a
+  /// gradebook, such as a pupil's, on to the start page (seen live, #168).
+  /// `SkoreService.checkAccess` does not check it.
+  gradebook,
 }
 
 /// The access a teacher gets to a gradebook shared with them.

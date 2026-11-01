@@ -913,6 +913,10 @@ void main() {
           'HTTP 403: "Course not found in source!".',
         ),
         (
+          (status: 500, body: '{"message":"No courses found in results!"}'),
+          'HTTP 500: "No courses found in results!".',
+        ),
+        (
           (status: 404, body: '{"message":"Report not found"}'),
           'HTTP 404: "Report not found".',
         ),
@@ -944,9 +948,13 @@ void main() {
       }
 
       // Its message in another case, or with another ending: the same answer.
+      // And Skore's answer to an account without its admin rights for the
+      // same course and report (seen live, #168).
       for (final message in [
         'course NOT found in source',
         '  Course not found!  ',
+        'No courses found in results!',
+        'no COURSES found',
       ]) {
         final server = _Skore(
           reportAnswer: (_) =>

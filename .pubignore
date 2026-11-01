@@ -2,8 +2,11 @@
 /.vscode/
 /.github/
 
-# Local credentials and captured live data
-/credentials.yml
+# Local credentials and captured live data. Every *credentials.yml, in any
+# folder, as .gitignore has it since #168 (a second account's file, such as
+# student-credentials.yml, for DARTSCHOOL_LIVE_CREDENTIALS): pub reads only
+# this file, so a pattern in .gitignore alone does not keep it out.
+*credentials.yml
 /dev_dumps/
 
 # Per-developer codebase overview (in .gitignore too, but pub reads only this

@@ -29,6 +29,8 @@ import 'models/presence_models.dart'
         PresenceUnreadableAnswerKind;
 import 'models/skore_gradebook_models.dart'
     show SkoreEvaluation, SkoreFeedback, SkoreGrade, SkoreGradebook;
+import 'models/skore_project_models.dart'
+    show SkoreProject, SkoreProjectRating, SkoreProjectRatingChange;
 import 'models/skore_models.dart'
     show
         SkoreAccessArea,
@@ -1739,10 +1741,14 @@ class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
 /// is not on the report (#204): Skore answers its `getReportsResults` with
 /// HTTP 404 and `{"message": "Course not found in source!"}`. Seen live
 /// (2026-10-27, #195, #204) for gradebooks whose report Skore lists
-/// (`SkoreGradebookSheet.reports`), open: one of them a course that is on
-/// the report through a project ("Projecten"), not through evaluation
-/// results, which the library does not read. Skore's web client shows the
-/// answer as an error too.
+/// (`SkoreGradebookSheet.reports`), open: one of them a project course
+/// ("Projecten"). A project course is not on the
+/// gradebook's reports, by design: Skore's web client does not list a
+/// project gradebook under "Rapporten", and Skore answers this for it
+/// (also "No courses found in results!", and also with a rated project,
+/// seen live 2026-11-01). There is no report comment to write from the
+/// gradebook for a project course (`SkoreGradebookService.getProjectRatings`
+/// reads its ratings).
 ///
 /// It is not an answer the library cannot use, and not an empty report
 /// either (which would read as a report without pupils or comments): an app
@@ -1879,6 +1885,29 @@ class SmartschoolSkoreEvaluationPublishedError
   const SmartschoolSkoreEvaluationPublishedError(
     super.message, {
     required this.evaluation,
+  });
+}
+
+/// Thrown by `SkoreGradebookService.saveProjectRating` and
+/// `saveProjectRatings` when the project is published or scheduled to be
+/// (Skore's `isPublic`, or a `publicDateTime`, as Skore lists the project
+/// right before the save) and `allowPublished` is `false` (#204). **Nothing
+/// was saved.**
+///
+/// The project counterpart of [SmartschoolSkoreEvaluationPublishedError]:
+/// a rating in a published project is visible to its pupils. An app can
+/// tell the user so ([project]'s `isPublic` and `publicAt`) and ask for
+/// their yes before it passes `allowPublished: true`. A
+/// [SmartschoolSkoreChangeRefusedError] (and so a [SmartschoolSkoreError]).
+class SmartschoolSkoreProjectPublishedError
+    extends SmartschoolSkoreChangeRefusedError {
+  /// The project as Skore listed it right before the save (read again with
+  /// `getProjectList`, not the one passed).
+  final SkoreProject project;
+
+  const SmartschoolSkoreProjectPublishedError(
+    super.message, {
+    required this.project,
   });
 }
 
@@ -2740,6 +2769,56 @@ class SmartschoolSkoreGradeSaveUnconfirmedError
     required this.periodId,
     required this.evaluationId,
     required this.grades,
+    this.confirmed = const {},
+    required this.unconfirmed,
+  });
+}
+
+/// The [SmartschoolSkoreSaveUnconfirmedError] of
+/// `SkoreGradebookService.saveProjectRating` and `saveProjectRatings`
+/// (#204): the ratings went out to Skore's project sheet
+/// (`saveCategoryGrades`, at most 30 cells per request), but Skore's
+/// answers, or reading the project's ratings again afterwards, do not
+/// confirm all of them. Its message says, per change, what went wrong.
+///
+/// The changes in [confirmed] were saved: reading again showed them. **Those
+/// in [unconfirmed] may or may not have been.** Saving a rating again is
+/// harmless: a cell Skore already has is saved under its ID, and a new
+/// one, once Skore made it, is read with its ID before the next save. Read
+/// the ratings again (`SkoreGradebookService.getProjectRatings`) and save
+/// the ones that differ.
+///
+/// A change is unconfirmed when Skore did not answer its request with a
+/// list of cells (another HTTP status, an answer that is not JSON, a
+/// connection that dropped), when it was not sent (Smartschool stopped
+/// accepting the session for an earlier request), or when reading the
+/// ratings again failed or showed another level or `info` than the one
+/// sent.
+class SmartschoolSkoreProjectRatingSaveUnconfirmedError
+    extends SmartschoolSkoreSaveUnconfirmedError {
+  /// The gradebook of the project (its `gradebookId`).
+  final int gradebookId;
+
+  /// The project (its `SkoreProject.id`).
+  final int projectId;
+
+  /// Every change the call was saving, in the order given.
+  final List<SkoreProjectRatingChange> changes;
+
+  /// The changes reading again showed as sent, with the pupil's cell as
+  /// read then.
+  final Map<SkoreProjectRatingChange, SkoreProjectRating> confirmed;
+
+  /// The other changes, with why each is not confirmed, in the library's
+  /// words (with what reading again showed, when it did).
+  final Map<SkoreProjectRatingChange, String> unconfirmed;
+
+  const SmartschoolSkoreProjectRatingSaveUnconfirmedError(
+    super.message, {
+    super.cause,
+    required this.gradebookId,
+    required this.projectId,
+    required this.changes,
     this.confirmed = const {},
     required this.unconfirmed,
   });

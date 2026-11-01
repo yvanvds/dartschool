@@ -338,8 +338,11 @@ class SkoreGradebookPeriod {
   /// "Gesloten!" once closed).
   final String info;
 
-  /// Skore's `categoryMode` of the period: `1` for evaluations (the only
-  /// one seen live, and the one the gradebook service is about).
+  /// Skore's `categoryMode` of the period: `1` in every period seen live,
+  /// evaluation periods and project periods alike (#204). In a project
+  /// period (`SkoreGradebookService.getProjectPeriods`), `1` is the mode in
+  /// which Skore's web client opens its newer project sheet, the one the
+  /// service reads.
   final int categoryMode;
 
   const SkoreGradebookPeriod({

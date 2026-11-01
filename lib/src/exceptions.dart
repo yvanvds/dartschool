@@ -2829,7 +2829,9 @@ class SmartschoolLvsError extends SmartschoolException {
 /// user on to the start page. It answers the notes of another user with the
 /// pupil's own notes, under the pupil's own ID: `LvsService.getNotes` and
 /// `getAllNotes` throw this error for an answer about another pupil than the
-/// one asked for (its [statusCode] `200`), never that pupil's notes. A
+/// one asked for (its [statusCode] `200`), never that pupil's notes. It
+/// answers the support plan reads (`getIHP`, `getProfielSchets`) with HTTP
+/// `200` and the text `geen toegang` ("no access"), also this error. A
 /// pupil's own notes and absences are not refused.
 ///
 /// Any other answer the service cannot read is a plain [SmartschoolLvsError],

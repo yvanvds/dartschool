@@ -1349,6 +1349,73 @@ class PlannedElementDetail extends PlannedElement {
 }
 
 // ---------------------------------------------------------------------------
+// A lesfiche planned into several hours at once
+// ---------------------------------------------------------------------------
+
+/// What `PlannerService.planLessonContentInto` did with one of its targets
+/// (#224): planned the lesfiche into it ([lesson]), or not ([exception]).
+class PlannerBulkOutcome {
+  /// The target (an empty lesson hour or a lesson) as the call read it again
+  /// before it sent the plan. A target that was planned is gone under this
+  /// ID: the planner made a new lesson in its place.
+  final PlannedElementDetail target;
+
+  /// The new lesson in the target's hour, as the planner holds it after the
+  /// plan (its detail, read after the plan); `null` when the planner did not
+  /// plan the target ([exception]).
+  final PlannedElementDetail? lesson;
+
+  /// What the planner answered for the target when it did not plan it (its
+  /// entry in the answer's `exceptions`, as the planner gave it); `null`
+  /// when the target was planned.
+  final Object? exception;
+
+  const PlannerBulkOutcome({required this.target, this.lesson, this.exception});
+
+  /// Whether the lesfiche was planned into the target ([lesson] is set).
+  bool get isPlanned => lesson != null;
+
+  @override
+  String toString() => isPlanned
+      ? 'PlannerBulkOutcome(${target.typeName} ${target.id} -> '
+            '${lesson!.typeName} ${lesson!.id})'
+      : 'PlannerBulkOutcome(${target.typeName} ${target.id} not planned)';
+}
+
+/// The answer to `PlannerService.planLessonContentInto` (#224): one
+/// [PlannerBulkOutcome] per target, in the order of the targets. A target
+/// with a planner exception is reported in [failed], not retried.
+class PlannerBulkResult {
+  /// One outcome per target, in the order the targets were given.
+  final List<PlannerBulkOutcome> outcomes;
+
+  /// The planner's answer to the plan (decoded JSON, read-only).
+  final Map<String, dynamic> raw;
+
+  const PlannerBulkResult({required this.outcomes, this.raw = const {}});
+
+  /// The new lessons, in the order of their targets.
+  List<PlannedElementDetail> get lessons => [
+    for (final outcome in outcomes)
+      if (outcome.lesson != null) outcome.lesson!,
+  ];
+
+  /// The outcomes of the targets the planner did not plan.
+  List<PlannerBulkOutcome> get failed => [
+    for (final outcome in outcomes)
+      if (!outcome.isPlanned) outcome,
+  ];
+
+  /// Whether every target was planned.
+  bool get allPlanned => outcomes.every((outcome) => outcome.isPlanned);
+
+  @override
+  String toString() =>
+      'PlannerBulkResult(${outcomes.length - failed.length} of '
+      '${outcomes.length} planned)';
+}
+
+// ---------------------------------------------------------------------------
 // Workload
 // ---------------------------------------------------------------------------
 
@@ -1527,14 +1594,16 @@ enum PlannerWriteRefusalReason {
   /// error's `element` has the organisers ([PlannedElement.organiserUsers]).
   ///
   /// From every write that changes an element: `planLesson`,
-  /// `planLessonContent`, `renameElement`, `changePublicInfo`,
+  /// `planLessonContent`, `replaceWithLessonContent`,
+  /// `planLessonContentInto`, `renameElement`, `changePublicInfo`,
   /// `changePrivateInfo`, `clearLesson` and `trashAssignment`.
   notOwn,
 
   /// The planner's capabilities of the element do not allow the change. The
   /// error's `capabilityFlags` are the flags the write needs that are not
-  /// set: `canUserReplace` to fill a slot (`planLesson`,
-  /// `planLessonContent`); `canUserEdit` and `canUserRename`,
+  /// set: `canUserReplace` to fill a slot or replace a lesson (`planLesson`,
+  /// `planLessonContent`, `replaceWithLessonContent`,
+  /// `planLessonContentInto`); `canUserEdit` and `canUserRename`,
   /// `canUserChangePublicInfo` or `canUserChangePrivateInfo` to edit;
   /// `canUserEdit` to clear a lesson; `canUserTrash` to move an assignment
   /// to the trash.
@@ -1542,16 +1611,21 @@ enum PlannerWriteRefusalReason {
 
   /// The slot to fill (`planLesson`, `planLessonContent`) is no longer a
   /// timetable slot: the planner answered its detail with an element of
-  /// another type (the error's `element`).
+  /// another type (the error's `element`). So for the lesson to replace
+  /// (`replaceWithLessonContent`) and the targets of
+  /// `planLessonContentInto`: the element is no longer of the type it was
+  /// read as.
   noLongerASlot,
 
-  /// The slot to fill (`planLesson`, `planLessonContent`) is no longer in
-  /// the period it was read with: the error's `element` has the period it
+  /// The slot to fill (`planLesson`, `planLessonContent`) or the lesson to
+  /// replace (`replaceWithLessonContent`, `planLessonContentInto`) is no
+  /// longer in the period it was read with: the error's `element` has the period it
   /// has now. Read the calendar again.
   periodChanged,
 
-  /// The slot to fill (`planLesson`, `planLessonContent`) has participant
-  /// roles or group filters, which the timetable slots seen live never had
+  /// The slot to fill or the lesson to replace (`planLesson`,
+  /// `planLessonContent`, `replaceWithLessonContent`,
+  /// `planLessonContentInto`) has participant roles or group filters, which the timetable slots seen live never had
   /// and which the service does not know how to send on.
   participantRoles,
 
@@ -1562,15 +1636,17 @@ enum PlannerWriteRefusalReason {
   /// way to remove them; the clear of another lesson was not tried.
   trashable,
 
-  /// The lesfiche to plan (`planLessonContent`) is not among the user's
-  /// lesfiches (`LessonContentService.getItems`, read again first). Refused
-  /// before the slot was read: the error has no `element`.
+  /// The lesfiche to plan (`planLessonContent`, `replaceWithLessonContent`,
+  /// `planLessonContentInto`) is not among the user's lesfiches
+  /// (`LessonContentService.getItems`, read again first). Refused before
+  /// the slot or lesson was read: the error has no `element`.
   unknownLessonContent,
 
-  /// The lesfiche to plan (`planLessonContent`) is not a lesson lesfiche:
-  /// an assignment lesfiche, or one of a kind the library does not know.
-  /// The error's `lessonContent` is the lesfiche as read again. Refused
-  /// before the slot was read: the error has no `element`.
+  /// The lesfiche to plan (`planLessonContent`, `replaceWithLessonContent`,
+  /// `planLessonContentInto`) is not a lesson lesfiche: an assignment
+  /// lesfiche, or one of a kind the library does not know. The error's
+  /// `lessonContent` is the lesfiche as read again. Refused before the slot
+  /// or lesson was read: the error has no `element`.
   notALessonLessonContent,
 
   /// The type of a new assignment (`planAssignment`) is not one of the

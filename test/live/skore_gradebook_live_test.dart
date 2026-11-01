@@ -1456,7 +1456,12 @@ void main() {
                     'message',
                     allOf(
                       contains('HTTP 404'),
-                      contains('"Course not found in source!"'),
+                      // With Skore's admin rights; without them, the other
+                      // (seen live, #168).
+                      anyOf(
+                        contains('"Course not found in source!"'),
+                        contains('"No courses found in results!"'),
+                      ),
                     ),
                   ),
             ),

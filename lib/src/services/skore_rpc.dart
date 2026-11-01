@@ -118,6 +118,38 @@ abstract final class SkoreRpc {
     return value is String ? int.tryParse(value.trim()) : null;
   }
 
+  /// Whether [response] sends its request on to Smartschool's start page,
+  /// `/?module=Homepage` on the same host: Skore's answer to a request of a
+  /// teacher without the rights for that part of Skore (#91).
+  ///
+  /// Seen live (2026-10-04) for every request of `SkoreService`, and (#168)
+  /// for the gradebook's calls of a pupil account: a `302` with
+  /// `Location: /?module=Homepage` (an empty `text/html` body). The client
+  /// follows the redirect of a GET, which then ends on the start page with
+  /// `200` (its [Response.redirects] and [Response.realUri] say so); it does
+  /// not follow that of a POST, which comes as the `302` itself.
+  ///
+  /// A redirect elsewhere is not one: the client handles one to its login
+  /// pages, and another is an answer the service cannot use.
+  static bool sentToStartPage(Response<dynamic> response) {
+    final request = response.requestOptions.uri;
+    final status = response.statusCode ?? 0;
+    final location = Uri.tryParse(
+      response.headers.value('location')?.trim() ?? '',
+    );
+    final Uri target;
+    if (status >= 300 && status < 400 && location != null) {
+      target = request.resolveUri(location);
+    } else if (response.redirects.isNotEmpty) {
+      target = request.resolveUri(response.realUri);
+    } else {
+      return false;
+    }
+    return target.host == request.host &&
+        (target.path == '/' || target.path.isEmpty) &&
+        target.queryParameters['module'] == 'Homepage';
+  }
+
   /// What [response] redirects to, for the message of an error about it:
   /// `, a redirect to <target>` for a redirect (`3xx`) with a `Location`,
   /// `, a redirect without a Location` for one without, and `""` for any

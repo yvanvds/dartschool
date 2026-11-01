@@ -769,9 +769,14 @@ final class LvsWire {
   }
 
   /// The body of [response], the answer to [read], trimmed. Throws a
-  /// [SmartschoolLvsAccessDeniedError] for a refusal (HTTP `403`, or a
-  /// redirect to Smartschool's start page), and a [SmartschoolLvsError] for
-  /// another status than `200` and an empty answer.
+  /// [SmartschoolLvsAccessDeniedError] for a refusal (HTTP `403`, a
+  /// redirect to Smartschool's start page, or the text `geen toegang`), and
+  /// a [SmartschoolLvsError] for another status than `200` and an empty
+  /// answer.
+  /// The LVS's whole answer to a read it refuses to a pupil account, as
+  /// text (#168).
+  static const _noAccess = 'geen toegang';
+
   static String _body(Response<String> response, LvsRead read) {
     final what = read.what;
     final status = response.statusCode ?? 0;
@@ -795,6 +800,15 @@ final class LvsWire {
       );
     }
     final body = (response.data ?? '').trim();
+    // "No access": the LVS's answer to the support plan reads of a pupil
+    // account (getIHP, getProfielSchets), HTTP 200 and this text alone
+    // (seen live, #168).
+    if (body.toLowerCase() == _noAccess) {
+      throw SmartschoolLvsAccessDeniedError(
+        'The LVS refused $what to the account: it answered "no access".',
+        statusCode: status,
+      );
+    }
     if (body.isEmpty) {
       throw SmartschoolLvsError(
         'The LVS answered $what with an empty answer.',

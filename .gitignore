@@ -21,7 +21,7 @@ pubspec.lock
 node_modules/
 
 # ── Credentials / secrets ────────────────────────────────────────────────────
-credentials.yml
+*credentials.yml
 *.env
 .env
 

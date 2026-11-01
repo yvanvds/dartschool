@@ -162,7 +162,10 @@ class LvsService {
   /// no pupil; for a status check, before the other reads.
   ///
   /// `true` also for a root that lists no class: [checkAccessDetails] tells
-  /// how many it lists.
+  /// how many it lists. `true` for a pupil account too, whose root lists the
+  /// pupil's own class (seen live, #168): a pupil may read their own notes
+  /// and absences, and the LVS refuses them the rest
+  /// ([SmartschoolLvsAccessDeniedError]).
   ///
   /// Any other failure is thrown: an answer the service cannot read (a
   /// plain [SmartschoolLvsError]) is not taken for missing rights.
@@ -306,8 +309,11 @@ class LvsService {
   /// placeholder pupil, a [SmartschoolLvsPupilNotFoundError], and a category
   /// it does not know without the category, a
   /// [SmartschoolLvsCategoryNotFoundError] (both seen live for made-up IDs),
-  /// never an empty list. An ID that is not positive, or a [schoolYear] that
-  /// ends before it starts, is an [ArgumentError], before anything is sent.
+  /// never an empty list. A pupil account that asks for another user's notes
+  /// gets its own from the LVS, under its own ID: a
+  /// [SmartschoolLvsAccessDeniedError] (seen live, #168). An ID that is not
+  /// positive, or a [schoolYear] that ends before it starts, is an
+  /// [ArgumentError], before anything is sent.
   Future<List<LvsNote>> getNotes({
     required int pupilId,
     required int classId,
@@ -360,9 +366,11 @@ class LvsService {
   ///
   /// The LVS answers a pupil it does not know with no data at all (seen live
   /// for a made-up ID): an empty list, as for a pupil without notes.
-  /// [getPupilFile] tells the two apart. An ID that is not positive, or a
-  /// [schoolYear] that ends before it starts, is an [ArgumentError], before
-  /// anything is sent.
+  /// [getPupilFile] tells the two apart. A pupil account that asks for
+  /// another user's notes gets its own from the LVS, under its own ID: a
+  /// [SmartschoolLvsAccessDeniedError] (seen live, #168), never an empty
+  /// list. An ID that is not positive, or a [schoolYear] that ends before it
+  /// starts, is an [ArgumentError], before anything is sent.
   Future<List<LvsNote>> getAllNotes({
     required int pupilId,
     required int classId,

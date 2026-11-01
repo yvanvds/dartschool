@@ -858,9 +858,9 @@ class SmartschoolIntradeskWriteRefusedError extends SmartschoolException {
 /// So a caller can tell "there is no such item" from a move that went
 /// through: Intradesk answers the move of an item that is in the trash
 /// already, of its own kind, with `204`, as the first move. An item deleted
-/// for good was not tried (the library never deletes for good), nor an item
-/// the user may not manage (`capabilities.canManage` false, #139), which may
-/// be answered otherwise.
+/// for good was not tried (the library never deletes for good). An item the
+/// user may not manage is answered with `403`: a
+/// [SmartschoolIntradeskAccessDeniedError] (#139).
 ///
 /// A [SmartschoolIntradeskWriteRefusedError] with [statusCode] `404` (and
 /// Intradesk's [violations], none seen), as a move to the trash answered
@@ -882,6 +882,36 @@ class SmartschoolIntradeskItemNotFoundError
     required this.id,
     super.violations,
   }) : super(statusCode: 404);
+}
+
+/// Thrown by `IntradeskService.trashFolder`, `trashWeblink` and `trashFile`
+/// when Intradesk refuses to move the item of that [kind] with that [id] to
+/// the trash with HTTP `403`: the user may not manage it (#139). **Nothing
+/// was moved to the trash.**
+///
+/// Seen live (2026-11-01) for a weblink whose `capabilities.canManage` was
+/// `false` (an account without Intradesk's admin rights): `403`, the
+/// weblink still in its folder after. Intradesk's web client does not offer
+/// the move for such an item; the library sends it, and Intradesk refuses
+/// it.
+///
+/// A [SmartschoolIntradeskWriteRefusedError] with [statusCode] `403` (and
+/// Intradesk's [violations], none seen), as a move to the trash answered
+/// `403` was before #139, so a `catch` of that type still catches it.
+class SmartschoolIntradeskAccessDeniedError
+    extends SmartschoolIntradeskWriteRefusedError {
+  /// The kind of item the move to the trash asked for.
+  final IntradeskItemKind kind;
+
+  /// The ID that was asked for.
+  final String id;
+
+  const SmartschoolIntradeskAccessDeniedError(
+    super.message, {
+    required this.kind,
+    required this.id,
+    super.violations,
+  }) : super(statusCode: 403);
 }
 
 /// Thrown by `IntradeskService.createFolder`, `createWeblink` and
@@ -1726,6 +1756,10 @@ class SmartschoolSkoreEvaluationUnreadableError extends SmartschoolSkoreError {
 /// anything is sent, with a [SmartschoolSkoreChangeRefusedError] that says
 /// the course is not on the report, not with this error.
 ///
+/// Skore answers an account without its admin rights for the same course
+/// and report with HTTP `404` and "No courses found in results!" (seen live,
+/// #168): this error too.
+///
 /// A [SmartschoolSkoreError], so `catch` clauses for that type keep catching
 /// it. Its message names the course, the gradebook and the report by their
 /// IDs, and Skore's status and `message`, as the plain error did, and
@@ -1942,6 +1976,24 @@ class SmartschoolPlannerError extends SmartschoolException {
       : '$runtimeType($statusCode): $message';
 }
 
+/// Thrown by `PlannerService` when the planner refuses a read to the account
+/// with HTTP `403` (Forbidden): seen live (#168) for the lookup of a
+/// calendar by its ID (`getCalendar`, `POST quick-search/planner/start`)
+/// from a pupil account, answered with
+/// `{"status":403,"title":"Forbidden","detail":"","type":""}`. The request
+/// was refused: no data came. From a write, it comes from a read before the
+/// save: nothing was sent. When the planner answers a save itself with
+/// `403`, the write throws a [SmartschoolPlannerSaveUnconfirmedError] with
+/// this error as its `cause`, as before.
+///
+/// A [SmartschoolPlannerError] with [statusCode] `403`, so `catch` clauses
+/// for that type keep catching it. Its message names the read and quotes
+/// nothing of the answer.
+class SmartschoolPlannerAccessDeniedError extends SmartschoolPlannerError {
+  const SmartschoolPlannerAccessDeniedError(super.message)
+    : super(statusCode: 403);
+}
+
 /// Thrown by `PlannerService.getPlannedElement` and `getDetail` when the
 /// planner answers `404`: it has no element of that type with that ID (#84).
 /// The ID is unknown, or the element was removed or moved to the trash (a
@@ -2155,6 +2207,25 @@ class SmartschoolLessonContentError extends SmartschoolException {
   String toString() => statusCode == null
       ? '$runtimeType: $message'
       : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `LessonContentService` when the Lesfiches module, or the
+/// school's course list, refuses a read to the account with HTTP `403`
+/// (Forbidden): seen live (#168) for the lesfiches (`getItems`) of a pupil
+/// account, answered with Smartschool's HTML page. The request was refused:
+/// no data came. From `PlannerService.planLessonContent` and the writes of
+/// `LessonContentService`, it comes from a read before the write: nothing
+/// was sent or changed.
+///
+/// A [SmartschoolLessonContentError] with [statusCode] `403`, so `catch`
+/// clauses for that type keep catching it. Its message names the read and
+/// quotes nothing of the answer. From `getItems`, a refusal of the course
+/// list after the lesfiches were read is a
+/// [SmartschoolLessonContentCourseListError] instead, which keeps them.
+class SmartschoolLessonContentAccessDeniedError
+    extends SmartschoolLessonContentError {
+  const SmartschoolLessonContentAccessDeniedError(super.message)
+    : super(statusCode: 403);
 }
 
 /// Thrown by `LessonContentService.getItems` when it read the lesfiches, but
@@ -2824,11 +2895,19 @@ class SmartschoolLvsError extends SmartschoolException {
 /// start page (`/?module=Homepage`, as Skore does for an account without its
 /// rights, #91). The request was refused: no data came.
 ///
-/// **Not captured live** (#160): what the LVS answers a teacher without LVS
-/// rights and a pupil account. The two answers above are what the service
-/// takes for a refusal; any other answer it cannot read is a plain
-/// [SmartschoolLvsError], never an empty result. `LvsService.checkAccess`
-/// tells whether the account may use the LVS.
+/// For a pupil account (seen live, #168): the LVS sends a pupil search, a
+/// pupil's file, the reads of the results app and the absences of another
+/// user on to the start page. It answers the notes of another user with the
+/// pupil's own notes, under the pupil's own ID: `LvsService.getNotes` and
+/// `getAllNotes` throw this error for an answer about another pupil than the
+/// one asked for (its [statusCode] `200`), never that pupil's notes. It
+/// answers the support plan reads (`getIHP`, `getProfielSchets`) with HTTP
+/// `200` and the text `geen toegang` ("no access"), also this error. A
+/// pupil's own notes and absences are not refused.
+///
+/// Any other answer the service cannot read is a plain [SmartschoolLvsError],
+/// never an empty result. `LvsService.checkAccess` tells whether the account
+/// may use the LVS.
 ///
 /// Its message names the read, and quotes nothing of the answer. A
 /// [SmartschoolLvsError], so `catch` clauses for that type keep catching it.

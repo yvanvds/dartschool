@@ -6,6 +6,7 @@ import 'package:html/parser.dart' as html_parser;
 
 import '../exceptions.dart';
 import '../models/skore_gradebook_models.dart';
+import '../models/skore_models.dart' show SkoreAccessArea;
 import '../session.dart';
 import 'skore_rpc.dart';
 
@@ -829,11 +830,14 @@ class SkoreGradebookService {
   /// [SmartschoolSkoreError]: Skore answers it with HTTP 404 and "Course not
   /// found in source!" (seen live, also for an open report Skore lists for
   /// the gradebook, whose course is on it through a project), which its web
-  /// client shows as an error too. Not an empty report, which would
-  /// read as one without pupils: an app that walks the reports of its
-  /// gradebooks catches it and goes on. Only a `404` whose `message` holds
-  /// "Course not found" (in any case) is that error; another status, or a
-  /// `404` with another message or none, is a plain [SmartschoolSkoreError].
+  /// client shows as an error too. For the same course and report, an
+  /// account without Skore's admin rights gets HTTP 404 and "No courses
+  /// found in results!" (seen live, #168): the same error. Not an empty
+  /// report, which would read as one without pupils: an app that walks the
+  /// reports of its gradebooks catches it and goes on. Only a `404` whose
+  /// `message` holds "Course not found" or "No courses found" (in any case)
+  /// is that error; another status, or a `404` with another message or
+  /// none, is a plain [SmartschoolSkoreError].
   /// A [reportId] that is not positive is refused with an [ArgumentError]
   /// before anything is sent; an answer about another report or without the
   /// gradebook's course with a [SmartschoolSkoreError].
@@ -889,14 +893,19 @@ class SkoreGradebookService {
   /// Whether Skore's answer to `getReportsResults` with HTTP [status] and
   /// the JSON `message` [message] says that the course is not on the
   /// report: `404` and "Course not found in source!" (seen live, #195,
-  /// #204). The message is matched on "Course not found", in any case, so
-  /// that a change of its ending or punctuation keeps it apart; a `404`
-  /// with another message or none is not this answer (what Skore answers
-  /// for a report it does not know was not seen).
-  static bool _isCourseNotOnReport(int? status, String? message) =>
-      status == 404 &&
-      message != null &&
-      message.toLowerCase().contains('course not found');
+  /// #204), or, to an account without Skore's admin rights, `404` and "No
+  /// courses found in results!" (seen live for the same course and report,
+  /// #168). The message is matched on "Course not found" or "No courses
+  /// found", in any case, so that a change of its ending or punctuation
+  /// keeps it apart; a `404` with another message or none is not this
+  /// answer (what Skore answers for a report it does not know was not
+  /// seen).
+  static bool _isCourseNotOnReport(int? status, String? message) {
+    if (status != 404 || message == null) return false;
+    final lower = message.toLowerCase();
+    return lower.contains('course not found') ||
+        lower.contains('no courses found');
+  }
 
   /// The page of Skore's gradebook, which hands its frame the start-up
   /// secret.
@@ -2772,9 +2781,12 @@ class SkoreGradebookService {
   /// The body of [response], the answer to RPC call [method]; any other
   /// status than `200` is a [SmartschoolSkoreError]. Also a redirect, whose
   /// message names its target by path and `module` only
-  /// ([SkoreRpc.redirectNote], #192): the admin side of Skore sends a
-  /// request it refuses on to the start page (`/?module=Homepage`, #91);
-  /// what the gradebook answers an account without one was not seen.
+  /// ([SkoreRpc.redirectNote], #192), but one to the start page
+  /// (`/?module=Homepage`, [SkoreRpc.sentToStartPage]): Skore's refusal of
+  /// the call to an account without a gradebook, a pupil's (a `302`, seen
+  /// live for `getNavigation`, #168), as the admin side of Skore refuses its
+  /// requests (#91). That is a [SmartschoolSkoreAccessDeniedError] with
+  /// [SkoreAccessArea.gradebook].
   ///
   /// Skore's answer to a call in a session Smartschool does not accept, a
   /// redirect to `/` (seen live, #192), never comes here: the client takes
@@ -2789,6 +2801,14 @@ class SkoreGradebookService {
     _StatusError? statusError,
   }) {
     final status = response.statusCode;
+    if (SkoreRpc.sentToStartPage(response)) {
+      throw SmartschoolSkoreAccessDeniedError(
+        "Skore refused the RPC call $method of its gradebook to the account "
+        "(it sent the request on to Smartschool's start page): it has no "
+        'gradebook in Skore.',
+        area: SkoreAccessArea.gradebook,
+      );
+    }
     if (status != 200) {
       final message = _message(response.data);
       final error =

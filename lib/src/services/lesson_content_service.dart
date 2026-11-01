@@ -2054,6 +2054,11 @@ class LessonContentService {
   ) {
     final status = response.statusCode;
     final body = (response.data ?? '').trimLeft();
+    if (status == 403) {
+      throw SmartschoolLessonContentAccessDeniedError(
+        '$source refused $what to the account (HTTP 403).',
+      );
+    }
     if (status != 200) {
       throw SmartschoolLessonContentError(
         '$source answered $what with HTTP $status: ${_preview(body)}',

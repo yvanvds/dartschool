@@ -889,8 +889,9 @@ void main() {
               'location': ['/?module=Homepage'],
             },
           ),
-          'Skore answered the RPC call accessableList of its gradebook with '
-              'HTTP 302, a redirect to /?module=Homepage.',
+          'Skore refused the RPC call accessableList of its gradebook to '
+              "the account (it sent the request on to Smartschool's start "
+              'page)',
         ),
         (
           () => _Skore._body(

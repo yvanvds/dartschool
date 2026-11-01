@@ -849,6 +849,30 @@ void main() {
       }
     });
 
+    test('the text "geen toegang" (a pupil account, seen live for getIHP and '
+        'getProfielSchets, #168) is a SmartschoolLvsAccessDeniedError, '
+        'whatever its case and spaces', () async {
+      for (final MapEntry(key: read, value: (what, call)) in _calls.entries) {
+        for (final body in ['geen toegang', ' Geen toegang\n']) {
+          final (_, lvs) = await _serve({read: () => _answer(body)});
+          await expectLater(
+            call(lvs),
+            throwsA(
+              allOf(
+                _refused(what),
+                isA<SmartschoolLvsError>().having(
+                  (e) => e.statusCode,
+                  'statusCode',
+                  200,
+                ),
+              ),
+            ),
+            reason: '$read: $body',
+          );
+        }
+      }
+    });
+
     test("Smartschool's error page with a 500 is a SmartschoolLvsError with "
         'the status', () async {
       for (final MapEntry(key: read, value: (_, call)) in _calls.entries) {

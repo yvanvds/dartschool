@@ -1821,10 +1821,55 @@ void main() {
       ]);
     });
 
+    test('a 403 (an item the user may not manage, seen live for a weblink, '
+        '#139) is a SmartschoolIntradeskAccessDeniedError with the kind and '
+        'the ID, sent once', () async {
+      final (server, intradesk) = await serve({
+        'POST $_api/folders/$_newFolder/trash': [_problem(403, 'Forbidden')],
+        'POST $_api/weblinks/$_newWeblink/trash': [_problem(403, 'Forbidden')],
+        'POST $_api/files/$_newFile/trash': [_problem(403, 'Forbidden')],
+      });
+
+      for (final (kind, id, trash) in [
+        (IntradeskItemKind.folder, _newFolder, intradesk.trashFolder),
+        (IntradeskItemKind.weblink, _newWeblink, intradesk.trashWeblink),
+        (IntradeskItemKind.file, _newFile, intradesk.trashFile),
+      ]) {
+        await expectLater(
+          trash(id),
+          throwsA(
+            allOf(
+              isA<SmartschoolIntradeskWriteRefusedError>()
+                  .having((e) => e.statusCode, 'statusCode', 403)
+                  .having((e) => e.violations, 'violations', isEmpty),
+              isNot(isA<SmartschoolIntradeskItemNotFoundError>()),
+              isA<SmartschoolIntradeskAccessDeniedError>()
+                  .having((e) => e.kind, 'kind', kind)
+                  .having((e) => e.id, 'id', id)
+                  .having(
+                    (e) => e.message,
+                    'message',
+                    allOf(
+                      contains('may not manage it'),
+                      contains('Nothing was moved to the trash.'),
+                    ),
+                  ),
+            ),
+          ),
+          reason: kind.name,
+        );
+      }
+      expect(server.writes, [
+        'POST $_api/folders/$_newFolder/trash',
+        'POST $_api/weblinks/$_newWeblink/trash',
+        'POST $_api/files/$_newFile/trash',
+      ]);
+    });
+
     test('another 4xx answer is refused, another one unconfirmed', () async {
       final (_, intradesk) = await serve({
         'POST $_api/files/$_newFile/trash': [
-          _problem(403, 'Forbidden'),
+          _problem(400, 'Bad Request'),
           _bareServerError,
         ],
       });
@@ -1833,8 +1878,9 @@ void main() {
         intradesk.trashFile(_newFile),
         throwsA(
           allOf(
-            _refused(status: 403, violations: isEmpty),
+            _refused(status: 400, violations: isEmpty),
             isNot(isA<SmartschoolIntradeskItemNotFoundError>()),
+            isNot(isA<SmartschoolIntradeskAccessDeniedError>()),
           ),
         ),
       );

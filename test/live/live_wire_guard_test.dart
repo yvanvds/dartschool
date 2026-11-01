@@ -550,8 +550,27 @@ class _Smartschool implements HttpClientAdapter {
       };
       return _answer('{"id":"$id"}', contentType: json, status: 201);
     }
-    if (path == 'lesson-content/trash/bulk') {
+    if (path == 'lesson-content/trash/bulk' ||
+        path == 'lesson-content/restore/bulk') {
       return _answer('{"exceptions":[]}', contentType: json);
+    }
+    if (path == 'lesson-content/duplicate/bulk') {
+      // Each copy keyed by the lesfiche as sent (#227).
+      final copies = <String, Object?>{};
+      for (final entry in body['lessonContent'] as List) {
+        final source = lessonContent[(entry as Map)['id']]!;
+        final id = _uuid();
+        lessonContent[id] = {
+          ...source,
+          'id': id,
+          'name': '${source['name']} - kopie',
+        };
+        copies[jsonEncode(entry)] = lessonContent[id];
+      }
+      return _answer(
+        jsonEncode({'lessonContent': copies, 'exceptions': []}),
+        contentType: json,
+      );
     }
     if (path == 'assignments/applicable-assignment-types') {
       return _answer(
@@ -2194,6 +2213,59 @@ void main() {
       ]);
       expect(guard.violations, isEmpty);
     });
+
+    test('the duplicate of a lesfiche the run made, whose copy then counts '
+        'as made; the restore of one it moved to the trash, which may then be '
+        'written again; a duplicate past the maximum, or of a lesfiche in '
+        'the trash, is refused (#227)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+
+      final made = await lessonContent.createLesson(name: _lessonName('les'));
+      final copy = (await lessonContent.duplicate([made])).single;
+      await lessonContent.rename(copy, _lessonName('kopie'));
+      // Two lesfiches made: the maximum.
+      await refused(lessonContent.duplicate([copy]));
+      await lessonContent.trash([made, copy]);
+      await refused(lessonContent.rename(copy, _lessonName('x')));
+      await lessonContent.restore([copy]);
+      await lessonContent.rename(copy, _lessonName('terug'));
+      await lessonContent.trash([copy]);
+
+      const api = '/lesson-content/api/v1';
+      expect(copy.name, '${_lessonName('les')} - kopie');
+      expect(server.lessonContentWrites, [
+        'POST $api/lessons/',
+        'POST $api/lesson-content/duplicate/bulk',
+        'POST $api/lessons/${copy.id}/rename',
+        'POST $api/lesson-content/trash/bulk',
+        'POST $api/lesson-content/restore/bulk',
+        'POST $api/lessons/${copy.id}/rename',
+        'POST $api/lesson-content/trash/bulk',
+      ]);
+      expect(guard.lessonContentCreates, 2);
+      expect(guard.lessonContentMade, {made.id, copy.id});
+      expect(_violations(guard), [
+        contains('more than the run\'s maximum of 2 lesfiches'),
+        contains('moved to the trash already'),
+      ]);
+    });
+
+    test('a duplicate of a lesfiche the run moved to the trash', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final lessonContent = LessonContentService(client);
+
+      final made = await lessonContent.createLesson(name: _lessonName('les'));
+      await lessonContent.trash([made]);
+      await expectLater(lessonContent.duplicate([made]), throwsA(anything));
+
+      expect(guard.lessonContentCreates, 1);
+      expect(_violations(guard), [contains('moved to the trash already')]);
+    });
   });
 
   group('refuses before it reaches Smartschool (Lesfiches, #129)', () {
@@ -2414,6 +2486,12 @@ void main() {
           data: {'lessonContent': <Object>[]},
         ),
       );
+      // A restore of a lesfiche that is not in the trash, or not the run's
+      // (#227).
+      await refused(lessonContent.restore([made]));
+      await refused(lessonContent.restore([otherItem]));
+      // A duplicate of a lesfiche the run did not make (#227).
+      await refused(lessonContent.duplicate([otherItem]));
       // After its move to the trash.
       await lessonContent.trash([made]);
       await refused(lessonContent.trash([made]));
@@ -2439,7 +2517,10 @@ void main() {
           contains('a goal that is not as the library sends one'),
         contains('sends no DELETE but of a weblink or an attachment'),
         contains('sends no Lesfiches POST but'),
-        contains('sends no Lesfiches POST but'),
+        contains('restores no lesfiche that it names'),
+        contains('which this run did not move to the trash'),
+        contains('which this run did not make'),
+        contains('which this run did not make'),
         contains('moved to the trash already'),
         contains('moved to the trash already'),
       ]);

@@ -89,12 +89,14 @@ typedef _Courses = ({
 /// [addAttachments], [changeAttachmentVisibility] and [removeAttachment]
 /// change its weblinks and attachments; [changeGoals] sets its learning
 /// goals (#223), which the creates take too; [trash] moves lesfiches to the
-/// module's trash. All of them were tried live on 2026-10-05 (the goals on
+/// module's trash, [getTrash] reads it and [restore] takes lesfiches out of
+/// it again (#227); [duplicate] copies lesfiches (#227). All of them were
+/// tried live on 2026-10-05 (the goals, the trash and the copies on
 /// 2026-11-01), in the own library, which is private to the teacher. The
 /// service never deletes a lesfiche for good (`lesson-content/delete/bulk`),
-/// never restores one, and does not cover labels, mini-database items,
-/// duplicating, merging or converting lesfiches, sharing, year plans, method
-/// lessons of publishers or printing.
+/// and does not cover labels, mini-database items, merging or converting
+/// lesfiches, sharing, year plans, method lessons of publishers or
+/// printing.
 ///
 /// What Smartschool answers, and what the service makes of it:
 /// - **A create answers with the ID only** (`201` with `{"id"}`), so the
@@ -104,9 +106,10 @@ typedef _Courses = ({
 /// - **A create is sent once**, never again after logging in again, nor
 ///   retried in any other way: a second one makes a second lesfiche (the
 ///   module keeps a name that is taken, seen live). The same for
-///   [addWeblink] and the last step of [addAttachments]. The edits set a
-///   value, the removals and the move to the trash name what they act on,
-///   so they are retried once after logging in again, as a read is.
+///   [addWeblink], the last step of [addAttachments] and [duplicate]. The
+///   edits set a value, the removals, the move to the trash and the restore
+///   name what they act on, so they are retried once after logging in
+///   again, as a read is.
 /// - **Checks before sending.** The module answers a bad name or address
 ///   with a bare HTTP `400` that does not say why, and stores a course it
 ///   does not know without complaint (seen live). So the writes refuse with
@@ -1204,7 +1207,7 @@ class LessonContentService {
   }
 
   // ---------------------------------------------------------------------------
-  // Trash (#129)
+  // Trash (#129), restore and duplicate (#227)
   // ---------------------------------------------------------------------------
 
   /// Moves the lesfiches [items] to the module's trash (#129).
@@ -1213,10 +1216,10 @@ class LessonContentService {
   /// "type", "platformId"}]}`, as the web client does, which the module
   /// answers with `200` and `{"exceptions": []}` (seen live, 2026-10-05).
   /// The lesfiches then leave [getItems]; their detail is still answered,
-  /// and the web client lists them in its trash, from where it can restore
-  /// or delete them for good. The service does neither: it never deletes a
-  /// lesfiche for good. A lesfiche given twice is sent once. Retried once
-  /// after logging in again.
+  /// and [getTrash] lists them (#227), from where [restore] takes them out
+  /// again. The web client can also delete them for good there; the service
+  /// never does. A lesfiche given twice is sent once. Retried once after
+  /// logging in again.
   ///
   /// The module answers the move of a lesfiche that is in the trash already
   /// with a bare `500` (seen live), a
@@ -1229,18 +1232,7 @@ class LessonContentService {
   /// UUID. See the class doc for the other errors.
   Future<void> trash(Iterable<LessonContentItem> items) async {
     const operation = 'trash';
-    final fiches = <String, LessonContentItem>{};
-    for (final item in items) {
-      _checkItem(item, argument: 'items');
-      fiches.putIfAbsent(
-        '${item.typeName} ${item.id.toLowerCase()}',
-        () => item,
-      );
-    }
-    if (fiches.isEmpty) {
-      throw ArgumentError.value(items, 'items', 'is empty');
-    }
-    final list = fiches.values.toList();
+    final list = _checkedItems(items);
     final change = list.length == 1
         ? 'the move of ${_what(list.single)} to the trash'
         : 'the move of ${list.length} lesfiches to the trash';
@@ -1251,16 +1243,7 @@ class LessonContentService {
     final response = await _write(
       operation,
       path: '$_apiPath/lesson-content/trash/bulk',
-      body: {
-        'lessonContent': [
-          for (final item in list)
-            {
-              'id': item.id,
-              'type': item.typeName,
-              'platformId': item.platformId,
-            },
-        ],
-      },
+      body: _bulkBody(list),
       retryAfterLogin: true,
       change: change,
       unconfirmed: unconfirmed,
@@ -1276,20 +1259,236 @@ class LessonContentService {
       );
     }
     final json = _jsonObject(operation, response, change, unconfirmed);
-    final exceptions = json['exceptions'];
-    final failures = switch (exceptions) {
-      final List<Object?> list => list,
-      final Map<Object?, Object?> map => map.values.toList(),
-      _ => null,
+    _checkNoExceptions(operation, response, json, change, unconfirmed);
+  }
+
+  /// Returns the lesfiches in the module's trash, lessons and assignments,
+  /// in the order the module gives them (#227).
+  ///
+  /// Sends `GET lesson-content/trashed`, as the web client's trash does,
+  /// which the module answers with the lesfiches in the shape of [getItems]
+  /// (seen live, 2026-11-01); each one's [LessonContentItem.dateStateChanged]
+  /// is when it went to the trash. The web client's trash dialog says a
+  /// lesfiche can be restored "binnen 100 dagen". [restore] takes them out
+  /// again. Their courses are named as [getItems] names them, with
+  /// [withCourseNames]; see there, also for the errors.
+  Future<List<LessonContentItem>> getTrash({
+    bool withCourseNames = true,
+  }) async {
+    final response = await _client.getResponse(
+      '$_apiPath/lesson-content/trashed',
+    );
+    final json = _decode(response, 'the trash', _module);
+    final items = parseItems(json);
+    if (!withCourseNames || items.every((item) => item.courses.isEmpty)) {
+      return items;
+    }
+    final courses = await _coursesFor(items);
+    return parseItems(json, courses: courses);
+  }
+
+  /// Takes the lesfiches [items], such as those of [getTrash], out of the
+  /// module's trash, back into the own library (#227).
+  ///
+  /// Sends `POST lesson-content/restore/bulk` with the body of [trash]
+  /// (`{"lessonContent": [{"id", "type", "platformId"}]}`), as the web
+  /// client does, which the module answers with `200` and `{"exceptions":
+  /// []}` (seen live, 2026-11-01). The lesfiches are then listed by
+  /// [getItems] again, and no longer by [getTrash]. A lesfiche given twice
+  /// is sent once. Retried once after logging in again: it names what it
+  /// restores.
+  ///
+  /// The module answers the restore of a lesfiche that is not in the trash
+  /// with `200` and an exception for it, keyed by the lesfiche as sent, with
+  /// the status `404` (seen live): a
+  /// [SmartschoolLessonContentSaveUnconfirmedError] that names each
+  /// lesfiche with its exception (the others were restored). Check
+  /// [getTrash] before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for no lesfiches,
+  /// a lesfiche of a kind this library does not know, or an ID that is not a
+  /// UUID. See the class doc for the other errors.
+  Future<void> restore(Iterable<LessonContentItem> items) async {
+    const operation = 'restore';
+    final list = _checkedItems(items);
+    final change = list.length == 1
+        ? 'the restore of ${_what(list.single)} from the trash'
+        : 'the restore of ${list.length} lesfiches from the trash';
+    const unconfirmed =
+        'They may or may not have been restored: look for them in the trash '
+        '(getTrash) before trying again; the module answers the restore of '
+        'a lesfiche that is not in the trash with an exception (404).';
+    final item = list.length == 1 ? list.single : null;
+    final response = await _write(
+      operation,
+      path: '$_apiPath/lesson-content/restore/bulk',
+      body: _bulkBody(list),
+      retryAfterLogin: true,
+      change: change,
+      unconfirmed: unconfirmed,
+      item: item,
+    );
+    if (response.statusCode != 200) {
+      _throwFailure(operation, response, change, unconfirmed, item: item);
+    }
+    final json = _jsonObject(operation, response, change, unconfirmed);
+    _checkNoExceptions(operation, response, json, change, unconfirmed);
+  }
+
+  /// Makes a copy of each of the lesfiches [items] in the own library, and
+  /// returns the copies, in the order of [items] (#227): a variant of a
+  /// lesfiche for another class or year, without making it again.
+  ///
+  /// Sends `POST lesson-content/duplicate/bulk` with the body of [trash]
+  /// (`{"lessonContent": [{"id", "type", "platformId"}]}`), as the web
+  /// client does. The module answers with `200` and the copies, each in the
+  /// shape of [getDetail] and keyed by the lesfiche it copies as sent
+  /// (seen live, 2026-11-01): a copy of the same kind with a new ID, named
+  /// after the lesfiche with " - kopie" behind it, with its icon, public and
+  /// private info, visibility, courses, goals, weblinks (each with a new
+  /// ID) and attachments (the same file, as [downloadAttachment] gives it;
+  /// tried live with one). The copies' courses are named after those of
+  /// [items] (as [getItems] names them); no course list is read.
+  ///
+  /// **Sent once**, never again after logging in again, nor retried in any
+  /// other way: a second one makes more copies. A lesfiche given twice is
+  /// copied once.
+  ///
+  /// The module answers the duplicate of a lesfiche in the trash with `200`,
+  /// no copy and an exception for it with the status `403` (seen live).
+  /// When no copy was made and the module gave each lesfiche such an
+  /// exception (`400` to `499`), it throws a
+  /// [SmartschoolLessonContentWriteRefusedError] that names them: nothing
+  /// was changed. When some copies were made and others not, or the answer
+  /// does not name a copy or an exception for each lesfiche, it throws a
+  /// [SmartschoolLessonContentSaveUnconfirmedError] that names the copies
+  /// that were made: look for them with [getItems] before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for no lesfiches,
+  /// a lesfiche of a kind this library does not know, or an ID that is not a
+  /// UUID. See the class doc for the other errors.
+  Future<List<LessonContentDetail>> duplicate(
+    Iterable<LessonContentItem> items,
+  ) async {
+    const operation = 'duplicate';
+    final list = _checkedItems(items);
+    final change = list.length == 1
+        ? 'the duplicate of ${_what(list.single)}'
+        : 'the duplicate of ${list.length} lesfiches';
+    const unconfirmed =
+        'Copies may or may not have been made: look for them in the '
+        'lesfiches (getItems, named after the lesfiche with " - kopie" '
+        'behind it) before trying again; trying again makes more copies.';
+    final item = list.length == 1 ? list.single : null;
+    final response = await _write(
+      operation,
+      path: '$_apiPath/lesson-content/duplicate/bulk',
+      body: _bulkBody(list),
+      retryAfterLogin: false,
+      change: change,
+      unconfirmed: unconfirmed,
+      item: item,
+    );
+    final status = response.statusCode ?? 0;
+    if (status != 200) {
+      _throwFailure(operation, response, change, unconfirmed, item: item);
+    }
+    final json = _jsonObject(operation, response, change, unconfirmed);
+
+    Never unusable(String what) =>
+        throw SmartschoolLessonContentSaveUnconfirmedError(
+          '$operation: $change was sent, but $_module answered $what '
+          '(${_preview(response.data ?? '')}). $unconfirmed',
+          statusCode: status,
+          lessonContentId: item?.id,
+        );
+
+    final courseNames = {
+      for (final fiche in list)
+        for (final course in fiche.courses)
+          if (course.name != null) course.id: course.name!,
     };
-    if (failures == null || failures.isNotEmpty) {
-      throw SmartschoolLessonContentSaveUnconfirmedError(
-        '$operation: $change was sent, but $_module answered '
-        '${failures == null ? 'without its exceptions (${_preview(response.data ?? '')})' : 'with exceptions: ${failures.map(_describeException).join('; ')}'}. '
-        '$unconfirmed',
-        statusCode: 200,
+    final copiesJson = json['lessonContent'];
+    final copied = <String, LessonContentDetail>{};
+    final Iterable<MapEntry<Object?, Object?>> copyEntries =
+        switch (copiesJson) {
+          final Map<Object?, Object?> map => map.entries,
+          final List<Object?> list when list.isEmpty => const [],
+          _ => unusable('without its copies'),
+        };
+    for (final entry in copyEntries) {
+      final key = _refKey(entry.key);
+      final value = entry.value;
+      if (key == null || value is! Map<String, dynamic>) {
+        unusable('with a copy in an unknown shape');
+      }
+      final LessonContentDetail copy;
+      try {
+        copy = LessonContentDetail.fromJson(value, courseNames: courseNames);
+      } on SmartschoolLessonContentError catch (e) {
+        unusable('with a copy in an unknown shape: ${e.message}');
+      }
+      if (!_uuid.hasMatch(copy.id)) unusable('with a copy without its ID');
+      if (copy.typeName != key.split(' ').first) {
+        unusable('with a copy of another kind (${copy.typeName})');
+      }
+      copied[key] = copy;
+    }
+    final failed = <String, Object?>{};
+    switch (json['exceptions']) {
+      case final List<Object?> list when list.isEmpty:
+        break;
+      case final Map<Object?, Object?> map:
+        for (final entry in map.entries) {
+          final key = _refKey(entry.key);
+          if (key == null) unusable('with an exception in an unknown shape');
+          failed[key] = entry.value;
+        }
+      default:
+        unusable('without its exceptions');
+    }
+
+    final copies = <LessonContentDetail>[];
+    final notCopied = <String>[];
+    final unknown = <LessonContentItem>[];
+    for (final fiche in list) {
+      final key = _itemKey(fiche);
+      final copy = copied[key];
+      if (copy != null) {
+        copies.add(copy);
+      } else if (failed.containsKey(key)) {
+        notCopied.add('${_what(fiche)}: ${_describeException(failed[key])}');
+      } else {
+        unknown.add(fiche);
+      }
+    }
+    if (copies.length == list.length) return List.unmodifiable(copies);
+
+    final statuses = {
+      for (final exception in failed.values)
+        exception is Map && exception['status'] is int
+            ? exception['status'] as int
+            : 0,
+    };
+    if (copies.isEmpty &&
+        unknown.isEmpty &&
+        statuses.every((s) => s >= 400 && s < 500)) {
+      throw SmartschoolLessonContentWriteRefusedError(
+        '$operation: $_module refused $change, with exceptions: '
+        '${notCopied.join('; ')} (a lesfiche in the trash is answered with '
+        '403). Nothing was changed.',
+        statusCode: statuses.first,
       );
     }
+    throw SmartschoolLessonContentSaveUnconfirmedError(
+      '$operation: $change was sent, but $_module made '
+      '${copies.isEmpty ? 'no copies' : 'only the copies ${copies.map((c) => '${_what(c)} ("${c.name}")').join(', ')}, which exist: do not make them again'}'
+      '${notCopied.isEmpty ? '' : '; with exceptions: ${notCopied.join('; ')}'}'
+      '${unknown.isEmpty ? '' : '; it named no copy and no exception for ${unknown.map(_what).join(', ')}'}. '
+      '$unconfirmed',
+      statusCode: status,
+      lessonContentId: item?.id,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1880,7 +2079,91 @@ class LessonContentService {
     ]);
   }
 
-  /// One of the `exceptions` of a move to the trash, for a message: its
+  /// [items] (at least one) as a bulk write of the module takes them, after
+  /// checking each ([_checkItem]); a lesfiche given twice is kept once.
+  /// Throws an [ArgumentError] for `items` otherwise.
+  static List<LessonContentItem> _checkedItems(
+    Iterable<LessonContentItem> items,
+  ) {
+    final fiches = <String, LessonContentItem>{};
+    for (final item in items) {
+      _checkItem(item, argument: 'items');
+      fiches.putIfAbsent(_itemKey(item), () => item);
+    }
+    if (fiches.isEmpty) {
+      throw ArgumentError.value(items, 'items', 'is empty');
+    }
+    return fiches.values.toList();
+  }
+
+  /// The body of a bulk write of the module (`trash`, `restore`,
+  /// `duplicate`) for [items].
+  static Map<String, Object?> _bulkBody(List<LessonContentItem> items) => {
+    'lessonContent': [
+      for (final item in items)
+        {'id': item.id, 'type': item.typeName, 'platformId': item.platformId},
+    ],
+  };
+
+  /// [item] as a key: its kind and its ID (`lessons <id>`, lower case).
+  static String _itemKey(LessonContentItem item) =>
+      '${item.typeName} ${item.id.toLowerCase()}';
+
+  /// The key, as [_itemKey], of a lesfiche that an answer to a bulk write
+  /// names as it was sent (a JSON object `{"id","type","platformId"}` as a
+  /// string, seen live, #227), or `null` when [key] is not one.
+  static String? _refKey(Object? key) {
+    if (key is! String) return null;
+    final Object? ref;
+    try {
+      ref = jsonDecode(key);
+    } on FormatException {
+      return null;
+    }
+    if (ref is! Map || ref['id'] is! String || ref['type'] is! String) {
+      return null;
+    }
+    return '${ref['type']} ${(ref['id'] as String).toLowerCase()}';
+  }
+
+  /// Throws a [SmartschoolLessonContentSaveUnconfirmedError] that ends in
+  /// [unconfirmed] unless the answer [json] of a bulk write (`trash`,
+  /// `restore`) has an empty list of `exceptions`; it names each exception,
+  /// with the lesfiche it is for when the module keys it so.
+  static void _checkNoExceptions(
+    String operation,
+    Response<String> response,
+    Map<String, dynamic> json,
+    String change,
+    String unconfirmed,
+  ) {
+    final exceptions = json['exceptions'];
+    final failures = switch (exceptions) {
+      final List<Object?> list => [
+        for (final exception in list) _describeException(exception),
+      ],
+      final Map<Object?, Object?> map => [
+        for (final MapEntry(:key, :value) in map.entries)
+          switch (_refKey(key)) {
+            final String ref =>
+              '${_noun(LessonContentType.fromWire(ref.split(' ').first))} '
+                  '${ref.split(' ').last}: ${_describeException(value)}',
+            null => _describeException(value),
+          },
+      ],
+      _ => null,
+    };
+    if (failures == null || failures.isNotEmpty) {
+      throw SmartschoolLessonContentSaveUnconfirmedError(
+        '$operation: $change was sent, but $_module answered '
+        '${failures == null ? 'without its exceptions (${_preview(response.data ?? '')})' : 'with exceptions: ${failures.join('; ')}'}. '
+        '$unconfirmed',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  /// One of the `exceptions` of a bulk write, for a message: its
   /// `title`, `detail` and `violations` when it is a problem object.
   static String _describeException(Object? exception) {
     if (exception is! Map) return '"$exception"';
@@ -1890,7 +2173,9 @@ class LessonContentService {
           '${exception[key]}'.trim(),
       ..._violations(jsonEncode(exception)),
     ];
-    return parts.isEmpty ? jsonEncode(exception) : parts.join(': ');
+    if (parts.isEmpty) return jsonEncode(exception);
+    final status = exception['status'];
+    return '${parts.join(': ')}${status is int ? ' ($status)' : ''}';
   }
 
   // ---------------------------------------------------------------------------

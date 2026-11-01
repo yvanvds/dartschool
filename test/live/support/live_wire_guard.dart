@@ -134,10 +134,14 @@
 //   goals as in the create), the add or change of a weblink, the take of an
 //   upload directory as above, the change of an attachment's visibility,
 //   and the DELETE of one of its weblinks or attachments (the only DELETE
-//   the live suite sends); and the move to the trash
-//   (`lesson-content/trash/bulk`) of lesfiches the run made, of their kind,
-//   until Smartschool answered one for them. Never a label, a share,
-//   a duplicate, merge or conversion, a year plan, a restore, and never
+//   the live suite sends); the duplicate (`lesson-content/duplicate/bulk`,
+//   #227) of such lesfiches, each copy counted as a create, whose copies
+//   (as Smartschool answered) count as made by the run; the move to the
+//   trash (`lesson-content/trash/bulk`) of lesfiches the run made, of their
+//   kind, until Smartschool answered one for them; and the restore
+//   (`lesson-content/restore/bulk`, #227) of lesfiches the run made and
+//   moved to the trash, after which they may be written again. Never a
+//   label, a share, a merge or conversion, a year plan, and never
 //   `lesson-content/delete/bulk` (deleted for good);
 // - an upload (`/Upload/Upload/Index`) into another directory than the one
 //   of a compose form loaded through the guard or one handed out through it
@@ -210,7 +214,8 @@ class LiveWireGuard extends Interceptor {
     // and an upload (#128).
     this.maxIntradeskCreates = 6,
     // The creates of lesson_content_write_live_test.dart: a lesson and an
-    // assignment (#129).
+    // assignment (#129); of lesson_content_reuse_live_test.dart, a lesson
+    // and its copy (#227).
     this.maxLessonContentCreates = 2,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
@@ -353,12 +358,12 @@ class LiveWireGuard extends Interceptor {
   /// Lesfiches module (a create, `attachments`, #129) take.
   final Set<String> _uploadDirsTaken = {};
 
-  /// The lesfiches the run made, as Smartschool answered their creates: the
-  /// kind (`lessons`, `assignments`) by ID (#129).
+  /// The lesfiches the run made, as Smartschool answered their creates and
+  /// duplicates (#227): the kind (`lessons`, `assignments`) by ID (#129).
   final Map<String, String> _lessonContentMade = {};
 
   /// The lesfiches the run made that Smartschool answered a move to the
-  /// trash for.
+  /// trash for, and not a restore after it (#227).
   final Set<String> _lessonContentTrashed = {};
 
   /// The IDs of the lesfiches the run made, as Smartschool answered their
@@ -1023,12 +1028,16 @@ class LiveWireGuard extends Interceptor {
         return _lessonContentCreateRefusal(data);
       case 'lesson-content/trash/bulk':
         return _lessonContentTrashRefusal(data);
+      case 'lesson-content/restore/bulk':
+        return _lessonContentRestoreRefusal(data);
+      case 'lesson-content/duplicate/bulk':
+        return _lessonContentDuplicateRefusal(data);
     }
     final action = rest == null ? null : _lessonContentAction.firstMatch(rest);
     if (action == null) {
       return 'the live suite sends no Lesfiches POST but the creates, edits, '
-          'weblinks, attachments and moves to the trash of lesfiches it '
-          'made (#129)';
+          'weblinks, attachments, duplicates, moves to the trash and '
+          'restores of lesfiches it made (#129, #227)';
     }
     final kind = action.group(1)!;
     final id = action.group(2)!;
@@ -1177,6 +1186,63 @@ class LiveWireGuard extends Interceptor {
       );
       if (made != null) return made;
     }
+    return null;
+  }
+
+  /// The lesfiches named in the JSON body [data] of a bulk write, as (kind,
+  /// ID), or `null` when it names none, or one it does not name as the
+  /// library does.
+  static List<(String, String)>? _bulkLessonContent(Object? data) {
+    final list = data is Map ? data['lessonContent'] : null;
+    if (list is! List || list.isEmpty) return null;
+    final refs = <(String, String)>[];
+    for (final entry in list) {
+      if (entry is! Map || entry['id'] is! String || entry['type'] is! String) {
+        return null;
+      }
+      refs.add((entry['type'] as String, entry['id'] as String));
+    }
+    return refs;
+  }
+
+  /// Why the restore with the JSON body [data] may not go out, or `null`
+  /// (#227): only lesfiches the run made, of their kind, that it moved to
+  /// the trash (as Smartschool answered).
+  String? _lessonContentRestoreRefusal(Object? data) {
+    final refs = _bulkLessonContent(data);
+    if (refs == null) return 'it restores no lesfiche that it names';
+    for (final (kind, id) in refs) {
+      final made = _lessonContentMade[id.toLowerCase()];
+      if (made == null) {
+        return 'it restores lesfiche $id, which this run did not make';
+      }
+      if (made != kind) {
+        return 'it restores lesfiche $id as one of the $kind, but the run '
+            'made it as one of the $made';
+      }
+      if (!_lessonContentTrashed.contains(id.toLowerCase())) {
+        return 'it restores lesfiche $id, which this run did not move to '
+            'the trash';
+      }
+    }
+    return null;
+  }
+
+  /// Why the duplicate with the JSON body [data] may not go out, or `null`
+  /// (#227): only lesfiches the run made, of their kind, not in the trash,
+  /// each copy counted as a create.
+  String? _lessonContentDuplicateRefusal(Object? data) {
+    final refs = _bulkLessonContent(data);
+    if (refs == null) return 'it duplicates no lesfiche that it names';
+    for (final (kind, id) in refs) {
+      final made = _madeLessonContentRefusal(kind, id);
+      if (made != null) return made;
+    }
+    if (lessonContentCreates + refs.length > maxLessonContentCreates) {
+      return 'its copies would make more than the run\'s maximum of '
+          '$maxLessonContentCreates lesfiches';
+    }
+    lessonContentCreates += refs.length;
     return null;
   }
 
@@ -1855,7 +1921,8 @@ class LiveWireGuard extends Interceptor {
       }
       return;
     }
-    if (rest == 'lesson-content/trash/bulk') {
+    if (rest == 'lesson-content/trash/bulk' ||
+        rest == 'lesson-content/restore/bulk') {
       final exceptions = answer is Map ? answer['exceptions'] : null;
       final data = options.data;
       final list = data is Map ? data['lessonContent'] : null;
@@ -1864,7 +1931,26 @@ class LiveWireGuard extends Interceptor {
       }
       for (final entry in list) {
         if (entry is Map && entry['id'] is String) {
-          _lessonContentTrashed.add((entry['id'] as String).toLowerCase());
+          final id = (entry['id'] as String).toLowerCase();
+          if (rest == 'lesson-content/trash/bulk') {
+            _lessonContentTrashed.add(id);
+          } else {
+            _lessonContentTrashed.remove(id);
+          }
+        }
+      }
+      return;
+    }
+    if (rest == 'lesson-content/duplicate/bulk') {
+      // The copies, keyed by the lesfiche they copy (#227).
+      final copies = answer is Map ? answer['lessonContent'] : null;
+      if (copies is! Map) return;
+      for (final copy in copies.values) {
+        if (copy is Map &&
+            copy['id'] is String &&
+            (copy['type'] == 'lessons' || copy['type'] == 'assignments')) {
+          _lessonContentMade[(copy['id'] as String).toLowerCase()] =
+              copy['type'] as String;
         }
       }
     }

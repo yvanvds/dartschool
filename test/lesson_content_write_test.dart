@@ -32,6 +32,18 @@
 // whole lesfiche, its goals replaced by the list. The goal IDs here are
 // made up.
 //
+// The trash, restore and duplicate (#227, seen live on 2026-11-01, made-up
+// IDs here): `GET lesson-content/trashed` answers an array in the list shape,
+// with `dateStateChanged` (when it went to the trash) and the capability
+// `canUserDelete`; `POST lesson-content/restore/bulk` with the body of
+// `trash/bulk` answers `{"exceptions":[]}`, and for a lesfiche that is not
+// in the trash `200` with `{"exceptions": {<the lesfiche as sent, as a JSON
+// string>: {status 404, ...}}}`; `POST lesson-content/duplicate/bulk` with
+// the same body answers `{"lessonContent": {<the lesfiche as sent>: <the
+// copy, in the detail shape, named "<name> - kopie">}, "exceptions": []}`,
+// and for a lesfiche in the trash `{"lessonContent": [], "exceptions":
+// {<the lesfiche>: {status 403, ...}}}`.
+//
 // The live test of the same writes is
 // test/live/lesson_content_write_live_test.dart.
 import 'dart:convert';
@@ -99,6 +111,52 @@ const _types = 'GET $_api/assignments/applicable-assignment-types';
 const _uploadDirectory = 'GET /upload/api/v1/get-upload-directory';
 const _upload = 'POST /Upload/Upload/Index';
 const _trash = 'POST $_api/lesson-content/trash/bulk';
+const _trashed = 'GET $_api/lesson-content/trashed';
+const _restore = 'POST $_api/lesson-content/restore/bulk';
+const _duplicate = 'POST $_api/lesson-content/duplicate/bulk';
+
+/// The copies of the lesson and the assignment lesfiche (#227).
+const _lessonCopyId = 'b0000000-0000-4000-8000-000000000021';
+const _assignmentCopyId = 'b0000000-0000-4000-8000-000000000022';
+
+/// A lesfiche as an answer to a bulk write names it (#227): as it was sent,
+/// a JSON object as a string.
+String _ref(String id, String type) =>
+    jsonEncode({'id': id, 'type': type, 'platformId': 4069});
+
+/// A lesfiche of the trash as the module lists it (#227, trimmed capture):
+/// the list shape, `dateStateChanged` when it went to the trash.
+Map<String, Object?> _trashedJson({
+  String id = _lessonId,
+  String type = 'lessons',
+  List<String> courses = const [_informatica],
+}) => {
+  'id': id,
+  'platformId': 4069,
+  'name': 'Lussen',
+  'icon': 'document_observation',
+  'publicInfo': '',
+  'isVisible': true,
+  'owner': '4069_1001_0',
+  'dateStateChanged': '2026-11-01 09:30:12',
+  'dateLastChanged': '2026-10-05 19:12:37',
+  'courses': [
+    for (final course in courses) {'platformId': 4069, 'id': course},
+  ],
+  'labels': [],
+  'weblinks': [],
+  'partnerWeblinks': [],
+  'attachments': [],
+  'deeplinks': [],
+  'capabilities': {
+    'canUserSeeDetails': true,
+    'canUserEdit': false,
+    'canUserTrash': false,
+    'canUserTrashAsAdmin': false,
+    'canUserDelete': true,
+  },
+  'type': type,
+};
 
 /// A weblink as the module gives it.
 Map<String, Object?> _weblinkJson({
@@ -2515,6 +2573,408 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // The trash, restore and duplicate (#227)
+  // ---------------------------------------------------------------------------
+
+  group('getTrash', () {
+    test('reads the trash, lesfiches in the list shape with the date they '
+        'went there, and names their courses', () async {
+      final (server, lessonContent) = await serve({
+        _trashed: [
+          _json([
+            _trashedJson(),
+            _trashedJson(id: _assignmentId, type: 'assignments', courses: []),
+          ]),
+        ],
+        _courses: [_json(_courseList)],
+      });
+
+      final trash = await lessonContent.getTrash();
+
+      expect(server.calls, [_trashed, _courses]);
+      expect(
+        [for (final item in trash) (item.type, item.id)],
+        [
+          (LessonContentType.lesson, _lessonId),
+          (LessonContentType.assignment, _assignmentId),
+        ],
+      );
+      expect(trash.first.dateStateChanged, DateTime(2026, 11, 1, 9, 30, 12));
+      expect(trash.first.courses.single.name, 'informatica');
+      expect(trash.first.capabilities['canUserEdit'], isFalse);
+    });
+
+    test('without course names, and an empty trash: one request', () async {
+      final (server, lessonContent) = await serve({
+        _trashed: [
+          _json([_trashedJson()]),
+          _json('[]'),
+        ],
+      });
+
+      final trash = await lessonContent.getTrash(withCourseNames: false);
+      expect(trash.single.courses.single.name, isNull);
+      expect(await lessonContent.getTrash(), isEmpty);
+      expect(server.calls, [_trashed, _trashed]);
+    });
+
+    test('an answer in an unknown shape, and an HTML page', () async {
+      final (_, lessonContent) = await serve({
+        _trashed: [
+          _json('{}'),
+          (status: 200, body: '<html></html>', contentType: 'text/html'),
+        ],
+      });
+
+      await expectLater(
+        lessonContent.getTrash(),
+        throwsA(isA<SmartschoolLessonContentError>()),
+      );
+      await expectLater(
+        lessonContent.getTrash(),
+        throwsA(isA<SmartschoolLessonContentError>()),
+      );
+    });
+  });
+
+  group('restore', () {
+    test('sends each lesfiche once with its kind and platform, answered '
+        'with no exceptions', () async {
+      final (server, lessonContent) = await serve({
+        _restore: [_json('{"exceptions":[]}')],
+      });
+
+      await lessonContent.restore([_lessonItem, _assignmentItem, _lessonItem]);
+
+      expect(server.calls, [_restore]);
+      expect(server.bodiesOf(_restore), [
+        {
+          'lessonContent': [
+            {'id': _lessonId, 'type': 'lessons', 'platformId': 4069},
+            {'id': _assignmentId, 'type': 'assignments', 'platformId': 4069},
+          ],
+        },
+      ]);
+    });
+
+    test('a lesfiche that is not in the trash (a 404 exception keyed by the '
+        'lesfiche, seen live): unconfirmed, naming it', () async {
+      final (_, lessonContent) = await serve({
+        _restore: [
+          _json({
+            'exceptions': {
+              _ref(_assignmentId, 'assignments'): {
+                'status': 404,
+                'title': 'Not Found',
+                'detail': '',
+                'type': '',
+              },
+            },
+          }),
+          _json('{}'),
+          _serverError,
+        ],
+      });
+
+      await expectLater(
+        lessonContent.restore([_lessonItem, _assignmentItem]),
+        throwsA(
+          _unconfirmed(
+            allOf(
+              contains(
+                'with exceptions: assignment lesfiche $_assignmentId: '
+                'Not Found (404)',
+              ),
+              isNot(contains(_lessonId)),
+              contains('getTrash'),
+            ),
+            statusCode: 200,
+          ),
+        ),
+      );
+      await expectLater(
+        lessonContent.restore([_lessonItem]),
+        throwsA(_unconfirmed(contains('without its exceptions'))),
+      );
+      await expectLater(
+        lessonContent.restore([_lessonItem]),
+        throwsA(_unconfirmed(anything, statusCode: 500)),
+      );
+    });
+
+    test('a 4xx: refused; retried once after logging in again', () async {
+      final (server, lessonContent) = await serve({
+        _restore: [_badRequest, _unauthorized, _json('{"exceptions":[]}')],
+      });
+
+      await expectLater(
+        lessonContent.restore([_assignmentItem, _lessonItem]),
+        throwsA(_refused(status: 400)),
+      );
+      await lessonContent.restore([_lessonItem]);
+
+      expect(server.log, contains('POST /login'));
+      expect(server.writes, [_restore, _restore, _restore]);
+    });
+
+    test('refuses no lesfiches and a kind it does not know, before any '
+        'request', () async {
+      final (server, lessonContent) = await serve({});
+      final other = LessonContentItem.fromJson(const {
+        'id': _lessonId,
+        'platformId': 4069,
+        'type': 'method-lessons',
+      });
+
+      await expectLater(lessonContent.restore(const []), throwsArgumentError);
+      await expectLater(lessonContent.restore([other]), throwsArgumentError);
+      expect(server.log, isEmpty);
+    });
+  });
+
+  group('duplicate', () {
+    test('sends each lesfiche once, and returns the copies the answer names, '
+        'in the order asked, with the courses named', () async {
+      final (server, lessonContent) = await serve({
+        _duplicate: [
+          _json({
+            'lessonContent': {
+              _ref(_assignmentId, 'assignments'): _detailJson(
+                id: _assignmentCopyId,
+                type: 'assignments',
+                name: 'Lussen - kopie',
+                courses: [_wiskunde],
+              ),
+              _ref(_lessonId, 'lessons'): _detailJson(
+                id: _lessonCopyId,
+                name: 'Lussen - kopie',
+              ),
+            },
+            'exceptions': [],
+          }),
+        ],
+      });
+
+      // As getItems gives it: its course named.
+      final named = LessonContentItem.fromJson(
+        _detailJson(),
+        courseNames: const {_informatica: 'informatica'},
+      );
+
+      final copies = await lessonContent.duplicate([
+        named,
+        _assignmentItem,
+        _lessonItem,
+      ]);
+
+      expect(server.calls, [_duplicate]);
+      expect(server.bodiesOf(_duplicate), [
+        {
+          'lessonContent': [
+            {'id': _lessonId, 'type': 'lessons', 'platformId': 4069},
+            {'id': _assignmentId, 'type': 'assignments', 'platformId': 4069},
+          ],
+        },
+      ]);
+      expect(
+        [for (final copy in copies) (copy.type, copy.id, copy.name)],
+        [
+          (LessonContentType.lesson, _lessonCopyId, 'Lussen - kopie'),
+          (LessonContentType.assignment, _assignmentCopyId, 'Lussen - kopie'),
+        ],
+      );
+      expect(copies.first.weblinks.single.name, 'Oefeningen');
+      expect(copies.first.courses.single.name, 'informatica');
+      // Named after the courses of the lesfiches given: wiskunde is not one.
+      expect(copies.last.courses.single.name, isNull);
+    });
+
+    test('a lesfiche in the trash (no copy, a 403 exception, seen live): '
+        'refused, nothing changed', () async {
+      final (server, lessonContent) = await serve({
+        _duplicate: [
+          _json({
+            'lessonContent': [],
+            'exceptions': {
+              _ref(_lessonId, 'lessons'): {
+                'status': 403,
+                'title': 'Forbidden',
+                'detail': '',
+                'type': '',
+              },
+            },
+          }),
+        ],
+      });
+
+      await expectLater(
+        lessonContent.duplicate([_lessonItem]),
+        throwsA(
+          allOf(
+            _refused(status: 403),
+            isA<SmartschoolLessonContentWriteRefusedError>().having(
+              (e) => e.message,
+              'message',
+              contains('lesson lesfiche $_lessonId: Forbidden (403)'),
+            ),
+          ),
+        ),
+      );
+      expect(server.calls, [_duplicate]);
+    });
+
+    test('some copies made and others not: unconfirmed, naming the copies '
+        'made', () async {
+      final (_, lessonContent) = await serve({
+        _duplicate: [
+          _json({
+            'lessonContent': {
+              _ref(_lessonId, 'lessons'): _detailJson(
+                id: _lessonCopyId,
+                name: 'Lussen - kopie',
+              ),
+            },
+            'exceptions': {
+              _ref(_assignmentId, 'assignments'): {
+                'status': 403,
+                'title': 'Forbidden',
+              },
+            },
+          }),
+          _json({
+            'lessonContent': {
+              _ref(_lessonId, 'lessons'): _detailJson(
+                id: _lessonCopyId,
+                name: 'Lussen - kopie',
+              ),
+            },
+            'exceptions': [],
+          }),
+        ],
+      });
+
+      await expectLater(
+        lessonContent.duplicate([_lessonItem, _assignmentItem]),
+        throwsA(
+          _unconfirmed(
+            allOf(
+              contains('only the copies lesson lesfiche $_lessonCopyId'),
+              contains('do not make them again'),
+              contains('assignment lesfiche $_assignmentId: Forbidden (403)'),
+            ),
+            statusCode: 200,
+          ),
+        ),
+      );
+      await expectLater(
+        lessonContent.duplicate([_lessonItem, _assignmentItem]),
+        throwsA(
+          _unconfirmed(
+            contains(
+              'named no copy and no exception for assignment lesfiche '
+              '$_assignmentId',
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('an answer it cannot use, a 500, a dropped connection: unconfirmed, '
+        'and a 4xx refused', () async {
+      for (final answer in [
+        _json('{"exceptions":[]}'),
+        _json('{"lessonContent":{},"exceptions":"no"}'),
+        _json({
+          'lessonContent': {_lessonId: _detailJson(id: _lessonCopyId)},
+          'exceptions': [],
+        }),
+        _json({
+          'lessonContent': {
+            _ref(_lessonId, 'lessons'): _detailJson(
+              id: _lessonCopyId,
+              type: 'assignments',
+            ),
+          },
+          'exceptions': [],
+        }),
+        _json({
+          'lessonContent': {
+            _ref(_lessonId, 'lessons'): {'name': 'Lussen - kopie'},
+          },
+          'exceptions': [],
+        }),
+        _serverError,
+      ]) {
+        final (server, lessonContent) = await serve({
+          _duplicate: [answer],
+        });
+        await expectLater(
+          lessonContent.duplicate([_lessonItem]),
+          throwsA(_unconfirmed(contains('trying again makes more copies'))),
+          reason: answer.body,
+        );
+        expect(server.calls, [_duplicate]);
+      }
+
+      final (_, dropped) = await serve({}, failures: {_duplicate: _dropped});
+      await expectLater(
+        dropped.duplicate([_lessonItem]),
+        throwsA(_unconfirmed(contains('no answer came in'))),
+      );
+
+      final (_, refused) = await serve({
+        _duplicate: [_badRequest],
+      });
+      await expectLater(
+        refused.duplicate([_lessonItem]),
+        throwsA(_refused(status: 400)),
+      );
+    });
+
+    test('a session refused for the duplicate is not retried after logging '
+        'in again: no login, no second duplicate', () async {
+      final (server, lessonContent) = await serve({
+        _duplicate: [_unauthorized, _json('{"lessonContent":[]}')],
+      });
+
+      await expectLater(
+        lessonContent.duplicate([_lessonItem]),
+        throwsA(_notRetried),
+      );
+      expect(server.log, isNot(contains('GET /login')));
+      expect(server.calls, [_duplicate]);
+    });
+
+    test('refuses no lesfiches, a kind it does not know and an ID that is '
+        'not a UUID, before any request', () async {
+      final (server, lessonContent) = await serve({});
+      final other = LessonContentItem.fromJson(const {
+        'id': _lessonId,
+        'platformId': 4069,
+        'type': 'method-lessons',
+      });
+      final badId = LessonContentItem.fromJson(const {
+        'id': '42',
+        'platformId': 4069,
+        'type': 'lessons',
+      });
+
+      for (final items in [
+        <LessonContentItem>[],
+        [other],
+        [_lessonItem, badId],
+      ]) {
+        await expectLater(
+          lessonContent.duplicate(items),
+          throwsArgumentError,
+          reason: '$items',
+        );
+      }
+      expect(server.log, isEmpty);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // The flow of the issue
   // ---------------------------------------------------------------------------
 
@@ -2580,6 +3040,49 @@ void main() {
       'POST $_lesson/rename',
       'POST $_lesson/weblinks/$_weblinkId',
       _trash,
+    ]);
+  });
+
+  test('the flow of #227: duplicate a lesfiche, move both to the trash, find '
+      'them there, restore the copy, and move it to the trash again', () async {
+    final copyJson = _detailJson(id: _lessonCopyId, name: 'Lussen - kopie');
+    final copyItem = LessonContentItem.fromJson(copyJson);
+    final (server, lessonContent) = await serve({
+      _duplicate: [
+        _json({
+          'lessonContent': {_ref(_lessonId, 'lessons'): copyJson},
+          'exceptions': [],
+        }),
+      ],
+      _trash: [_json('{"exceptions":[]}')],
+      _trashed: [
+        _json([
+          _trashedJson(courses: []),
+          {
+            ..._trashedJson(id: _lessonCopyId, courses: []),
+            'name': 'Lussen - kopie',
+          },
+        ]),
+      ],
+      _restore: [_json('{"exceptions":[]}')],
+    });
+
+    final copy = (await lessonContent.duplicate([_lessonItem])).single;
+    await lessonContent.trash([_lessonItem, copy]);
+    final trash = await lessonContent.getTrash();
+    final found = trash.singleWhere((item) => item.id == copy.id);
+    await lessonContent.restore([found]);
+    await lessonContent.trash([found]);
+
+    expect(copy.name, 'Lussen - kopie');
+    expect(found.name, copyItem.name);
+    expect(server.calls, [_duplicate, _trash, _trashed, _restore, _trash]);
+    expect(server.bodiesOf(_restore), [
+      {
+        'lessonContent': [
+          {'id': _lessonCopyId, 'type': 'lessons', 'platformId': 4069},
+        ],
+      },
     ]);
   });
 }

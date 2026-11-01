@@ -581,6 +581,88 @@ class _Smartschool implements HttpClientAdapter {
   final Map<String, Map<String, Object?>> lessonClusters = {};
   final Map<String, List<Object?>> clusterEntries = {};
 
+  /// The planned lesson clusters it made (#230), by ID, in full; and the
+  /// IDs of those moved to the trash.
+  final Map<String, Map<String, Object?>> plannedClusters = {};
+  final Set<String> trashedClusters = {};
+
+  /// The planner requests about planned lesson clusters that reached it
+  /// (#230), `METHOD path`.
+  final List<String> plannerClusterRequests = [];
+
+  /// Answers a request about planned lesson clusters (#230) as the planner
+  /// does (in short): the plan with the planned cluster in full, its
+  /// detail (`404` once trashed), the list and the trash.
+  ResponseBody _plannedClusterAnswer(RequestOptions options) {
+    const json = 'application/json';
+    const api = '/planner/api/v1/planned-lesson-clusters/';
+    final path = options.uri.path;
+    plannerClusterRequests.add('${options.method} $path');
+    final rest = path.substring(api.length);
+    final body = options.data is Map ? options.data as Map : const {};
+    if (options.method == 'POST' && rest.isEmpty) {
+      final id = _uuid();
+      final cluster = lessonClusters[body['lessonClusterId']]!;
+      final period = body['period'] as Map;
+      plannedClusters[id] = {
+        'id': id,
+        'platformId': 49,
+        'name': cluster['name'],
+        'period': {
+          'dateTimeFrom': '${period['dateTimeFrom']}T00:00:00+01:00',
+          'dateTimeTo': '${period['dateTimeTo']}T23:59:59+01:00',
+          'wholeDay': true,
+          'deadline': false,
+        },
+        'organisers': {
+          'users': [
+            {'id': '49_777_0', 'name': <String, String>{}},
+          ],
+        },
+        'participants': {
+          'users': [],
+          'groups': [
+            for (final group in (body['participants'] as Map)['groups'] as List)
+              {'id': group, 'platformId': 49, 'name': '6A1'},
+          ],
+        },
+        'courses': [],
+        'capabilities': {'canUserTrash': true},
+        'plannedElementType': 'planned-lesson-clusters',
+        'lessonClusterId': cluster['id'],
+        'lessonClusterPlatformId': 49,
+        'teachingAssignmentId': cluster['teachingAssignmentId'],
+        'teachingAssignmentPlatformId': 49,
+        'plannedLessonClusterContent': [],
+        'isCrossCurricular': false,
+      };
+      return _answer(
+        jsonEncode(plannedClusters[id]),
+        contentType: json,
+        status: 201,
+      );
+    }
+    if (rest == 'list') {
+      return _answer(
+        jsonEncode([
+          for (final MapEntry(:key, :value) in plannedClusters.entries)
+            if (!trashedClusters.contains(key)) value,
+        ]),
+        contentType: json,
+      );
+    }
+    final id = RegExp(r'^49/([^/]+)').firstMatch(rest)?.group(1);
+    if (rest.endsWith('/trash')) {
+      trashedClusters.add(id!);
+      return _answer('[]', contentType: json);
+    }
+    final planned = plannedClusters[id];
+    if (planned == null || trashedClusters.contains(id)) {
+      return _answer('{"status":404}', contentType: json, status: 404);
+    }
+    return _answer(jsonEncode(planned), contentType: json);
+  }
+
   /// Answers a request to the teaching assignments (#229) of the Lesfiches
   /// module as it does (in short).
   ResponseBody _teachingAssignmentAnswer(String rest, RequestOptions options) {
@@ -638,6 +720,15 @@ class _Smartschool implements HttpClientAdapter {
     if (method == 'DELETE') {
       teachingAssignments.remove(rest.split('/').last);
       return _answer('', status: 204);
+    }
+    final read = RegExp(
+      r'^49/[^/]+/lesson-clusters/49/([^/]+)$',
+    ).firstMatch(rest);
+    if (method == 'GET' && read != null) {
+      final cluster = lessonClusters[read.group(1)];
+      return cluster == null
+          ? _answer('{}', contentType: json, status: 404)
+          : _answer(jsonEncode(cluster), contentType: json);
     }
     final action = RegExp(
       r'^49/[^/]+/lesson-clusters/49/([^/]+)/(.+)$',
@@ -930,6 +1021,9 @@ class _Smartschool implements HttpClientAdapter {
         );
       case (true, _plannerLookup, _, _):
         return _answer(_plannerLookupAnswer, contentType: 'application/json');
+      case (_, final path, _, _)
+          when path.startsWith('/planner/api/v1/planned-lesson-clusters/'):
+        return _plannedClusterAnswer(options);
       case (true, final path, _, _) when path.startsWith('/goal/selector/'):
         return _answer('[]', contentType: 'application/json');
       case (false, '/course-list/api/v1/courses', _, _):
@@ -2747,6 +2841,204 @@ void main() {
         contains('which this run did not make'),
         contains('(or deleted already)'),
         contains('(or deleted already)'),
+      ]);
+    });
+  });
+
+  group('planned lesson clusters (#230)', () {
+    const api = '/planner/api/v1/planned-lesson-clusters';
+
+    /// The day [days] from today, as the planner takes it.
+    String day(int days) {
+      final now = DateTime.now();
+      return PlannerService.formatDate(
+        DateTime(now.year, now.month, now.day + days),
+      );
+    }
+
+    /// The body of a plan as the library sends it, for [cluster], with
+    /// [extra] keys over it.
+    Map<String, Object?> body(
+      String cluster, {
+      String? from,
+      String? to,
+      Map<String, Object?> extra = const {},
+      Map<String, Object?> participants = const {},
+    }) => {
+      'lessonClusterId': cluster,
+      'lessonClusterPlatformId': 49,
+      'period': {
+        'dateTimeFrom': from ?? day(35),
+        'dateTimeTo': to ?? day(39),
+        'wholeDay': true,
+      },
+      'participants': {
+        'users': <Object>[],
+        'groups': ['49_2001'],
+        'groupFilters': {'additionalUsers': <Object>[], 'filters': <Object>[]},
+        'excludedUsers': <Object>[],
+        ...participants,
+      },
+      'courses': [
+        {'id': 'cccc0001-0000-4000-8000-000000000000', 'platformId': '49'},
+      ],
+      'isCrossCurricular': false,
+      ...extra,
+    };
+
+    test('lets out the plan of a cluster the run made, over a week far '
+        'ahead, the list, and the trash of that planned cluster', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final plans = TeachingAssignmentService(client);
+      final planner = PlannerService(client);
+      final now = DateTime.now();
+      final from = DateTime(now.year, now.month, now.day + 35);
+      final to = DateTime(now.year, now.month, now.day + 39);
+
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      final planned = await planner.planLessonCluster(
+        cluster: unit,
+        from: from,
+        to: to,
+        groupIds: ['49_2001'],
+        courses: const [
+          PlannerCourse(
+            id: 'cccc0001-0000-4000-8000-000000000000',
+            platformId: 49,
+            name: 'informatica',
+          ),
+        ],
+      );
+      expect(guard.plannedLessonClustersMade, {planned.id});
+      final listed = await planner.getPlannedLessonClusters(from: from, to: to);
+      expect(listed.map((c) => c.id), [planned.id]);
+      await planner.trashPlannedLessonCluster(planned);
+      await plans.deleteTeachingAssignment(plan);
+
+      final path = '$api/49/${planned.id}';
+      expect(server.plannerClusterRequests, [
+        'POST $api/',
+        'POST $api/list',
+        'GET $path',
+        'POST $path/trash',
+        'GET $path',
+      ]);
+      expect(guard.plannedLessonClusters, 1);
+      expect(guard.plannedLessonClustersMade, isEmpty);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('refuses a plan of a cluster the run did not make, across courses, '
+        'for users, sooner than four weeks ahead, over more than a week, '
+        'with more keys or over the maximum; the trash of a planned cluster '
+        'the run did not make or trashed already; a list of another '
+        'calendar; and other planned-cluster writes', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (client, guard) = await _guardedClient(server);
+      final plans = TeachingAssignmentService(client);
+      final dio = _dio(server, guard);
+      Future<void> refused(Future<Object?> write) =>
+          expectLater(write, throwsA(anything));
+      const otherId = 'aaaa0009-0000-4000-8000-000000000000';
+
+      final plan = await plans.createTeachingAssignment(
+        name: _lessonName('plan'),
+      );
+      final unit = await plans.addCluster(plan, name: _lessonName('unit'));
+      final cluster = unit.id;
+
+      await refused(dio.post<String>('$api/', data: body(otherId)));
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(cluster, extra: {'isCrossCurricular': true}),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(
+            cluster,
+            participants: {
+              'users': ['49_778_0'],
+            },
+          ),
+        ),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(cluster, participants: {'groups': <Object>[]}),
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/', data: body(cluster, extra: {'courses': []})),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(cluster, from: day(3), to: day(5)),
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/', data: body(cluster, to: day(50))),
+      );
+      await refused(
+        dio.post<String>(
+          '$api/',
+          data: body(
+            cluster,
+            extra: {
+              'period': {
+                'dateTimeFrom': day(35),
+                'dateTimeTo': day(36),
+                'wholeDay': false,
+              },
+            },
+          ),
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/', data: body(cluster, extra: {'name': 'x'})),
+      );
+      final made = await dio.post<String>('$api/', data: body(cluster));
+      final id = (jsonDecode(made.data!) as Map)['id'] as String;
+      await refused(dio.post<String>('$api/', data: body(cluster)));
+      await refused(dio.post<String>('$api/49/$otherId/trash'));
+      await refused(
+        dio.post<String>(
+          '$api/list',
+          data: {'id': '49_2001', 'type': 'group', 'period': {}},
+        ),
+      );
+      await refused(
+        dio.post<String>('$api/49/$id/reschedule', data: <String, Object?>{}),
+      );
+      await dio.post<String>('$api/49/$id/trash');
+      await refused(dio.post<String>('$api/49/$id/trash'));
+
+      expect(server.plannerClusterRequests, [
+        'POST $api/',
+        'POST $api/49/$id/trash',
+      ]);
+      expect(_violations(guard), [
+        contains('which this run did not make'),
+        contains('across courses'),
+        for (var i = 0; i < 2; i++) contains('for others than groups'),
+        contains('without courses'),
+        contains('sooner than 28 days from today'),
+        for (var i = 0; i < 2; i++)
+          contains('another period than at most a week of whole days'),
+        contains('more than its cluster, period, participants and courses'),
+        contains('1 lesson clusters already'),
+        contains('which this run did not plan (or trashed already)'),
+        contains('of another calendar than a user\'s'),
+        contains('changes nothing in the planner'),
+        contains('which this run did not plan (or trashed already)'),
       ]);
     });
   });

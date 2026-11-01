@@ -205,6 +205,7 @@ try {
 | `notALessonLessonContent` — the lesfiche is not a lesson one | `planLessonContent`, `replaceWithLessonContent`, `planLessonContentInto` | `lessonContent`: the lesfiche (`LessonContentItem`) |
 | `unknownAssignmentType` — the type is not one of the school's | `planAssignment` | `assignmentTypes`: the school's types (`PlannerAssignmentType`) as the check read them (#119) |
 | `linkedEvaluation` — the assignment has a linked Skore evaluation | `trashAssignment` | `element` |
+| `unknownLessonCluster` — the Lesfiches module answered the read of the lesson cluster with `404` (#230) | `planLessonCluster` | — |
 
 `element` is the element as the write read it again (its detail, a `PlannedElementDetail`), so its name, period (a `DateTime`), classes, course and organisers are at hand; it is `null` when the check refused before an element was read (a lesfiche, a new assignment's type). `assignmentTypes` is empty for every other reason; for `unknownAssignmentType` it lists the school's types in the planner's order, so that an app can name them to its user, or pick the one it meant (a type the school replaced by one of the same name has a new ID), without reading them again with `getAssignmentTypes`, a read that could differ from the one the check refused on. `reason` is `null` only for an error made without it (its constructor takes the new fields as optional ones).
 
@@ -276,6 +277,45 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10
 dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 ```
 
+### Lesson clusters for a class
+
+> **Warning:** these calls change the live planner. **Pupils of the classes see the moments** of a planned lesson cluster while it is planned.
+
+A lesson cluster of a teaching assignment (the year plans of the Lesfiches module, `TeachingAssignmentService`, see [`doc/lesson-content.md`](lesson-content.md#teachingassignmentservice)) is planned for classes over a period, as the planner's "plan lesson cluster" does (#230). Unlike a lesson planned from a lesfiche (a copy), **a planned cluster keeps its link**: `PlannedLessonCluster.lessonCluster` names the cluster, and the cluster lists where it was planned. In the period, the planner turns the lesson hours of those classes and courses in the own planner into `PlannedElementType.lessonClusterMoment` elements, which `getPlannedElements` lists instead of the timetable slots, each naming the clusters planned in it (`plannedLessonClusters`).
+
+```dart
+final plans = TeachingAssignmentService(client);
+final unit = (await plans.getClusters(plan)).first;  // a LessonCluster
+
+final planned = await planner.planLessonCluster(
+  cluster: unit,                                   // or a LessonClusterRef kept by its IDs
+  from: DateTime(2027, 1, 11),                     // days: only the date counts
+  to: DateTime(2027, 1, 22),
+  groupIds: [for (final group in slot.participantGroups) group.id],
+  courses: slot.courses,                           // e.g. of a timetable slot of those classes
+);                                                 // PlannedLessonCluster, linked to unit
+
+final mine = await planner.getPlannedLessonClusters(
+  from: DateTime(2027, 1, 11),
+  to: DateTime(2027, 1, 22),
+);                                                 // the short form, without the link
+final where = await planner.getPlannedLessonClustersOf(unit);
+await planner.trashPlannedLessonCluster(planned);  // to the planner's trash (30 days)
+```
+
+| Method | Request | Sent |
+|---|---|---|
+| `planLessonCluster({cluster, from, to, groupIds, courses})` | `POST /planner/api/v1/planned-lesson-clusters/` with `{"lessonClusterId", "lessonClusterPlatformId", "period": {"dateTimeFrom", "dateTimeTo", "wholeDay": true}, "participants": {"users": [], "groups", "groupFilters": {"additionalUsers": [], "filters": []}, "excludedUsers": []}, "courses": [{"id", "platformId"}], "isCrossCurricular": false}`: the days as `yyyy-MM-dd`, a course's `platformId` as a **string**, as the planner's web client builds it; answered with `201` and the planned cluster in full | once |
+| `getPlannedLessonClusters({from, to})` | `POST /planner/api/v1/planned-lesson-clusters/list` with `{"id": <own user ID>, "type": "user", "period": {...}}`, which only reads | retried once after logging in again |
+| `getPlannedLessonClustersOf(cluster)` | `GET /lesson-content/api/v1/teaching-assignments/{taPlatformId}/{taId}/lesson-clusters/{platformId}/{id}/planned-lesson-clusters` | a read |
+| `trashPlannedLessonCluster(planned)` | `POST /planner/api/v1/planned-lesson-clusters/{platformId}/{id}/trash` without a body, answered with `200` and `[]`; then the detail is read again and must be `404` | once |
+
+Before anything is sent, `planLessonCluster` reads the cluster (`TeachingAssignmentService.getCluster`): one the module answers with `404` is refused (`PlannerWriteRefusalReason.unknownLessonCluster`), another failure of that read is its `SmartschoolLessonContentError`. No class, an ID that is not a class ID, no course, a course with an empty ID, `to` a day before `from`, or `from` and `to` in different school years (1 September to 31 August) throw an `ArgumentError`. The answer must be a planned cluster of that cluster over those days, organised by the authenticated user; else a `SmartschoolPlannerSaveUnconfirmedError`: look for it with `getPlannedLessonClusters` or `getPlannedLessonClustersOf` before trying again, since **a second plan plans the cluster twice**. `trashPlannedLessonCluster` reads the planned cluster again and refuses one that is not organised by the authenticated user or that the planner does not let the user trash (`canUserTrash`); a moment (`lessonClusterMoment`) or any other element is an `ArgumentError`.
+
+The plan's answer and the detail (`getDetail` of a planned cluster returns a `PlannedLessonCluster`) are the full form, with the link, `isCrossCurricular` and `plannedContent` (the planner's `plannedLessonClusterContent`: an object per lesfiche of the cluster, `planned-lesson-cluster-lessons`, as it gives it). The list, the cluster's instances and a moment's `plannedLessonClusters` are a **short form**, without info, content or link (`lessonCluster` is `null`; `getPlannedLessonClustersOf` sets it to the cluster asked for). Its period is whole days, from `00:00:00` of the first to `23:59:59` of the last.
+
+Tried live (2026-11-01, the developer's own planner, one week far ahead, trashed again; `test/live/planner_lesson_cluster_live_test.dart`): the planner turned two hours of the class and course of the week into moments; after the trash the list was empty, the cluster listed no instance, and the week had its timetable slots again. The planner's `DELETE` of a planned cluster answered `404`; the service never sends it. The trash worked after the teaching assignment had been deleted. Not covered: how the cluster's lesfiches are spread over the moments, whether later changes to the cluster reach the planned one, clearing or rescheduling a moment, the cluster's assignments (`schedule`, `announce`, `cancel`), and clusters planned across courses (`isCrossCurricular`, with users).
+
 ### Methods
 
 | Method | Returns | Description |
@@ -301,7 +341,12 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 | `renameElement(element, newName)` | `Future<PlannedElementDetail>` | Renames an own lesson or assignment (or another own element the planner lets the user rename); returns it. |
 | `changePublicInfo(element, newInfo)` / `changePrivateInfo(element, newInfo)` | `Future<PlannedElementDetail>` | Sets the info that pupils see / do not see of an own lesson or assignment (HTML); returns it. |
 | `changeGoals(lesson, goals)` | `Future<PlannedElementDetail>` | Sets the learning goals of an own lesson (`LearningGoalRef`s; empty clears them); returns it (#226). |
+| `planLessonCluster({cluster, from, to, groupIds, courses})` | `Future<PlannedLessonCluster>` | Plans a lesson cluster of a teaching assignment for classes and courses over whole days; returns the planned cluster, linked to the cluster. Pupils see its moments (see *Lesson clusters for a class*, #230). |
+| `getPlannedLessonClusters({from, to})` | `Future<List<PlannedLessonCluster>>` | The lesson clusters planned in the own planner in those days, in the short form. |
+| `getPlannedLessonClustersOf(cluster)` | `Future<List<PlannedLessonCluster>>` | Where a lesson cluster was planned, in the short form, linked to it. |
+| `trashPlannedLessonCluster(planned)` | `Future<void>` | Moves an own planned lesson cluster to the planner's trash, and checks that it is gone. |
 | `formatDateTime(time, {timeZoneOffset})` (static) | `String` | A date as the planner's API takes it: ISO 8601 to the second with the offset from UTC (`2026-11-20T11:10:00+01:00`); in the given offset when `timeZoneOffset` is set. |
+| `formatDate(day)` (static) | `String` | A day as the planner takes a whole-day period: `yyyy-MM-dd` (#230). |
 
 `from` and `to` go out as ISO 8601 with their offset (URL-encoded, `+` as `%2B`): a local `DateTime` in the local time of the machine, with its offset at that moment (in Belgium `+02:00` in summer, `+01:00` in winter), a UTC one in UTC. The planner's own dates are read into local `DateTime`s. Use `23:59:59` rather than midnight to include the last day. `to` before `from`, an empty `types` and `PlannedElementType.other` in `types` throw an `ArgumentError` before anything is sent.
 
@@ -310,14 +355,15 @@ dart run example/planner_assignment_example.dart 2026-11-20 11:10 GO
 - **A class calendar holds the elements of all teachers of the class**, and a colleague's lessons and assignments can be read in full. `privateInfo` is the info that pupils do not see, **not** info that only its teacher sees: other teachers who can read the element see it too. `publicInfo` is what pupils see. Both are HTML (`""` when empty); `info` held the same text as `privateInfo` in every answer seen.
 - **Timetable slots** are `PlannedElementType.placeholder` elements: one per teacher per lesson hour, with the classes, the course and the room, but no `name`. `capabilities.canReplace` tells whether a slot can be filled. Do not keep their IDs: a slot that was filled and cleared again comes back with a new ID. Find a slot again by its period, course and groups.
 - **The list lags behind**: after a change in the planner, `getPlannedElements` may show the old state for a few seconds, while `getPlannedElement` / `getDetail` show the new one at once. Read the detail to check a change.
-- Only lessons, assignments and placeholders were seen live; the other `PlannedElementType`s are the web client's constants. An element of a type the library does not know is kept as `PlannedElementType.other`, with the planner's name in `typeName`.
+- **A planned lesson cluster** (#230) shows in the week as `PlannedElementType.lessonClusterMoment` elements in the hours of its classes and courses, instead of their timetable slots; each moment names its planned clusters (`plannedLessonClusters`). The planned cluster itself (`lessonCluster`) is read with `getPlannedLessonClusters` and `getDetail`.
+- Only lessons, assignments, placeholders, planned lesson clusters and their moments were seen live; the other `PlannedElementType`s are the web client's constants. An element of a type the library does not know is kept as `PlannedElementType.other`, with the planner's name in `typeName`.
 
 ### Errors
 
 - `SmartschoolPlannerError` — the planner answered with something the service cannot use: another status than `200` (in `statusCode`, such as `400` for a calendar it refuses, or `500` for the elements of a user or class it does not have), an HTML page, invalid JSON, or data in an unknown shape (also a search hit of a user, class or location whose ID is not a calendar ID, and a lookup of `getCalendar` that names another calendar than the one asked for). The session was accepted: signing in again does not help.
 - `SmartschoolPlannedElementNotFoundError` (a `SmartschoolPlannerError`) — `getPlannedElement` / `getDetail`: the planner has no element of that type with that ID (`404`): unknown, removed, or in the trash, or a `typeName` the planner does not have (carries `elementType`, `platformId`, `elementId`). Also from a write, for the element it reads again first (such as a slot that was filled since it was read): nothing was sent.
 - `SmartschoolPlannerWriteRefusedError` (a `SmartschoolPlannerError`) — a check before a write refused it (not organised by the authenticated user, a capability not set, a slot in another period, an assignment type the school does not have, ...). Nothing was sent. Carries the check as `reason` (a `PlannerWriteRefusalReason`), the `element` as read again, the `capabilityFlags`, for a lesfiche that is not a lesson one the `lessonContent`, and for an assignment type the school does not have the school's `assignmentTypes` as the check read them (see *Why a write was refused*). From the writes, every `SmartschoolPlannerError` means nothing was sent.
-- `SmartschoolLessonContentError` — `planLessonContent`, `replaceWithLessonContent` or `planLessonContentInto` could not read the lesfiches before planning one (see `LessonContentService`). Nothing was sent.
+- `SmartschoolLessonContentError` — `planLessonContent`, `replaceWithLessonContent` or `planLessonContentInto` could not read the lesfiches before planning one (see `LessonContentService`), or `planLessonCluster` could not read the lesson cluster (other than a `404`, which is a `SmartschoolPlannerWriteRefusedError`). Nothing was sent.
 - `SmartschoolPlannerSaveUnconfirmedError` — a write went out, but the planner's answer does not confirm it, or no answer came in (carries the `statusCode` or the `cause`). It may or may not have been made: read the element again before trying again; for `planAssignment`, look for the assignment in the calendar of one of its classes, since calling it again adds another one. Not a `SmartschoolPlannerError`.
-- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; for `planLesson`, `planLessonContent`, `replaceWithLessonContent`, `planLessonContentInto`, `clearLesson`, `planAssignment` and `trashAssignment`, which are not retried, at once. Nothing was changed: call the method again; the client logs in before its next request (#134).
+- `SmartschoolSessionExpiredError` — Smartschool did not accept the session, also after the client logged in again and retried once; for `planLesson`, `planLessonContent`, `replaceWithLessonContent`, `planLessonContentInto`, `clearLesson`, `planAssignment`, `trashAssignment`, `planLessonCluster` and `trashPlannedLessonCluster`, which are not retried, at once. Nothing was changed: call the method again; the client logs in before its next request (#134).
 - `SmartschoolParsingError` — `ownCalendar()`: the session's user ID is not in the form `{platformId}_{userId}_{coaccount}`.

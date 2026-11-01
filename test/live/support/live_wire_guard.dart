@@ -92,10 +92,18 @@
 //   write, delete, lock or publish (saveOwner, saveShared, deleteTeacher,
 //   saveEvaluation, saveGrade, deleteEvaluation, setPublicProp, ...);
 // - any POST to the planner but its lookup of a calendar by ID
-//   (`quick-search/planner/start`, PlannerService.getCalendar, #127), which
-//   only reads: the live suite changes nothing in the planner, whose POSTs
-//   also fill and clear lesson hours, add assignments and move a whole
-//   period to the trash;
+//   (`quick-search/planner/start`, PlannerService.getCalendar, #127) and
+//   its list of planned lesson clusters (`planned-lesson-clusters/list`,
+//   PlannerService.getPlannedLessonClusters, #230), which only read; and,
+//   for the opt-in live test of #230, the plan of a lesson cluster the run
+//   made (`planned-lesson-clusters/`, PlannerService.planLessonCluster) for
+//   groups, over at most a week of whole days that starts at least
+//   minPlanAheadDays from today, not across courses, without users, at most
+//   maxPlannedLessonClusters of them, and the move to the trash of a
+//   planned cluster the run made (`planned-lesson-clusters/{platformId}/
+//   {id}/trash`), until Smartschool answered it. The live suite changes
+//   nothing else in the planner, whose POSTs also fill and clear lesson
+//   hours, add assignments and move a whole period to the trash;
 // - any POST to the goal selector (`/goal/`) but its naming of a selection
 //   of goals (`goal/selector/api/v1/leerplannen/{location}/{date}` with
 //   `"isView": true`, GoalService.resolve, #222), which only reads: never a
@@ -246,6 +254,9 @@ class LiveWireGuard extends Interceptor {
     // teaching_assignment_live_test.dart (#229).
     this.maxTeachingAssignmentCreates = 1,
     this.maxLessonClusterCreates = 1,
+    // The planned cluster of planner_lesson_cluster_live_test.dart (#230).
+    this.maxPlannedLessonClusters = 1,
+    this.minPlanAheadDays = 28,
     void Function(LiveGuardViolation violation)? onViolation,
   }) : _onViolation = onViolation ?? _failTest;
 
@@ -273,6 +284,14 @@ class LiveWireGuard extends Interceptor {
 
   /// How many lesson clusters the run may make at most (#229).
   final int maxLessonClusterCreates;
+
+  /// How many lesson clusters the run may plan at most (#230).
+  final int maxPlannedLessonClusters;
+
+  /// How many days from today a planned lesson cluster must start at least
+  /// (#230): pupils see the moments of a planned cluster, so the run plans
+  /// in a week far ahead.
+  final int minPlanAheadDays;
 
   final void Function(LiveGuardViolation violation) _onViolation;
 
@@ -307,6 +326,9 @@ class LiveWireGuard extends Interceptor {
 
   /// How many creates of a lesson cluster it let out (#229).
   int lessonClusterCreates = 0;
+
+  /// How many plans of a lesson cluster it let out (#230).
+  int plannedLessonClusters = 0;
 
   /// Whether a step of a login (the password, the 2FA code, the account
   /// verification answer) came through the guard in this run (#134). The
@@ -437,6 +459,16 @@ class LiveWireGuard extends Interceptor {
   /// creates (#229): the ID of their teaching assignment by their ID, both
   /// in lower case.
   final Map<String, String> _lessonClustersMade = {};
+
+  /// The lesson clusters the run planned, as Smartschool answered their
+  /// plans, and did not move to the trash yet (#230): their IDs, in lower
+  /// case.
+  final Set<String> _plannedLessonClustersMade = {};
+
+  /// The IDs of the planned lesson clusters the run made and did not move
+  /// to the trash (#230).
+  Set<String> get plannedLessonClustersMade =>
+      Set.unmodifiable(_plannedLessonClustersMade);
 
   /// Smartschool's answers to the moves to the trash out of a box, by
   /// (message ID, box), as they came in.
@@ -635,7 +667,9 @@ class LiveWireGuard extends Interceptor {
     if (path.startsWith('/modules/Skore/') || path.startsWith('/skore/')) {
       return _skoreRefusal(path, options.data);
     }
-    if (path.startsWith('/planner/')) return _plannerRefusal(path);
+    if (path.startsWith('/planner/')) {
+      return _plannerRefusal(path, options.data);
+    }
     if (path.startsWith('/goal/')) return _goalRefusal(path, options.data);
     if (path.startsWith('/intradesk/')) {
       return _intradeskRefusal(path, options.data);
@@ -888,13 +922,160 @@ class LiveWireGuard extends Interceptor {
   /// lookup of a calendar by ID (PlannerService.getCalendar, #127).
   static const _plannerReads = {'/planner/api/v1/quick-search/planner/start'};
 
-  /// Why the planner POST to [path] may not go out, or `null`: only the
-  /// lookup goes out, never a write.
-  String? _plannerRefusal(String path) {
+  /// The planned lesson clusters of the planner (#230).
+  static const _plannedClusters = '/planner/api/v1/planned-lesson-clusters/';
+
+  /// The move to the trash of a planned lesson cluster: `{platformId}/{id}/
+  /// trash` after [_plannedClusters].
+  static final _plannedClusterTrash = RegExp(r'^\d+/([^/]+)/trash$');
+
+  /// A day as the planner takes a whole-day period: `yyyy-MM-dd`.
+  static final _plannerDay = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$');
+
+  /// Why the planner POST to [path] with the JSON body [data] may not go
+  /// out, or `null`: the lookup, the list of planned lesson clusters, and
+  /// the plan and trash of a planned lesson cluster of the run (#230).
+  String? _plannerRefusal(String path, Object? data) {
     if (_plannerReads.contains(path)) return null;
+    if (path.startsWith(_plannedClusters)) {
+      final rest = path.substring(_plannedClusters.length);
+      if (rest == 'list') {
+        if (data is! Map ||
+            data['type'] != 'user' ||
+            !data.keys.every(const {'id', 'type', 'period'}.contains)) {
+          return 'it lists planned lesson clusters of another calendar than '
+              'a user\'s';
+        }
+        return null;
+      }
+      if (rest.isEmpty) return _planClusterRefusal(data);
+      final trash = _plannedClusterTrash.firstMatch(rest);
+      if (trash != null) {
+        if (data is Map && data.isNotEmpty) return 'it carries a body';
+        return _plannedLessonClustersMade.contains(
+              trash.group(1)!.toLowerCase(),
+            )
+            ? null
+            : 'it moves planned lesson cluster ${trash.group(1)} to the '
+                  'trash, which this run did not plan (or trashed already)';
+      }
+    }
     return 'the live suite changes nothing in the planner: it sends no '
         'planner POST but the lookup of a calendar by ID, '
-        'quick-search/planner/start (#127)';
+        'quick-search/planner/start (#127), and the list, plan and trash of '
+        'a planned lesson cluster of the run (#230)';
+  }
+
+  /// Why the plan of a lesson cluster with the JSON body [data] may not go
+  /// out, or `null` (#230).
+  String? _planClusterRefusal(Object? data) {
+    if (data is! Map) return 'it carries no JSON body';
+    const keys = {
+      'lessonClusterId',
+      'lessonClusterPlatformId',
+      'period',
+      'participants',
+      'courses',
+      'isCrossCurricular',
+    };
+    if (!data.keys.every(keys.contains)) {
+      return 'it plans a lesson cluster with more than its cluster, period, '
+          'participants and courses';
+    }
+    final cluster = data['lessonClusterId'];
+    if (cluster is! String ||
+        !_lessonClustersMade.containsKey(cluster.toLowerCase())) {
+      return 'it plans lesson cluster $cluster, which this run did not make';
+    }
+    if (data['isCrossCurricular'] != false) {
+      return 'it plans a lesson cluster across courses';
+    }
+    final participants = data['participants'];
+    final filters = participants is Map ? participants['groupFilters'] : null;
+    final groups = participants is Map ? participants['groups'] : null;
+    if (participants is! Map ||
+        !participants.keys.every(
+          const {'users', 'groups', 'groupFilters', 'excludedUsers'}.contains,
+        ) ||
+        [
+          participants['users'],
+          participants['excludedUsers'],
+          if (filters is Map) ...[
+            filters['additionalUsers'],
+            filters['filters'],
+          ] else
+            null,
+        ].any((list) => list is! List || list.isNotEmpty) ||
+        groups is! List ||
+        groups.isEmpty ||
+        groups.any((group) => group is! String)) {
+      return 'it plans a lesson cluster for others than groups';
+    }
+    final courses = data['courses'];
+    if (courses is! List || courses.isEmpty) {
+      return 'it plans a lesson cluster without courses';
+    }
+    final period = data['period'];
+    DateTime? day(Object? text) {
+      final match = text is String ? _plannerDay.firstMatch(text) : null;
+      if (match == null) return null;
+      return DateTime(
+        int.parse(match.group(1)!),
+        int.parse(match.group(2)!),
+        int.parse(match.group(3)!),
+      );
+    }
+
+    final from = period is Map ? day(period['dateTimeFrom']) : null;
+    final to = period is Map ? day(period['dateTimeTo']) : null;
+    if (period is! Map ||
+        period['wholeDay'] != true ||
+        from == null ||
+        to == null ||
+        to.isBefore(from) ||
+        to.difference(from).inDays > 6) {
+      return 'it plans a lesson cluster over another period than at most a '
+          'week of whole days';
+    }
+    final now = DateTime.now();
+    final earliest = DateTime(now.year, now.month, now.day + minPlanAheadDays);
+    if (from.isBefore(earliest)) {
+      return 'it plans a lesson cluster sooner than $minPlanAheadDays days '
+          'from today';
+    }
+    if (plannedLessonClusters >= maxPlannedLessonClusters) {
+      return 'the run planned $maxPlannedLessonClusters lesson clusters '
+          'already, its maximum';
+    }
+    plannedLessonClusters++;
+    return null;
+  }
+
+  /// Keeps what Smartschool's answer [body], with [status], to the planner
+  /// request [options] says (#230): the planned lesson cluster a plan made
+  /// (the `id` of its answer), and the one a trash moved to the trash.
+  void _recordPlannerAnswer(RequestOptions options, int status, String body) {
+    if (status < 200 || status >= 300) return;
+    if (options.method.toUpperCase() != 'POST') return;
+    final path = options.uri.path;
+    if (!path.startsWith(_plannedClusters)) return;
+    final rest = path.substring(_plannedClusters.length);
+    final trash = _plannedClusterTrash.firstMatch(rest);
+    if (trash != null) {
+      _plannedLessonClustersMade.remove(trash.group(1)!.toLowerCase());
+      return;
+    }
+    if (rest.isNotEmpty) return;
+    Object? answer;
+    try {
+      answer = jsonDecode(body);
+    } on FormatException {
+      return;
+    }
+    final id = answer is Map ? answer['id'] : null;
+    if (id is String && id.isNotEmpty) {
+      _plannedLessonClustersMade.add(id.toLowerCase());
+    }
   }
 
   /// The goal selector's naming of a selection of goals (#222):
@@ -2010,6 +2191,10 @@ class LiveWireGuard extends Interceptor {
     }
     if (uri.path.startsWith(_labelsApi)) {
       _recordLabelAnswer(options, response.statusCode ?? 0, body);
+      return null;
+    }
+    if (uri.path.startsWith('/planner/')) {
+      _recordPlannerAnswer(options, response.statusCode ?? 0, body);
       return null;
     }
     if (uri.path != '/' || query['module'] != 'Messages') return null;

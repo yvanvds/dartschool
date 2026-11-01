@@ -20,6 +20,7 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year and those colleagues shared with them, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback, and the report periods with each pupil's results so far and course comment; create an evaluation in a period, never published, save pupils' grades and feedback in it, and write a pupil's course comment on a report.
 - Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
 - Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
+- Learning goals (`GoalService`): the curricula of Smartschool's goal selector (the eindtermen, the curricula of the philosophies of life, the school's mini-databases), each as a tree of headings and goals with the goals that can be picked, and the naming of the goals a lesfiche or a planned lesson stores; read only.
 - Pupil tracking system support (`LvsService`, LVS): as the logged-in teacher, find a pupil by name and read the overview of the pupil's file (who, which class, today's attendance, and which sections of the file hold something), the pupil's notes per category (behaviour, care, talks with parents: the school's own categories) or all of them, with their fields, the pupil's results in every course (evaluations with their scores, feedback, reports), the pupil's support plan (support needs, goals, approach, profile sketch), and whether the account may use the LVS; read only, by an allowlist of requests, with models and errors that never print a pupil's data (see [`doc/lvs-privacy.md`](doc/lvs-privacy.md)).
 
 ---
@@ -142,6 +143,7 @@ The README gives an overview of each service, with a short example. The rest of 
 | `SkoreService`, `SkoreGradebookService` | [`doc/skore.md`](doc/skore.md) |
 | `PlannerService` | [`doc/planner.md`](doc/planner.md) |
 | `LessonContentService` | [`doc/lesson-content.md`](doc/lesson-content.md) |
+| `GoalService` | [`doc/goals.md`](doc/goals.md) |
 | `LvsService` | [`doc/lvs.md`](doc/lvs.md) |
 | Models and enums | [`doc/models.md`](doc/models.md) |
 | Exceptions | [`doc/exceptions.md`](doc/exceptions.md) |
@@ -570,6 +572,27 @@ The rest of its reference is in [`doc/lesson-content.md`](doc/lesson-content.md#
 
 ---
 
+## `GoalService`
+
+Reads the curricula and learning goals of Smartschool's **goal selector** (`/goal/selector/api/v1/`, #222), the dialog in which the Lesfiches module and the planner let a teacher pick the learning goals of a lesfiche or a lesson: the eindtermen per grade and finality, the curricula of the philosophies of life, and the school's own mini-databases. A curriculum comes as a tree of headings and goals; `Curriculum.goals` lists the goals that can be picked, each with the headings above it and the `LearningGoalRef` (`id`, `leerplanId`, `type`) that a lesfiche or a planned lesson stores. `resolve` names stored goals. It only reads.
+
+```dart
+final goals = GoalService(client);
+final groups = await goals.getCurricula();           // List<CurriculumGroup>
+final tree = await goals.getCurriculum(groups.first.curricula.first.id);
+for (final goal in tree.goals) {                     // List<SelectableGoal>
+  print('${goal.node.prefix ?? ''} ${goal.node.text}');
+}
+
+// Name the goals a lesfiche or a lesson stores.
+final named = await goals.resolve([tree.goals.first.ref]);
+print(GoalService.findGoal(named, tree.goals.first.ref)?.titles.join(' > '));
+```
+
+The rest of its reference is in [`doc/goals.md`](doc/goals.md#goalservice): [Methods](doc/goals.md#methods), [Errors](doc/goals.md#errors).
+
+---
+
 ## `LvsService`
 
 Reads Smartschool's pupil tracking system (LVS, "leerlingvolgsysteem", `/?module=LVS`) **as the logged-in teacher** (#160): finds a pupil by name, reads the overview of the pupil's file, the pupil's notes per category (#161), results (#162), support plan (#163) and absences (#164). The LVS holds the most sensitive data of Smartschool: what this service returns is about pupils, see [`doc/lvs-privacy.md`](doc/lvs-privacy.md).
@@ -687,6 +710,8 @@ What it checks, on messages it sends to the own account: `sendMessage` is confir
 `test/live/intradesk_write_live_test.dart` writes in Intradesk, in one folder only: `tests` in `2. SMA` at the root, found by name, which must be empty when the run starts (#128). It adds a folder (`createFolder`) and checks it in the listing, adds it a second time and checks that Intradesk renames the new one (`name (1)`), adds a weblink to the new folder with an address without `http://` (`createWeblink`), uploads a file to it (`uploadFiles`) and downloads it back unchanged, sends a made-up ID and the IDs of its own file, weblink and folder as another kind to the trash, and checks that each is a `SmartschoolIntradeskItemNotFoundError` and that nothing moved (#133), and then moves all of it to Intradesk's trash (`trashFile`, `trashWeblink`, `trashFolder`) and checks that the test folder is empty again. It reads the new folder by its ID alone (`getFolder`, `getFolderPath`, #132), and again once it is in the trash, where Smartschool answers its parents as those of a folder at the root and `getFolder` throws a `SmartschoolIntradeskFolderNotFoundError`. Every folder and weblink it makes is named `dartschool test <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes for good. The guard lets an Intradesk write out only in that folder, as Smartschool's own listings name it (read through the guard), and in the folders the run made there; refuses a name without the run's tag, a move to the trash of anything the run did not make (but a made-up ID that the guard made up itself, a random UUID, once per kind; and an item of the run as another kind, once, when the run allows it and before the item went to the trash, #133), a second take of an upload directory, and every other Intradesk POST (a confidential folder, a rename, a move, a copy, a restore).
 
 `test/live/intradesk_folder_live_test.dart` only reads (#132): `getFolderParentIds`, `getFolder` and `getFolderPath` of the test folder, of `2. SMA` at the root and of a folder two levels down, each compared with the listing that holds it, and a made-up ID and the ID of a file, which are no folder (`404`). Names are compared, never shown.
+
+`test/live/goal_live_test.dart` only reads the goal selector (#222): the list of curricula (the same for the Lesfiches module and the planner), the first curriculum with goals, a made-up curriculum ID (`404`), and the naming of one of its goals with `resolve`, the selector's one POST that reads (`"isView": true`), the only POST to the goal selector the guard lets out.
 
 `test/live/lesson_content_write_live_test.dart` writes in the Lesfiches module, in the own library only, which is private to the teacher (#129). It makes a lesson lesfiche with a course, a weblink and an attachment in one create (`createLesson`) and checks it with `getDetail` and `getItems`, downloads the attachment back unchanged (also as a stream), changes its name, icon, info, courses and visibility, adds, changes and removes a weblink and an attachment, checks that an empty name, an address the web client refuses and a course the school does not have send no write, makes an assignment lesfiche of a school assignment type (`createAssignment`), and moves both to the module's trash (`trash`), after which `getItems` no longer lists them. Every lesfiche it makes is named `[dartschool test] <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes a lesfiche for good, never shares or plans one, and sends no label or goal. The guard lets a lesfiche write out only for a lesfiche the run made (as Smartschool answered its create) and did not move to the trash: a create named after the run, without labels, goals or other lists, at most two per run; a rename to a name after the run, the other edits, its weblinks and attachments (the DELETE of one of them is the only DELETE the live suite sends), an upload directory handed out through the guard once; and the move to the trash of what the run made. It refuses everything else in the module (labels, goals, deeplinks, a share, a restore, `delete/bulk`).
 

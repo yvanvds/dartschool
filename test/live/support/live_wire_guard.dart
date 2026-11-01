@@ -96,6 +96,10 @@
 //   only reads: the live suite changes nothing in the planner, whose POSTs
 //   also fill and clear lesson hours, add assignments and move a whole
 //   period to the trash;
+// - any POST to the goal selector (`/goal/`) but its naming of a selection
+//   of goals (`goal/selector/api/v1/leerplannen/{location}/{date}` with
+//   `"isView": true`, GoalService.resolve, #222), which only reads: never a
+//   curriculum marked as a favourite or the selector's settings saved;
 // - any Intradesk POST but the writes of IntradeskService that the live
 //   suite tries (#128), and those only in the Intradesk folder it may write
 //   in: "tests" in "2. SMA" at the root, as Smartschool's listings name it
@@ -554,6 +558,7 @@ class LiveWireGuard extends Interceptor {
       return _skoreRefusal(path, options.data);
     }
     if (path.startsWith('/planner/')) return _plannerRefusal(path);
+    if (path.startsWith('/goal/')) return _goalRefusal(path, options.data);
     if (path.startsWith('/intradesk/')) {
       return _intradeskRefusal(path, options.data);
     }
@@ -811,6 +816,36 @@ class LiveWireGuard extends Interceptor {
     return 'the live suite changes nothing in the planner: it sends no '
         'planner POST but the lookup of a calendar by ID, '
         'quick-search/planner/start (#127)';
+  }
+
+  /// The goal selector's naming of a selection of goals (#222):
+  /// `leerplannen/{location}/{date}`.
+  static final _goalResolve = RegExp(
+    r'^/goal/selector/api/v1/leerplannen/[a-z-]+/\d{4}-\d{2}-\d{2}$',
+  );
+
+  /// Why the goal selector POST to [path] with the JSON body [data] may not
+  /// go out, or `null`: only the naming of a selection of goals goes out,
+  /// with `"isView": true` (GoalService.resolve, #222).
+  String? _goalRefusal(String path, Object? data) {
+    final body = data is String ? _decoded(data) : data;
+    if (_goalResolve.hasMatch(path) &&
+        body is Map &&
+        body['isView'] == true &&
+        body['selection'] is List) {
+      return null;
+    }
+    return 'the live suite changes nothing in the goal selector: it sends '
+        'no goal selector POST but the naming of a selection of goals '
+        '(leerplannen/{location}/{date} with "isView": true, #222)';
+  }
+
+  static Object? _decoded(String data) {
+    try {
+      return jsonDecode(data);
+    } on FormatException {
+      return null;
+    }
   }
 
   /// An Intradesk API path: the platform and the rest.

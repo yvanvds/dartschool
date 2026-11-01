@@ -238,6 +238,15 @@ What the authenticated user may do with an element: `flags` (every `canUser...` 
 ### `LessonContentItem`
 Returned by `LessonContentService.getItems()`. A lesfiche: `id` (a UUID, the `lessonContentId` of `PlannerService.planLessonContent`), `platformId`, `type` (`LessonContentType`; `other` for a kind the library does not know), `typeName` (`lessons`, `assignments`), `name`, `icon` (`String?`), `publicInfo` (HTML, `""` when empty), `isVisible`, `ownerId` (`String?`, the whole user ID), `dateLastChanged` / `dateStateChanged` (`DateTime?`, local time), `courses` (`LessonContentCourse`: `id`, `platformId`, `name` — `String?`, from the school's course list, `null` when not known), `labels` (`LessonContentLabel`: `id`, `text`, `color`, `type` — `platform` for a school label, `user` for an own one —, `isVisible`, `isSchoolLabel`), `assignmentType` (`PlannerAssignmentType?`, assignment lesfiches only), `attachmentCount`, `weblinkCount`, `partnerWeblinkCount`, `deeplinkCount`, `capabilities` (every `canUser...` flag by name; `can(flag)`), and `raw` (as the module gave it, read-only).
 
+### `CurriculumGroup` / `CurriculumListItem`
+From `GoalService.getCurricula()` (#222). A group of curricula: `name`, `curricula` (`CurriculumListItem`: `id`, `title`, `icon` — `String?`, `isVisible`, `isFavourite`).
+
+### `Curriculum` / `CurriculumNode` / `SelectableGoal`
+From `GoalService.getCurriculum()` and `resolve()` (#222). A curriculum as a tree: `id`, `type`, `leerplanType`, `title`, `isDeprecated`, `selectableTypes`, `children` (`CurriculumNode`: `id`, `type` — `CurriculumNodeType`, `typeName`, `title` — HTML or plain text, `text`, `prefix`, `number`, `icon`, `isDeprecated`, `children`, `isGoal`); `goals` (`SelectableGoal`: `curriculum`, `node`, `path`, `titles`, `ref`) and `goal(id)`. See [`doc/goals.md`](goals.md#the-trees).
+
+### `LearningGoalRef`
+A stored learning goal (#222): `id`, `leerplanId`, `type` (the curriculum's `leerplanType`, or the goal's source); `fromJson`, `toJson` (`{id, leerplanId, type}`), `toWire` (with `goalId`); equal by value.
+
 ### `LvsAccess`
 Returned by `LvsService.checkAccessDetails()` (#184): `granted` (whether the LVS answers the root of its class tree to the account), `classCount` (the classes that root lists; `0` when not granted), and `LvsAccess.denied()`. Compared by value. Prints the flag and the count only.
 
@@ -302,4 +311,6 @@ From `getAbsences` (#164). `LvsAbsences`: `yearLabel`, `periods` (`label`, `abse
 | `PlannerSearchResultKind` | `user`, `group`, `location`, `other` (what `PlannerService.searchCalendars` found, or `getCalendar` named) |
 | `PlannedElementType` | `lesson`, `assignment`, `placeholder`, `toDo`, `schoolActivity`, `meeting`, `lessonFreeDay`, `generic`, `activity`, `routine`, `partnerElement`, `lessonCluster`, `lessonClusterMoment`, `lessonClusterLesson`, `lessonClusterAssignment`, `mergedTeachingMoment`, `other` (`wireName`: the planner's name, such as `planned-lessons`; `null` for `other`) |
 | `LessonContentType` | `lesson` (`lessons`), `assignment` (`assignments`), `other` (`wireName`: the Lesfiches module's name; `null` for `other`) |
+| `GoalLocation` | `lessonContent` (`lesson-content`), `plannerLessonContent` (`planner-lesson-content`) (`wireName`: where the goal selector is opened) |
+| `CurriculumNodeType` | `title`, `subtitle`, `part`, `subpart`, `goal`, `goalBasic` (`goal-basic`), `goalExtension` (`goal-extension`), `other` (`wireName`: the selector's name; `""` for `other`); `isGoal` |
 | `PlannerVisibilityOption` | `always`, `never`, `atStart` (`at-start`), `atEnd` (`at-end`), `daysAfterEnd` (`days-after-end`), `other` (`wireName`: the planner's name; `null` for `other`). From when pupils see an attachment or weblink of a planned element; only `always` was seen live |

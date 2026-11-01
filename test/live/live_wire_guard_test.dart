@@ -711,6 +711,8 @@ class _Smartschool implements HttpClientAdapter {
         );
       case (true, _plannerLookup, _, _):
         return _answer(_plannerLookupAnswer, contentType: 'application/json');
+      case (true, final path, _, _) when path.startsWith('/goal/selector/'):
+        return _answer('[]', contentType: 'application/json');
       case (false, '/course-list/api/v1/courses', _, _):
         return _answer('[{"platformId":49}]', contentType: 'application/json');
       case (false, '/', null, null) when query.isEmpty:
@@ -1654,6 +1656,28 @@ void main() {
       expect(server.log, ['POST $_plannerLookup']);
       expect(guard.violations, isEmpty);
     });
+
+    test(
+      'the goal selector\'s naming of a selection of goals (#222)',
+      () async {
+        final server = _Smartschool(replyForm: _replyFormFromOwn);
+        final (client, guard) = await _guardedClient(server);
+
+        final named = await GoalService(client).resolve([
+          const LearningGoalRef(
+            id: 'e0000000-0000-4000-8000-000000000002',
+            leerplanId: 'e0000000-0000-4000-8000-000000000001',
+            type: 'miniDB',
+          ),
+        ], date: DateTime(2026, 11, 1));
+
+        expect(named, isEmpty);
+        expect(server.log, [
+          'POST /goal/selector/api/v1/leerplannen/lesson-content/2026-11-01',
+        ]);
+        expect(guard.violations, isEmpty);
+      },
+    );
 
     test('a recipient search on a compose form loaded through it, which '
         'registers no one (#97)', () async {
@@ -3377,6 +3401,50 @@ void main() {
           ),
       ]);
     });
+
+    test(
+      'any goal selector POST but the naming of a selection of goals (#222)',
+      () async {
+        final server = _Smartschool(replyForm: _replyFormFromOwn);
+        final (_, guard) = await _guardedClient(server);
+        final dio = _dio(server, guard);
+        const base = '/goal/selector/api/v1';
+
+        // A favourite, the selector's settings, and the naming route
+        // without "isView" or without a selection.
+        final others = [
+          (
+            '$base/leerplannen/lesson-content/'
+                'e0000000-0000-4000-8000-000000000001/mark-as-favourite',
+            <String, Object>{},
+          ),
+          ('$base/user-settings/lesson-content/save', <String, Object>{}),
+          (
+            '$base/leerplannen/lesson-content/2026-11-01',
+            <String, Object>{'selection': <Object>[]},
+          ),
+          (
+            '$base/leerplannen/lesson-content/2026-11-01',
+            <String, Object>{'isView': true},
+          ),
+        ];
+        for (final (path, body) in others) {
+          await expectLater(
+            dio.post<String>(path, data: body),
+            throwsA(isA<DioException>()),
+          );
+        }
+
+        expect(server.log, isEmpty);
+        expect(_violations(guard), [
+          for (final (path, _) in others)
+            allOf(
+              contains('POST $path was not sent'),
+              contains('changes nothing in the goal selector'),
+            ),
+        ]);
+      },
+    );
 
     test(
       'any planner POST but its lookup of a calendar by ID (#127)',

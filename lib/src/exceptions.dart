@@ -2194,6 +2194,57 @@ class SmartschoolPlannerSaveUnconfirmedError extends SmartschoolException {
       : '$runtimeType($statusCode): $message';
 }
 
+/// Thrown by `GoalService` when Smartschool's goal selector
+/// (`/goal/selector/api/v1/`, #222) answers with something the service
+/// cannot use: another HTTP status than `200` (in [statusCode]), an HTML
+/// page instead of data, an answer that is not valid JSON, or data in a
+/// shape it does not recognise (such as a curriculum or a node without its
+/// `id`).
+///
+/// The session was accepted: signing in again does not help. A session that
+/// Smartschool does not accept is a [SmartschoolSessionExpiredError]
+/// instead. `GoalService` only reads: nothing was changed.
+class SmartschoolGoalError extends SmartschoolException {
+  /// The HTTP status of the goal selector's answer when it was not `200`;
+  /// `null` when the answer had status `200` but could not be used.
+  final int? statusCode;
+
+  const SmartschoolGoalError(super.message, {this.statusCode});
+
+  @override
+  String toString() => statusCode == null
+      ? '$runtimeType: $message'
+      : '$runtimeType($statusCode): $message';
+}
+
+/// Thrown by `GoalService` when the goal selector refuses a read to the
+/// account with HTTP `403` (Forbidden). The request was refused: no data
+/// came.
+///
+/// A [SmartschoolGoalError] with [statusCode] `403`, so `catch` clauses for
+/// that type keep catching it. Its message names the read and quotes
+/// nothing of the answer.
+class SmartschoolGoalAccessDeniedError extends SmartschoolGoalError {
+  const SmartschoolGoalAccessDeniedError(super.message)
+    : super(statusCode: 403);
+}
+
+/// Thrown by `GoalService.getCurriculum` when the goal selector answers
+/// `404`: it has no curriculum with that ID (seen live, 2026-11-01, for a
+/// made-up ID, answered with
+/// `{"status":404,"title":"Not Found","detail":"","type":""}`).
+///
+/// A [SmartschoolGoalError] with [statusCode] `404`.
+class SmartschoolCurriculumNotFoundError extends SmartschoolGoalError {
+  /// The curriculum ID that was asked for.
+  final String curriculumId;
+
+  const SmartschoolCurriculumNotFoundError(
+    super.message, {
+    required this.curriculumId,
+  }) : super(statusCode: 404);
+}
+
 /// Thrown when Smartschool's Lesfiches module (lesson content), or the
 /// school's course list that names the courses of the lesfiches (#101),
 /// answers a request with something `LessonContentService` cannot use

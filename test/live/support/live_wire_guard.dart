@@ -96,6 +96,10 @@
 //   only reads: the live suite changes nothing in the planner, whose POSTs
 //   also fill and clear lesson hours, add assignments and move a whole
 //   period to the trash;
+// - any POST to the goal selector (`/goal/`) but its naming of a selection
+//   of goals (`goal/selector/api/v1/leerplannen/{location}/{date}` with
+//   `"isView": true`, GoalService.resolve, #222), which only reads: never a
+//   curriculum marked as a favourite or the selector's settings saved;
 // - any Intradesk POST but the writes of IntradeskService that the live
 //   suite tries (#128), and those only in the Intradesk folder it may write
 //   in: "tests" in "2. SMA" at the root, as Smartschool's listings name it
@@ -119,17 +123,20 @@
 //   those only for lesfiches the run made itself, in the own library (a
 //   create makes a lesfiche there; nothing else does): the create of a
 //   lesson or an assignment named after the run ("[dartschool test] <run
-//   tag> ..."), without labels, goals, partner weblinks, deeplinks, mini-DB
-//   items or a lesfiche it continues, with at most one upload directory
+//   tag> ..."), without labels, partner weblinks, deeplinks, mini-DB items
+//   or a lesfiche it continues, with learning goals only as the library
+//   sends them (#223: `{id, goalId, leerplanId, type}`, `goalId` the same as
+//   the UUID `id`), with at most one upload directory
 //   handed out through the guard and not yet taken; on a lesfiche the run
 //   made (as Smartschool answered its create) and did not move to the
 //   trash: a rename to a name after the run, a change of its icon, info,
-//   courses or visibility, the add or change of a weblink, the take of an
+//   courses or visibility, a change of its goals (`change-goals`, #223,
+//   goals as in the create), the add or change of a weblink, the take of an
 //   upload directory as above, the change of an attachment's visibility,
 //   and the DELETE of one of its weblinks or attachments (the only DELETE
 //   the live suite sends); and the move to the trash
 //   (`lesson-content/trash/bulk`) of lesfiches the run made, of their kind,
-//   until Smartschool answered one for them. Never a label, a goal, a share,
+//   until Smartschool answered one for them. Never a label, a share,
 //   a duplicate, merge or conversion, a year plan, a restore, and never
 //   `lesson-content/delete/bulk` (deleted for good);
 // - an upload (`/Upload/Upload/Index`) into another directory than the one
@@ -554,6 +561,7 @@ class LiveWireGuard extends Interceptor {
       return _skoreRefusal(path, options.data);
     }
     if (path.startsWith('/planner/')) return _plannerRefusal(path);
+    if (path.startsWith('/goal/')) return _goalRefusal(path, options.data);
     if (path.startsWith('/intradesk/')) {
       return _intradeskRefusal(path, options.data);
     }
@@ -813,6 +821,36 @@ class LiveWireGuard extends Interceptor {
         'quick-search/planner/start (#127)';
   }
 
+  /// The goal selector's naming of a selection of goals (#222):
+  /// `leerplannen/{location}/{date}`.
+  static final _goalResolve = RegExp(
+    r'^/goal/selector/api/v1/leerplannen/[a-z-]+/\d{4}-\d{2}-\d{2}$',
+  );
+
+  /// Why the goal selector POST to [path] with the JSON body [data] may not
+  /// go out, or `null`: only the naming of a selection of goals goes out,
+  /// with `"isView": true` (GoalService.resolve, #222).
+  String? _goalRefusal(String path, Object? data) {
+    final body = data is String ? _decoded(data) : data;
+    if (_goalResolve.hasMatch(path) &&
+        body is Map &&
+        body['isView'] == true &&
+        body['selection'] is List) {
+      return null;
+    }
+    return 'the live suite changes nothing in the goal selector: it sends '
+        'no goal selector POST but the naming of a selection of goals '
+        '(leerplannen/{location}/{date} with "isView": true, #222)';
+  }
+
+  static Object? _decoded(String data) {
+    try {
+      return jsonDecode(data);
+    } on FormatException {
+      return null;
+    }
+  }
+
   /// An Intradesk API path: the platform and the rest.
   static final _intradeskPath = RegExp(r'^/intradesk/api/v1/(\d+)/(.+)$');
 
@@ -1007,14 +1045,47 @@ class LiveWireGuard extends Interceptor {
       return null;
     }
     if (what == 'attachments') return _lessonContentTakeRefusal(data);
+    if (what == 'change-goals') {
+      return _lessonContentGoalsRefusal(data['newGoals']);
+    }
     if (_lessonContentEdits.contains(what) ||
         _lessonContentSubEdit.hasMatch(what)) {
       return null;
     }
     return 'the live suite sends no "$what" to a lesfiche: only renames, '
-        'changes of the icon, info, courses and visibility, and its weblinks '
-        'and attachments; never labels, goals, deeplinks or partner weblinks '
-        '(#129)';
+        'changes of the icon, info, courses, goals and visibility, and its '
+        'weblinks and attachments; never labels, deeplinks or partner '
+        'weblinks (#129)';
+  }
+
+  /// A goal's ID (#223): a UUID.
+  static final _goalId = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+    r'[0-9a-fA-F]{12}$',
+  );
+
+  /// Why the learning goals [goals] of a create or a `change-goals` may not
+  /// go out, or `null` (#223): only a list of goals as the library sends
+  /// them, `{id, goalId, leerplanId, type}` and nothing else, with `goalId`
+  /// the same as `id`, a UUID, and a non-empty `leerplanId` and `type`.
+  static String? _lessonContentGoalsRefusal(Object? goals) {
+    if (goals is! List) return 'its goals are not a list';
+    for (final goal in goals) {
+      if (goal is! Map ||
+          goal.length != 4 ||
+          goal['id'] is! String ||
+          !_goalId.hasMatch(goal['id'] as String) ||
+          goal['goalId'] != goal['id'] ||
+          goal['leerplanId'] is! String ||
+          (goal['leerplanId'] as String).isEmpty ||
+          goal['type'] is! String ||
+          (goal['type'] as String).isEmpty) {
+        return 'it sends a goal that is not as the library sends one '
+            '({id, goalId, leerplanId, type}, goalId the same as the UUID '
+            'id): $goal';
+      }
+    }
+    return null;
   }
 
   /// Why the create of a lesfiche with the JSON body [data] may not go out,
@@ -1026,9 +1097,10 @@ class LiveWireGuard extends Interceptor {
       return 'the name of the lesfiche does not start with '
           '"$_lessonContentTagged"';
     }
+    final goals = _lessonContentGoalsRefusal(data['goals']);
+    if (goals != null) return 'it makes a lesfiche with goals: $goals';
     for (final key in const [
       'labels',
-      'goals',
       'partnerWeblinks',
       'deeplinks',
       'miniDBItems',

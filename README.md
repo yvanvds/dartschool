@@ -18,8 +18,9 @@ Repository: [yvanvds/dartschool](https://github.com/yvanvds/dartschool)
 - Presence write support (`PresenceService`): mark a pupil **Te laat** / **Te laat zonder geldige reden** for a half-day via Smartschool's internal Presence module (requires Presence-handling access).
 - Skore support (`SkoreService`): read the classes of the report models, the courses of a class with the teachers assigned to them, and the teachers that can be assigned; assign a teacher to a course of a class (add a teacher, or give an assignment another teacher), with checks before the save and a save that is never retried; as an admin, share a teacher's gradebook with other teachers (read or write access) or stop sharing it, with checks before the save and a read afterwards that checks it.
 - Skore gradebook support (`SkoreGradebookService`): as the logged-in teacher, without admin rights, the teacher's own gradebooks of the current or an earlier school year and those colleagues shared with them, the periods (open or closed, and until when) and the pupils of a gradebook, with whether the teacher may change it, and the evaluations of a period with whether and when they are published, the pupils' grades and their feedback, and the report periods with each pupil's results so far and course comment; create an evaluation in a period, never published, save pupils' grades and feedback in it, and write a pupil's course comment on a report.
-- Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, and change the name and info of an own lesson or assignment, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
-- Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
+- Planner support (`PlannerService`): the planned elements (lessons, assignments, timetable slots, ...) of the own planner, of another teacher, of a class or of a location in a period, optionally of some types only, and the full detail of one element; find the calendar of a class, a teacher or a location by name; the school's assignment types, and the assignments of classes in a period with the planner's workload figures per day (the planner's workload view); in the own planner, fill an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library, replace a lesson by a lesfiche, plan one lesfiche into several hours at once, save a lesson as a new lesfiche, and clear the hour again, add an assignment (a test, a task) for classes and move it to the planner's trash again, change the name and info of an own lesson or assignment, and set the learning goals of an own lesson, with checks before each write that keep it out of colleagues' elements, and creates, fills, clears and trashes that are never retried.
+- Lesfiches support (`LessonContentService`): the lesfiches (lessons and assignments) a teacher keeps in the Lesfiches module, with their labels and courses (named after the school's course list), to plan into the planner; one lesfiche in full, with its private info, weblinks and attachments (downloaded unchanged); and, in the own library, make a complete lesfiche in one create (info, courses, weblinks and attachments, each with when pupils see it), change its name, icon, info, courses and visibility, add, change and remove its weblinks and attachments, set its learning goals (in the create, too), and move lesfiches to the module's trash, with checks before each write and creates that are never retried.
+- Learning goals (`GoalService`): the curricula of Smartschool's goal selector (the eindtermen, the curricula of the philosophies of life, the school's mini-databases), each as a tree of headings and goals with the goals that can be picked, and the naming of the goals a lesfiche or a planned lesson stores; read only.
 - Pupil tracking system support (`LvsService`, LVS): as the logged-in teacher, find a pupil by name and read the overview of the pupil's file (who, which class, today's attendance, and which sections of the file hold something), the pupil's notes per category (behaviour, care, talks with parents: the school's own categories) or all of them, with their fields, the pupil's results in every course (evaluations with their scores, feedback, reports), the pupil's support plan (support needs, goals, approach, profile sketch), and whether the account may use the LVS; read only, by an allowlist of requests, with models and errors that never print a pupil's data (see [`doc/lvs-privacy.md`](doc/lvs-privacy.md)).
 
 ---
@@ -142,6 +143,7 @@ The README gives an overview of each service, with a short example. The rest of 
 | `SkoreService`, `SkoreGradebookService` | [`doc/skore.md`](doc/skore.md) |
 | `PlannerService` | [`doc/planner.md`](doc/planner.md) |
 | `LessonContentService` | [`doc/lesson-content.md`](doc/lesson-content.md) |
+| `GoalService` | [`doc/goals.md`](doc/goals.md) |
 | `LvsService` | [`doc/lvs.md`](doc/lvs.md) |
 | Models and enums | [`doc/models.md`](doc/models.md) |
 | Exceptions | [`doc/exceptions.md`](doc/exceptions.md) |
@@ -477,7 +479,7 @@ The rest of its reference is in [`doc/skore.md`](doc/skore.md#skoregradebookserv
 
 Reads Smartschool's **planner**: the elements planned in a calendar in a period (lessons, assignments, timetable slots, ...) and the full detail of one element. A calendar is the planner of a user (the account itself, or another teacher), of a class, or of a location (a room), as `/planner/main/user/...`, `/planner/main/group/...` and `/planner/main/location/...` show it. It also reads what the planner's workload view ("werkbelasting") shows: the school's assignment types, and the assignments and workload figures of classes in a period. The reads are GETs to the planner's JSON API (`/planner/api/v1/`; the assignment types to the lesson-content API, `/lesson-content/api/v1/`), and for the search for a calendar by name, the lookup of a calendar by its ID and the workload calls, POSTs that only read.
 
-In the **own planner** only, it fills an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library (see `LessonContentService`) and clears the hour again (see *Lessons in the own planner*), adds an assignment for classes and moves it to the planner's trash again (see *Assignments in the own planner*), and changes the name and info of an own lesson or assignment: eight writes, each for one element, after checks that keep them out of colleagues' elements.
+In the **own planner** only, it fills an empty lesson hour with a new lesson or with a lesfiche of the Lesfiches library (see `LessonContentService`), replaces a lesson by a lesfiche, plans one lesfiche into several hours at once, saves a lesson as a new lesfiche (which adds to the Lesfiches library and leaves the lesson as it is), and clears the hour again (see *Lessons in the own planner*), adds an assignment for classes and moves it to the planner's trash again (see *Assignments in the own planner*), changes the name and info of an own lesson or assignment, and sets the learning goals of an own lesson: twelve writes, each for one element but the plan into several hours, after checks that keep them out of colleagues' elements.
 
 ```dart
 final planner = PlannerService(client);
@@ -526,7 +528,7 @@ The rest of its reference is in [`doc/planner.md`](doc/planner.md#plannerservice
 
 ## `LessonContentService`
 
-Reads and builds the lesfiches of Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lessons and assignments a teacher keeps in the own library ("Mijn lesfiches"), with their labels (such as `JAAR 6`, `TRIMESTER 1`), courses, weblinks and attachments, to plan into the planner. It reads with GETs to the module's JSON API (`/lesson-content/api/v1/`) and to the school's course list (`/course-list/api/v1/courses`), which names the courses: the module gives them by ID only. In the own library it also makes lesfiches, changes them and moves them to the module's trash (#129). A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent` (see *Lessons in the own planner*), so a lesfiche prepared once can be planned as often as needed.
+Reads and builds the lesfiches of Smartschool's **Lesfiches** module (lesson content, `/lesson-content`): the lessons and assignments a teacher keeps in the own library ("Mijn lesfiches"), with their labels (such as `JAAR 6`, `TRIMESTER 1`), courses, weblinks and attachments, to plan into the planner. It reads with GETs to the module's JSON API (`/lesson-content/api/v1/`) and to the school's course list (`/course-list/api/v1/courses`), which names the courses: the module gives them by ID only. In the own library it also makes lesfiches, changes them and moves them to the module's trash (#129). A lesson lesfiche is planned into an empty lesson hour with `PlannerService.planLessonContent`, in place of a lesson with `replaceWithLessonContent`, and into several hours at once with `planLessonContentInto` (see *Lessons in the own planner*), so a lesfiche prepared once can be planned as often as needed.
 
 ```dart
 final lessonContent = LessonContentService(client);
@@ -559,6 +561,8 @@ final fiche = await lessonContent.createLesson(      // LessonContentDetail
   ],
 );
 await lessonContent.rename(fiche, 'Lussen (herhaling)');
+// Its learning goals (#223): `goal` a SelectableGoal of GoalService.getCurriculum.
+await lessonContent.changeGoals(fiche, [...fiche.goals, goal.ref]);
 final bytes = await lessonContent.downloadAttachment(
   fiche,
   fiche.attachments.single.id,
@@ -567,6 +571,27 @@ await lessonContent.trash([fiche]);                  // the module's trash, neve
 ```
 
 The rest of its reference is in [`doc/lesson-content.md`](doc/lesson-content.md#lessoncontentservice): [Methods](doc/lesson-content.md#methods), [Errors](doc/lesson-content.md#errors).
+
+---
+
+## `GoalService`
+
+Reads the curricula and learning goals of Smartschool's **goal selector** (`/goal/selector/api/v1/`, #222), the dialog in which the Lesfiches module and the planner let a teacher pick the learning goals of a lesfiche or a lesson: the eindtermen per grade and finality, the curricula of the philosophies of life, and the school's own mini-databases. A curriculum comes as a tree of headings and goals; `Curriculum.goals` lists the goals that can be picked, each with the headings above it and the `LearningGoalRef` (`id`, `leerplanId`, `type`) that a lesfiche or a planned lesson stores. `resolve` names stored goals. It only reads.
+
+```dart
+final goals = GoalService(client);
+final groups = await goals.getCurricula();           // List<CurriculumGroup>
+final tree = await goals.getCurriculum(groups.first.curricula.first.id);
+for (final goal in tree.goals) {                     // List<SelectableGoal>
+  print('${goal.node.prefix ?? ''} ${goal.node.text}');
+}
+
+// Name the goals a lesfiche or a lesson stores.
+final named = await goals.resolve([tree.goals.first.ref]);
+print(GoalService.findGoal(named, tree.goals.first.ref)?.titles.join(' > '));
+```
+
+The rest of its reference is in [`doc/goals.md`](doc/goals.md#goalservice): [Methods](doc/goals.md#methods), [Errors](doc/goals.md#errors).
 
 ---
 
@@ -688,7 +713,11 @@ What it checks, on messages it sends to the own account: `sendMessage` is confir
 
 `test/live/intradesk_folder_live_test.dart` only reads (#132): `getFolderParentIds`, `getFolder` and `getFolderPath` of the test folder, of `2. SMA` at the root and of a folder two levels down, each compared with the listing that holds it, and a made-up ID and the ID of a file, which are no folder (`404`). Names are compared, never shown.
 
-`test/live/lesson_content_write_live_test.dart` writes in the Lesfiches module, in the own library only, which is private to the teacher (#129). It makes a lesson lesfiche with a course, a weblink and an attachment in one create (`createLesson`) and checks it with `getDetail` and `getItems`, downloads the attachment back unchanged (also as a stream), changes its name, icon, info, courses and visibility, adds, changes and removes a weblink and an attachment, checks that an empty name, an address the web client refuses and a course the school does not have send no write, makes an assignment lesfiche of a school assignment type (`createAssignment`), and moves both to the module's trash (`trash`), after which `getItems` no longer lists them. Every lesfiche it makes is named `[dartschool test] <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes a lesfiche for good, never shares or plans one, and sends no label or goal. The guard lets a lesfiche write out only for a lesfiche the run made (as Smartschool answered its create) and did not move to the trash: a create named after the run, without labels, goals or other lists, at most two per run; a rename to a name after the run, the other edits, its weblinks and attachments (the DELETE of one of them is the only DELETE the live suite sends), an upload directory handed out through the guard once; and the move to the trash of what the run made. It refuses everything else in the module (labels, goals, deeplinks, a share, a restore, `delete/bulk`).
+`test/live/lesson_content_goals_live_test.dart` sets the learning goals of a lesfiche in the own library (#223): it makes a lesson lesfiche named after the run with a goal of the goal selector in the create, changes its goals (`changeGoals`) to goals of the selector and checks them with `getDetail` and `resolve`, sets a made-up goal ID once to see that the module stores it without complaint, clears the goals, and moves the lesfiche to the module's trash, after which `getItems` no longer lists it. The guard lets out goals in a create or a `change-goals` of a lesfiche the run made only in the shape the library sends them (`{id, goalId, leerplanId, type}`, `goalId` the same as the UUID `id`).
+
+`test/live/goal_live_test.dart` only reads the goal selector (#222): the list of curricula (the same for the Lesfiches module and the planner), the first curriculum with goals, a made-up curriculum ID (`404`), and the naming of one of its goals with `resolve`, the selector's one POST that reads (`"isView": true`), the only POST to the goal selector the guard lets out.
+
+`test/live/lesson_content_write_live_test.dart` writes in the Lesfiches module, in the own library only, which is private to the teacher (#129). It makes a lesson lesfiche with a course, a weblink and an attachment in one create (`createLesson`) and checks it with `getDetail` and `getItems`, downloads the attachment back unchanged (also as a stream), changes its name, icon, info, courses and visibility, adds, changes and removes a weblink and an attachment, checks that an empty name, an address the web client refuses and a course the school does not have send no write, makes an assignment lesfiche of a school assignment type (`createAssignment`), and moves both to the module's trash (`trash`), after which `getItems` no longer lists them. Every lesfiche it makes is named `[dartschool test] <run tag> ...`, every file `dartschool-test-<run tag>-....txt`; at the end, also when a test failed, it moves what is left to the trash. It never deletes a lesfiche for good, never shares or plans one, and sends no label or goal. The guard lets a lesfiche write out only for a lesfiche the run made (as Smartschool answered its create) and did not move to the trash: a create named after the run, without labels or other lists (goals only as the library sends them, #223), at most two per run; a rename to a name after the run, the other edits (a change of its goals as well), its weblinks and attachments (the DELETE of one of them is the only DELETE the live suite sends), an upload directory handed out through the guard once; and the move to the trash of what the run made. It refuses everything else in the module (labels, deeplinks, a share, a restore, `delete/bulk`).
 
 Its rules, kept by the tests and, on the wire, by a guard on the live client (`test/live/support/live_wire_guard.dart`, a Dio interceptor that refuses a request before it is sent and fails the test):
 

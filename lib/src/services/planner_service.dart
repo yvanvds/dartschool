@@ -4,8 +4,10 @@ import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html_parser;
 
 import '../exceptions.dart';
+import '../models/goal_models.dart';
 import '../models/planner_models.dart';
 import '../session.dart';
+import 'goal_refs.dart';
 import 'lesson_content_service.dart';
 
 export '../models/planner_models.dart';
@@ -21,12 +23,17 @@ export '../models/planner_models.dart';
 ///
 /// In the authenticated user's own planner, it fills a lesson hour with a
 /// new lesson ([planLesson]) or with a lesfiche of the Lesfiches library
-/// ([planLessonContent], the lesfiches read with `LessonContentService`) and
-/// clears the hour again ([clearLesson]); it adds an assignment (a test, a
+/// ([planLessonContent], the lesfiches read with `LessonContentService`),
+/// replaces a lesson by a lesfiche ([replaceWithLessonContent]), plans one
+/// lesfiche into several hours at once ([planLessonContentInto]), saves a
+/// lesson as a new lesfiche ([saveAsLessonContent]) and clears the hour
+/// again ([clearLesson]); it adds an assignment (a test, a
 /// task) for classes ([planAssignment]) and moves it to the planner's trash
-/// again ([trashAssignment]); and it changes the name and info of an own
+/// again ([trashAssignment]); it changes the name and info of an own
 /// lesson or assignment ([renameElement], [changePublicInfo],
-/// [changePrivateInfo]). See *Writes* below.
+/// [changePrivateInfo]), and the learning goals of an own lesson
+/// ([changeGoals], read in [PlannedElementDetail.goals]). See *Writes*
+/// below.
 ///
 /// For the planner's workload view ("werkbelasting") it reads the school's
 /// assignment types ([getAssignmentTypes]), the assignments of classes in a
@@ -96,10 +103,13 @@ export '../models/planner_models.dart';
 /// [calculateWorkload].
 ///
 /// ### Writes
-/// Only [planLesson], [planLessonContent], [clearLesson], [planAssignment],
-/// [trashAssignment], [renameElement], [changePublicInfo] and
-/// [changePrivateInfo] change the planner, each with one POST for one
-/// element:
+/// Only [planLesson], [planLessonContent], [replaceWithLessonContent],
+/// [planLessonContentInto], [clearLesson], [planAssignment],
+/// [trashAssignment], [renameElement], [changePublicInfo],
+/// [changePrivateInfo] and [changeGoals] change the planner, each with one POST for one
+/// element ([planLessonContentInto]: one POST for all its hours);
+/// [saveAsLessonContent] adds a lesfiche to the Lesfiches library through
+/// the planner, with one POST, and leaves the lesson as it is:
 ///
 /// ```dart
 /// final me = await planner.ownCalendar();
@@ -159,11 +169,14 @@ export '../models/planner_models.dart';
 /// service only uses the move of one own assignment ([trashAssignment]); it
 /// never uses its permanent delete
 /// (`DELETE {plannedElementType}/{platformId}/{id}`), its restore, or its
-/// bulk endpoints (`planned-elements/trash`, `planned-elements/delete`,
-/// `planned-elements/bulk/...`, `planned-elements/replace-with-...`, and
+/// bulk endpoints but `planned-elements/replace-with-lesson-content`
+/// ([planLessonContentInto]): not `planned-elements/trash`,
+/// `planned-elements/delete`, `planned-elements/bulk/...`, the other
+/// `planned-elements/replace-with-...`, or
 /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
-/// moves everything in a period to the trash), nor an assignment's
-/// `announce`.
+/// moves everything in a period to the trash; nor an assignment's
+/// `announce`, nor `update-in-source-module` (its `save-in-source-module`
+/// is [saveAsLessonContent]'s).
 ///
 /// [PlannedElementDetail.privateInfo] is not private to the teacher: other
 /// teachers who can read the element see it too (see below). Pupils see the
@@ -206,16 +219,20 @@ export '../models/planner_models.dart';
 ///   [PlannerWriteRefusalReason.notOwn]), and its
 ///   [SmartschoolPlannerWriteRefusedError.element] is the element as read
 ///   again, so an app can say why in its own words.
-/// - [SmartschoolLessonContentError]: [planLessonContent] could not read the
-///   lesfiches before it planned one. Nothing was sent.
+/// - [SmartschoolLessonContentError]: [planLessonContent],
+///   [replaceWithLessonContent], [planLessonContentInto] or
+///   [saveAsLessonContent] could not read the lesfiches before it sent
+///   anything. Nothing was sent.
 /// - [SmartschoolPlannerSaveUnconfirmedError]: a write went out, but the
 ///   planner's answer does not confirm it. It may or may not have been
 ///   made: read the element again (for a new assignment, the calendar of
 ///   one of its classes).
 /// - [SmartschoolSessionExpiredError]: Smartschool did not accept the
 ///   session, also after the client logged in again and retried the request
-///   once; for the fill of a slot, the clear of a lesson, and the create and
-///   trash of an assignment, which are not retried, at once. The request was
+///   once; for the fill of a slot, the replace of a lesson, the plan of a
+///   lesfiche into several hours, the save of a lesson as a lesfiche, the
+///   clear of a lesson, and the create and trash of an assignment, which
+///   are not retried, at once. The request was
 ///   not carried out: call the method again, the client logs in before its
 ///   next request (#134).
 /// - Another [SmartschoolAuthenticationError]: logging in again for the
@@ -239,18 +256,25 @@ class PlannerService {
   /// saves an assignment). The writes send, for one element each,
   /// `planned-placeholders/{platformId}/{id}/replace/planned-lessons/blanco`
   /// ([planLesson]), `.../replace/planned-lessons` ([planLessonContent]),
+  /// `planned-lessons/replace/planned-lessons/{platformId}/{id}`
+  /// ([replaceWithLessonContent]),
+  /// `planned-elements/replace-with-lesson-content?waitForRefresh=true`
+  /// (several hours, [planLessonContentInto]),
   /// `planned-elements/clear` ([clearLesson]),
   /// `planned-assignments/blanco?waitForRefresh=true` ([planAssignment]),
   /// `planned-assignments/{platformId}/{id}/trash` ([trashAssignment]), and
   /// `{plannedElementType}/{platformId}/{id}/rename`,
-  /// `.../change-public-info` and `.../change-private-info` (the edits). The
+  /// `.../change-public-info` and `.../change-private-info` (the edits), and
+  /// `planned-lessons/{platformId}/{id}/change-goals` ([changeGoals]). The
   /// planner also answers POSTs on it that change the planner or the user's
   /// settings and that the service never sends: the favourites of the search
   /// (`quick-search/planner/mark-as-favourite` and `discard-as-favourite`),
   /// the restore from the trash (`.../trash/restore`), an assignment's
-  /// `announce` and `remove-announcement`, the bulk endpoints
-  /// (`planned-elements/trash`, `planned-elements/delete`,
-  /// `planned-elements/bulk/...`, `planned-elements/replace-with-...`), and
+  /// `announce` and `remove-announcement`, `update-in-source-module`,
+  /// `apply-curriculum-concordance`, `change-minidb-items`, the
+  /// other bulk endpoints (`planned-elements/trash`,
+  /// `planned-elements/delete`, `planned-elements/bulk/...`, the other
+  /// `planned-elements/replace-with-...`), and
   /// `planned-elements/{calendarType}/{calendarId}/trash?from=&to=`, which
   /// moves everything in a period to the trash; nor its `DELETE` of an
   /// element, which deletes it for good.
@@ -768,13 +792,14 @@ class PlannerService {
   ///
   /// The planner makes the lesson from the lesfiche: in the try live
   /// (2026-10-02) it took the lesfiche's name, labels and goals, and the
-  /// lesfiche's (empty) info. Whether it copies the attachments, weblinks and
-  /// info of a richer lesfiche, and whether later changes to the lesfiche
-  /// reach a lesson planned from it, was not checked. The answer has no
-  /// field that points back to the lesfiche. Planning does not change the
-  /// lesfiche (the whole list was the same afterwards), and a hidden
-  /// lesfiche ([LessonContentItem.isVisible] `false`) was planned like any
-  /// other.
+  /// lesfiche's (empty) info. From a richer lesfiche it copies the name,
+  /// the icon, the public and private info, the goals, and the attachments
+  /// and weblinks with their visibility (tried live, 2026-11-01, #224).
+  /// Planning **copies** the lesfiche: the lesson has no field that points
+  /// back to it, and a later change to the lesfiche does not reach the
+  /// lesson (tried live). Planning does not change the lesfiche (the whole
+  /// list was the same afterwards), and a hidden lesfiche
+  /// ([LessonContentItem.isVisible] `false`) was planned like any other.
   ///
   /// Before it sends anything, it reads the lesfiches again
   /// (`LessonContentService.getItems`, without the course names: one
@@ -812,49 +837,456 @@ class PlannerService {
   }) async {
     const operation = 'planLessonContent';
     _checkSlot(placeholder);
-    final sourceId = lessonContentId.trim();
-    if (sourceId.isEmpty) {
-      throw ArgumentError.value(lessonContentId, 'lessonContentId', 'is empty');
-    }
-    // The lesfiche's ID and kind are all it needs: no course names, so no
-    // read of the course list (#101).
-    final fiches = await LessonContentService(
-      _client,
-    ).getItems(withCourseNames: false);
-    final fiche = fiches
-        .where((item) => item.id.toLowerCase() == sourceId.toLowerCase())
-        .firstOrNull;
-    if (fiche == null) {
-      throw SmartschoolPlannerWriteRefusedError(
-        '$operation: there is no lesfiche $sourceId among your '
-        '${fiches.length} lesfiches (LessonContentService.getItems). Nothing '
-        'was sent.',
-        reason: PlannerWriteRefusalReason.unknownLessonContent,
-      );
-    }
-    if (fiche.type != LessonContentType.lesson) {
-      final kind = fiche.type == LessonContentType.assignment
-          ? 'an assignment'
-          : 'a "${fiche.typeName}"';
-      throw SmartschoolPlannerWriteRefusedError(
-        '$operation: lesfiche ${fiche.id} "${fiche.name}" is $kind lesfiche '
-        '(${fiche.typeName}), not a lesson one (lessons): planning it would '
-        'not make a lesson. Nothing was sent.',
-        reason: PlannerWriteRefusalReason.notALessonLessonContent,
-        lessonContent: fiche,
-      );
-    }
-    final icon = fiche.icon?.trim() ?? '';
+    final fiche = await _lessonFiche(operation, lessonContentId);
     return _fillSlot(
       operation,
       placeholder,
       route: 'planned-lessons',
-      content: {
-        'sourceId': fiche.id,
-        'icon': icon.isEmpty ? defaultLessonIcon : icon,
-      },
+      content: _ficheContent(fiche),
       name: fiche.name,
     );
+  }
+
+  /// Replaces [lesson], a lesson in the authenticated user's own planner
+  /// (one typed in with [planLesson], or planned from another lesfiche), by
+  /// the lesfiche [lessonContentId] of the Lesfiches library, as the
+  /// planner's "replace" in the detail of a lesson does (#224). Returns the
+  /// new lesson: an element of type [PlannedElementType.lesson] with a **new
+  /// ID**, in the lesson's period, with its classes, course and room, named
+  /// after the lesfiche, with the lesfiche's icon, info, goals, attachments
+  /// and weblinks (see [planLessonContent]). The old lesson is gone: its
+  /// name, info and goals with it, and the planner answers its detail with
+  /// `404`. Pupils of the classes see the new lesson at once.
+  ///
+  /// There is no lasting link between a lesson and a lesfiche: replacing
+  /// copies the lesfiche, as planning it does.
+  ///
+  /// Before it sends anything, it checks the lesfiche as
+  /// [planLessonContent] does (among the user's lesfiches, a lesson one),
+  /// then reads the lesson again and refuses with a
+  /// [SmartschoolPlannerWriteRefusedError] a lesson that is not organised by
+  /// the authenticated user, whose capabilities do not allow replacing it
+  /// (`canUserReplace`), that is another kind of element now
+  /// ([PlannerWriteRefusalReason.noLongerASlot]), that is no longer in the
+  /// period of [lesson], or that has participant roles or group filters. A
+  /// lesson that is gone (one replaced or cleared since it was read) throws
+  /// a [SmartschoolPlannedElementNotFoundError].
+  ///
+  /// Sends `POST planned-lessons/replace/planned-lessons/{platformId}/{id}`
+  /// with the lesson's organisers, classes, course, period and rooms as
+  /// reading it again gave them, the lesfiche's ID as `sourceId` and its
+  /// icon, as [planLessonContent] sends them (tried live, 2026-11-01: the
+  /// planner answered `201` with the new lesson). It is sent **once**, never
+  /// again after logging in again. When the answer is not a lesson named as
+  /// the lesfiche in the lesson's period (or no usable answer comes in), this
+  /// throws a [SmartschoolPlannerSaveUnconfirmedError]: read the lesson
+  /// again ([getDetail] of [lesson] answers `404` once it was replaced)
+  /// before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [lesson] is
+  /// not a [PlannedElementType.lesson] (an empty hour is filled with
+  /// [planLessonContent]), or [lessonContentId] is empty.
+  Future<PlannedElementDetail> replaceWithLessonContent({
+    required PlannedElement lesson,
+    required String lessonContentId,
+  }) async {
+    const operation = 'replaceWithLessonContent';
+    if (lesson.type != PlannedElementType.lesson) {
+      throw ArgumentError.value(
+        lesson,
+        'lesson',
+        'is a ${lesson.typeName}, not a lesson (planned-lessons); an empty '
+            'hour is filled with planLessonContent',
+      );
+    }
+    final fiche = await _lessonFiche(operation, lessonContentId);
+    final me = await _ownUserId();
+    final current = await _readTarget(operation, lesson, me);
+    final what = _describe(current);
+    return _write(
+      operation,
+      path:
+          '$_apiPath/planned-lessons/replace/planned-lessons/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}',
+      body: {..._slotBody(current), ..._ficheContent(fiche)},
+      change: 'the replace of $what',
+      retryAfterLogin: false,
+      ok: const {200, 201},
+      unconfirmed:
+          'It may or may not have been replaced: read the lesson again '
+          '(getDetail; the planner answers 404 once it was replaced) before '
+          'trying again.',
+      problemOf: (answer) => _lessonProblem(answer, fiche.name, current.period),
+    );
+  }
+
+  /// Plans the lesfiche [lessonContentId] of the Lesfiches library into
+  /// every hour of [targets] at once, as the planner's copy dialog does
+  /// (#224): each target is an empty lesson hour
+  /// ([PlannedElementType.placeholder]) or a lesson
+  /// ([PlannedElementType.lesson]) of the authenticated user's own planner,
+  /// and becomes a new lesson made from the lesfiche, as [planLessonContent]
+  /// and [replaceWithLessonContent] make it for one hour. A lesson's old
+  /// content is gone. Pupils of the classes see the new lessons at once.
+  ///
+  /// Returns a [PlannerBulkResult] with one [PlannerBulkOutcome] per target,
+  /// in the order of [targets]: the new lesson (its detail, read after the
+  /// plan), or, for a target the planner did not plan, its exception as the
+  /// planner gave it. A target with an exception is reported, not retried.
+  ///
+  /// Before it sends anything, it checks the lesfiche as
+  /// [planLessonContent] does, then reads every target again and checks it
+  /// as [planLessonContent] checks a slot (organised by the authenticated
+  /// user, `canUserReplace`, still of its type and in its period, no
+  /// participant roles or group filters); the first target that fails a
+  /// check refuses the whole call with a
+  /// [SmartschoolPlannerWriteRefusedError], and a target that is gone throws
+  /// a [SmartschoolPlannedElementNotFoundError]. Nothing is sent then.
+  ///
+  /// Sends `POST planned-elements/replace-with-lesson-content?waitForRefresh=true`
+  /// **once** (never again after logging in again) with
+  /// `{"platformId", "sourceId", "sourceType": "lesson", "courses",
+  /// "visibility": [], "plannedElements": [{"plannedElementId", "platformId",
+  /// "plannedElementType"}, ...]}`: the lesfiche's platform, ID and courses,
+  /// the planner's own type of a lesson lesfiche (`lesson`; the Lesfiches
+  /// module's `lessons` is answered with `400`), the visibility of the copy
+  /// dialog's "publish now", and the targets as read again (tried live,
+  /// 2026-11-01). The planner answers with a short element per planned
+  /// target and its `exceptions` (an empty list, or an object keyed by
+  /// `{platformId}_{id}` of the targets it did not plan); the call then
+  /// reads the detail of each new lesson. When the answer is unusable, does
+  /// not account for every target, or holds an element that is not a lesson
+  /// named as the lesfiche in the hour of a target, or when a new lesson
+  /// cannot be read, this throws a [SmartschoolPlannerSaveUnconfirmedError]:
+  /// read the targets again (their [getDetail] answers `404` once they were
+  /// replaced) before trying again.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [targets] is
+  /// empty, holds an element that is neither an empty lesson hour nor a
+  /// lesson, or holds one element twice, or when [lessonContentId] is empty.
+  Future<PlannerBulkResult> planLessonContentInto({
+    required String lessonContentId,
+    required List<PlannedElement> targets,
+  }) async {
+    const operation = 'planLessonContentInto';
+    if (targets.isEmpty) {
+      throw ArgumentError.value(targets, 'targets', 'is empty');
+    }
+    final seen = <String>{};
+    for (final target in targets) {
+      if (target.type != PlannedElementType.placeholder &&
+          target.type != PlannedElementType.lesson) {
+        throw ArgumentError.value(
+          targets,
+          'targets',
+          'holds ${target.typeName} ${target.id}, which is neither an empty '
+              'lesson hour (planned-placeholders) nor a lesson '
+              '(planned-lessons)',
+        );
+      }
+      if (!seen.add(_targetKey(target))) {
+        throw ArgumentError.value(
+          targets,
+          'targets',
+          'holds ${target.typeName} ${target.id} twice',
+        );
+      }
+    }
+    final fiche = await _lessonFiche(operation, lessonContentId);
+    final me = await _ownUserId();
+    final current = [
+      for (final target in targets) await _readTarget(operation, target, me),
+    ];
+
+    const unconfirmed =
+        'Some or all of the targets may have been planned: read them again '
+        '(getDetail; the planner answers 404 for a target that was '
+        'replaced) before trying again.';
+    final change =
+        'the plan of lesfiche ${fiche.id} into ${current.length} '
+        '${current.length == 1 ? 'hour' : 'hours'}';
+    final response = await _send(
+      operation,
+      path: '$_apiPath/planned-elements/replace-with-lesson-content',
+      query: const {'waitForRefresh': 'true'},
+      body: {
+        'platformId': fiche.platformId,
+        'sourceId': fiche.id,
+        'sourceType': 'lesson',
+        'courses': [
+          for (final course in fiche.courses)
+            {'platformId': course.platformId, 'id': course.id},
+        ],
+        'visibility': const <Object>[],
+        'plannedElements': [
+          for (final target in current)
+            {
+              'plannedElementId': target.id,
+              'platformId': target.platformId,
+              'plannedElementType': target.typeName,
+            },
+        ],
+      },
+      change: change,
+      retryAfterLogin: false,
+      unconfirmed: unconfirmed,
+    );
+    Never unconfirmedBy(String problem, {Object? cause}) =>
+        throw SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent, but $problem. $unconfirmed',
+          statusCode: response.statusCode,
+          cause: cause,
+        );
+
+    final ({List<Map<String, dynamic>> planned, Map<String, Object?> failed})
+    answer;
+    final Map<String, dynamic> raw;
+    try {
+      final json = _decode(response, change);
+      answer = parseBulkAnswer(json);
+      raw = Map.unmodifiable(json as Map<String, dynamic>);
+    } on SmartschoolPlannerError catch (e) {
+      unconfirmedBy(
+        'the planner\'s answer cannot be used (${e.message})',
+        cause: e,
+      );
+    }
+
+    // The targets the planner did not plan, by their key.
+    final exceptions = <int, Object?>{};
+    for (final MapEntry(:key, :value) in answer.failed.entries) {
+      final index = current.indexWhere(
+        (target) => _targetKey(target) == key.toLowerCase(),
+      );
+      if (index < 0) {
+        unconfirmedBy(
+          'the planner gave an exception for "$key", none of the targets',
+        );
+      }
+      exceptions[index] = value;
+    }
+    final open = [
+      for (var i = 0; i < current.length; i++)
+        if (!exceptions.containsKey(i)) i,
+    ];
+    if (answer.planned.length != open.length) {
+      unconfirmedBy(
+        'the planner answered with ${answer.planned.length} planned '
+        '${answer.planned.length == 1 ? 'element' : 'elements'} and '
+        '${exceptions.length} ${exceptions.length == 1 ? 'exception' : 'exceptions'} '
+        'for ${current.length} targets',
+      );
+    }
+
+    // Each new lesson, read in full, in the hour of a target not yet taken.
+    final lessons = <int, PlannedElementDetail>{};
+    for (final element in answer.planned) {
+      final id = element['id'];
+      if (id is! String || id.trim().isEmpty) {
+        unconfirmedBy('the planner gave a planned element without its id');
+      }
+      final typeName = element['plannedElementType'];
+      if (typeName != null && typeName != _lessonType) {
+        unconfirmedBy(
+          'the planner answered with a $typeName instead of a lesson',
+        );
+      }
+      final platformId = switch (element['platformId']) {
+        int value => value,
+        _ => fiche.platformId,
+      };
+      final PlannedElementDetail lesson;
+      try {
+        lesson = await _detail(_lessonType, platformId, id);
+      } on SmartschoolPlannerError catch (e) {
+        unconfirmedBy(
+          'reading the new lesson $id failed (${e.message})',
+          cause: e,
+        );
+      }
+      final index = open.firstWhere(
+        (i) =>
+            !lessons.containsKey(i) &&
+            _samePeriod(lesson.period, current[i].period),
+        orElse: () => -1,
+      );
+      if (index < 0) {
+        unconfirmedBy(
+          'the new lesson $id is in none of the hours of the targets '
+          '(${lesson.period.from} - ${lesson.period.to})',
+        );
+      }
+      final problem = _lessonProblem(lesson, fiche.name, current[index].period);
+      if (problem != null) unconfirmedBy('the planner made $problem');
+      lessons[index] = lesson;
+    }
+
+    return PlannerBulkResult(
+      outcomes: List.unmodifiable([
+        for (var i = 0; i < current.length; i++)
+          PlannerBulkOutcome(
+            target: current[i],
+            lesson: lessons[i],
+            exception: exceptions[i],
+          ),
+      ]),
+      raw: raw,
+    );
+  }
+
+  /// Saves [lesson], a lesson of the authenticated user's own planner (one
+  /// typed in with [planLesson], say), as a new lesfiche in the Lesfiches
+  /// library, as the planner's "Opslaan in Lesfiches" does (#225). Returns
+  /// the new lesfiche as `LessonContentService.getDetailById` reads it: a
+  /// lesson lesfiche ([LessonContentType.lesson]) named [name], with the
+  /// lesson's icon, public and private info and goals (tried live,
+  /// 2026-11-01). Whether the lesson's attachments, weblinks and labels are
+  /// copied too was not seen. The lesfiche is the teacher's own; it can then
+  /// be planned into other hours ([planLessonContent],
+  /// [replaceWithLessonContent], [planLessonContentInto]), and is moved to
+  /// the module's trash with `LessonContentService.trash`.
+  ///
+  /// The lesson itself is left as it is (its name, info, goals,
+  /// attachments, weblinks, labels and icon were the same before and after,
+  /// tried live), and keeps no link to the lesfiche.
+  ///
+  /// [name] is the lesfiche's name, sent without the white space around it;
+  /// `null` (the default) takes the lesson's name as reading it again gives
+  /// it. The module keeps two lesfiches of one name (#129): a name that is
+  /// taken makes another lesfiche of that name.
+  ///
+  /// Before it sends anything, it reads the lesson again (its detail) and
+  /// refuses with a [SmartschoolPlannerWriteRefusedError] a lesson that is
+  /// not organised by the authenticated user
+  /// ([PlannerWriteRefusalReason.notOwn]), or whose capabilities do not
+  /// allow saving it (`canUserSaveInSourceModule`,
+  /// [PlannerWriteRefusalReason.notAllowed]); a lesson that is gone throws a
+  /// [SmartschoolPlannedElementNotFoundError]. It then reads the lesfiches
+  /// (`LessonContentService.getItems`, without the course names: one
+  /// request); when they cannot be read, the [SmartschoolLessonContentError]
+  /// of `getItems` is thrown: nothing was sent.
+  ///
+  /// Sends `POST planned-lessons/{platformId}/{id}/save-in-source-module`
+  /// with `{"newName": name}` (as the lesson's own save in the planner's web
+  /// client does: no `sourceId`), **once**: never again after logging in
+  /// again, since a second send makes a second lesfiche. The planner answers
+  /// `{}` (tried live): the answer does not name the new lesfiche, so the
+  /// call reads the lesfiches again and takes the one lesson lesfiche named
+  /// [name] that was not there before. When there is none, or more than one,
+  /// or the lesfiches or the new lesfiche's detail cannot be read, this
+  /// throws a [SmartschoolPlannerSaveUnconfirmedError]: look in the
+  /// lesfiches (`LessonContentService.getItems`) before trying again, or the
+  /// lesson ends up in the library twice.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [lesson] is
+  /// not a [PlannedElementType.lesson] (an assignment was not tried), or
+  /// [name] is empty; and, after reading the lesson again but before
+  /// sending, when [name] is `null` and the lesson has no name.
+  Future<LessonContentDetail> saveAsLessonContent(
+    PlannedElement lesson, {
+    String? name,
+  }) async {
+    const operation = 'saveAsLessonContent';
+    if (lesson.type != PlannedElementType.lesson) {
+      throw ArgumentError.value(
+        lesson,
+        'lesson',
+        'is a ${lesson.typeName}, not a lesson (planned-lessons); the save '
+            'of another kind of element was not tried',
+      );
+    }
+    if (name != null && name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'is empty');
+    }
+    final me = await _ownUserId();
+    final current = await _detail(
+      lesson.typeName,
+      lesson.platformId,
+      lesson.id,
+    );
+    final what = _describe(current);
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const [
+      'canUserSaveInSourceModule',
+    ]);
+    final title = (name ?? current.name ?? '').trim();
+    if (title.isEmpty) {
+      throw ArgumentError.value(
+        name,
+        'name',
+        'is null and $what has no name: give the lesfiche one',
+      );
+    }
+
+    final library = LessonContentService(_client);
+    final before = {
+      for (final item in await library.getItems(withCourseNames: false))
+        item.id.toLowerCase(),
+    };
+
+    final change = 'the save of $what as lesfiche "$title"';
+    const unconfirmed =
+        'A lesfiche may or may not have been made: look in the lesfiches '
+        '(LessonContentService.getItems) before trying again, or the lesson '
+        'ends up in the library twice.';
+    final response = await _send(
+      operation,
+      path:
+          '$_apiPath/${Uri.encodeComponent(current.typeName)}/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}/'
+          'save-in-source-module',
+      body: {'newName': title},
+      change: change,
+      retryAfterLogin: false,
+      unconfirmed: unconfirmed,
+    );
+    final status = response.statusCode;
+    final answered = status == 200
+        ? 'answered'
+        : 'answered with HTTP $status (${_preview(response.data ?? '')})';
+    Never unconfirmedBy(String problem, {Object? cause}) =>
+        throw SmartschoolPlannerSaveUnconfirmedError(
+          '$operation: $change was sent and $answered, but $problem. '
+          '$unconfirmed',
+          statusCode: status,
+          cause: cause,
+        );
+
+    // The answer (`{}`) does not name the lesfiche: the list does.
+    final List<LessonContentItem> after;
+    try {
+      after = await library.getItems(withCourseNames: false);
+    } on Exception catch (e) {
+      unconfirmedBy('reading the lesfiches again failed ($e)', cause: e);
+    }
+    final added = [
+      for (final item in after)
+        if (!before.contains(item.id.toLowerCase())) item,
+    ];
+    final made = [
+      for (final item in added)
+        if (item.type == LessonContentType.lesson && item.name.trim() == title)
+          item,
+    ];
+    if (made.length != 1) {
+      unconfirmedBy(
+        made.isEmpty
+            ? 'the lesfiches hold no new lesson lesfiche of that name '
+                  '(${added.length} new '
+                  '${added.length == 1 ? 'lesfiche' : 'lesfiches'})'
+            : 'the lesfiches hold ${made.length} new lesson lesfiches of '
+                  'that name (${[for (final item in made) item.id].join(', ')})',
+      );
+    }
+    try {
+      return await library.getDetail(made.single);
+    } on Exception catch (e) {
+      unconfirmedBy(
+        'reading the detail of lesfiche ${made.single.id}, which is new '
+        'and of that name, failed ($e)',
+        cause: e,
+      );
+    }
   }
 
   /// Renames [element], an element of the authenticated user's own planner
@@ -963,6 +1395,106 @@ class PlannerService {
     value: newInfo,
     same: _sameHtml,
   );
+
+  /// Sets the learning goals of [lesson], a lesson of the authenticated
+  /// user's own planner, to [goals] (empty clears them), and returns the
+  /// lesson as the planner holds it after the change (#226). Meant for a
+  /// lesson filled in by hand ([planLesson]); a lesson planned from a
+  /// lesfiche gets the lesfiche's goals, and can be changed the same way.
+  ///
+  /// The list replaces the goals the lesson had, as in the planner's web
+  /// client, which sends the whole selection every time: to add a goal, send
+  /// [PlannedElementDetail.goals] with it (`[...?detail.goals, goal]`). A
+  /// goal of `GoalService.getCurriculum` gives its reference with
+  /// [SelectableGoal.ref]; `GoalService.resolve` names the goals of the
+  /// answer. Pupils see a lesson's goals.
+  ///
+  /// Before it sends anything, it reads the lesson again (its detail) and
+  /// refuses with a [SmartschoolPlannerWriteRefusedError] a lesson that is
+  /// not organised by the authenticated user
+  /// ([PlannerWriteRefusalReason.notOwn]), or whose capabilities do not
+  /// allow the change (`canUserEdit` and `canUserChangeGoals`,
+  /// [PlannerWriteRefusalReason.notAllowed]); a lesson that is gone throws a
+  /// [SmartschoolPlannedElementNotFoundError]. When the lesson already has
+  /// exactly these goals (in any order), it sends nothing and returns the
+  /// lesson as read.
+  ///
+  /// Sends `POST planned-lessons/{platformId}/{id}/change-goals` with
+  /// `{"goals": [{id, goalId, leerplanId, type}]}` (`goalId` the same as
+  /// `id`, [LearningGoalRef.toWire]; the key is `goals` here, `newGoals` in
+  /// the Lesfiches module), which the planner answers with `200` and the
+  /// whole lesson (tried live, 2026-11-01, with a goal of a school
+  /// mini-database on a lesson filled in by hand). A goal given twice is
+  /// sent once. The change sets a value, so it is retried once after logging
+  /// in again, as a read is. When the answer is not the lesson with exactly
+  /// the goals sent (or no usable answer comes in), this throws a
+  /// [SmartschoolPlannerSaveUnconfirmedError]: read the lesson again before
+  /// trying again. The planner, like the Lesfiches module, is not known to
+  /// check that a goal exists: name the goals with `GoalService.resolve`
+  /// when that matters.
+  ///
+  /// Throws an [ArgumentError], without sending anything, when [lesson] is
+  /// not a [PlannedElementType.lesson] (the goals of an assignment were not
+  /// tried), or for a goal whose `id` is not a UUID, with an empty
+  /// `leerplanId` or `type` (or white space around one), or with the `id` of
+  /// another goal of the list in another curriculum or of another type.
+  Future<PlannedElementDetail> changeGoals(
+    PlannedElement lesson,
+    Iterable<LearningGoalRef> goals,
+  ) async {
+    const operation = 'changeGoals';
+    if (lesson.type != PlannedElementType.lesson) {
+      throw ArgumentError.value(
+        lesson,
+        'lesson',
+        'is a ${lesson.typeName}, not a lesson (planned-lessons); the goals '
+            'of another kind of element were not tried',
+      );
+    }
+    final newGoals = GoalRefs.checked(goals);
+    final me = await _ownUserId();
+    final current = await _detail(
+      lesson.typeName,
+      lesson.platformId,
+      lesson.id,
+    );
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const [
+      'canUserEdit',
+      'canUserChangeGoals',
+    ]);
+    final held = current.goals;
+    if (held != null && GoalRefs.same(held, newGoals)) return current;
+    final what = _describe(current);
+    return _write(
+      operation,
+      path:
+          '$_apiPath/${Uri.encodeComponent(current.typeName)}/'
+          '${current.platformId}/${Uri.encodeComponent(current.id)}/'
+          'change-goals',
+      body: {
+        'goals': [for (final goal in newGoals) goal.toWire()],
+      },
+      change:
+          'the change of the goals of $what to '
+          '${GoalRefs.describe(newGoals)}',
+      retryAfterLogin: true,
+      unconfirmed:
+          'They may or may not have been changed: read the lesson again '
+          '(getDetail) before trying again.',
+      problemOf: (answer) {
+        if (answer.id.toLowerCase() != current.id.toLowerCase()) {
+          return 'element ${answer.id}';
+        }
+        final answered = answer.goals;
+        if (answered == null) return 'no goals';
+        if (!GoalRefs.same(answered, newGoals)) {
+          return 'the goals ${GoalRefs.describe(answered)}';
+        }
+        return null;
+      },
+    );
+  }
 
   /// Clears [lesson], a lesson in a lesson hour of the authenticated user's
   /// own planner: the hour is an empty timetable slot again, as the
@@ -1406,46 +1938,8 @@ class PlannerService {
   }) async {
     _checkSlot(placeholder);
     final me = await _ownUserId();
-    final slot = await _detail(
-      placeholder.typeName,
-      placeholder.platformId,
-      placeholder.id,
-    );
+    final slot = await _readTarget(operation, placeholder, me);
     final what = _describe(slot);
-    if (slot.type != PlannedElementType.placeholder) {
-      throw SmartschoolPlannerWriteRefusedError(
-        '$operation: ${slot.id} is a ${slot.typeName} now, not a timetable '
-        'slot. Nothing was sent.',
-        reason: PlannerWriteRefusalReason.noLongerASlot,
-        element: slot,
-      );
-    }
-    if (!_samePeriod(slot.period, placeholder.period)) {
-      throw SmartschoolPlannerWriteRefusedError(
-        '$operation: $what is no longer in the period it was read with '
-        '(${placeholder.period.from} - ${placeholder.period.to}): read the '
-        'calendar again. Nothing was sent.',
-        reason: PlannerWriteRefusalReason.periodChanged,
-        element: slot,
-      );
-    }
-    _refuseUnlessOwn(operation, slot, me);
-    _refuseUnlessCapable(operation, slot, const ['canUserReplace']);
-    final participants = slot.raw['participants'];
-    final roles = participants is Map ? participants['userRoles'] : null;
-    final filters = participants is Map ? participants['groupFilters'] : null;
-    if (_isFilled(roles) ||
-        filters is Map &&
-            (_isFilled(filters['filters']) ||
-                _isFilled(filters['additionalUsers']))) {
-      throw SmartschoolPlannerWriteRefusedError(
-        '$operation: $what has participant roles or group filters, which '
-        'the service does not know how to send on. Nothing was sent.',
-        reason: PlannerWriteRefusalReason.participantRoles,
-        element: slot,
-      );
-    }
-
     return _write(
       operation,
       path:
@@ -1458,21 +1952,141 @@ class PlannerService {
           'It may or may not have been filled: read the slot again '
           '(getDetail; the planner answers 404 once it was filled) before '
           'trying again.',
-      problemOf: (answer) {
-        if (answer.type != PlannedElementType.lesson) {
-          return 'a ${answer.typeName} instead of a lesson';
-        }
-        if (name != null && (answer.name ?? '').trim() != name) {
-          return 'a lesson named "${answer.name ?? ''}" instead of "$name"';
-        }
-        if (!_samePeriod(answer.period, slot.period)) {
-          return 'a lesson in another period (${answer.period.from} - '
-              '${answer.period.to})';
-        }
-        return null;
-      },
+      problemOf: (answer) => _lessonProblem(answer, name, slot.period),
     );
   }
+
+  /// What is wrong with [answer] as the lesson a write made in [period],
+  /// named [name] when it is given; `null` when nothing is.
+  static String? _lessonProblem(
+    PlannedElementDetail answer,
+    String? name,
+    PlannerPeriod period,
+  ) {
+    if (answer.type != PlannedElementType.lesson) {
+      return 'a ${answer.typeName} instead of a lesson';
+    }
+    if (name != null && (answer.name ?? '').trim() != name) {
+      return 'a lesson named "${answer.name ?? ''}" instead of "$name"';
+    }
+    if (!_samePeriod(answer.period, period)) {
+      return 'a lesson in another period (${answer.period.from} - '
+          '${answer.period.to})';
+    }
+    return null;
+  }
+
+  /// Reads [given], an empty lesson hour or a lesson to fill or replace,
+  /// again (its detail) and refuses it unless it is still of its type and
+  /// in its period, organised by the authenticated user [me], with
+  /// `canUserReplace`, and without participant roles or group filters.
+  /// Returns it as read again.
+  Future<PlannedElementDetail> _readTarget(
+    String operation,
+    PlannedElement given,
+    String me,
+  ) async {
+    final current = await _detail(given.typeName, given.platformId, given.id);
+    final what = _describe(current);
+    if (current.type != given.type) {
+      final kind = given.type == PlannedElementType.placeholder
+          ? 'a timetable slot'
+          : 'a ${given.typeName}';
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: ${current.id} is a ${current.typeName} now, not $kind. '
+        'Nothing was sent.',
+        reason: PlannerWriteRefusalReason.noLongerASlot,
+        element: current,
+      );
+    }
+    if (!_samePeriod(current.period, given.period)) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: $what is no longer in the period it was read with '
+        '(${given.period.from} - ${given.period.to}): read the calendar '
+        'again. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.periodChanged,
+        element: current,
+      );
+    }
+    _refuseUnlessOwn(operation, current, me);
+    _refuseUnlessCapable(operation, current, const ['canUserReplace']);
+    final participants = current.raw['participants'];
+    final roles = participants is Map ? participants['userRoles'] : null;
+    final filters = participants is Map ? participants['groupFilters'] : null;
+    if (_isFilled(roles) ||
+        filters is Map &&
+            (_isFilled(filters['filters']) ||
+                _isFilled(filters['additionalUsers']))) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: $what has participant roles or group filters, which '
+        'the service does not know how to send on. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.participantRoles,
+        element: current,
+      );
+    }
+    return current;
+  }
+
+  /// The lesson lesfiche [lessonContentId] among the user's lesfiches, read
+  /// again (`LessonContentService.getItems`, without the course names: one
+  /// request, #101). Refuses an ID that is not among them, or a lesfiche
+  /// that is not a lesson one; throws an [ArgumentError] for an empty ID.
+  Future<LessonContentItem> _lessonFiche(
+    String operation,
+    String lessonContentId,
+  ) async {
+    final sourceId = lessonContentId.trim();
+    if (sourceId.isEmpty) {
+      throw ArgumentError.value(lessonContentId, 'lessonContentId', 'is empty');
+    }
+    final fiches = await LessonContentService(
+      _client,
+    ).getItems(withCourseNames: false);
+    final fiche = fiches
+        .where((item) => item.id.toLowerCase() == sourceId.toLowerCase())
+        .firstOrNull;
+    if (fiche == null) {
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: there is no lesfiche $sourceId among your '
+        '${fiches.length} lesfiches (LessonContentService.getItems). Nothing '
+        'was sent.',
+        reason: PlannerWriteRefusalReason.unknownLessonContent,
+      );
+    }
+    if (fiche.type != LessonContentType.lesson) {
+      final kind = fiche.type == LessonContentType.assignment
+          ? 'an assignment'
+          : 'a "${fiche.typeName}"';
+      throw SmartschoolPlannerWriteRefusedError(
+        '$operation: lesfiche ${fiche.id} "${fiche.name}" is $kind lesfiche '
+        '(${fiche.typeName}), not a lesson one (lessons): planning it would '
+        'not make a lesson. Nothing was sent.',
+        reason: PlannerWriteRefusalReason.notALessonLessonContent,
+        lessonContent: fiche,
+      );
+    }
+    return fiche;
+  }
+
+  /// What a write that plans [fiche] adds to the body of an hour: the
+  /// lesfiche's ID as `sourceId`, and its icon ([defaultLessonIcon] when it
+  /// has none). The planner gives the lesson the lesfiche's icon anyway
+  /// (seen live, #224).
+  static Map<String, Object?> _ficheContent(LessonContentItem fiche) {
+    final icon = fiche.icon?.trim() ?? '';
+    return {
+      'sourceId': fiche.id,
+      'icon': icon.isEmpty ? defaultLessonIcon : icon,
+    };
+  }
+
+  /// The planner's name of a lesson's type.
+  static const _lessonType = 'planned-lessons';
+
+  /// [element] as the planner keys it in the `exceptions` of a bulk answer
+  /// (`{platformId}_{id}`), in lower case.
+  static String _targetKey(PlannedElement element) =>
+      '${element.platformId}_${element.id}'.toLowerCase();
 
   /// Changes [field] of [element] to [value] through
   /// `{plannedElementType}/{platformId}/{id}/[action]` with [body], after
@@ -1857,6 +2471,57 @@ class PlannerService {
         'T${pad(wall.hour)}:${pad(wall.minute)}:${pad(wall.second)}'
         '${offset.isNegative ? '-' : '+'}${pad(minutes ~/ 60)}:'
         '${pad(minutes % 60)}';
+  }
+
+  /// Parses the planner's answer to the plan of a lesfiche into several
+  /// hours (`planned-elements/replace-with-lesson-content`, #224):
+  /// `{"plannedElements": [...], "exceptions": [] | {...}}`. Returns the
+  /// planned elements (short ones: the planner leaves their info, goals,
+  /// attachments and weblinks `null`) and the exceptions by the key the
+  /// planner gives them (`{platformId}_{id}` of a target). The planner
+  /// writes no exceptions as an empty list, and some as an object; a missing
+  /// or `null` `exceptions` is none.
+  static ({List<Map<String, dynamic>> planned, Map<String, Object?> failed})
+  parseBulkAnswer(dynamic json) {
+    if (json is! Map<String, dynamic>) {
+      throw SmartschoolPlannerError(
+        'The planner gave the answer to a bulk plan as ${json.runtimeType} '
+        'instead of an object.',
+      );
+    }
+    final elements = json['plannedElements'];
+    if (elements is! List) {
+      throw SmartschoolPlannerError(
+        'The planner gave the planned elements of a bulk plan as '
+        '${elements.runtimeType} instead of a list.',
+      );
+    }
+    final planned = [
+      for (final (index, item) in elements.indexed)
+        if (item is Map<String, dynamic>)
+          item
+        else
+          throw SmartschoolPlannerError(
+            'The planner gave planned element $index of a bulk plan as '
+            '${item.runtimeType} instead of an object.',
+          ),
+    ];
+    final exceptions = json['exceptions'];
+    final failed = switch (exceptions) {
+      null => const <String, Object?>{},
+      List() when exceptions.isEmpty => const <String, Object?>{},
+      Map() => {
+        for (final MapEntry(:key, :value) in exceptions.entries) '$key': value,
+      },
+      _ => throw SmartschoolPlannerError(
+        'The planner gave the exceptions of a bulk plan as '
+        '${exceptions.runtimeType} instead of an object or an empty list.',
+      ),
+    };
+    return (
+      planned: List.unmodifiable(planned),
+      failed: Map.unmodifiable(failed),
+    );
   }
 
   /// Parses the planner's list of elements (a JSON array of elements).

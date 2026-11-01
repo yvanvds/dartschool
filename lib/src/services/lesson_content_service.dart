@@ -5,9 +5,11 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 import '../exceptions.dart';
+import '../models/goal_models.dart';
 import '../models/lesson_content_models.dart';
 import '../models/planner_models.dart';
 import '../session.dart';
+import 'goal_refs.dart';
 import 'smartschool_uploader.dart';
 
 export '../models/lesson_content_models.dart';
@@ -85,12 +87,14 @@ typedef _Courses = ({
 /// [changePublicInfo], [changePrivateInfo], [changeCourses] and [setVisible]
 /// change one; [addWeblink], [changeWeblink], [removeWeblink],
 /// [addAttachments], [changeAttachmentVisibility] and [removeAttachment]
-/// change its weblinks and attachments; [trash] moves lesfiches to the
-/// module's trash. All of them were tried live on 2026-10-05, in the own
-/// library, which is private to the teacher. The service never deletes a
-/// lesfiche for good (`lesson-content/delete/bulk`), never restores one, and
-/// does not cover labels, goals, duplicating, merging or converting
-/// lesfiches, sharing, year plans, method lessons of publishers or printing.
+/// change its weblinks and attachments; [changeGoals] sets its learning
+/// goals (#223), which the creates take too; [trash] moves lesfiches to the
+/// module's trash. All of them were tried live on 2026-10-05 (the goals on
+/// 2026-11-01), in the own library, which is private to the teacher. The
+/// service never deletes a lesfiche for good (`lesson-content/delete/bulk`),
+/// never restores one, and does not cover labels, mini-database items,
+/// duplicating, merging or converting lesfiches, sharing, year plans, method
+/// lessons of publishers or printing.
 ///
 /// What Smartschool answers, and what the service makes of it:
 /// - **A create answers with the ID only** (`201` with `{"id"}`), so the
@@ -111,8 +115,9 @@ typedef _Courses = ({
 ///   or with an address the web client refuses ([normalizeWeblinkUrl]), a
 ///   visibility the web client does not offer, a file that does not exist,
 ///   a file name Smartschool does not allow, two files of the same name, an
-///   ID that is not a UUID, and a lesfiche of a kind this library does not
-///   know ([LessonContentType.other]). Courses and an assignment type are
+///   ID that is not a UUID, a learning goal without a `leerplanId` or a
+///   `type`, and a lesfiche of a kind this library does not know
+///   ([LessonContentType.other]). Courses and an assignment type are
 ///   checked against the school's own ([getCourses], the module's
 ///   assignment types) after reading them, also before anything is sent.
 ///
@@ -383,8 +388,10 @@ class LessonContentService {
   /// icon [icon], the info for pupils [publicInfo] and for the teacher only
   /// [privateInfo] (both HTML, as the web client's editor makes it; empty
   /// by default), the courses [courseIds] (IDs of [getCourses]), the
-  /// [weblinks] and the [attachments], each with when pupils see it: all in
-  /// one create, as the web client makes a lesfiche (seen live, 2026-10-05).
+  /// [weblinks] and the [attachments], each with when pupils see it, and the
+  /// learning goals [goals] (#223; such as [SelectableGoal.ref] of a goal of
+  /// `GoalService.getCurriculum`): all in one create, as the web client
+  /// makes a lesfiche (seen live, 2026-10-05).
   /// A name that is taken is kept: the module makes a second lesfiche of
   /// that name (seen live).
   ///
@@ -403,14 +410,16 @@ class LessonContentService {
   ///    (`{platformId, id}`), `weblinks` (`{name, url, icon, visibility}`),
   ///    the upload directory as `randomDir` (`null` without attachments), the
   ///    visibility of each attachment by its file name in
-  ///    `visibilityOptions`, and empty `goals`, `labels`, `partnerWeblinks`,
-  ///    `miniDBItems` and `deeplinks` (the module answers a body with only a
+  ///    `visibilityOptions`, the goals as `goals` (`{id, goalId, leerplanId,
+  ///    type}`, as [changeGoals] sends them), and empty `labels`,
+  ///    `partnerWeblinks`, `miniDBItems` and `deeplinks` (the module answers
+  ///    a body with only a
   ///    name with a bare `400`, seen live). Sent **once**, never again after
   ///    logging in again. The module answers `201` with `{"id"}` only.
   /// 4. `GET lessons/{id}`: the detail of the new lesfiche ([getDetailById]),
   ///    which is returned, with its courses named when it has any. It must
   ///    show the name, the courses, every weblink and every attachment with
-  ///    the visibility sent, as it did live.
+  ///    the visibility sent, as it did live, and exactly the goals sent.
   ///
   /// Throws an [ArgumentError], without sending anything, for a name that is
   /// empty or longer than [maxNameLength], an empty icon, a course ID that is
@@ -418,8 +427,9 @@ class LessonContentService {
   /// client refuses ([normalizeWeblinkUrl]) or a visibility it does not
   /// offer, an attachment whose file does not exist or has a name
   /// Smartschool does not allow ([SmartschoolUploader.isAllowedName]), two
-  /// attachments of the same name (their visibility is sent by name), or an
-  /// attachment visibility the web client does not offer. Throws it after
+  /// attachments of the same name (their visibility is sent by name), an
+  /// attachment visibility the web client does not offer, or a goal that
+  /// [changeGoals] refuses. Throws it after
   /// reading the school's courses, still without sending anything, for a
   /// course ID that is not one of them.
   ///
@@ -435,6 +445,7 @@ class LessonContentService {
     Iterable<String> courseIds = const [],
     List<NewLessonContentWeblink> weblinks = const [],
     List<NewLessonContentAttachment> attachments = const [],
+    Iterable<LearningGoalRef> goals = const [],
   }) => _create(
     'createLesson',
     LessonContentType.lesson,
@@ -445,6 +456,7 @@ class LessonContentService {
     courseIds: courseIds,
     weblinks: weblinks,
     attachments: attachments,
+    goals: goals,
   );
 
   /// Makes an assignment lesfiche of the assignment type [assignmentTypeId]
@@ -472,6 +484,7 @@ class LessonContentService {
     Iterable<String> courseIds = const [],
     List<NewLessonContentWeblink> weblinks = const [],
     List<NewLessonContentAttachment> attachments = const [],
+    Iterable<LearningGoalRef> goals = const [],
   }) => _create(
     'createAssignment',
     LessonContentType.assignment,
@@ -483,6 +496,7 @@ class LessonContentService {
     courseIds: courseIds,
     weblinks: weblinks,
     attachments: attachments,
+    goals: goals,
   );
 
   /// Makes a lesfiche of [type]; see [createLesson].
@@ -497,8 +511,10 @@ class LessonContentService {
     required Iterable<String> courseIds,
     required List<NewLessonContentWeblink> weblinks,
     required List<NewLessonContentAttachment> attachments,
+    required Iterable<LearningGoalRef> goals,
   }) async {
     final newName = _checkedName(name);
+    final newGoals = GoalRefs.checked(goals);
     final newIcon = _checkedIcon(icon);
     final links = [for (final link in weblinks) _checkedWeblink(link)];
     final files = _checkedFiles(attachments);
@@ -540,7 +556,7 @@ class LessonContentService {
         'publicInfo': publicInfo,
         'privateInfo': privateInfo,
         'courses': courses.wire,
-        'goals': const <Object>[],
+        'goals': [for (final goal in newGoals) goal.toWire()],
         'labels': const <Object>[],
         'weblinks': [
           for (final link in links)
@@ -603,6 +619,8 @@ class LessonContentService {
         courses.wire.map((c) => c['id']! as String),
       ))
         'the courses sent (it has ${_ids(detail.courses.map((c) => c.id))})',
+      if (!GoalRefs.same(detail.goals, newGoals))
+        'the goals sent (it has ${GoalRefs.describe(detail.goals)})',
       for (final link in links)
         if (!detail.weblinks.any(
           (w) =>
@@ -752,6 +770,54 @@ class LessonContentService {
         final has = detail.courses.map((c) => c.id);
         return _sameIds(has, sent) ? null : 'the courses ${_ids(has)}';
       },
+    );
+  }
+
+  /// Sets the learning goals of the lesfiche [item] to [goals] (empty clears
+  /// them), and returns its detail (#223).
+  ///
+  /// The list replaces the goals the lesfiche had, as in the web client,
+  /// which sends the whole selection every time: to add a goal, send
+  /// [LessonContentDetail.goals] with it (`[...detail.goals, goal]`). A goal
+  /// of `GoalService.getCurriculum` gives its reference with
+  /// [SelectableGoal.ref]; `GoalService.resolve` names the goals of the
+  /// answer.
+  ///
+  /// Sends `POST lessons/{id}/change-goals` (or `assignments/...`) with
+  /// `{"newGoals": [{id, goalId, leerplanId, type}]}` (`goalId` the same as
+  /// `id`, [LearningGoalRef.toWire]), which the module answers with `200`
+  /// and the whole lesfiche (seen live, 2026-11-01, with a goal of the
+  /// eindtermen and one of a school mini-database); the answer must have
+  /// exactly the goals sent. A goal given twice is sent once. The module
+  /// stores a goal ID it does not know without complaint (seen live, with a
+  /// made-up ID in a real curriculum), as it does a course: name the goals
+  /// with `GoalService.resolve` when that matters. See [rename] for the
+  /// rest.
+  ///
+  /// Throws an [ArgumentError], without sending anything, for a goal whose
+  /// `id` is not a UUID, with an empty `leerplanId` or `type` (or white
+  /// space around one), or with the `id` of another goal of the list in
+  /// another curriculum or of another type; and as [rename] does for
+  /// [item].
+  Future<LessonContentDetail> changeGoals(
+    LessonContentItem item,
+    Iterable<LearningGoalRef> goals,
+  ) async {
+    _checkItem(item);
+    final newGoals = GoalRefs.checked(goals);
+    return _edit(
+      'changeGoals',
+      item,
+      'change-goals',
+      {
+        'newGoals': [for (final goal in newGoals) goal.toWire()],
+      },
+      change:
+          'the change of the goals of ${_what(item)} to '
+          '${GoalRefs.describe(newGoals)}',
+      mismatch: (detail) => GoalRefs.same(detail.goals, newGoals)
+          ? null
+          : 'the goals ${GoalRefs.describe(detail.goals)}',
     );
   }
 

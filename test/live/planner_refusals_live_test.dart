@@ -8,7 +8,8 @@
 // Without a credentials.yml in the package root, it skips.
 //
 // It only reads: every write it calls is one that a check of
-// PlannerService refuses before anything is sent, after reading the planner
+// PlannerService refuses, or finds already done (#226), before anything is
+// sent, after reading the planner
 // with GET requests. It reads a timetable slot of the own planner some eight
 // weeks ahead, the own lesfiches and the school's assignment types, and
 // never an element of a colleague or of a class. Two guards keep any write
@@ -62,6 +63,22 @@ class _Attempts extends Interceptor {
 
 /// A lesfiche ID that is no UUID Smartschool hands out.
 const _noSuchId = '00000000-0000-4000-8000-000000000000';
+
+/// An element of [type] with [_noSuchId], at [from], that the planner does
+/// not have: for a check that refuses before the element is read (#224),
+/// or, on the own [platformId], one that the planner answers with `404`
+/// (#225).
+PlannedElement _unread(
+  PlannedElementType type,
+  DateTime from, {
+  int platformId = 0,
+}) => PlannedElement(
+  id: _noSuchId,
+  platformId: platformId,
+  type: type,
+  typeName: type.wireName!,
+  period: PlannerPeriod(from: from, to: from.add(const Duration(minutes: 50))),
+);
 
 void main() {
   final credentials = liveCredentialsFile();
@@ -267,6 +284,204 @@ void main() {
           reason: 'lesfiche ${fiche.id} is not named as getItems names it',
         );
         expect(refused.lessonContent?.type, LessonContentType.assignment);
+      });
+
+      test('replaceWithLessonContent of a lesfiche the user does not have: '
+          'unknownLessonContent, before the lesson is read (#224)', () async {
+        // The lesfiche is checked before the lesson is read: a lesson that
+        // the planner does not have is never asked for.
+        final lesson = _unread(PlannedElementType.lesson, from);
+
+        final refused = await refusal(
+          () => planner.replaceWithLessonContent(
+            lesson: lesson,
+            lessonContentId: _noSuchId,
+          ),
+        );
+
+        expect(refused.reason, PlannerWriteRefusalReason.unknownLessonContent);
+        expect(refused.element?.id, isNull, reason: 'an element');
+      });
+
+      test('planLessonContentInto of an own assignment lesfiche: '
+          'notALessonLessonContent, with the lesfiche, before a target is '
+          'read (#224)', () async {
+        // The lesfiche is checked before the targets are read: an hour that
+        // the planner does not have is never asked for.
+        final hour = _unread(PlannedElementType.placeholder, from);
+        final fiche = (await LessonContentService(run.client).getItems())
+            .where((item) => item.type == LessonContentType.assignment)
+            .firstOrNull;
+        if (fiche == null) {
+          markTestSkipped('no assignment lesfiche among the own lesfiches');
+          return;
+        }
+
+        final refused = await refusal(
+          () => planner.planLessonContentInto(
+            lessonContentId: fiche.id,
+            targets: [hour],
+          ),
+        );
+
+        expect(
+          refused.reason,
+          PlannerWriteRefusalReason.notALessonLessonContent,
+        );
+        expect(refused.element?.id, isNull, reason: 'an element');
+        expect(refused.lessonContent?.id, fiche.id);
+      });
+
+      test('planLessonContentInto of an own lesson lesfiche into an own hour '
+          'read with another period: periodChanged, with the hour as the '
+          'planner has it; the bulk plan is not sent (#224)', () async {
+        final hour = slot;
+        if (hour == null) {
+          markTestSkipped('no own empty lesson hour in the week of $from');
+          return;
+        }
+        final fiche = (await LessonContentService(run.client).getItems())
+            .where((item) => item.type == LessonContentType.lesson)
+            .firstOrNull;
+        if (fiche == null) {
+          markTestSkipped('no lesson lesfiche among the own lesfiches');
+          return;
+        }
+        final period = Map<String, dynamic>.of(
+          hour.raw['period'] as Map<String, dynamic>,
+        );
+        period['dateTimeFrom'] = PlannerService.formatDateTime(
+          hour.period.from.add(const Duration(days: 7)),
+        );
+        period['dateTimeTo'] = PlannerService.formatDateTime(
+          hour.period.to.add(const Duration(days: 7)),
+        );
+        final moved = PlannedElement.fromJson({...hour.raw, 'period': period});
+
+        final refused = await refusal(
+          () => planner.planLessonContentInto(
+            lessonContentId: fiche.id,
+            targets: [moved],
+          ),
+        );
+
+        expect(refused.reason, PlannerWriteRefusalReason.periodChanged);
+        expect(refused.element?.id, hour.id);
+        expect(
+          refused.element!.period.from.isAtSameMomentAs(hour.period.from),
+          isTrue,
+        );
+      });
+
+      test('saveAsLessonContent of a lesson the planner does not have: '
+          'SmartschoolPlannedElementNotFoundError, before the lesfiches '
+          'are read; the save is not sent (#225)', () async {
+        // On the own platform: the planner answers a lesson of platform 0
+        // with 400, not 404.
+        final lesson = _unread(
+          PlannedElementType.lesson,
+          from,
+          platformId: int.parse(own.id.split('_').first),
+        );
+        final mark = attempts.requests.length;
+        final violations = run.guard.violations.length;
+
+        await expectLater(
+          planner.saveAsLessonContent(lesson, name: '[dartschool test] no'),
+          throwsA(isA<SmartschoolPlannedElementNotFoundError>()),
+        );
+
+        expect(attempts.writesSince(mark), isEmpty, reason: 'nothing sent');
+        expect(run.guard.violations, hasLength(violations));
+        expect(
+          attempts.requests
+              .skip(mark)
+              .where((r) => r.contains(' /lesson-content/')),
+          isEmpty,
+          reason: 'the lesfiches are read only for a lesson that may be saved',
+        );
+      });
+
+      test('changeGoals of a lesson the planner does not have: '
+          'SmartschoolPlannedElementNotFoundError; the change is not sent '
+          '(#226)', () async {
+        // On the own platform: the planner answers a lesson of platform 0
+        // with 400, not 404.
+        final lesson = _unread(
+          PlannedElementType.lesson,
+          from,
+          platformId: int.parse(own.id.split('_').first),
+        );
+        final mark = attempts.requests.length;
+        final violations = run.guard.violations.length;
+
+        await expectLater(
+          planner.changeGoals(lesson, const []),
+          throwsA(isA<SmartschoolPlannedElementNotFoundError>()),
+        );
+
+        expect(attempts.writesSince(mark), isEmpty, reason: 'nothing sent');
+        expect(run.guard.violations, hasLength(violations));
+      });
+
+      test('changeGoals of an own lesson with the goals it has: the goals '
+          'read from its detail, nothing sent, the lesson returned as read '
+          '(#226)', () async {
+        PlannedElement? ownLesson(List<PlannedElement> elements) => elements
+            .where(
+              (e) =>
+                  e.type == PlannedElementType.lesson &&
+                  e.organiserUsers.any((u) => u.id == own.id),
+            )
+            .firstOrNull;
+        // That week, else the coming four weeks (the week ahead may be a
+        // holiday).
+        var lesson = ownLesson(weekBefore);
+        final now = DateTime.now();
+        final monday = DateTime(now.year, now.month, now.day - now.weekday + 1);
+        for (var week = 0; lesson == null && week < 4; week++) {
+          final start = DateTime(
+            monday.year,
+            monday.month,
+            monday.day + 7 * week,
+          );
+          lesson = ownLesson(
+            await planner.getPlannedElements(
+              own,
+              from: start,
+              to: DateTime(start.year, start.month, start.day + 6, 23, 59, 59),
+              types: {PlannedElementType.lesson},
+            ),
+          );
+        }
+        if (lesson == null) {
+          markTestSkipped(
+            'no own lesson in the week of $from or the coming '
+            'four weeks',
+          );
+          return;
+        }
+        final detail = await planner.getDetail(lesson);
+        if (!detail.capabilities.can('canUserEdit') ||
+            !detail.capabilities.can('canUserChangeGoals')) {
+          markTestSkipped('own lesson ${lesson.id} may not change its goals');
+          return;
+        }
+        // Only the count and the shape are checked: a failure prints no goal.
+        expect(
+          detail.goals,
+          isNotNull,
+          reason: 'the detail of lesson ${lesson.id} has no goals list',
+        );
+        final mark = attempts.requests.length;
+        final violations = run.guard.violations.length;
+
+        final same = await planner.changeGoals(lesson, detail.goals!.reversed);
+
+        expect(attempts.writesSince(mark), isEmpty, reason: 'nothing sent');
+        expect(run.guard.violations, hasLength(violations));
+        expect(same.id, lesson.id);
+        expect(same.goals?.length, detail.goals!.length);
       });
 
       test('planAssignment of a type the school does not have: '

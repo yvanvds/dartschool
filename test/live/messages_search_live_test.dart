@@ -1,13 +1,16 @@
 // The live recipient search (#97): MessagesService.searchRecipientsForCompose
 // on the live Smartschool of credentials.yml, and
-// searchRecipientsForComposeAll, several searches on one compose form (#107).
+// searchRecipientsForComposeAll, several searches on one compose form (#107),
+// and, when the developer names someone of another school of the school
+// group, the search with `includeOtherSchools: true` (#238).
 //
 // Local and on demand only, as messages_live_test.dart (see there and
 // dart_test.yaml): `dart test -P live test/live` runs it with the other live
 // files, `dart test -P live test/live/messages_search_live_test.dart` alone.
 // Without a credentials.yml in the package root, it skips.
 //
-// It only reads: it sends no message and registers no one. A search loads
+// It only reads, apart from the setting that the search of #238 switches and
+// sets back (below): it sends no message and registers no one. A search loads
 // the new-message compose form and searches with its `uniqueUsc` (several
 // times on one form for searchRecipientsForComposeAll), which registers no
 // one on the form, and LiveWireGuard (support/live_wire_guard.dart)
@@ -19,19 +22,52 @@
 // (support/unshown.dart: `expect` shows the actual value of a failed match
 // whatever the matcher, and a result's toString holds its name, #216).
 //
+// The search of people of other schools (#238) runs only with the
+// environment variable below, a name (or part of one) that Smartschool finds
+// at another school of the school group, and not at the own one:
+//
+//   DARTSCHOOL_OTHER_SCHOOL_NAME=<name> \
+//     dart test -P live test/live/messages_search_live_test.dart
+//
+// The name comes from the environment, never from the code, and the test
+// shows it nowhere: it counts the results, and compares them without showing
+// them. Apart from its searches, it changes one thing: the account's setting
+// "Toon personen van andere scholen" (`changesgr`), which the web interface
+// and every session of the account share. The library switches it on for the
+// search and back off afterwards; the test needs it off when it starts, and
+// checks that it is off again at the end, as Smartschool's answer to a
+// search says it (`<dosgrsearch>`, which the guard keeps). The guard lets a
+// switch out only with `val` `0` or `1`, and registers no one but the own
+// account on a form: the people of other schools are found, never
+// registered, and nothing is sent.
+//
 // It does not call forbidRealNetwork(): it talks to the live Smartschool on
 // purpose (see network_guard_test.dart).
 @Tags(['live'])
 library;
 
+import 'dart:io';
+
+import 'package:flutter_smartschool/flutter_smartschool.dart';
 import 'package:test/test.dart';
 
 import 'support/live_client.dart';
 import 'support/live_run.dart';
 import 'support/unshown.dart';
 
+/// The environment variable that names someone of another school (#238).
+const _otherSchoolVariable = 'DARTSCHOOL_OTHER_SCHOOL_NAME';
+
+/// The platforms and user IDs of [users], sorted, as one text: compared,
+/// never shown.
+String _ids(Iterable<MessageSearchUser> users) =>
+    (users.map((user) => '${user.ssId}_${user.userId}').toList()..sort()).join(
+      ',',
+    );
+
 void main() {
   final credentials = liveCredentialsFile();
+  final otherSchoolName = Platform.environment[_otherSchoolVariable]?.trim();
 
   group(
     'live, read only:',
@@ -126,6 +162,102 @@ void main() {
         );
         expect(run.guard.submits, 0, reason: 'a search sends no message');
       });
+
+      test(
+        'searchRecipientsForCompose with includeOtherSchools: true finds '
+        'someone of another school, with the platform of their school, and '
+        'leaves the account\'s setting "Toon personen van andere scholen" '
+        'off, as it found it (#238)',
+        skip: otherSchoolName == null || otherSchoolName.isEmpty
+            ? 'set $_otherSchoolVariable to a name of someone of another school '
+                  'of the school group to run it (#238)'
+            : null,
+        () async {
+          final name = otherSchoolName!;
+          final switchesBefore = run.guard.otherSchoolsSwitches;
+          final submitsBefore = run.guard.submits;
+
+          // The setting as the run finds it: a search without the option.
+          final (before, _) = await run.messages.searchRecipientsForCompose(
+            name,
+          );
+          expect(
+            run.guard.otherSchoolsOn,
+            isFalse,
+            reason:
+                'the account\'s setting "Toon personen van andere scholen" '
+                'must be off when the test starts (a search answered '
+                'dosgrsearch other than 0); switch it off in the web '
+                'interface first',
+          );
+
+          final (users, _) = await run.messages.searchRecipientsForCompose(
+            name,
+            includeOtherSchools: true,
+          );
+
+          // First the setting as the run leaves it, whatever the results: a
+          // search without the option says it is off, and finds what it
+          // found before.
+          final (after, _) = await run.messages.searchRecipientsForCompose(
+            name,
+          );
+          expect(
+            run.guard.otherSchoolsOn,
+            isFalse,
+            reason:
+                'the setting must be off again after the search: '
+                'Smartschool\'s answer to a plain search must say '
+                'dosgrsearch 0',
+          );
+          expect(
+            run.guard.otherSchoolsSwitches - switchesBefore,
+            2,
+            reason: 'one switch on, and one back off',
+          );
+          expectSameUnshown(
+            _ids(after),
+            _ids(before),
+            reason:
+                'the plain search after it must find the users the plain '
+                'search before it found',
+          );
+
+          // Counts and booleans: a failure shows no name and no ID.
+          expect(
+            before.every((user) => user.ssId == run.own.ssId),
+            isTrue,
+            reason:
+                'with the setting off, the search finds the own school only',
+          );
+          final others = users.where((user) => user.ssId != run.own.ssId);
+          expect(
+            others.length,
+            greaterThan(0),
+            reason:
+                'the search with the option on must find someone of another '
+                'school (a platform other than the own)',
+          );
+          expect(
+            others.every(
+              (user) =>
+                  user.userId > 0 &&
+                  user.userLt == 0 &&
+                  (user.schoolName?.isNotEmpty ?? false),
+            ),
+            isTrue,
+            reason:
+                'each person of another school has a user ID, userLT 0 and '
+                'the name of their school',
+          );
+          expect(
+            run.guard.submits - submitsBefore,
+            0,
+            reason: 'a search sends no message',
+          );
+          expect(run.guard.violations, isEmpty);
+        },
+      );
     },
   );
 }

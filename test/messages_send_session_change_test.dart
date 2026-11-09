@@ -25,6 +25,15 @@
 // session of that form; when one cannot go out there, it loads a new form
 // once and goes on with the searches on it.
 //
+// Issue #238: with `includeOtherSchools`, the search switches the account's
+// setting "Toon personen van andere scholen" (`changesgr`) when it differs,
+// and sets it back afterwards. The setting is the account's, not the
+// session's or the form's, so the switch is not bound to the session of the
+// form: when Smartschool refuses the session for it, the client logs in and
+// sends it again, and the searches after it then load a new form, as for any
+// login; the setting is set back after logging in again, also when the
+// searches fail.
+//
 // Like the fake in `session_shared_login_test.dart`, the fake Smartschool
 // below keeps its state per `PHPSESSID` cookie, as the live platform does:
 // the login loads the login page without a session cookie and gets a new
@@ -120,6 +129,10 @@ const _search = 'POST /?file=searchUsers (search)';
 const _upload = 'POST /Upload/Upload/Index';
 const _submit = 'POST /?file=composeMessage';
 
+/// The switch of the setting "Toon personen van andere scholen" (#238): a
+/// GET of the search URL with `function=changesgr`.
+const _switch = 'GET /?file=searchUsers';
+
 /// A request of another service on the same client: a page GET.
 const _otherRequest = 'GET /';
 
@@ -162,6 +175,13 @@ class _Smartschool implements HttpClientAdapter {
   /// The recipient searches handled, as `<session>: <uniqueUsc> <query>`
   /// (#97).
   final List<String> searches = <String>[];
+
+  /// The account's setting "Toon personen van andere scholen" (#238): the
+  /// same in every session, as on the live platform.
+  bool otherSchools = false;
+
+  /// The switches of that setting handled, as `<session>: <val>` (#238).
+  final List<String> switches = <String>[];
 
   /// Runs once Smartschool has handled the first request `METHOD path` in
   /// here, before its answer goes back; what it throws is thrown instead of
@@ -275,7 +295,18 @@ class _Smartschool implements HttpClientAdapter {
       case _search:
         final fields = options.data as Map;
         searches.add('$sid: ${fields['uniqueUsc']} ${fields['val']}');
-        return _response(_searchAnswer, contentType: 'text/xml');
+        return _response(
+          _searchAnswer.replaceFirst(
+            '<dosgrsearch>0</dosgrsearch>',
+            '<dosgrsearch>${otherSchools ? 1 : 0}</dosgrsearch>',
+          ),
+          contentType: 'text/xml',
+        );
+      case _switch:
+        final value = options.uri.queryParameters['val'];
+        switches.add('$sid: $value');
+        otherSchools = value == '1';
+        return _response('');
       case _upload:
         uploads.add('$sid: ${_field(options, 'uploadDir')}');
         return _response('true');
@@ -989,6 +1020,69 @@ void main() {
         _search,
       ]);
       expect(server.count(_password), 1);
+    });
+  });
+
+  group('searchRecipientsForCompose with includeOtherSchools switches the '
+      'account\'s setting in whichever session the client has, and searches '
+      'only in the session of the form (#238)', () {
+    test('when Smartschool refuses the session for the switch, the client '
+        'logs in and sends it again; the search after it goes out on a new '
+        'form, in the new session, and the setting is set back', () async {
+      // Smartschool ends the session once it has handled the first search:
+      // the switch, in that session, is refused.
+      server.afterHandling[_search] = (_) async => server.expire(_firstSession);
+
+      final (users, _) = await messages.searchRecipientsForCompose(
+        'Piet',
+        includeOtherSchools: true,
+      );
+
+      expect(users, isNotEmpty);
+      expect(server.switches, ['session-2: 1', 'session-2: 0']);
+      expect(server.otherSchools, isFalse);
+      // The search on the form of session-0 is not sent after the login for
+      // the switch: it goes out on a new form, in session-2.
+      expect(server.searches, [
+        'session-0: usc-of-session-0 Piet',
+        'session-2: usc-of-session-2 Piet',
+      ]);
+      expect(server.log.where((r) => r.contains('?file=')), [
+        _form,
+        _search,
+        _switch,
+        _switch,
+        _form,
+        _search,
+        _switch,
+      ]);
+      expect(server.count(_password), 1);
+    });
+
+    test('when the searches cannot go out in the session of their form, also '
+        'on a new form, it throws a SmartschoolSessionExpiredError, and sets '
+        'the setting back after logging in again', () async {
+      server.afterHandling[_switch] = (_) async {
+        // The search after the switch is refused, and so is the one on the
+        // new form, which loads in session-2 (#134).
+        server.expire(_firstSession);
+        server.afterHandling[_form] = (_) async => server.expire('session-2');
+      };
+
+      await expectLater(
+        messages.searchRecipientsForCompose('Piet', includeOtherSchools: true),
+        throwsA(
+          isA<SmartschoolSessionExpiredError>().having(
+            (e) => e.message,
+            'message',
+            contains('/?module=Messages&file=searchUsers'),
+          ),
+        ),
+      );
+      expect(server.searches, ['session-0: usc-of-session-0 Piet']);
+      expect(server.switches, ['session-0: 1', 'session-4: 0']);
+      expect(server.otherSchools, isFalse);
+      expect(server.count(_password), 2);
     });
   });
 

@@ -1095,6 +1095,16 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 /// is submitted, so nothing was sent. A submitted message that Smartschool
 /// does not confirm as sent is a [SmartschoolSendUnconfirmedError] instead
 /// (#25).
+///
+/// `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` throw it with `includeOtherSchools`
+/// (#238): before anything is switched, when Smartschool does not offer its
+/// option "Toon personen van andere scholen" to the account (for `true`), or
+/// the answer to the first search does not say whether the option is on;
+/// when Smartschool does not answer a switch of the option with an empty
+/// `200`, or an answer after the switch says the option is not as asked;
+/// and when the option cannot be set back as it was found, which the
+/// message then says.
 class SmartschoolComposeError extends SmartschoolException {
   const SmartschoolComposeError(super.message);
 }

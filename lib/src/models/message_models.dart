@@ -613,14 +613,36 @@ class MessageSearchUser {
   final int userId;
   final String displayName;
 
-  /// The Smartschool platform / school ID.  Required when adding this user
-  /// as a recipient via the compose-form `addUserToSelected` endpoint.
+  /// The Smartschool platform / school ID of the user: the platform the
+  /// user belongs to, not the one of the account that searched. Required
+  /// when adding this user as a recipient via the compose-form
+  /// `addUserToSelected` endpoint.
+  ///
+  /// For a user of the own school it is the own platform. For a person of
+  /// another school of the school group, which
+  /// [MessagesService.searchRecipientsForCompose] finds with
+  /// `includeOtherSchools: true` (#238), it is that school's platform, and
+  /// [platformName] and [schoolName] name that school (seen live on
+  /// 2026-11-09). Such a user is registered on a compose form with that
+  /// platform as its `ssid`, as Smartschool's web client registers them:
+  /// tried live up to the registration, without sending.
   final int ssId;
 
   final String? coaccountName;
   final String? className;
   final String? schoolName;
   final String? picture;
+
+  /// The name of the user's platform, the search answer's `ssPlName`, or
+  /// `null` when it is empty (#238).
+  ///
+  /// Smartschool's search leaves it empty for a user of the own school. For
+  /// a person of another school of the school group it named that school,
+  /// as [schoolName] did, in the answers seen live on 2026-11-09. `null`
+  /// for a user that does not come from a search, such as
+  /// [MessagesService.getCurrentUserAsRecipient] and the recipients of a
+  /// reply form.
+  final String? platformName;
 
   /// The `userLT` value from the search response (usually 0).
   final int userLt;
@@ -633,6 +655,7 @@ class MessageSearchUser {
     this.className,
     this.schoolName,
     this.picture,
+    this.platformName,
     this.userLt = 0,
   });
 
@@ -645,6 +668,7 @@ class MessageSearchUser {
       className: _nullableStr(xml, 'classname'),
       schoolName: _nullableStr(xml, 'schoolname'),
       picture: _nullableStr(xml, 'picture'),
+      platformName: _nullableStr(xml, 'ssPlName'),
       userLt: _int(xml, 'userLT'),
     );
   }

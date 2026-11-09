@@ -16,6 +16,13 @@
 //   was not loaded through the guard, or with another selection (`xml`)
 //   than the empty one the library sends. A search only reads: it registers
 //   no one on the form;
+// - any GET to the recipient search (`searchUsers`) but the switch of the
+//   account's setting "Toon personen van andere scholen" (`changesgr`, with
+//   `val` `0` or `1` and no other field), which
+//   MessagesService.searchRecipientsForCompose sends with
+//   `includeOtherSchools` and sets back after its searches (#238). Of every
+//   other GET the guard checks the host only: the switch changes the
+//   account, the other GETs of the live suite read;
 // - submitting a compose form that has anyone but the own account
 //   registered, that stores the message in the LVS or schedules it, whose
 //   subject lacks the run's tag, or that replies to a message the run did not
@@ -311,6 +318,17 @@ class LiveWireGuard extends Interceptor {
 
   /// How many recipient searches it let out (#97).
   int searches = 0;
+
+  /// How many switches of the setting "Toon personen van andere scholen"
+  /// (`changesgr`) it let out (#238).
+  int otherSchoolsSwitches = 0;
+
+  /// What the last answer to a recipient search said of the setting "Toon
+  /// personen van andere scholen" (#238): `true` when its `<dosgrsearch>`
+  /// was `1`, `false` for `0`, `null` before the first search or when the
+  /// answer said neither. The setting is the account's: a live test reads
+  /// it here to check that a search left it as it was found.
+  bool? otherSchoolsOn;
 
   /// How many Intradesk creates it let out (#128).
   int intradeskCreates = 0;
@@ -646,6 +664,12 @@ class LiveWireGuard extends Interceptor {
       return 'it goes to another host than the one of credentials.yml';
     }
     final method = options.method.toUpperCase();
+    if (method == 'GET' &&
+        uri.path == '/' &&
+        uri.queryParameters['module'] == 'Messages' &&
+        uri.queryParameters['file'] == 'searchUsers') {
+      return _otherSchoolsSwitchRefusal(uri);
+    }
     if (method == 'GET') return null;
     if (method == 'DELETE' && uri.path.startsWith(_lessonContentApi)) {
       return _lessonContentDeleteRefusal(uri.path);
@@ -2029,6 +2053,62 @@ class LiveWireGuard extends Interceptor {
     return null;
   }
 
+  /// The fields of the switch of the setting "Toon personen van andere
+  /// scholen" (#238): those of its URL, and no other.
+  static const _otherSchoolsSwitchFields = {
+    'module',
+    'file',
+    'function',
+    'val',
+  };
+
+  /// Why the GET [uri] to the recipient search (`file=searchUsers`) may not
+  /// go out, or `null` (#238): only the switch of the account's setting
+  /// "Toon personen van andere scholen" (`function=changesgr`) goes out,
+  /// with `val` `0` or `1`, each field once, and no other field (no
+  /// `uniqueUsc`: it changes the account, not a compose form), as
+  /// MessagesService sends it for `includeOtherSchools`.
+  String? _otherSchoolsSwitchRefusal(Uri uri) {
+    final fields = uri.queryParametersAll;
+    if (uri.queryParameters['function'] != 'changesgr') {
+      return 'the live suite sends no GET to searchUsers but the switch of '
+          '"Toon personen van andere scholen" (changesgr, #238)';
+    }
+    final value = uri.queryParameters['val'];
+    if (value != '0' && value != '1') {
+      return 'its val is not 0 or 1: the switch of "Toon personen van andere '
+          'scholen" sets it on or off, nothing else (#238)';
+    }
+    if (!fields.keys.toSet().containsAll(_otherSchoolsSwitchFields) ||
+        fields.keys.any((key) => !_otherSchoolsSwitchFields.contains(key)) ||
+        fields.values.any((values) => values.length != 1)) {
+      return 'it has other fields than ${_otherSchoolsSwitchFields.join(', ')}, '
+          'each once, as MessagesService sends the switch of "Toon personen '
+          'van andere scholen" (#238)';
+    }
+    otherSchoolsSwitches++;
+    return null;
+  }
+
+  /// Keeps what Smartschool's answer [body] to a recipient search says of
+  /// the setting "Toon personen van andere scholen" in [otherSchoolsOn]
+  /// (#238). An answer the guard cannot read says nothing: the library
+  /// reports it.
+  void _recordSearchAnswer(String body) {
+    String? value;
+    try {
+      final details = XmlInterface.parseResponse(body, './/results/sgrdetails');
+      if (details.isNotEmpty) value = '${details.first['dosgrsearch']}'.trim();
+    } on FormatException {
+      value = null;
+    }
+    otherSchoolsOn = switch (value) {
+      '1' => true,
+      '0' => false,
+      _ => null,
+    };
+  }
+
   /// The selection that MessagesService.searchRecipientsForCompose sends
   /// with a search: none.
   static const _emptySelection = '<results></results>';
@@ -2204,6 +2284,8 @@ class LiveWireGuard extends Interceptor {
         if (folder != null && folder > 0) _archiveFolders.add(folder);
       case ('GET', 'composeMessage', _):
         _recordForm(uri, body);
+      case ('POST', 'searchUsers', null):
+        _recordSearchAnswer(body);
       case ('POST', 'searchUsers', 'addUserToSelected'):
         return _addedRefusal(options.data, body);
       case ('POST', 'searchUsers', 'deleteUsersFromSelected'):

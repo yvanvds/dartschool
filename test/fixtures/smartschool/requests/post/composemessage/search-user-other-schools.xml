@@ -1,0 +1,51 @@
+<results>
+<type>0</type>
+<ssID>4069</ssID>
+<parentNodeId>insertSearchFieldContainer_0_0</parentNodeId>
+<groups />
+<users>
+<user>
+<userID>15020</userID>
+<text>Rod <span class="searchDivHighlight">Flanders</span></text>
+<value>Rod Flanders</value>
+<selectable>on</selectable>
+<ssID>4069</ssID>
+<ssPlName />
+<userLT>0</userLT>
+<coaccountname />
+<classname>Klas: 2B</classname>
+<schoolname>Springfield Academy</schoolname>
+<picture>https://userpicture.example.test/User/Userimage/hashimage/hash/initials_RF/plain/1/square/1/res/48</picture>
+</user>
+<user>
+<userID>2231</userID>
+<text>Ned <span class="searchDivHighlight">Flanders</span></text>
+<value>Ned Flanders</value>
+<selectable>on</selectable>
+<ssID>5810</ssID>
+<ssPlName>Shelbyville High</ssPlName>
+<userLT>0</userLT>
+<coaccountname />
+<classname />
+<schoolname>Shelbyville High</schoolname>
+<picture>https://userpicture.example.test/User/Userimage/hashimage/hash/initials_NF/plain/1/square/1/res/48</picture>
+</user>
+<user>
+<userID>3317</userID>
+<text>Maude <span class="searchDivHighlight">Flanders</span></text>
+<value>Maude Flanders</value>
+<selectable>on</selectable>
+<ssID>6120</ssID>
+<ssPlName>Ogdenville College</ssPlName>
+<userLT>0</userLT>
+<coaccountname />
+<classname />
+<schoolname>Ogdenville College</schoolname>
+<picture>https://userpicture.example.test/User/Userimage/hashimage/hash/initials_MF/plain/1/square/1/res/48</picture>
+</user>
+</users>
+<sgrdetails>
+<sgrselect>1</sgrselect>
+<dosgrsearch>1</dosgrsearch>
+</sgrdetails>
+</results>

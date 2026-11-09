@@ -328,6 +328,11 @@ class _Smartschool implements HttpClientAdapter {
   /// The fields of each recipient search that reached it (#97).
   final List<Map<dynamic, dynamic>> searched = [];
 
+  /// The account's setting "Toon personen van andere scholen", which the
+  /// answers to the searches say (`<dosgrsearch>`) and a `changesgr`
+  /// switches (#238).
+  bool otherSchools = false;
+
   /// The fields of each submit that reached it.
   final List<Map<String, String>> submits = [];
 
@@ -936,7 +941,16 @@ class _Smartschool implements HttpClientAdapter {
         );
       case (true, '/', 'searchUsers', null):
         searched.add(options.data as Map);
-        return _answer(_searchAnswer, contentType: 'text/xml');
+        return _answer(
+          _searchAnswer.replaceFirst(
+            '<dosgrsearch>0</dosgrsearch>',
+            '<dosgrsearch>${otherSchools ? 1 : 0}</dosgrsearch>',
+          ),
+          contentType: 'text/xml',
+        );
+      case (false, '/', 'searchUsers', 'changesgr'):
+        otherSchools = query['val'] == '1';
+        return _answer('');
       case (true, '/Upload/Upload/Index', _, _):
         return _answer('true');
       case (true, final path, _, _) when path.startsWith('/Presence/'):
@@ -2035,6 +2049,41 @@ void main() {
       expect(server.searched.map((f) => f['uniqueUsc']).toSet(), hasLength(1));
       expect(server.registered, isEmpty);
       expect(guard.searches, 2);
+      expect(guard.violations, isEmpty);
+    });
+
+    test('a recipient search with includeOtherSchools: the switch of the '
+        'account\'s setting "Toon personen van andere scholen" on and back '
+        'off, and what each answer to a search says of it (#238)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (messages, guard) = await _guarded(server);
+      expect(guard.otherSchoolsOn, isNull, reason: 'no search yet');
+
+      await messages.searchRecipientsForCompose(
+        'John',
+        includeOtherSchools: true,
+      );
+
+      expect(server.log, [
+        'GET /?module=Messages&file=composeMessage&boxType=inbox'
+            '&composeType=0&msgID=undefined',
+        'POST /?module=Messages&file=searchUsers',
+        'GET /?module=Messages&file=searchUsers&function=changesgr&val=1',
+        'POST /?module=Messages&file=searchUsers',
+        'GET /?module=Messages&file=searchUsers&function=changesgr&val=0',
+      ]);
+      expect(guard.otherSchoolsSwitches, 2);
+      expect(guard.searches, 2);
+      // The last search went out with the setting on, before it was set
+      // back.
+      expect(guard.otherSchoolsOn, isTrue);
+      expect(server.otherSchools, isFalse);
+
+      // A search without the option reads the setting as it is now.
+      await messages.searchRecipientsForCompose('John');
+      expect(guard.otherSchoolsOn, isFalse);
+      expect(guard.otherSchoolsSwitches, 2);
+      expect(server.registered, isEmpty);
       expect(guard.violations, isEmpty);
     });
   });
@@ -4458,6 +4507,40 @@ void main() {
       expect(_violations(guard), [
         contains('its compose form was not loaded through the guard'),
         contains('its selection (xml) is not the empty one'),
+      ]);
+    });
+
+    test('a GET to the recipient search but the switch of "Toon personen van '
+        'andere scholen" with val 0 or 1 and no other field (#238)', () async {
+      final server = _Smartschool(replyForm: _replyFormFromOwn);
+      final (_, guard) = await _guarded(server);
+      final dio = _dio(server, guard);
+      const search = '/?module=Messages&file=searchUsers';
+      final refused = [
+        '$search&function=changesgr&val=2',
+        '$search&function=changesgr&val=',
+        '$search&function=changesgr',
+        '$search&function=changesgr&val=1&val=0',
+        '$search&function=changesgr&val=1&uniqueUsc=abc',
+        '$search&function=addUserToSelected&id=201&ssid=100',
+        '$search&val=Piet',
+      ];
+
+      for (final url in refused) {
+        await expectLater(dio.get<String>(url), throwsA(isA<DioException>()));
+      }
+
+      expect(server.log, isEmpty);
+      expect(server.otherSchools, isFalse);
+      expect(guard.otherSchoolsSwitches, 0);
+      expect(_violations(guard), [
+        contains('its val is not 0 or 1'),
+        contains('its val is not 0 or 1'),
+        contains('its val is not 0 or 1'),
+        contains('other fields than module, file, function, val, each once'),
+        contains('other fields than module, file, function, val, each once'),
+        contains('sends no GET to searchUsers but the switch'),
+        contains('sends no GET to searchUsers but the switch'),
       ]);
     });
 

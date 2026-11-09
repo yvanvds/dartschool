@@ -35,6 +35,18 @@ typedef _FormEntry = ({
   String id,
 });
 
+/// Smartschool's answer to a recipient search of the compose form: the
+/// users and groups it [found], and what it says of the option "Toon
+/// personen van andere scholen" (#238): [otherSchoolsOffered], its
+/// `<sgrselect>` (Smartschool offers the option to the account), and
+/// [otherSchoolsOn], its `<dosgrsearch>` (the option is on), each `true`
+/// for `1`, `false` for `0`, and `null` when the answer says neither.
+typedef _SearchAnswer = ({
+  (List<MessageSearchUser>, List<MessageSearchGroup>) found,
+  bool? otherSchoolsOffered,
+  bool? otherSchoolsOn,
+});
+
 /// Provides access to the Smartschool messaging system.
 ///
 /// All Python message classes (`MessageHeaders`, `Message`, `Attachments`,
@@ -1325,9 +1337,26 @@ class MessagesService {
   /// an answer that comes this far is not one of them. A page with
   /// Smartschool's login form is told apart
   /// ([SmartschoolUnexpectedPageError.isLoginPage]).
+  ///
+  /// [includeOtherSchools] is the checkbox "Toon personen van andere
+  /// scholen" under the search results of Smartschool's compose form
+  /// (#238). With `true`, the search also finds the people of the other
+  /// schools of the school group (the other platforms), each with the
+  /// platform of their own school as [MessageSearchUser.ssId], which
+  /// [sendMessage] registers them with, as the web client does; with
+  /// `false`, only those of the own school. `null`, the default, searches as
+  /// before: the account's setting decides, and nothing switches it. The
+  /// option is a setting of the account that the web interface and every
+  /// session share, so this method switches it for the search only when it
+  /// differs, and sets it back afterwards: see
+  /// [searchRecipientsForComposeAll], which also says what it throws. With
+  /// `true`, it throws a [SmartschoolComposeError] for an account that
+  /// Smartschool does not offer the option to, before anything is switched.
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
-  searchRecipientsForCompose(String query) async =>
-      (await searchRecipientsForComposeAll([query]))[query]!;
+  searchRecipientsForCompose(String query, {bool? includeOtherSchools}) async =>
+      (await searchRecipientsForComposeAll([
+        query,
+      ], includeOtherSchools: includeOtherSchools))[query]!;
 
   /// Searches for the recipients of each query of [queries] on one compose
   /// form, as [searchRecipientsForCompose] does for one query (#107).
@@ -1361,19 +1390,97 @@ class MessagesService {
   /// [SmartschoolUnexpectedPageError] or a [SmartschoolParsingError], as
   /// [searchRecipientsForCompose] does (#112): without loading a new page,
   /// and without the results of the searches before it.
+  ///
+  /// With [includeOtherSchools] `true` or `false`, the searches run with
+  /// Smartschool's option "Toon personen van andere scholen" on or off
+  /// (#238): with it on, a search also finds the people of the other schools
+  /// of the school group, as [searchRecipientsForCompose] says. `null`, the
+  /// default, searches as before, with the account's setting, and sends
+  /// nothing else.
+  ///
+  /// The option is a setting of the account, not of the session or of the
+  /// compose form: Smartschool keeps it for the account, and the web
+  /// interface and every session of the account share it (verified live on
+  /// 2026-11-09: after a switch in one session, a new login found what the
+  /// switch asked for). Each answer to a search says whether it is on (its
+  /// `<dosgrsearch>`, `1` or `0`) and whether Smartschool offers it to the
+  /// account at all (its `<sgrselect>`; the web client draws the checkbox
+  /// only for `1`). So this method reads the setting from the answer to the
+  /// first search, and only when it differs from [includeOtherSchools]
+  /// switches it, as the checkbox does
+  /// (`GET /?module=Messages&file=searchUsers&function=changesgr&val=1`, or
+  /// `val=0`, answered with an empty `200`), searches the first query again,
+  /// and goes on with the others: one search and two switches more, however
+  /// many queries there are. After the last search it sets the setting back
+  /// to what it found, also when a search, or the switch itself, throws.
+  /// When the setting is as asked already, it sends no switch.
+  ///
+  /// The switch is not bound to the compose form or its session, unlike the
+  /// searches: it changes the account, carries no `uniqueUsc`, and gives the
+  /// setting a value instead of toggling it, so a second one has the same
+  /// effect as the first. So it goes out as most requests of the client do:
+  /// when Smartschool refuses the session for it, the client logs in again
+  /// and sends it once more. That way the setting is also set back when
+  /// Smartschool refused the session of the searches meanwhile. A login for
+  /// a switch replaces the session of the form, and the next search then
+  /// loads a new form, as for any other login (see above).
+  ///
+  /// Every answer to a search after the first must say that the setting is
+  /// as asked, when it says anything: when it says otherwise, the setting
+  /// was switched meanwhile by something else that uses the account, and
+  /// this method throws a [SmartschoolComposeError] (after setting the
+  /// setting back) instead of returning results searched with the other
+  /// setting.
+  ///
+  /// Because the setting is shared, the switch holds for everything that
+  /// searches as the account while these searches run: the web interface,
+  /// other sessions and other clients, and the searches of this client
+  /// without [includeOtherSchools], which then find what the switch asked
+  /// for; and a switch of the checkbox in the web interface meanwhile is
+  /// undone when this method sets the setting back. The calls with
+  /// [includeOtherSchools] of this method and of [searchRecipientsForCompose]
+  /// run one after the other on one [SmartschoolClient], also through
+  /// different [MessagesService]s of it: a second call waits until the first
+  /// set the setting back, so they do not switch it under each other.
+  ///
+  /// Throws a [SmartschoolComposeError], before anything is switched, when
+  /// the answer to the first search does not say whether the setting is on
+  /// (an empty answer, say), and, for [includeOtherSchools] `true`, when it
+  /// says that Smartschool does not offer the option to the account (its
+  /// `<sgrselect>` is not `1`: a school without a school group, or an
+  /// account without the right). Throws a [SmartschoolComposeError] too when
+  /// Smartschool answers a switch with anything but an empty `200`, and when
+  /// the setting cannot be set back: its message then says that the setting
+  /// may be left switched for the account, to be set back with the checkbox
+  /// in the web interface, and names the error of the search when one
+  /// failed as well.
   Future<Map<String, (List<MessageSearchUser>, List<MessageSearchGroup>)>>
-  searchRecipientsForComposeAll(Iterable<String> queries) async {
-    final results =
-        <String, (List<MessageSearchUser>, List<MessageSearchGroup>)>{};
+  searchRecipientsForComposeAll(
+    Iterable<String> queries, {
+    bool? includeOtherSchools,
+  }) async {
     // A set keeps the order of the queries, and each query once.
     final distinct = queries.toSet();
-    if (distinct.isEmpty) return results;
+    if (distinct.isEmpty) return {};
+    if (includeOtherSchools == null) return _searchAll(distinct, null);
+    return _oneOtherSchoolsSearchAtATime(
+      () => _searchAll(distinct, includeOtherSchools),
+    );
+  }
 
+  /// The searches of [searchRecipientsForComposeAll] for [queries] (at least
+  /// one) on one compose form, with the setting "Toon personen van andere
+  /// scholen" switched to [otherSchools] for them when it is not `null` and
+  /// the setting differs, and set back afterwards (#238).
+  Future<Map<String, (List<MessageSearchUser>, List<MessageSearchGroup>)>>
+  _searchAll(Set<String> queries, bool? otherSchools) async {
+    final results =
+        <String, (List<MessageSearchUser>, List<MessageSearchGroup>)>{};
     var form = await _loadSearchForm();
     var reloaded = false;
-    for (final query in distinct) {
+    Future<_SearchAnswer> search(String query) async {
       try {
-        results[query] = await _searchUsers(query, form);
+        return await _searchUsers(query, form);
       } on SmartschoolSessionExpiredError {
         if (reloaded) rethrow;
         // The search was refused, or not sent, in the session of its form
@@ -1385,11 +1492,179 @@ class MessagesService {
         // turns into this error for the search.
         reloaded = true;
         form = await _loadSearchForm();
-        results[query] = await _searchUsers(query, form);
+        return _searchUsers(query, form);
       }
     }
+
+    if (otherSchools == null) {
+      for (final query in queries) {
+        results[query] = (await search(query)).found;
+      }
+      return results;
+    }
+
+    final first = await search(queries.first);
+    final found = _otherSchoolsFound(first, otherSchools);
+    if (found == otherSchools) {
+      // As asked already: nothing to switch, nor to set back.
+      results[queries.first] = first.found;
+      for (final query in queries.skip(1)) {
+        results[query] = _searchedWith(await search(query), otherSchools);
+      }
+      return results;
+    }
+
+    try {
+      await _switchOtherSchools(otherSchools);
+      // The first query again, now with the setting as asked.
+      for (final query in queries) {
+        results[query] = _searchedWith(await search(query), otherSchools);
+      }
+    } catch (error) {
+      await _switchOtherSchoolsBack(found, failure: error);
+      rethrow;
+    }
+    await _switchOtherSchoolsBack(found);
     return results;
   }
+
+  /// The last call of each client with `includeOtherSchools`, which the next
+  /// one waits for (#238): see [_oneOtherSchoolsSearchAtATime].
+  static final _otherSchoolsSearches = Expando<Future<void>>();
+
+  /// Runs [searches] once the calls of [searchRecipientsForComposeAll] with
+  /// `includeOtherSchools` on the same [SmartschoolClient] that came before
+  /// it are done, also those through another [MessagesService] of it, so
+  /// that they do not switch the account's setting "Toon personen van
+  /// andere scholen" under each other (#238). Whether one before it failed
+  /// does not matter.
+  Future<T> _oneOtherSchoolsSearchAtATime<T>(Future<T> Function() searches) {
+    final before = _otherSchoolsSearches[_client] ?? Future<void>.value();
+    final done = before.then((_) => searches());
+    _otherSchoolsSearches[_client] = done.then<void>(
+      (_) {},
+      onError: (Object _) {},
+    );
+    return done;
+  }
+
+  /// What [answer], the answer to the first search of
+  /// [searchRecipientsForComposeAll] with `includeOtherSchools`
+  /// [otherSchools], says of the setting "Toon personen van andere scholen":
+  /// whether it is on (#238).
+  ///
+  /// Throws a [SmartschoolComposeError] when it does not say, or when
+  /// [otherSchools] is `true` and it does not say that Smartschool offers
+  /// the option to the account. Nothing was switched then.
+  static bool _otherSchoolsFound(_SearchAnswer answer, bool otherSchools) {
+    final on = answer.otherSchoolsOn;
+    if (on == null) {
+      throw SmartschoolComposeError(
+        'searchRecipientsForCompose: Smartschool\'s answer to the search '
+        'does not say whether its option "Toon personen van andere scholen" '
+        'is on (no <dosgrsearch> of 0 or 1), so it cannot search with it '
+        '${_onOff(otherSchools)} and set it back afterwards (#238). Nothing '
+        'was switched.',
+      );
+    }
+    if (otherSchools && answer.otherSchoolsOffered != true) {
+      throw SmartschoolComposeError(
+        'searchRecipientsForCompose: Smartschool does not offer the option '
+        '"Toon personen van andere scholen" to this account (its answer to '
+        'the search has no <sgrselect> of 1), so it cannot search the people '
+        'of other schools: the school has no school group, or the account '
+        'not the right (#238). Nothing was switched.',
+      );
+    }
+    return on;
+  }
+
+  /// The results of [answer], a search of [searchRecipientsForComposeAll]
+  /// with `includeOtherSchools` [otherSchools] after its first one (or, for
+  /// a switch, the first one again).
+  ///
+  /// Throws a [SmartschoolComposeError] when [answer] says that the setting
+  /// "Toon personen van andere scholen" is not as asked: it was switched
+  /// meanwhile by something else that uses the account (#238). An answer
+  /// that does not say holds no results to doubt (an empty answer).
+  static (List<MessageSearchUser>, List<MessageSearchGroup>) _searchedWith(
+    _SearchAnswer answer,
+    bool otherSchools,
+  ) {
+    final on = answer.otherSchoolsOn;
+    if (on == null || on == otherSchools) return answer.found;
+    throw SmartschoolComposeError(
+      'searchRecipientsForCompose: Smartschool searched with its option '
+      '"Toon personen van andere scholen" ${_onOff(on)}, while this search '
+      'had it ${_onOff(otherSchools)}: the setting, which the account shares '
+      'with the web interface and its other sessions, was switched '
+      'meanwhile (#238). Search again.',
+    );
+  }
+
+  static const _switchOtherSchoolsUrl =
+      '/?module=Messages&file=searchUsers&function=changesgr';
+
+  /// Sets the account's setting "Toon personen van andere scholen" [on] or
+  /// off, as the checkbox under the search results of Smartschool's compose
+  /// form does (`oSearchUsers.doSgrSearchCheck`): a GET with `val` `1` or
+  /// `0`, without `uniqueUsc`, which Smartschool answers with an empty `200`
+  /// (#238, seen live on 2026-11-09).
+  ///
+  /// It changes the account, in every session, and not the compose form; and
+  /// it sets a value, it does not toggle. So, unlike the searches, it is not
+  /// bound to the session of a form, and it is retried once after logging
+  /// in again when Smartschool refuses the session for it, as most requests
+  /// of the client are: a second one has the same effect as the first.
+  ///
+  /// Throws a [SmartschoolComposeError] for any other answer than an empty
+  /// `200`. The setting may have been switched all the same.
+  Future<void> _switchOtherSchools(bool on) async {
+    final answer = await _client.getResponse(
+      '$_switchOtherSchoolsUrl&val=${on ? 1 : 0}',
+      headers: const {kXRequestedWith: 'XMLHttpRequest'},
+    );
+    if (answer.statusCode == HttpStatus.ok &&
+        (answer.data ?? '').trim().isEmpty) {
+      return;
+    }
+    throw SmartschoolComposeError(
+      'searchRecipientsForCompose: Smartschool did not answer the switch of '
+      'its option "Toon personen van andere scholen" ${_onOff(on)} as it '
+      'does, with an empty 200 (${_describeAnswer(answer)}) (#238).',
+    );
+  }
+
+  /// Sets the setting "Toon personen van andere scholen" back to [found],
+  /// what the first search of [searchRecipientsForComposeAll] found, after
+  /// its searches (#238); [failure] is what they failed with, if they did.
+  ///
+  /// Throws a [SmartschoolComposeError] when it cannot: its message says
+  /// that the setting may be left switched for the account, and names
+  /// [failure] too.
+  Future<void> _switchOtherSchoolsBack(bool found, {Object? failure}) async {
+    try {
+      await _switchOtherSchools(found);
+    } catch (error, stackTrace) {
+      final searchFailed = failure == null
+          ? ''
+          : ', after the search failed ($failure)';
+      Error.throwWithStackTrace(
+        SmartschoolComposeError(
+          'searchRecipientsForCompose: the option "Toon personen van andere '
+          'scholen" could not be set back ${_onOff(found)}, as it was found '
+          '($error)$searchFailed. It may be left ${_onOff(!found)} for the '
+          'account, in the web interface and in every session of the account '
+          'too: set it back with the checkbox under the search results of '
+          'Smartschool\'s compose form (#238).',
+        ),
+        stackTrace,
+      );
+    }
+  }
+
+  /// `on` or `off`, for [on], in an error message.
+  static String _onOff(bool on) => on ? 'on' : 'off';
 
   /// Loads the new-message compose form for [searchRecipientsForComposeAll]:
   /// its answer, which the searches go out in the session of, and its
@@ -2548,7 +2823,12 @@ class MessagesService {
   /// groups, as before; an HTML page or a piece of one throws a
   /// [SmartschoolUnexpectedPageError] (with the action `searchUsers`), and
   /// any other answer that is not XML a [SmartschoolParsingError].
-  Future<(List<MessageSearchUser>, List<MessageSearchGroup>)> _searchUsers(
+  ///
+  /// Also reads what the answer says of the option "Toon personen van
+  /// andere scholen" (#238): its `<sgrdetails>`, which ends every answer
+  /// seen live, holds `<sgrselect>` (Smartschool offers the option to the
+  /// account) and `<dosgrsearch>` (the option is on).
+  Future<_SearchAnswer> _searchUsers(
     String query,
     ({Response<String> form, String uniqueUsc}) compose,
   ) async {
@@ -2565,21 +2845,37 @@ class MessagesService {
       sameSessionAs: compose.form,
     );
 
-    final (users, groups) = readXmlAnswer(
+    final (users, groups, otherSchools) = readXmlAnswer(
       answer,
       action: 'searchUsers',
       allowEmptyAnswer: true,
       parse: (xml) => (
         XmlInterface.parseResponse(xml, './/users/user'),
         XmlInterface.parseResponse(xml, './/groups/group'),
+        XmlInterface.parseResponse(xml, './/results/sgrdetails'),
       ),
     );
+    final details = otherSchools.isEmpty
+        ? const <String, dynamic>{}
+        : otherSchools.first;
 
     return (
-      users.map(MessageSearchUser.fromXml).toList(),
-      groups.map(MessageSearchGroup.fromXml).toList(),
+      found: (
+        users.map(MessageSearchUser.fromXml).toList(),
+        groups.map(MessageSearchGroup.fromXml).toList(),
+      ),
+      otherSchoolsOffered: _flag(details['sgrselect']),
+      otherSchoolsOn: _flag(details['dosgrsearch']),
     );
   }
+
+  /// `true` for the text `1`, `false` for `0`, `null` for anything else (a
+  /// missing element included).
+  static bool? _flag(Object? value) => switch ('${value ?? ''}'.trim()) {
+    '1' => true,
+    '0' => false,
+    _ => null,
+  };
 
   /// Registers a single user recipient on the server-side compose form state.
   ///

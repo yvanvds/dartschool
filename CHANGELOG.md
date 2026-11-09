@@ -1,3 +1,14 @@
+## Unreleased
+
+### Can break a build
+- New top-level names (#241): `SmartschoolOtherSchoolsNotOfferedError`, `SmartschoolOtherSchoolsNotRestoredError`.
+
+### Changed
+- Messages: `MessagesService.searchRecipientsForCompose` and `searchRecipientsForComposeAll` with `includeOtherSchools` tell apart the two failures an app has to act on, each with a subtype of `SmartschoolComposeError` of its own, so that a `catch` of that type keeps catching them (#241). `true` for an account that Smartschool does not offer the option "Toon personen van andere scholen" to (no `<sgrselect>` of `1`; nothing was switched) throws a `SmartschoolOtherSchoolsNotOfferedError`. An option that cannot be set back after the search throws a `SmartschoolOtherSchoolsNotRestoredError`, with what it may be left at (`leftOn`), the set-back's error (`cause`) and the search's own failure, if any (`searchFailure`). Both were a plain `SmartschoolComposeError` that only its message told apart from a compose page without `uniqueUsc`. A first answer without `<dosgrsearch>`, a switch not answered with an empty `200`, and an answer that says the option was switched elsewhere meanwhile stay a plain `SmartschoolComposeError`.
+
+### Tests
+- `test/messages_search_other_schools_test.dart` checks the type of each failure of `includeOtherSchools` against the fake Smartschool (#241): `SmartschoolOtherSchoolsNotOfferedError` for `<sgrselect>` `0`, also through `searchRecipientsForComposeAll` and an `on SmartschoolComposeError` catch; `SmartschoolOtherSchoolsNotRestoredError` with `leftOn` `true` and `false`, its `cause`, and its `searchFailure` (none, a search's error, the switch's error); and a plain `SmartschoolComposeError` for the other failures and for a compose page without `uniqueUsc`.
+
 ## 0.4.3 - 2026-11-09
 
 ### Can break a build

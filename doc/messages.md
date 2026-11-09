@@ -222,8 +222,26 @@ final elsewhere = users.where((u) => u.ssId != myself.ssId).toList();
 - The option is a **setting of the account**, not of the session: Smartschool keeps it for the account, and the web interface and every session of the account share it (verified live on 2026-11-09). Each answer to a search says whether it is on (`<dosgrsearch>`) and whether Smartschool offers it to the account (`<sgrselect>`). So the library reads it from the answer to the first search, and only when it differs switches it, as the checkbox does (`GET /?module=Messages&file=searchUsers&function=changesgr&val=1`, or `0`, answered with an empty `200`), searches the first query again and goes on; after the last search it sets the setting back to what it found, also when a search throws. That costs one search and two switches more, and nothing when the setting is as asked already.
 - The switch changes the account, not the compose form, and sets a value rather than toggling one: unlike the searches, it is retried after logging in again when Smartschool refuses the session for it, so the setting is also set back when the session expired meanwhile.
 - While the searches run, the switched setting holds for everything that searches as the account: the web interface, other sessions and clients, and this client's searches without `includeOtherSchools`. The calls with `includeOtherSchools` take turns on one `SmartschoolClient` (also through different `MessagesService`s of it), so they do not switch it under each other; a switch elsewhere meanwhile is undone by the set-back, and an answer that says the setting is not as asked is a `SmartschoolComposeError` rather than results of the other setting.
-- `SmartschoolComposeError`, before anything is switched: `true` for an account that Smartschool does not offer the option to (`<sgrselect>` not `1`: a school without a school group, or an account without the right), or a first answer that does not say whether the option is on. Also when Smartschool answers a switch with anything but an empty `200`, and when the setting cannot be set back: its message then says that it may be left switched for the account (set it back with the checkbox in the web interface).
 - Verified live up to registering such a person on a compose form (`addUserToSelected` with their platform as `ssid`, which `sendMessage` sends as for anyone): Smartschool registers them. A send to someone of another school was not tried (the live tests send to the own account only), nor groups or classes of other schools, nor what the switch does for an account that is not offered the option.
+- Errors, each a `SmartschoolComposeError` (#241):
+  - `SmartschoolOtherSchoolsNotOfferedError`, before anything is switched: `true` for an account that Smartschool does not offer the option to (`<sgrselect>` not `1`: a school without a school group, or an account without the right). Nothing is wrong; tell the user the people of other schools cannot be searched.
+  - `SmartschoolOtherSchoolsNotRestoredError`: the setting cannot be set back, so it may be left switched for the account, at `leftOn`. Tell the user to set it back with the checkbox in the web interface. `cause` is the set-back's error, and `searchFailure` the search's, if it failed too.
+  - A plain `SmartschoolComposeError` for the rest: a first answer that does not say whether the option is on (before anything is switched), a switch that Smartschool answers with anything but an empty `200`, and an answer after the switch that says the setting is not as asked (it was set back).
+
+```dart
+try {
+  final (users, _) = await messages.searchRecipientsForCompose(
+    'Janssens',
+    includeOtherSchools: true,
+  );
+  print('${users.length} found');
+} on SmartschoolOtherSchoolsNotOfferedError {
+  // The school has no school group, or the account not the right.
+} on SmartschoolOtherSchoolsNotRestoredError catch (e) {
+  print('The option "Toon personen van andere scholen" may be left '
+      '${e.leftOn ? 'on' : 'off'}: set it back in the compose form.');
+}
+```
 
 ### Thread subject helpers
 

@@ -1350,8 +1350,9 @@ class MessagesService {
   /// session share, so this method switches it for the search only when it
   /// differs, and sets it back afterwards: see
   /// [searchRecipientsForComposeAll], which also says what it throws. With
-  /// `true`, it throws a [SmartschoolComposeError] for an account that
-  /// Smartschool does not offer the option to, before anything is switched.
+  /// `true`, it throws a [SmartschoolOtherSchoolsNotOfferedError] (a
+  /// [SmartschoolComposeError]) for an account that Smartschool does not
+  /// offer the option to, before anything is switched (#241).
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
   searchRecipientsForCompose(String query, {bool? includeOtherSchools}) async =>
       (await searchRecipientsForComposeAll([
@@ -1443,17 +1444,20 @@ class MessagesService {
   /// different [MessagesService]s of it: a second call waits until the first
   /// set the setting back, so they do not switch it under each other.
   ///
-  /// Throws a [SmartschoolComposeError], before anything is switched, when
+  /// Throws, before anything is switched, a [SmartschoolComposeError] when
   /// the answer to the first search does not say whether the setting is on
-  /// (an empty answer, say), and, for [includeOtherSchools] `true`, when it
-  /// says that Smartschool does not offer the option to the account (its
-  /// `<sgrselect>` is not `1`: a school without a school group, or an
-  /// account without the right). Throws a [SmartschoolComposeError] too when
-  /// Smartschool answers a switch with anything but an empty `200`, and when
-  /// the setting cannot be set back: its message then says that the setting
-  /// may be left switched for the account, to be set back with the checkbox
-  /// in the web interface, and names the error of the search when one
-  /// failed as well.
+  /// (an empty answer, say), and, for [includeOtherSchools] `true`, a
+  /// [SmartschoolOtherSchoolsNotOfferedError] when it says that Smartschool
+  /// does not offer the option to the account (its `<sgrselect>` is not
+  /// `1`: a school without a school group, or an account without the
+  /// right; #241). Throws a [SmartschoolComposeError] too when Smartschool
+  /// answers a switch with anything but an empty `200`. When the setting
+  /// cannot be set back, it throws a
+  /// [SmartschoolOtherSchoolsNotRestoredError] (#241), whatever the
+  /// searches did: the setting may be left switched for the account (its
+  /// `leftOn`), to be set back with the checkbox in the web interface; its
+  /// `searchFailure` is the error of the searches when one failed as well.
+  /// Both subtypes are [SmartschoolComposeError]s.
   Future<Map<String, (List<MessageSearchUser>, List<MessageSearchGroup>)>>
   searchRecipientsForComposeAll(
     Iterable<String> queries, {
@@ -1553,9 +1557,10 @@ class MessagesService {
   /// [otherSchools], says of the setting "Toon personen van andere scholen":
   /// whether it is on (#238).
   ///
-  /// Throws a [SmartschoolComposeError] when it does not say, or when
-  /// [otherSchools] is `true` and it does not say that Smartschool offers
-  /// the option to the account. Nothing was switched then.
+  /// Throws a [SmartschoolComposeError] when it does not say, and a
+  /// [SmartschoolOtherSchoolsNotOfferedError] when [otherSchools] is `true`
+  /// and it does not say that Smartschool offers the option to the account
+  /// (#241). Nothing was switched then.
   static bool _otherSchoolsFound(_SearchAnswer answer, bool otherSchools) {
     final on = answer.otherSchoolsOn;
     if (on == null) {
@@ -1568,7 +1573,7 @@ class MessagesService {
       );
     }
     if (otherSchools && answer.otherSchoolsOffered != true) {
-      throw SmartschoolComposeError(
+      throw const SmartschoolOtherSchoolsNotOfferedError(
         'searchRecipientsForCompose: Smartschool does not offer the option '
         '"Toon personen van andere scholen" to this account (its answer to '
         'the search has no <sgrselect> of 1), so it cannot search the people '
@@ -1639,9 +1644,10 @@ class MessagesService {
   /// what the first search of [searchRecipientsForComposeAll] found, after
   /// its searches (#238); [failure] is what they failed with, if they did.
   ///
-  /// Throws a [SmartschoolComposeError] when it cannot: its message says
-  /// that the setting may be left switched for the account, and names
-  /// [failure] too.
+  /// Throws a [SmartschoolOtherSchoolsNotRestoredError] when it cannot
+  /// (#241): its `leftOn` is the opposite of [found], its `cause` the error
+  /// of the set-back and its `searchFailure` [failure]. Its message says that
+  /// the setting may be left switched for the account, and names both.
   Future<void> _switchOtherSchoolsBack(bool found, {Object? failure}) async {
     try {
       await _switchOtherSchools(found);
@@ -1650,13 +1656,16 @@ class MessagesService {
           ? ''
           : ', after the search failed ($failure)';
       Error.throwWithStackTrace(
-        SmartschoolComposeError(
+        SmartschoolOtherSchoolsNotRestoredError(
           'searchRecipientsForCompose: the option "Toon personen van andere '
           'scholen" could not be set back ${_onOff(found)}, as it was found '
           '($error)$searchFailed. It may be left ${_onOff(!found)} for the '
           'account, in the web interface and in every session of the account '
           'too: set it back with the checkbox under the search results of '
           'Smartschool\'s compose form (#238).',
+          leftOn: !found,
+          cause: error,
+          searchFailure: failure,
         ),
         stackTrace,
       );

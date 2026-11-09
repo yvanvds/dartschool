@@ -1098,15 +1098,80 @@ class SmartschoolAttachmentUploadError extends SmartschoolException {
 ///
 /// `MessagesService.searchRecipientsForCompose` and
 /// `searchRecipientsForComposeAll` throw it with `includeOtherSchools`
-/// (#238): before anything is switched, when Smartschool does not offer its
-/// option "Toon personen van andere scholen" to the account (for `true`), or
-/// the answer to the first search does not say whether the option is on;
-/// when Smartschool does not answer a switch of the option with an empty
-/// `200`, or an answer after the switch says the option is not as asked;
-/// and when the option cannot be set back as it was found, which the
-/// message then says.
+/// (#238): before anything is switched, when the answer to the first search
+/// does not say whether Smartschool's option "Toon personen van andere
+/// scholen" is on; when Smartschool does not answer a switch of the option
+/// with an empty `200`, or an answer after the switch says the option is not
+/// as asked. Two cases that an app has to tell apart have a subtype of their
+/// own (#241): a [SmartschoolOtherSchoolsNotOfferedError] when Smartschool
+/// does not offer the option to the account (nothing was switched), and a
+/// [SmartschoolOtherSchoolsNotRestoredError] when the option cannot be set
+/// back as it was found (the account may be left switched).
 class SmartschoolComposeError extends SmartschoolException {
   const SmartschoolComposeError(super.message);
+}
+
+/// Thrown by `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` with `includeOtherSchools: true` when
+/// Smartschool does not offer its option "Toon personen van andere scholen"
+/// to the account: the answer to the first search has no `<sgrselect>` of
+/// `1`, for which Smartschool's web client does not draw the checkbox (#238,
+/// #241). The school has no school group, or the account does not have the
+/// right.
+///
+/// Nothing is wrong, and nothing was switched: the account's setting is as
+/// it was. Searching again does not help; a search without
+/// `includeOtherSchools` (or with `false`) finds the people of the own
+/// school.
+///
+/// A [SmartschoolComposeError], so `catch` clauses for that type keep
+/// catching it.
+class SmartschoolOtherSchoolsNotOfferedError extends SmartschoolComposeError {
+  const SmartschoolOtherSchoolsNotOfferedError(super.message);
+}
+
+/// Thrown by `MessagesService.searchRecipientsForCompose` and
+/// `searchRecipientsForComposeAll` with `includeOtherSchools` when the
+/// account's option "Toon personen van andere scholen", which they switched
+/// for the search, cannot be set back as they found it (#238, #241).
+///
+/// **The account may be left switched**: the option is a setting of the
+/// account, so it may be left [leftOn] (on for `true`, off for `false`) in
+/// Smartschool's web interface and in every session of the account, and
+/// the searches of this client without `includeOtherSchools` find what that
+/// setting finds. Tell the user to set it back with the checkbox "Toon
+/// personen van andere scholen" under the search results of Smartschool's
+/// compose form. Whether it was set back after all is not known: a set-back
+/// that Smartschool did not answer as it does may have been made all the
+/// same.
+///
+/// [cause] is what setting it back failed with, such as a
+/// [SmartschoolComposeError] for an answer to the switch other than an
+/// empty `200`, or a [SmartschoolConnectionError]. [searchFailure] is what
+/// the searches failed with before it, if they did; the results of the
+/// searches are not returned either way. The message names both.
+///
+/// A [SmartschoolComposeError], so `catch` clauses for that type keep
+/// catching it.
+class SmartschoolOtherSchoolsNotRestoredError extends SmartschoolComposeError {
+  /// What the option may be left at: `true` when the search switched it on
+  /// and it could not be set back off, `false` the other way round.
+  final bool leftOn;
+
+  /// What setting the option back failed with.
+  final Object cause;
+
+  /// What the searches failed with before the option was set back: an
+  /// error of a search, or of the switch before them; `null` when they did
+  /// not fail.
+  final Object? searchFailure;
+
+  const SmartschoolOtherSchoolsNotRestoredError(
+    super.message, {
+    required this.leftOn,
+    required this.cause,
+    this.searchFailure,
+  });
 }
 
 /// Thrown by `MessagesService.sendMessage` (and `sendReply`, #26) when the

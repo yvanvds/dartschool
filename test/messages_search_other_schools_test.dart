@@ -19,6 +19,14 @@
 // `post/composemessage/search-user-other-schools.xml` (made-up people and
 // schools, made-up platforms 5810 and 6120 besides the own 4069), and with
 // it off with the recorded `search-user.xml` (the own school only).
+//
+// Issue #241: the two failures an app must act on have a subtype of
+// `SmartschoolComposeError` of their own, so that existing catches of that
+// type keep working: `SmartschoolOtherSchoolsNotOfferedError` (the option is
+// not offered to the account; nothing was switched) and
+// `SmartschoolOtherSchoolsNotRestoredError` (the option could not be set back;
+// it carries `leftOn`, the set-back's error as `cause` and the search's as
+// `searchFailure`). The other failures stay a plain `SmartschoolComposeError`.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -76,13 +84,17 @@ const _errorPage =
 /// scholen" ([otherSchools]) and answers the searches with it. It accepts the
 /// session for every request, so the client never logs in.
 class _Smartschool implements HttpClientAdapter {
-  _Smartschool({this.otherSchools = false, this.offered = true});
+  _Smartschool({this.otherSchools = false, this.offered = true, String? form})
+    : form = form ?? _newMessageForm;
 
   /// The account's setting: whether the option is on.
   bool otherSchools;
 
   /// Whether Smartschool offers the option to the account (`<sgrselect>`).
   final bool offered;
+
+  /// The answer to a request for the compose form.
+  final String form;
 
   /// Every request: [_form], [_search], [_switchOn] or [_switchOff], or
   /// `METHOD <path and query>` for any other.
@@ -116,7 +128,7 @@ class _Smartschool implements HttpClientAdapter {
     final file = query['file'];
     if (options.method == 'GET' && file == 'composeMessage') {
       log.add(_form);
-      return _answer(_html(_newMessageForm));
+      return _answer(_html(form));
     }
     if (options.method == 'POST' &&
         file == 'searchUsers' &&
@@ -184,6 +196,31 @@ Matcher _composeError(List<String> parts) =>
       'message',
       allOf([for (final p in parts) contains(p)]),
     );
+
+/// A [SmartschoolComposeError] as [_composeError], but none of the subtypes
+/// of #241: an error that an app need not tell apart.
+Matcher _plainComposeError(List<String> parts) => allOf(
+  _composeError(parts),
+  isNot(isA<SmartschoolOtherSchoolsNotOfferedError>()),
+  isNot(isA<SmartschoolOtherSchoolsNotRestoredError>()),
+);
+
+/// A [SmartschoolOtherSchoolsNotRestoredError], which is a
+/// [SmartschoolComposeError] whose message holds every one of [parts], left
+/// [leftOn], whose `cause` matches [cause] and whose `searchFailure` matches
+/// [searchFailure].
+Matcher _notRestored(
+  List<String> parts, {
+  required bool leftOn,
+  required Matcher cause,
+  required Matcher searchFailure,
+}) => allOf(
+  _composeError(parts),
+  isA<SmartschoolOtherSchoolsNotRestoredError>()
+      .having((e) => e.leftOn, 'leftOn', leftOn)
+      .having((e) => e.cause, 'cause', cause)
+      .having((e) => e.searchFailure, 'searchFailure', searchFailure),
+);
 
 void main() {
   forbidRealNetwork();
@@ -322,8 +359,9 @@ void main() {
     );
 
     test('when Smartschool does not offer the option to the account '
-        '(sgrselect 0), it throws a SmartschoolComposeError after the first '
-        'search, and switches nothing', () async {
+        '(sgrselect 0), it throws a SmartschoolOtherSchoolsNotOfferedError, a '
+        'SmartschoolComposeError, after the first search, and switches '
+        'nothing (#241)', () async {
       await serve(_Smartschool(offered: false));
 
       await expectLater(
@@ -332,19 +370,55 @@ void main() {
           includeOtherSchools: true,
         ),
         throwsA(
-          _composeError([
-            'does not offer the option "Toon personen van andere scholen"',
-            'Nothing was switched',
-          ]),
+          allOf(
+            isA<SmartschoolOtherSchoolsNotOfferedError>(),
+            _composeError([
+              'does not offer the option "Toon personen van andere scholen"',
+              'Nothing was switched',
+            ]),
+          ),
         ),
       );
       expect(server.log, [_form, _search('Flanders')]);
       expect(server.otherSchools, isFalse);
     });
 
+    test('searchRecipientsForComposeAll, for an account that is not offered '
+        'the option with the setting on (sgrselect 0, dosgrsearch 1): a '
+        'SmartschoolOtherSchoolsNotOfferedError after the first search, and '
+        'the other queries are not searched (#241)', () async {
+      await serve(_Smartschool(otherSchools: true, offered: false));
+
+      await expectLater(
+        messages.searchRecipientsForComposeAll([
+          'Flanders',
+          'Lovejoy',
+        ], includeOtherSchools: true),
+        throwsA(isA<SmartschoolOtherSchoolsNotOfferedError>()),
+      );
+      expect(server.log, [_form, _search('Flanders')]);
+      expect(server.otherSchools, isTrue);
+    });
+
+    test('an existing catch of SmartschoolComposeError still catches the '
+        'SmartschoolOtherSchoolsNotOfferedError (#241)', () async {
+      await serve(_Smartschool(offered: false));
+
+      Object? caught;
+      try {
+        await messages.searchRecipientsForCompose(
+          'Flanders',
+          includeOtherSchools: true,
+        );
+      } on SmartschoolComposeError catch (error) {
+        caught = error;
+      }
+      expect(caught, isA<SmartschoolOtherSchoolsNotOfferedError>());
+    });
+
     test('when the first answer does not say whether the option is on (an '
-        'empty 200), it throws a SmartschoolComposeError, and switches '
-        'nothing', () async {
+        'empty 200), it throws a plain SmartschoolComposeError, not the one '
+        'for an option that is not offered, and switches nothing', () async {
       await serve(_Smartschool()..searchAnswers[1] = _html(''));
 
       await expectLater(
@@ -353,10 +427,24 @@ void main() {
           includeOtherSchools: true,
         ),
         throwsA(
-          _composeError(['does not say whether', 'Nothing was switched']),
+          _plainComposeError(['does not say whether', 'Nothing was switched']),
         ),
       );
       expect(server.log, [_form, _search('Flanders')]);
+    });
+
+    test('a compose page without uniqueUsc stays a plain '
+        'SmartschoolComposeError, before any search (#241)', () async {
+      await serve(_Smartschool(form: '<html><body>Geen toegang</body></html>'));
+
+      await expectLater(
+        messages.searchRecipientsForCompose(
+          'Flanders',
+          includeOtherSchools: true,
+        ),
+        throwsA(_plainComposeError(['could not extract uniqueUsc'])),
+      );
+      expect(server.log, [_form]);
     });
   });
 
@@ -492,31 +580,36 @@ void main() {
       expect(server.otherSchools, isFalse);
     });
 
-    test('when Smartschool answers the switch with anything but an empty '
-        '200: a SmartschoolComposeError, after setting it back', () async {
-      await serve(
-        _Smartschool()..switchAnswers[1] = _html(_errorPage, status: 500),
-      );
+    test(
+      'when Smartschool answers the switch with anything but an empty '
+      '200: a plain SmartschoolComposeError, after setting it back',
+      () async {
+        await serve(
+          _Smartschool()..switchAnswers[1] = _html(_errorPage, status: 500),
+        );
 
-      await expectLater(
-        messages.searchRecipientsForCompose(
-          'Flanders',
-          includeOtherSchools: true,
-        ),
-        throwsA(
-          _composeError([
-            'did not answer the switch of its option "Toon personen van '
-                'andere scholen" on',
-            'HTTP 500',
-          ]),
-        ),
-      );
-      expect(server.log, [_form, _search('Flanders'), _switchOn, _switchOff]);
-      expect(server.otherSchools, isFalse);
-    });
+        await expectLater(
+          messages.searchRecipientsForCompose(
+            'Flanders',
+            includeOtherSchools: true,
+          ),
+          throwsA(
+            _plainComposeError([
+              'did not answer the switch of its option "Toon personen van '
+                  'andere scholen" on',
+              'HTTP 500',
+            ]),
+          ),
+        );
+        expect(server.log, [_form, _search('Flanders'), _switchOn, _switchOff]);
+        expect(server.otherSchools, isFalse);
+      },
+    );
 
-    test('when the setting cannot be set back: a SmartschoolComposeError that '
-        'says it may be left on', () async {
+    test('when the setting cannot be set back: a '
+        'SmartschoolOtherSchoolsNotRestoredError, a SmartschoolComposeError, '
+        'that says it may be left on, with the set-back\'s error as its cause '
+        'and no search failure (#241)', () async {
       await serve(_Smartschool()..switchAnswers[2] = _html(_errorPage));
 
       await expectLater(
@@ -525,11 +618,20 @@ void main() {
           includeOtherSchools: true,
         ),
         throwsA(
-          _composeError([
-            'could not be set back off',
-            'It may be left on for the account',
-            'with the checkbox',
-          ]),
+          _notRestored(
+            [
+              'could not be set back off',
+              'It may be left on for the account',
+              'with the checkbox',
+            ],
+            leftOn: true,
+            cause: _plainComposeError([
+              'did not answer the switch of its option "Toon personen van '
+                  'andere scholen" off',
+              'HTTP 200',
+            ]),
+            searchFailure: isNull,
+          ),
         ),
       );
       expect(server.log, [
@@ -542,7 +644,8 @@ void main() {
     });
 
     test('when a search throws and the setting cannot be set back either: a '
-        'SmartschoolComposeError that names both', () async {
+        'SmartschoolOtherSchoolsNotRestoredError that names both, with the '
+        'search\'s error as its searchFailure (#241)', () async {
       await serve(
         _Smartschool()
           ..searchAnswers[2] = _html(_errorPage)
@@ -555,16 +658,86 @@ void main() {
           includeOtherSchools: true,
         ),
         throwsA(
-          _composeError([
-            'could not be set back off',
-            'HTTP 503',
-            'after the search failed',
-            '"searchUsers"',
-            'It may be left on',
-          ]),
+          _notRestored(
+            [
+              'could not be set back off',
+              'HTTP 503',
+              'after the search failed',
+              '"searchUsers"',
+              'It may be left on',
+            ],
+            leftOn: true,
+            cause: _plainComposeError(['HTTP 503']),
+            searchFailure: isA<SmartschoolUnexpectedPageError>().having(
+              (e) => e.action,
+              'action',
+              'searchUsers',
+            ),
+          ),
         ),
       );
       expect(server.log.last, _switchOff);
+    });
+
+    test('includeOtherSchools: false, and the setting cannot be set back on: '
+        'a SmartschoolOtherSchoolsNotRestoredError left off (#241)', () async {
+      await serve(
+        _Smartschool(otherSchools: true)
+          ..switchAnswers[2] = _html('', status: 500),
+      );
+
+      await expectLater(
+        messages.searchRecipientsForComposeAll([
+          'Flanders',
+          'Lovejoy',
+        ], includeOtherSchools: false),
+        throwsA(
+          _notRestored(
+            ['could not be set back on', 'It may be left off'],
+            leftOn: false,
+            cause: _plainComposeError(['HTTP 500']),
+            searchFailure: isNull,
+          ),
+        ),
+      );
+      expect(server.log, [
+        _form,
+        _search('Flanders'),
+        _switchOff,
+        _search('Flanders'),
+        _search('Lovejoy'),
+        _switchOn,
+      ]);
+    });
+
+    test('when the switch itself fails and the setting cannot be set back '
+        'either: a SmartschoolOtherSchoolsNotRestoredError whose '
+        'searchFailure is the error of the switch (#241)', () async {
+      await serve(
+        _Smartschool()
+          ..switchAnswers[1] = _html(_errorPage, status: 500)
+          ..switchAnswers[2] = _html('', status: 503),
+      );
+
+      await expectLater(
+        messages.searchRecipientsForCompose(
+          'Flanders',
+          includeOtherSchools: true,
+        ),
+        throwsA(
+          _notRestored(
+            ['could not be set back off', 'after the search failed'],
+            leftOn: true,
+            cause: _plainComposeError(['HTTP 503']),
+            searchFailure: _plainComposeError([
+              'did not answer the switch of its option "Toon personen van '
+                  'andere scholen" on',
+              'HTTP 500',
+            ]),
+          ),
+        ),
+      );
+      expect(server.log, [_form, _search('Flanders'), _switchOn, _switchOff]);
     });
 
     test('when an answer after the switch says the setting is off again '
@@ -581,7 +754,7 @@ void main() {
           includeOtherSchools: true,
         ),
         throwsA(
-          _composeError([
+          _plainComposeError([
             'searched with its option "Toon personen van andere scholen" off',
             'was switched meanwhile',
           ]),
@@ -608,7 +781,7 @@ void main() {
           'Flanders',
           'Lovejoy',
         ], includeOtherSchools: true),
-        throwsA(_composeError(['was switched meanwhile'])),
+        throwsA(_plainComposeError(['was switched meanwhile'])),
       );
       expect(server.log, [_form, _search('Flanders'), _search('Lovejoy')]);
     });

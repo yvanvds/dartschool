@@ -1,3 +1,14 @@
+## Unreleased
+
+### Can break a build
+- New top-level names (#235): `LessonContentBulkFailure`, `SmartschoolLessonContentBulkSaveUnconfirmedError`.
+
+### Changed
+- Lesfiches: `LessonContentService.trash`, `restore` and `duplicate` say as data which lesfiches were done and which not when the module's answer does not confirm all of them (#235). They throw a `SmartschoolLessonContentBulkSaveUnconfirmedError`, a subtype of `SmartschoolLessonContentSaveUnconfirmedError` (so a `catch` of that type keeps catching it), whose `items` (the lesfiches sent, as given, each once) are each in one of `done`, `failed` (by lesfiche, its `LessonContentBulkFailure`: the exception's `statusCode`, its `message` without a name, and `raw`) and `unanswered`; from `duplicate`, `copies` maps each lesfiche of `done` to its copy. For `trash` and `restore`, a lesfiche without an exception is done, unless the module gives an exception that is not keyed by a lesfiche of the call: those are `unanswered` then. These were only named in the message. An answer that says nothing usable about any lesfiche (another status, no answer, no `exceptions`, an unknown shape) stays a plain `SmartschoolLessonContentSaveUnconfirmedError`; the messages are unchanged.
+
+### Tests
+- `test/lesson_content_write_test.dart` checks the new error's `items`, `done`, `failed`, `unanswered` and `copies` against the fake module (#235): a keyed exception of `trash` and `restore` (the `404` seen live), exceptions not keyed by a lesfiche of the call, a `duplicate` with a copy and an exception and one with a lesfiche the answer does not name, and a plain `SmartschoolLessonContentSaveUnconfirmedError` for the answers that say nothing usable. A flow duplicates a lesfiche in the library and one in the trash, then moves the copy made to the trash and restores the refused lesfiche from what the error carries.
+
 ## 0.4.4 - 2026-11-09
 
 ### Can break a build

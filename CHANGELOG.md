@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.4 - 2026-11-09
 
 ### Can break a build
 - New top-level names (#241): `SmartschoolOtherSchoolsNotOfferedError`, `SmartschoolOtherSchoolsNotRestoredError`.

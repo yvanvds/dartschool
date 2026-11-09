@@ -565,6 +565,52 @@ Matcher _unconfirmed(
       .having((e) => e.lessonContentId, 'lessonContentId', lessonContentId),
 );
 
+/// A bulk write (`trash`, `restore`, `duplicate`) whose answer says per
+/// lesfiche what was done (#235): the lesfiches as given to the call, the
+/// [failed] ones as `(statusCode, message)`, and the [copies] by the ID of
+/// the copy.
+Matcher _bulkUnconfirmed({
+  Object? message = anything,
+  Object? lessonContentId = anything,
+  required List<LessonContentItem> items,
+  required List<LessonContentItem> done,
+  Map<LessonContentItem, (int?, String)> failed = const {},
+  required List<LessonContentItem> unanswered,
+  Map<LessonContentItem, String> copies = const {},
+}) => allOf(
+  _unconfirmed(
+    message,
+    statusCode: 200,
+    cause: isNull,
+    lessonContentId: lessonContentId,
+  ),
+  isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()
+      .having((e) => e.items, 'items', orderedEquals(items))
+      .having((e) => e.done, 'done', orderedEquals(done))
+      .having(
+        (e) => [
+          for (final MapEntry(:key, :value) in e.failed.entries)
+            (key, value.statusCode, value.message),
+        ],
+        'failed',
+        orderedEquals([
+          for (final MapEntry(:key, value: (status, why)) in failed.entries)
+            (key, status, why),
+        ]),
+      )
+      .having((e) => e.unanswered, 'unanswered', orderedEquals(unanswered))
+      .having(
+        (e) => [
+          for (final MapEntry(:key, :value) in e.copies.entries)
+            (key, value.id),
+        ],
+        'copies',
+        orderedEquals([
+          for (final MapEntry(:key, :value) in copies.entries) (key, value),
+        ]),
+      ),
+);
+
 /// The files of `addAttachments` were added, and only setting a visibility
 /// failed (#135): the attachments made [added] (as `(id, fileName,
 /// visibility)`, in the order of the call), the one whose visibility failed,
@@ -3037,20 +3083,85 @@ void main() {
         ],
       });
 
-      await expectLater(
-        lessonContent.trash([_lessonItem]),
-        throwsA(_unconfirmed(contains('with exceptions: Forbidden'))),
-      );
-      await expectLater(
-        lessonContent.trash([_lessonItem]),
-        throwsA(_unconfirmed(contains('without its exceptions'))),
-      );
+      // An exception not keyed by a lesfiche as sent: it may be about the
+      // lesfiche, which is unanswered then (#235).
       await expectLater(
         lessonContent.trash([_lessonItem]),
         throwsA(
-          _unconfirmed(contains('in the trash already'), statusCode: 500),
+          _bulkUnconfirmed(
+            message: contains('with exceptions: Forbidden'),
+            lessonContentId: _lessonId,
+            items: [_lessonItem],
+            done: [],
+            unanswered: [_lessonItem],
+          ),
         ),
       );
+      for (final (why, status) in [
+        ('without its exceptions', 200),
+        ('in the trash already', 500),
+      ]) {
+        await expectLater(
+          lessonContent.trash([_lessonItem]),
+          throwsA(
+            allOf(
+              _unconfirmed(contains(why), statusCode: status),
+              isNot(isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()),
+            ),
+          ),
+        );
+      }
+    });
+
+    test('an exception keyed by one of the lesfiches as sent: that one '
+        'failed with its status, the others done (#235)', () async {
+      final (server, lessonContent) = await serve({
+        _trash: [
+          _json({
+            'exceptions': {
+              _ref(_assignmentId, 'assignments'): {
+                'status': 403,
+                'title': 'Forbidden',
+                'detail': 'Not yours',
+              },
+            },
+          }),
+          _json({
+            'exceptions': [
+              {'status': 500, 'title': 'Internal Server Error'},
+            ],
+          }),
+        ],
+      });
+
+      await expectLater(
+        lessonContent.trash([_lessonItem, _assignmentItem, _lessonItem]),
+        throwsA(
+          _bulkUnconfirmed(
+            message: contains(
+              'assignment lesfiche $_assignmentId: Forbidden: Not yours (403)',
+            ),
+            lessonContentId: isNull,
+            items: [_lessonItem, _assignmentItem],
+            done: [_lessonItem],
+            failed: {_assignmentItem: (403, 'Forbidden: Not yours')},
+            unanswered: [],
+          ),
+        ),
+      );
+      // A list of exceptions names no lesfiche: none is confirmed.
+      await expectLater(
+        lessonContent.trash([_lessonItem, _assignmentItem]),
+        throwsA(
+          _bulkUnconfirmed(
+            message: contains('Internal Server Error (500)'),
+            items: [_lessonItem, _assignmentItem],
+            done: [],
+            unanswered: [_lessonItem, _assignmentItem],
+          ),
+        ),
+      );
+      expect(server.calls, [_trash, _trash]);
     });
 
     test('refuses no lesfiches and a kind it does not know, before any '
@@ -3175,8 +3286,8 @@ void main() {
       await expectLater(
         lessonContent.restore([_lessonItem, _assignmentItem]),
         throwsA(
-          _unconfirmed(
-            allOf(
+          _bulkUnconfirmed(
+            message: allOf(
               contains(
                 'with exceptions: assignment lesfiche $_assignmentId: '
                 'Not Found (404)',
@@ -3184,17 +3295,31 @@ void main() {
               isNot(contains(_lessonId)),
               contains('getTrash'),
             ),
-            statusCode: 200,
+            lessonContentId: isNull,
+            items: [_lessonItem, _assignmentItem],
+            done: [_lessonItem],
+            failed: {_assignmentItem: (404, 'Not Found')},
+            unanswered: [],
           ),
         ),
       );
       await expectLater(
         lessonContent.restore([_lessonItem]),
-        throwsA(_unconfirmed(contains('without its exceptions'))),
+        throwsA(
+          allOf(
+            _unconfirmed(contains('without its exceptions')),
+            isNot(isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()),
+          ),
+        ),
       );
       await expectLater(
         lessonContent.restore([_lessonItem]),
-        throwsA(_unconfirmed(anything, statusCode: 500)),
+        throwsA(
+          allOf(
+            _unconfirmed(anything, statusCode: 500),
+            isNot(isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()),
+          ),
+        ),
       );
     });
 
@@ -3352,24 +3477,33 @@ void main() {
       await expectLater(
         lessonContent.duplicate([_lessonItem, _assignmentItem]),
         throwsA(
-          _unconfirmed(
-            allOf(
+          _bulkUnconfirmed(
+            message: allOf(
               contains('only the copies lesson lesfiche $_lessonCopyId'),
               contains('do not make them again'),
               contains('assignment lesfiche $_assignmentId: Forbidden (403)'),
             ),
-            statusCode: 200,
+            lessonContentId: isNull,
+            items: [_lessonItem, _assignmentItem],
+            done: [_lessonItem],
+            copies: {_lessonItem: _lessonCopyId},
+            failed: {_assignmentItem: (403, 'Forbidden')},
+            unanswered: [],
           ),
         ),
       );
       await expectLater(
         lessonContent.duplicate([_lessonItem, _assignmentItem]),
         throwsA(
-          _unconfirmed(
-            contains(
+          _bulkUnconfirmed(
+            message: contains(
               'named no copy and no exception for assignment lesfiche '
               '$_assignmentId',
             ),
+            items: [_lessonItem, _assignmentItem],
+            done: [_lessonItem],
+            copies: {_lessonItem: _lessonCopyId},
+            unanswered: [_assignmentItem],
           ),
         ),
       );
@@ -3406,7 +3540,12 @@ void main() {
         });
         await expectLater(
           lessonContent.duplicate([_lessonItem]),
-          throwsA(_unconfirmed(contains('trying again makes more copies'))),
+          throwsA(
+            allOf(
+              _unconfirmed(contains('trying again makes more copies')),
+              isNot(isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()),
+            ),
+          ),
           reason: answer.body,
         );
         expect(server.calls, [_duplicate]);
@@ -3577,6 +3716,66 @@ void main() {
       {
         'lessonContent': [
           {'id': _lessonCopyId, 'type': 'lessons', 'platformId': 4069},
+        ],
+      },
+    ]);
+  });
+
+  test('the flow of #235: duplicate a lesfiche in the library and one in '
+      'the trash, and act on what the error says: move the copy that was '
+      'made to the trash, and restore the lesfiche that was refused', () async {
+    final copyJson = _detailJson(id: _lessonCopyId, name: 'Lussen - kopie');
+    final (server, lessonContent) = await serve({
+      _duplicate: [
+        _json({
+          'lessonContent': {_ref(_lessonId, 'lessons'): copyJson},
+          'exceptions': {
+            _ref(_assignmentId, 'assignments'): {
+              'status': 403,
+              'title': 'Forbidden',
+              'detail': '',
+              'type': '',
+            },
+          },
+        }),
+      ],
+      _trash: [_json('{"exceptions":[]}')],
+      _restore: [_json('{"exceptions":[]}')],
+    });
+    final inLibrary = _lessonItem;
+    final inTrash = _assignmentItem;
+
+    final List<LessonContentDetail> made;
+    final List<LessonContentItem> refused;
+    try {
+      await lessonContent.duplicate([inLibrary, inTrash]);
+      fail('duplicate made every copy');
+    } on SmartschoolLessonContentBulkSaveUnconfirmedError catch (e) {
+      expect(e.unanswered, isEmpty);
+      expect(e.copies.keys, [inLibrary]);
+      expect(e.failed[inTrash]?.statusCode, 403);
+      made = e.copies.values.toList();
+      refused = [
+        for (final MapEntry(key: fiche, value: failure) in e.failed.entries)
+          if (failure.statusCode == 403) fiche,
+      ];
+    }
+    await lessonContent.trash(made);
+    await lessonContent.restore(refused);
+
+    expect(made.single.id, _lessonCopyId);
+    expect(server.calls, [_duplicate, _trash, _restore]);
+    expect(server.bodiesOf(_trash), [
+      {
+        'lessonContent': [
+          {'id': _lessonCopyId, 'type': 'lessons', 'platformId': 4069},
+        ],
+      },
+    ]);
+    expect(server.bodiesOf(_restore), [
+      {
+        'lessonContent': [
+          {'id': _assignmentId, 'type': 'assignments', 'platformId': 4069},
         ],
       },
     ]);

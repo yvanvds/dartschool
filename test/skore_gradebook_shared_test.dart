@@ -194,8 +194,11 @@ Map<String, Object?> _navigation({String year = '24'}) => {
   'currentWorkyear': year,
 };
 
-/// init of the shared gradebook of 6EWI: its period (open unless [open] is
-/// 0), as seen live (`activePeriodE` -1), or none, with its report period.
+/// init of the shared gradebook of 6EWI: its evaluation period (`scope` 1,
+/// open unless [open] is 0; Skore opens the gradebook on it), or none, with
+/// its report period. The shared gradebook seen live was a project
+/// gradebook (its one period of `scope` 2, `activePeriodE` -1), which
+/// getGradebook reads without evaluation periods since #236.
 Map<String, Object?> _init({int open = 1, bool periods = true}) => {
   'left_0': {
     'stream': [
@@ -216,7 +219,7 @@ Map<String, Object?> _init({int open = 1, bool periods = true}) => {
         'id': '$_period',
         'info': '<p>Open tot 2027-06-26 22:00</p>',
         'virtual': '0',
-        'scope': '2',
+        'scope': '1',
         'open': open,
         'timestamp': '2027-06-26T22:00:00+0200',
         'lockIcon': 0,
@@ -232,7 +235,7 @@ Map<String, Object?> _init({int open = 1, bool periods = true}) => {
       'timestamp': '2026-10-30T23:00:00+0100',
     },
   ],
-  'activePeriodE': -1,
+  'activePeriodE': periods ? 0 : -1,
   'ownerMap': [
     {
       'courseID': '1588',
@@ -1110,7 +1113,7 @@ void main() {
       expect(sheet.gradebook, same(_shared));
       expect(sheet.courseName, 'Digitale vaardigheden');
       expect(sheet.periods.single.id, _period);
-      // Skore's activePeriodE -1, as seen live: the first period.
+      // Skore's activePeriodE 0: its evaluation period.
       expect(sheet.activePeriod?.id, _period);
       expect(sheet.pupils.map((p) => p.id), [_an, _bart]);
       expect(sheet.writable, isTrue);

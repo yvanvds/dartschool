@@ -10,6 +10,8 @@ import 'models/intradesk_models.dart'
 import 'models/lesson_content_models.dart'
     show
         LessonContentAttachment,
+        LessonContentBulkFailure,
+        LessonContentDetail,
         LessonContentItem,
         LessonContentType,
         LessonContentVisibility;
@@ -2507,9 +2509,10 @@ class SmartschoolLessonContentWriteRefusedError
 /// another status the write does not expect ([statusCode]); with something
 /// that is not what the write made (not JSON, another lesfiche, a value
 /// other than the one sent, a weblink or an attachment missing from the
-/// lesfiche); when a move to the trash answers with `exceptions`; and when
-/// the write failed after it went out, before a usable answer came in
-/// ([cause] holds the failure, typically a [SmartschoolConnectionError]).
+/// lesfiche); when a bulk write (`trash`, `restore`, `duplicate`) answers
+/// with `exceptions` or without a copy; and when the write failed after it
+/// went out, before a usable answer came in ([cause] holds the failure,
+/// typically a [SmartschoolConnectionError]).
 ///
 /// A create that the module answered with the new lesfiche's ID, but whose
 /// detail could not be read back, or does not hold everything sent, carries
@@ -2527,6 +2530,14 @@ class SmartschoolLessonContentWriteRefusedError
 /// files were added then, and the error carries their attachments. From
 /// `addAttachments`, this error itself (not of that subtype) means that the
 /// take is unconfirmed: the files may or may not have been added.
+///
+/// `trash`, `restore` and `duplicate`, and
+/// `TeachingAssignmentService.addLessonContent`, throw the subtype
+/// [SmartschoolLessonContentBulkSaveUnconfirmedError] when the module's
+/// answer says, for some lesfiches, that they were done or not (#235,
+/// #244): it carries which. From them, this error itself (not of that
+/// subtype) means that the answer says nothing usable about any lesfiche:
+/// each may or may not have been done.
 ///
 /// Deliberately not a [SmartschoolLessonContentError], so a `catch` meant
 /// for the failures where nothing was changed does not catch it.
@@ -2547,8 +2558,11 @@ class SmartschoolLessonContentSaveUnconfirmedError
 
   /// The ID of the lesfiche the write was for: the lesfiche that was edited,
   /// or, for a create, the ID the module answered with (the lesfiche was
-  /// made); `null` for a create that no ID came back for, and for a move to
-  /// the trash.
+  /// made); `null` for a create that no ID came back for. For a bulk write
+  /// (`trash`, `restore`, `duplicate`, and `addLessonContent` of
+  /// `TeachingAssignmentService`), the ID of the lesfiche when it was given
+  /// one, and `null` for more than one: see
+  /// [SmartschoolLessonContentBulkSaveUnconfirmedError] for those.
   final String? lessonContentId;
 
   const SmartschoolLessonContentSaveUnconfirmedError(
@@ -2641,6 +2655,105 @@ class SmartschoolLessonContentVisibilityNotSetError
     required this.attachment,
     required this.visibility,
     required this.visibilitiesNotSet,
+  });
+}
+
+/// The [SmartschoolLessonContentSaveUnconfirmedError] of the bulk writes of
+/// `LessonContentService` (`trash`, `restore`, `duplicate`) and of
+/// `TeachingAssignmentService.addLessonContent` when the module's answer
+/// says, lesfiche by lesfiche, what was done and what not (#235, #244): an
+/// answer that names an exception for some lesfiches, or, from `duplicate`
+/// and `addLessonContent`, a copy or an added lesfiche for only some of
+/// them.
+///
+/// Every lesfiche of [items] is in exactly one of [done], [failed] and
+/// [unanswered]. The lesfiches are those given to the call, as given (the
+/// first one of a lesfiche given twice), so a caller can look its own up:
+/// `e.failed[fiche]`, `e.copies[fiche]`, `e.added[fiche]`.
+///
+/// ```dart
+/// try {
+///   await lessonContent.duplicate(fiches);
+/// } on SmartschoolLessonContentBulkSaveUnconfirmedError catch (e) {
+///   // e.copies were made: do not make them again.
+///   // e.failed were not copied, each with the module's exception.
+///   // e.unanswered may or may not have been copied: look in getItems.
+/// }
+/// ```
+///
+/// - `trash` and `restore`: the module answers with only the `exceptions`,
+///   keyed by the lesfiche as sent (seen live for `restore`, a `404` for a
+///   lesfiche that is not in the trash, #227). A lesfiche with an exception
+///   is in [failed], the others in [done]. When the module gives an
+///   exception that is not keyed by a lesfiche of the call (a list, or
+///   another key), the lesfiches without an exception are in [unanswered]
+///   instead, since that exception may be about them; it is in the message.
+/// - `duplicate`: a lesfiche with a copy is in [done] and [copies] (the
+///   copies were made: **do not make them again**), one with an exception
+///   in [failed], and one that the answer names neither way in [unanswered].
+///   (When no copy was made and each lesfiche has an exception from `400`
+///   to `499`, `duplicate` throws a
+///   [SmartschoolLessonContentWriteRefusedError] instead: nothing was
+///   changed.)
+/// - `TeachingAssignmentService.addLessonContent`: a lesfiche the module
+///   answers as added is in [done] and [added] (it is in the cluster: **do
+///   not add it again**), one with an exception keyed by it
+///   (`{platformId}_lesson_{id}`; `403` for a lesfiche the content filter
+///   does not take, seen live) in [failed], and one that the answer names
+///   neither way in [unanswered]: read the cluster (`getClusterContent`)
+///   before adding those again. (When none was added and each has an
+///   exception from `400` to `499`, it throws a
+///   [SmartschoolLessonContentWriteRefusedError] instead: nothing was
+///   changed.)
+///
+/// Its [statusCode] is that of the answer (`200`; `201` from
+/// `addLessonContent`), [cause] `null`, and
+/// [lessonContentId] the ID of the lesfiche for a call with one. From these
+/// writes, a [SmartschoolLessonContentSaveUnconfirmedError] that is not of
+/// this type means that the answer says nothing usable about any lesfiche
+/// (another status, no answer, an answer without its `exceptions` or in an
+/// unknown shape): each may or may not have been done.
+class SmartschoolLessonContentBulkSaveUnconfirmedError
+    extends SmartschoolLessonContentSaveUnconfirmedError {
+  /// The lesfiches the call sent, in the order given, each once.
+  final List<LessonContentItem> items;
+
+  /// The lesfiches the answer confirms: moved to the trash, restored,
+  /// copied (their copies are in [copies]), or added to the lesson cluster
+  /// (as answered in [added]); in the order of [items].
+  final List<LessonContentItem> done;
+
+  /// From `duplicate`: the copy made of each lesfiche of [done], as
+  /// `duplicate` returns copies (named after the courses of [items]); in the
+  /// order of [items]. Empty from `trash` and `restore`.
+  final Map<LessonContentItem, LessonContentDetail> copies;
+
+  /// From `TeachingAssignmentService.addLessonContent`: each lesfiche of
+  /// [done] as the module answered it added to the lesson cluster, as
+  /// `addLessonContent` returns them; in the order of [items]. Empty from
+  /// the writes of `LessonContentService`.
+  final Map<LessonContentItem, LessonContentItem> added;
+
+  /// The lesfiches the module answered with an exception, each with that
+  /// exception and its status; in the order of [items]. Not done.
+  final Map<LessonContentItem, LessonContentBulkFailure> failed;
+
+  /// The lesfiches the answer does not say were done or not; in the order of
+  /// [items]. They may or may not have been done: read the library
+  /// (`getItems`), the trash (`getTrash`) or the lesson cluster
+  /// (`getClusterContent`) before trying again.
+  final List<LessonContentItem> unanswered;
+
+  const SmartschoolLessonContentBulkSaveUnconfirmedError(
+    super.message, {
+    required int super.statusCode,
+    super.lessonContentId,
+    required this.items,
+    required this.done,
+    this.copies = const {},
+    this.added = const {},
+    required this.failed,
+    required this.unanswered,
   });
 }
 

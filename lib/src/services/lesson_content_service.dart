@@ -10,6 +10,7 @@ import '../models/lesson_content_models.dart';
 import '../models/planner_models.dart';
 import '../session.dart';
 import 'goal_refs.dart';
+import 'lesson_content_failures.dart';
 import 'smartschool_uploader.dart';
 
 export '../models/lesson_content_models.dart';
@@ -1582,9 +1583,11 @@ class LessonContentService {
   ///
   /// The module answers the move of a lesfiche that is in the trash already
   /// with a bare `500` (seen live), a
-  /// [SmartschoolLessonContentSaveUnconfirmedError]; so is an answer whose
+  /// [SmartschoolLessonContentSaveUnconfirmedError]; an answer whose
   /// `exceptions` are not empty (not seen live; they are listed in the
-  /// message): check [getItems] before trying again.
+  /// message) is a [SmartschoolLessonContentBulkSaveUnconfirmedError] that
+  /// says which lesfiches were moved and which not (#235): check [getItems]
+  /// before trying again.
   ///
   /// Throws an [ArgumentError], without sending anything, for no lesfiches,
   /// a lesfiche of a kind this library does not know, or an ID that is not a
@@ -1618,7 +1621,7 @@ class LessonContentService {
       );
     }
     final json = _jsonObject(operation, response, change, unconfirmed);
-    _checkNoExceptions(operation, response, json, change, unconfirmed);
+    _checkNoExceptions(operation, response, json, change, unconfirmed, list);
   }
 
   /// Returns the lesfiches in the module's trash, lessons and assignments,
@@ -1660,9 +1663,9 @@ class LessonContentService {
   /// The module answers the restore of a lesfiche that is not in the trash
   /// with `200` and an exception for it, keyed by the lesfiche as sent, with
   /// the status `404` (seen live): a
-  /// [SmartschoolLessonContentSaveUnconfirmedError] that names each
-  /// lesfiche with its exception (the others were restored). Check
-  /// [getTrash] before trying again.
+  /// [SmartschoolLessonContentBulkSaveUnconfirmedError] with each such
+  /// lesfiche and its exception in `failed`, and the others, which were
+  /// restored, in `done` (#235). Check [getTrash] before trying again.
   ///
   /// Throws an [ArgumentError], without sending anything, for no lesfiches,
   /// a lesfiche of a kind this library does not know, or an ID that is not a
@@ -1691,7 +1694,7 @@ class LessonContentService {
       _throwFailure(operation, response, change, unconfirmed, item: item);
     }
     final json = _jsonObject(operation, response, change, unconfirmed);
-    _checkNoExceptions(operation, response, json, change, unconfirmed);
+    _checkNoExceptions(operation, response, json, change, unconfirmed, list);
   }
 
   /// Makes a copy of each of the lesfiches [items] in the own library, and
@@ -1720,8 +1723,10 @@ class LessonContentService {
   /// [SmartschoolLessonContentWriteRefusedError] that names them: nothing
   /// was changed. When some copies were made and others not, or the answer
   /// does not name a copy or an exception for each lesfiche, it throws a
-  /// [SmartschoolLessonContentSaveUnconfirmedError] that names the copies
-  /// that were made: look for them with [getItems] before trying again.
+  /// [SmartschoolLessonContentBulkSaveUnconfirmedError] with the copies that
+  /// were made (`copies`, by lesfiche), the lesfiches with an exception
+  /// (`failed`) and those the answer names neither way (`unanswered`, #235):
+  /// look for those with [getItems] before trying again.
   ///
   /// Throws an [ArgumentError], without sending anything, for no lesfiches,
   /// a lesfiche of a kind this library does not know, or an ID that is not a
@@ -1793,7 +1798,7 @@ class LessonContentService {
       }
       copied[key] = copy;
     }
-    final failed = <String, Object?>{};
+    final exceptions = <String, Object?>{};
     switch (json['exceptions']) {
       case final List<Object?> list when list.isEmpty:
         break;
@@ -1801,30 +1806,34 @@ class LessonContentService {
         for (final entry in map.entries) {
           final key = _refKey(entry.key);
           if (key == null) unusable('with an exception in an unknown shape');
-          failed[key] = entry.value;
+          exceptions[key] = entry.value;
         }
       default:
         unusable('without its exceptions');
     }
 
-    final copies = <LessonContentDetail>[];
-    final notCopied = <String>[];
+    final copies = <LessonContentItem, LessonContentDetail>{};
+    final failed = <LessonContentItem, LessonContentBulkFailure>{};
     final unknown = <LessonContentItem>[];
     for (final fiche in list) {
       final key = _itemKey(fiche);
       final copy = copied[key];
       if (copy != null) {
-        copies.add(copy);
-      } else if (failed.containsKey(key)) {
-        notCopied.add('${_what(fiche)}: ${_describeException(failed[key])}');
+        copies[fiche] = copy;
+      } else if (exceptions.containsKey(key)) {
+        failed[fiche] = LessonContentFailures.bulkFailure(exceptions[key]);
       } else {
         unknown.add(fiche);
       }
     }
-    if (copies.length == list.length) return List.unmodifiable(copies);
+    if (copies.length == list.length) return List.unmodifiable(copies.values);
 
+    final notCopied = [
+      for (final MapEntry(key: fiche, value: failure) in failed.entries)
+        '${_what(fiche)}: $failure',
+    ];
     final statuses = {
-      for (final exception in failed.values)
+      for (final exception in exceptions.values)
         exception is Map && exception['status'] is int
             ? exception['status'] as int
             : 0,
@@ -1839,14 +1848,19 @@ class LessonContentService {
         statusCode: statuses.first,
       );
     }
-    throw SmartschoolLessonContentSaveUnconfirmedError(
+    throw SmartschoolLessonContentBulkSaveUnconfirmedError(
       '$operation: $change was sent, but $_module made '
-      '${copies.isEmpty ? 'no copies' : 'only the copies ${copies.map((c) => '${_what(c)} ("${c.name}")').join(', ')}, which exist: do not make them again'}'
+      '${copies.isEmpty ? 'no copies' : 'only the copies ${copies.values.map((c) => '${_what(c)} ("${c.name}")').join(', ')}, which exist: do not make them again'}'
       '${notCopied.isEmpty ? '' : '; with exceptions: ${notCopied.join('; ')}'}'
       '${unknown.isEmpty ? '' : '; it named no copy and no exception for ${unknown.map(_what).join(', ')}'}. '
       '$unconfirmed',
       statusCode: status,
       lessonContentId: item?.id,
+      items: List.unmodifiable(list),
+      done: List.unmodifiable(copies.keys),
+      copies: Map.unmodifiable(copies),
+      failed: Map.unmodifiable(failed),
+      unanswered: List.unmodifiable(unknown),
     );
   }
 
@@ -2397,7 +2411,7 @@ class LessonContentService {
       );
     }
     if (status >= 400 && status < 500) {
-      final violations = _violations(body);
+      final violations = LessonContentFailures.violations(body);
       final why = violations.isEmpty
           ? 'without saying why'
           : violations.map((v) => '"$v"').join(', ');
@@ -2414,28 +2428,6 @@ class LessonContentService {
       statusCode: status,
       lessonContentId: item?.id,
     );
-  }
-
-  /// The `violations` of the module's problem answer [body]: a list, or an
-  /// object whose values are the reasons; empty when there are none (the
-  /// bare `400` seen live), or when [body] is not such an answer.
-  static List<String> _violations(String body) {
-    final Object? decoded;
-    try {
-      decoded = jsonDecode(body);
-    } on FormatException {
-      return const [];
-    }
-    final raw = decoded is Map ? decoded['violations'] : null;
-    final Iterable<Object?> values = switch (raw) {
-      final List<Object?> list => list,
-      final Map<Object?, Object?> map => map.values,
-      _ => const [],
-    };
-    return List.unmodifiable([
-      for (final value in values)
-        if (value != null && '$value'.trim().isNotEmpty) '$value'.trim(),
-    ]);
   }
 
   /// [items] (at least one) as a bulk write of the module takes them, after
@@ -2487,54 +2479,71 @@ class LessonContentService {
 
   /// Throws a [SmartschoolLessonContentSaveUnconfirmedError] that ends in
   /// [unconfirmed] unless the answer [json] of a bulk write (`trash`,
-  /// `restore`) has an empty list of `exceptions`; it names each exception,
-  /// with the lesfiche it is for when the module keys it so.
+  /// `restore`) of the lesfiches [list] has no `exceptions` (an empty list or
+  /// object); it names each exception, with the lesfiche it is for when the
+  /// module keys it so. For an answer with exceptions, it is a
+  /// [SmartschoolLessonContentBulkSaveUnconfirmedError] that says which
+  /// lesfiches were done and which not (#235).
   static void _checkNoExceptions(
     String operation,
     Response<String> response,
     Map<String, dynamic> json,
     String change,
     String unconfirmed,
+    List<LessonContentItem> list,
   ) {
-    final exceptions = json['exceptions'];
-    final failures = switch (exceptions) {
-      final List<Object?> list => [
-        for (final exception in list) _describeException(exception),
-      ],
+    final status = response.statusCode ?? 0;
+    final item = list.length == 1 ? list.single : null;
+    final List<(Object?, Object?)> exceptions = switch (json['exceptions']) {
+      final List<Object?> list => [for (final value in list) (null, value)],
       final Map<Object?, Object?> map => [
-        for (final MapEntry(:key, :value) in map.entries)
-          switch (_refKey(key)) {
-            final String ref =>
-              '${_noun(LessonContentType.fromWire(ref.split(' ').first))} '
-                  '${ref.split(' ').last}: ${_describeException(value)}',
-            null => _describeException(value),
-          },
+        for (final MapEntry(:key, :value) in map.entries) (key, value),
       ],
-      _ => null,
+      _ => throw SmartschoolLessonContentSaveUnconfirmedError(
+        '$operation: $change was sent, but $_module answered without its '
+        'exceptions (${_preview(response.data ?? '')}). $unconfirmed',
+        statusCode: status,
+        lessonContentId: item?.id,
+      ),
     };
-    if (failures == null || failures.isNotEmpty) {
-      throw SmartschoolLessonContentSaveUnconfirmedError(
-        '$operation: $change was sent, but $_module answered '
-        '${failures == null ? 'without its exceptions (${_preview(response.data ?? '')})' : 'with exceptions: ${failures.join('; ')}'}. '
-        '$unconfirmed',
-        statusCode: response.statusCode,
+    if (exceptions.isEmpty) return;
+
+    final byKey = {for (final fiche in list) _itemKey(fiche): fiche};
+    final failures = <LessonContentItem, LessonContentBulkFailure>{};
+    final described = <String>[];
+    var unattributed = false;
+    for (final (key, value) in exceptions) {
+      final failure = LessonContentFailures.bulkFailure(value);
+      final ref = _refKey(key);
+      final fiche = ref == null ? null : byKey[ref];
+      if (fiche == null) {
+        unattributed = true;
+      } else {
+        failures[fiche] = failure;
+      }
+      described.add(
+        ref == null
+            ? '$failure'
+            : '${_noun(LessonContentType.fromWire(ref.split(' ').first))} '
+                  '${ref.split(' ').last}: $failure',
       );
     }
-  }
-
-  /// One of the `exceptions` of a bulk write, for a message: its
-  /// `title`, `detail` and `violations` when it is a problem object.
-  static String _describeException(Object? exception) {
-    if (exception is! Map) return '"$exception"';
-    final parts = [
-      for (final key in const ['title', 'detail'])
-        if ('${exception[key] ?? ''}'.trim().isNotEmpty)
-          '${exception[key]}'.trim(),
-      ..._violations(jsonEncode(exception)),
+    final rest = [
+      for (final fiche in list)
+        if (!failures.containsKey(fiche)) fiche,
     ];
-    if (parts.isEmpty) return jsonEncode(exception);
-    final status = exception['status'];
-    return '${parts.join(': ')}${status is int ? ' ($status)' : ''}';
+    throw SmartschoolLessonContentBulkSaveUnconfirmedError(
+      '$operation: $change was sent, but $_module answered with exceptions: '
+      '${described.join('; ')}. $unconfirmed',
+      statusCode: status,
+      lessonContentId: item?.id,
+      items: List.unmodifiable(list),
+      done: unattributed ? const [] : List.unmodifiable(rest),
+      failed: Map.unmodifiable({
+        for (final fiche in list) fiche: ?failures[fiche],
+      }),
+      unanswered: unattributed ? List.unmodifiable(rest) : const [],
+    );
   }
 
   // ---------------------------------------------------------------------------

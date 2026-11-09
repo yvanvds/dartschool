@@ -247,10 +247,18 @@ class LessonCluster extends LessonClusterRef {
   /// How many assignment lesfiches it holds (`numberOfAssignments`).
   final int? numberOfAssignments;
 
-  /// How many learning goals it has (`numberOfGoals`).
+  /// How many learning goals the module counts for it (`numberOfGoals`):
+  /// the goals of the cluster and of its lesfiches, not only its own
+  /// [goals] (seen live, #237: a cluster with 1 goal of its own and two
+  /// lesfiches with 2 goals each counted 3, and 2 once its own goal was
+  /// cleared; how a goal shared by the cluster and a lesfiche, or by two
+  /// lesfiches, is counted was not checked). The cluster's own goals are
+  /// [goals]; count those with `goals.length`.
   final int? numberOfGoals;
 
-  /// The estimate of its teaching hours (`teachingHoursEstimate`).
+  /// The estimate of its teaching hours (`teachingHoursEstimate`). `0` can
+  /// mean "no estimate": it was `0` live for a cluster whose lesfiches have
+  /// none ([LessonClusterLesfiche.teachingHoursEstimate] `null`, #237).
   final num? teachingHoursEstimate;
 
   /// How many attachments its info has (`numberOfAttachments`).

@@ -826,6 +826,39 @@ class NewLessonContentAttachment {
   String toString() => 'NewLessonContentAttachment($path)';
 }
 
+/// One of the `exceptions` that the Lesfiches module answers a bulk write
+/// with (`LessonContentService.trash`, `restore`, `duplicate`) for one
+/// lesfiche (#235): the lesfiche was not moved, restored or copied.
+///
+/// Carried by `SmartschoolLessonContentBulkSaveUnconfirmedError.failed`.
+/// Seen live (#227): `{"status": 404, "title": "Not Found", "detail": "",
+/// "type": ""}` for the restore of a lesfiche that is not in the trash, and
+/// the same with `403` and `Forbidden` for the duplicate of a lesfiche in
+/// the trash.
+class LessonContentBulkFailure {
+  /// The `status` of the exception (`403`, `404`), or `null` when it has
+  /// none.
+  final int? statusCode;
+
+  /// What the exception says: its `title`, `detail` and `violations`, joined
+  /// with `": "` (`Not Found`); the exception as JSON when it has none of
+  /// them, or the value in quotes when it is not an object. Not a name of
+  /// the lesfiche: the module does not put one in it.
+  final String message;
+
+  /// The exception as the module gave it (decoded JSON).
+  final Object? raw;
+
+  const LessonContentBulkFailure({
+    this.statusCode,
+    required this.message,
+    this.raw,
+  });
+
+  @override
+  String toString() => statusCode == null ? message : '$message ($statusCode)';
+}
+
 // ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------

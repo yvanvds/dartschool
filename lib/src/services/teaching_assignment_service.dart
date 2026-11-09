@@ -8,6 +8,7 @@ import '../models/lesson_content_models.dart';
 import '../models/teaching_assignment_models.dart';
 import '../session.dart';
 import 'goal_refs.dart';
+import 'lesson_content_failures.dart';
 
 export '../models/teaching_assignment_models.dart';
 
@@ -73,7 +74,9 @@ export '../models/teaching_assignment_models.dart';
 /// `403`, a [SmartschoolLessonContentWriteRefusedError] for a write refused
 /// with a status from `400` to `499` (nothing was changed), and a
 /// [SmartschoolLessonContentSaveUnconfirmedError] for a write that went out
-/// but whose answer does not confirm it (read before trying again). An
+/// but whose answer does not confirm it (read before trying again; from
+/// [addLessonContent], a [SmartschoolLessonContentBulkSaveUnconfirmedError]
+/// when its answer says which lesfiches were added, #244). An
 /// [ArgumentError] for a value refused before anything is sent.
 class TeachingAssignmentService {
   final SmartschoolClient _client;
@@ -417,7 +420,14 @@ class TeachingAssignmentService {
   /// (`400` to `499`), a [SmartschoolLessonContentWriteRefusedError] that
   /// names them: nothing was changed. When it added some and not others, or
   /// its answer does not account for each, a
-  /// [SmartschoolLessonContentSaveUnconfirmedError] that names those added.
+  /// [SmartschoolLessonContentBulkSaveUnconfirmedError] (#244) with the
+  /// lesfiches added (`done`, and in `added` each as the module answered
+  /// it: do not add them again), those with an exception (`failed`, each
+  /// with its [LessonContentBulkFailure]) and those the answer names
+  /// neither way (`unanswered`): read the cluster ([getClusterContent])
+  /// before adding those again. An answer it cannot use at all (another
+  /// status, no `lessonContent`, no `exceptions`, an exception keyed in an
+  /// unknown way) is a plain [SmartschoolLessonContentSaveUnconfirmedError].
   ///
   /// Throws an [ArgumentError], without sending anything, for no lesfiches,
   /// a lesfiche of a kind this library does not know, or an ID that is not
@@ -501,19 +511,22 @@ class TeachingAssignmentService {
       default:
         _unconfirmed(operation, change, unconfirmed, 'without its exceptions');
     }
-    final result = <LessonContentItem>[];
+    final done = <LessonContentItem, LessonContentItem>{};
+    final notAdded = <LessonContentItem, LessonContentBulkFailure>{};
     final refused = <String>[];
-    final unknown = <String>[];
+    final unknown = <LessonContentItem>[];
     for (final item in list) {
       final key = item.id.toLowerCase();
       if (added[key] case final made?) {
-        result.add(made);
+        done[item] = made;
       } else if (failed.containsKey(key)) {
+        notAdded[item] = LessonContentFailures.bulkFailure(failed[key]);
         refused.add('lesfiche ${item.id}: ${jsonEncode(failed[key])}');
       } else {
-        unknown.add(item.id);
+        unknown.add(item);
       }
     }
+    final result = done.values.toList();
     if (result.length == list.length) return List.unmodifiable(result);
     final statuses = [
       for (final value in failed.values)
@@ -529,13 +542,19 @@ class TeachingAssignmentService {
         statusCode: statuses.first,
       );
     }
-    throw SmartschoolLessonContentSaveUnconfirmedError(
+    throw SmartschoolLessonContentBulkSaveUnconfirmedError(
       '$operation: $change was sent, but $_module added '
       '${result.isEmpty ? 'none of them' : 'only ${result.map((i) => 'lesfiche ${i.id}').join(', ')}, which are in the cluster: do not add them again'}'
       '${refused.isEmpty ? '' : '; with exceptions: ${refused.join('; ')}'}'
-      '${unknown.isEmpty ? '' : '; it named nothing for ${unknown.map((id) => 'lesfiche $id').join(', ')}'}. '
+      '${unknown.isEmpty ? '' : '; it named nothing for ${unknown.map((i) => 'lesfiche ${i.id}').join(', ')}'}. '
       '$unconfirmed',
-      statusCode: response.statusCode,
+      statusCode: response.statusCode ?? 0,
+      lessonContentId: list.length == 1 ? list.single.id : null,
+      items: List.unmodifiable(list),
+      done: List.unmodifiable(done.keys),
+      added: Map.unmodifiable(done),
+      failed: Map.unmodifiable(notAdded),
+      unanswered: List.unmodifiable(unknown),
     );
   }
 

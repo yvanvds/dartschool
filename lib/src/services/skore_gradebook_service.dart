@@ -445,17 +445,26 @@ class SkoreGradebookService {
     workyearId: workyear.id,
   );
 
-  /// Returns [gradebook] (from [getGradebooks]) with its periods, its report
-  /// periods ([SkoreGradebookSheet.reports], #195), its pupils and whether
-  /// Skore lets the user change it.
+  /// Returns [gradebook] (from [getGradebooks]) with its evaluation periods,
+  /// its project periods ([SkoreGradebookSheet.projectPeriods], #236), its
+  /// report periods ([SkoreGradebookSheet.reports], #195), its pupils and
+  /// whether Skore lets the user change it.
   ///
   /// Two requests, for the gradebook's school year
   /// ([SkoreGradebook.workyearId]): Skore's `init` (the periods, the report
   /// periods and the pupils, as the web client opens a gradebook) and
-  /// `getGradebookContext` for the period Skore opens the gradebook on
-  /// ([SkoreGradebookSheet.activePeriod]; not sent for a gradebook without
-  /// periods), which says whether the user may change it
+  /// `getGradebookContext` for the evaluation period Skore opens the
+  /// gradebook on ([SkoreGradebookSheet.activePeriod]; not sent without
+  /// one), which says whether the user may change it
   /// ([SkoreGradebookSheet.writable]).
+  ///
+  /// `init` lists evaluation periods and project periods alike, telling
+  /// them apart by their `scope` (#236): [SkoreGradebookSheet.periods] are
+  /// the evaluation periods only, and a project gradebook (seen live: one
+  /// project period, `activePeriodE` `-1`) is read without periods and
+  /// without an active period, so `getGradebookContext` is not sent for a
+  /// project period. Its project periods are
+  /// [SkoreGradebookSheet.projectPeriods], read from the same answer.
   ///
   /// A gradebook can have no evaluation periods: that of a behaviour course
   /// ("Gedrag") had none in 2026-2027, only a report period (seen live,
@@ -977,8 +986,11 @@ class SkoreGradebookService {
   ///
   /// One request, for the gradebook's school year: Skore's `init` with the
   /// page `1` (the projects), as the web client opens the gradebook's tab
-  /// "Projecten"; it answers the project periods as `periods`, with the
-  /// pupils and report periods as for the evaluations. Seen live
+  /// "Projecten". Its `periods` hold the evaluation periods and the project
+  /// periods alike, as for the page `0` (seen live, 2026-11-02): the project
+  /// periods are those with `scope` 2 ([SkoreGradebookPeriod.isProject],
+  /// #236), so a normal gradebook has none. [getGradebook] gives the same
+  /// as [SkoreGradebookSheet.projectPeriods]. Seen live
   /// (2026-11-01): a project gradebook ("Digitale vaardigheden") had one
   /// project period and no evaluation periods. Its `categoryMode` was `1`,
   /// with which Skore's web client opens the project sheet that
@@ -1007,7 +1019,7 @@ class SkoreGradebookService {
       scope: scope,
       workyearId: gradebook.workyearId,
     );
-    return _parseInit(gradebook, init).periods;
+    return _parseInit(gradebook, init).projectPeriods;
   }
 
   /// Returns the templates of project period [periodId] of [gradebook] (a
@@ -1293,12 +1305,13 @@ class SkoreGradebookService {
       ),
     );
     final gradebookId = book.gradebookId;
-    final period = sheet.periods.where((p) => p.id == periodId).firstOrNull;
+    final projectPeriods = sheet.projectPeriods;
+    final period = projectPeriods.where((p) => p.id == periodId).firstOrNull;
     if (period == null) {
       _refuse(
         operation,
         'project period $periodId is not one of gradebook $gradebookId (it '
-        'has ${sheet.periods.isEmpty ? 'none' : sheet.periods.map((p) => '${p.name} (${p.id})').join(', ')})',
+        'has ${projectPeriods.isEmpty ? 'none' : projectPeriods.map((p) => '${p.name} (${p.id})').join(', ')})',
       );
     }
     if (!period.isOpen) {
@@ -3408,6 +3421,7 @@ class SkoreGradebookService {
         gradebook: book,
         courseName: sheet.courseName,
         periods: sheet.periods,
+        projectPeriods: sheet.projectPeriods,
         activePeriod: period,
         pupils: sheet.pupils,
         reports: sheet.reports,
@@ -4330,10 +4344,15 @@ class SkoreGradebookService {
   /// active period ([context]).
   ///
   /// `init` gives (the parts read):
-  /// - `periods`, read by [parsePeriods];
+  /// - `periods`, read by [parsePeriods]: the evaluation periods (`scope`
+  ///   1, [SkoreGradebookSheet.periods]) and the project periods (`scope`
+  ///   2, [SkoreGradebookSheet.projectPeriods]) alike, whatever the page
+  ///   (#236); a period of another `scope` (not seen) is in neither;
   /// - `reports`, the report periods, read by [parseReports] (#195);
-  /// - `activePeriodE`: the index of the period Skore opens the gradebook
-  ///   on (the first period when it is not an index of one);
+  /// - `activePeriodE`: the index in the evaluation periods of the one
+  ///   Skore opens the gradebook on: none when it is negative (`-1`, as
+  ///   for a project gradebook, #236), the first when it is missing or not
+  ///   an index of one;
   /// - `left_0`: the rows of the gradebook, whose `stream` [parsePupils]
   ///   reads;
   /// - `ownerMap`: a list of `{courseID, groupID, coursename, ownerID,
@@ -4386,16 +4405,26 @@ class SkoreGradebookService {
       );
     }
 
-    final periods = parsePeriods(init['periods']);
+    // #236: `periods` holds the evaluation periods (`scope` 1) and the
+    // project periods (`scope` 2) alike, whatever the page asked for.
+    final all = parsePeriods(init['periods']);
+    final periods = [
+      for (final period in all)
+        if (period.scope == 1) period,
+    ];
     final index = SkoreRpc.tryId(init['activePeriodE']) ?? 0;
     final rows = init['left_0'];
     return SkoreGradebookSheet(
       gradebook: gradebook,
       courseName: '${owner['coursename'] ?? ''}'.trim(),
       periods: periods,
-      activePeriod: periods.isEmpty
+      projectPeriods: [
+        for (final period in all)
+          if (period.isProject) period,
+      ],
+      activePeriod: periods.isEmpty || index < 0
           ? null
-          : periods[index >= 0 && index < periods.length ? index : 0],
+          : periods[index < periods.length ? index : 0],
       pupils: parsePupils(rows is Map ? rows['stream'] : rows, gradebook),
       reports: parseReports(init['reports']),
     );
@@ -4424,6 +4453,7 @@ class SkoreGradebookService {
       gradebook: gradebook,
       courseName: sheet.courseName,
       periods: sheet.periods,
+      projectPeriods: sheet.projectPeriods,
       activePeriod: sheet.activePeriod,
       pupils: sheet.pupils,
       writable: SkoreRpc.tryId(context['writable']) == 1,
@@ -4435,7 +4465,10 @@ class SkoreGradebookService {
   /// Parses the `periods` of `init`: `[{"name": "DW1", "fullname": "DW1",
   /// "id": "1704", "info": "<p>...</p>", "open": 1, "timestamp":
   /// "2026-12-18T20:00:00+0100", "categoryMode": 1, "virtual": "0",
-  /// "scope": "1", "lockIcon": 0}]`.
+  /// "scope": "1", "lockIcon": 0}]`, evaluation periods (`scope` 1) and
+  /// project periods (`scope` 2, [SkoreGradebookPeriod.isProject], #236)
+  /// alike, in Skore's order. A period without a `scope` is read as an
+  /// evaluation period; one whose `scope` is not a number is refused.
   ///
   /// An empty `timestamp` gives a period without [SkoreGradebookPeriod.closesAt];
   /// one that is not a date with its offset is refused, as is anything else
@@ -4468,7 +4501,22 @@ class SkoreGradebookService {
       closesAt: _closingTime(period['timestamp'], 'period $id'),
       info: '${period['info'] ?? ''}',
       categoryMode: SkoreRpc.tryId(period['categoryMode']) ?? 0,
+      scope: _periodScope(period['scope'], id),
     );
+  }
+
+  /// The `scope` [scope] of period [id] (#236): `1` when Skore gives none;
+  /// one that is not a number is refused with a [SmartschoolSkoreError].
+  static int _periodScope(Object? scope, int id) {
+    if (scope == null) return 1;
+    final value = SkoreRpc.tryId(scope);
+    if (value == null) {
+      throw SmartschoolSkoreError(
+        'Skore gave period $id the scope ${SkoreRpc.jsonPreview(scope)}, '
+        'which is not a number.',
+      );
+    }
+    return value;
   }
 
   /// The closing time [timestamp] of [what] (`"2026-12-18T20:00:00+0100"`)

@@ -225,6 +225,25 @@ Map<String, Object?> _init(
   'isRestrictedAccess': 0,
 };
 
+/// A period of `init`'s `periods`: of [scope] `'1'` (an evaluation period)
+/// or `'2'` (a project period), as seen live (#236).
+Map<String, Object?> _initPeriod(int id, String name, {String scope = '1'}) => {
+  'name': name,
+  'fullname': name,
+  'id': '$id',
+  'info': '<p>Open</p>',
+  'virtual': '0',
+  'scope': scope,
+  'open': 1,
+  'timestamp': '2027-06-26T22:00:00+0200',
+  'lockIcon': 0,
+  'categoryMode': 1,
+};
+
+/// Two evaluation periods of a normal gradebook (#236).
+const _dw1 = 1704;
+const _dw2 = 1708;
+
 /// `getGradebookContext` for project period [periodId].
 Map<String, Object?> _context(
   SkoreGradebook gradebook,
@@ -575,6 +594,8 @@ class _Skore implements HttpClientAdapter {
     this.saveAnswer,
     this.extra = 0,
     this.pupilTree,
+    this.initPeriods,
+    this.activePeriodE = 0,
     List<Object?>? ratings,
   }) : store = [
          for (final r in ratings ?? _ratings())
@@ -583,6 +604,13 @@ class _Skore implements HttpClientAdapter {
 
   /// The `writable` of getGradebookContext.
   final int writable;
+
+  /// The `periods` of init instead of the fixture's one project period,
+  /// with [activePeriodE] (#236); `null` for the fixture's.
+  final List<Map<String, Object?>>? initPeriods;
+
+  /// The `activePeriodE` of init with [initPeriods].
+  final int activePeriodE;
 
   /// The pupils of the class beyond An and Bart (see [_rows]).
   final int extra;
@@ -677,7 +705,14 @@ class _Skore implements HttpClientAdapter {
         );
       case 'init':
         final init = _init(gradebook, extra: extra);
-        ((init['periods']! as List).single as Map)['open'] = periodOpen;
+        final periods = initPeriods;
+        if (periods == null) {
+          ((init['periods']! as List).single as Map)['open'] = periodOpen;
+        } else {
+          init['periods'] = periods;
+          init['activePeriodE'] = activePeriodE;
+          init['activePeriodP'] = periods.indexWhere((p) => p['scope'] == '2');
+        }
         return (
           status: 200,
           body: _answer('init', init),
@@ -869,6 +904,88 @@ void main() {
       expect(init.params[5], _shared.gradebookId);
       expect(init.session['teacher'], _colleague);
       expect(init.session['restriction'], _shared.gradebookId);
+    });
+
+    // #236: init lists evaluation periods (scope 1) and project periods
+    // (scope 2) in the same `periods`, whatever the page.
+    test('getProjectPeriods of a normal gradebook: none, though init lists '
+        'its evaluation periods (#236)', () async {
+      final server = _Skore(
+        initPeriods: [_initPeriod(_dw1, 'DW1'), _initPeriod(_dw2, 'DW2')],
+        activePeriodE: 1,
+      );
+      final gradebooks = await serve(server);
+
+      final periods = await gradebooks.getProjectPeriods(_own);
+
+      expect(periods, isEmpty);
+      expect(server.requests, ['init']);
+    });
+
+    test('getGradebook of a project gradebook: no evaluation periods and no '
+        'active period, its project period in projectPeriods, and no '
+        'getGradebookContext for it (#236)', () async {
+      final server = _Skore();
+      final gradebooks = await serve(server);
+
+      final sheet = await gradebooks.getGradebook(_own);
+
+      expect(sheet.periods, isEmpty);
+      expect(sheet.activePeriod, isNull);
+      expect(sheet.writable, isFalse);
+      expect(sheet.projectPeriods.map((p) => (p.id, p.scope, p.isProject)), [
+        (_period, 2, true),
+      ]);
+      expect(sheet.pupils.map((p) => p.id), [_an, _bart]);
+      expect(server.requests, ['init']);
+      expect(server.rpcs.single.params[4], 0, reason: 'the page 0');
+      // getProjectPeriods gives the same project periods.
+      expect(
+        (await gradebooks.getProjectPeriods(_own)).map((p) => p.id),
+        sheet.projectPeriods.map((p) => p.id),
+      );
+    });
+
+    test('getGradebook of a normal gradebook: its evaluation periods, the '
+        'active one at activePeriodE, no project periods (#236)', () async {
+      final server = _Skore(
+        initPeriods: [_initPeriod(_dw1, 'DW1'), _initPeriod(_dw2, 'DW2')],
+        activePeriodE: 1,
+      );
+      final gradebooks = await serve(server);
+
+      final sheet = await gradebooks.getGradebook(_own);
+
+      expect(sheet.periods.map((p) => (p.id, p.isProject)), [
+        (_dw1, false),
+        (_dw2, false),
+      ]);
+      expect(sheet.activePeriod?.id, _dw2);
+      expect(sheet.projectPeriods, isEmpty);
+      expect(sheet.writable, isTrue);
+      expect(server.requests, ['init', 'getGradebookContext']);
+      expect(server.rpcs.last.params[4], _dw2);
+    });
+
+    test('a gradebook with both kinds (not seen live): each in its own list, '
+        'activePeriodE an index in the evaluation periods (#236)', () async {
+      final server = _Skore(
+        initPeriods: [
+          _initPeriod(_period, 'Proj', scope: '2'),
+          _initPeriod(_dw1, 'DW1'),
+        ],
+      );
+      final gradebooks = await serve(server);
+
+      final sheet = await gradebooks.getGradebook(_own);
+      final projectPeriods = await gradebooks.getProjectPeriods(_own);
+
+      expect(sheet.periods.map((p) => p.id), [_dw1]);
+      expect(sheet.activePeriod?.id, _dw1);
+      expect(sheet.projectPeriods.map((p) => p.id), [_period]);
+      expect(projectPeriods.map((p) => p.id), [_period]);
+      expect(server.requests, ['init', 'getGradebookContext', 'init']);
+      expect(server.rpcs[1].params[4], _dw1);
     });
   });
 
@@ -1814,6 +1931,12 @@ void main() {
           () => _Skore(periodOpen: 0),
           ok,
           'is closed',
+        ),
+        (
+          'a period Skore lists as an evaluation period (scope 1, #236)',
+          () => _Skore(initPeriods: [_initPeriod(_period, 'Proj')]),
+          ok,
+          'project period $_period is not one of gradebook',
         ),
         (
           'a level that is not one of the scale',

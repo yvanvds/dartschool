@@ -249,9 +249,20 @@ class SkoreGradebookSheet {
   /// `ownerMap`).
   final String courseName;
 
-  /// The periods ("Evaluaties | DW1", ...) of the gradebook, in Skore's
-  /// order. Skore adds periods during the school year.
+  /// The evaluation periods ("Evaluaties | DW1", ...) of the gradebook, in
+  /// Skore's order: the periods of Skore's `init` with `scope` 1. Skore adds
+  /// periods during the school year. Not its project periods
+  /// ([projectPeriods], #236): empty for a project gradebook.
   final List<SkoreGradebookPeriod> periods;
+
+  /// The project periods ("Projecten") of the gradebook, in Skore's order:
+  /// the periods of Skore's `init` with `scope` 2
+  /// ([SkoreGradebookPeriod.isProject], #236), the same as
+  /// `SkoreGradebookService.getProjectPeriods` gives. Empty for a gradebook
+  /// without projects. Seen live (2026-11-02): one project period and no
+  /// evaluation periods in a project gradebook ("Digitale vaardigheden"),
+  /// and none in a normal gradebook.
+  final List<SkoreGradebookPeriod> projectPeriods;
 
   /// The report periods ("Rapporten | Rapport 1") of the gradebook, in
   /// Skore's order (the `reports` of Skore's `init`, #195): where the
@@ -262,9 +273,12 @@ class SkoreGradebookSheet {
   /// periods (a behaviour gradebook).
   final List<SkoreReportPeriod> reports;
 
-  /// The period Skore opens the gradebook on (its `activePeriodE`), or
-  /// `null` when the gradebook has no periods. Seen live: the only period of
-  /// a new school year, and the last of the five of an earlier one.
+  /// The evaluation period Skore opens the gradebook on (its
+  /// `activePeriodE`, an index in [periods]), or `null` when the gradebook
+  /// has no evaluation periods or Skore opens it on none (`activePeriodE`
+  /// `-1`, as for a project gradebook, #236). Seen live: the only period of
+  /// a new school year, and the last of the five of an earlier one. Never a
+  /// project period.
   final SkoreGradebookPeriod? activePeriod;
 
   /// The pupils of the gradebook's class, in the class's order (by class
@@ -278,8 +292,9 @@ class SkoreGradebookSheet {
   /// It is about the user's rights in the gradebook, not about a period:
   /// seen live, Skore also answers `writable` 1 for a closed period of an
   /// earlier school year. Whether a period takes grades is
-  /// [SkoreGradebookPeriod.isOpen]. `false` when the gradebook has no
-  /// periods: then Skore is not asked.
+  /// [SkoreGradebookPeriod.isOpen]. `false` without an [activePeriod] (a
+  /// gradebook without evaluation periods, a project gradebook included):
+  /// then Skore is not asked.
   ///
   /// For a gradebook shared with the user to write, Skore answered `1`
   /// (seen live, #191); what it answers for one shared to read only was not
@@ -297,6 +312,7 @@ class SkoreGradebookSheet {
     required this.gradebook,
     required this.courseName,
     this.periods = const [],
+    this.projectPeriods = const [],
     this.activePeriod,
     this.pupils = const [],
     this.writable = false,
@@ -308,12 +324,14 @@ class SkoreGradebookSheet {
   String toString() =>
       'SkoreGradebookSheet(gradebookId: ${gradebook.gradebookId}, '
       'courseName: $courseName, periods: ${periods.length}, '
+      'projectPeriods: ${projectPeriods.length}, '
       'activePeriod: ${activePeriod?.name}, reports: ${reports.length}, '
       'pupils: ${pupils.length}, writable: $writable)';
 }
 
 /// A period of a gradebook: a tab of Skore's gradebook ("Evaluaties | DW1"),
-/// in which the teacher enters grades while it is open.
+/// in which the teacher enters grades while it is open; or a project period
+/// ("Projecten", [isProject], #204), in which the teacher rates projects.
 class SkoreGradebookPeriod {
   /// The period ID (e.g. `1704`).
   final int id;
@@ -345,6 +363,13 @@ class SkoreGradebookPeriod {
   /// service reads.
   final int categoryMode;
 
+  /// Skore's `scope` of the period, its kind (#236): `1` for an evaluation
+  /// period, `2` for a project period ([isProject]). Skore's `init` lists
+  /// both kinds in its `periods`, whatever the page it is asked for; seen
+  /// live, the same `categoryMode` (`1`) and no other marker tell them
+  /// apart. `1` when Skore gives none.
+  final int scope;
+
   const SkoreGradebookPeriod({
     required this.id,
     required this.name,
@@ -353,12 +378,19 @@ class SkoreGradebookPeriod {
     required this.closesAt,
     this.info = '',
     this.categoryMode = 1,
+    this.scope = 1,
   });
+
+  /// Whether this is a project period ("Projecten", `scope` 2, #236): one
+  /// of `SkoreGradebookService.getProjectPeriods`, not an evaluation period
+  /// that takes grades.
+  bool get isProject => scope == 2;
 
   @override
   String toString() =>
       'SkoreGradebookPeriod(id: $id, name: $name, isOpen: $isOpen, '
-      'closesAt: ${closesAt?.toIso8601String()})';
+      'closesAt: ${closesAt?.toIso8601String()}'
+      '${isProject ? ', project' : ''})';
 }
 
 /// A report period of a gradebook: a tab of Skore's gradebook under
@@ -391,6 +423,11 @@ class SkoreReportPeriod {
 
   /// When the report closes (or closed), from Skore's `timestamp`
   /// (`"2026-10-30T23:00:00+0100"`), in UTC; `null` when Skore gives none.
+  ///
+  /// The school sets it, and Skore does not always close the report at it: a
+  /// report can stay open past this time (seen live: a report listed open after its
+  /// `timestamp`, #245). Whether its comments can be written is [isOpen],
+  /// not this time.
   final DateTime? closesAt;
 
   /// Skore's description of the report, as HTML (e.g. "Rapport 1", "Open

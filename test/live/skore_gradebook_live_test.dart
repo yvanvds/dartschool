@@ -74,7 +74,9 @@
 // that a period is open: each checks a period's closing time against the
 // rest of Skore's answer (its info, whether it is open, the school year),
 // and expects of a period, open or closed, what Skore does for that state
-// (the refusals of saveGrade and saveFeedback, the rights).
+// (the refusals of saveGrade and saveFeedback, the rights). A report period
+// is checked the same way, and not against the clock either: Skore can keep
+// a report open past its closing time (#245).
 //
 // It only reads, and changes nothing in Skore, which drives the school's
 // grading and has no test instance: getNavigation, init,
@@ -1344,9 +1346,16 @@ void main() {
       // the developer's, on their go-ahead. Counts only: no comment text, no
       // result.
       group('report periods and course comments (#195):', () {
-        /// Checks the report periods of [sheet], read from [readFrom] on,
-        /// against the rest of Skore's answer, never against a date.
-        void expectReportPeriods(SkoreGradebookSheet sheet, DateTime readFrom) {
+        /// Checks the report periods of [sheet], a gradebook of school year
+        /// [workyear], against the rest of Skore's answer, never against a
+        /// date or the clock: when a report closes is the school's to set,
+        /// and Skore can keep a report open past its closing time (#245:
+        /// R1D listed open past its `timestamp`), so an open report's
+        /// closing time may lie in the past.
+        void expectReportPeriods(
+          SkoreGradebookSheet sheet,
+          SkoreWorkyear workyear,
+        ) {
           final ids = sheet.reports.map((r) => r.id).toList();
           expect(ids.toSet(), hasLength(ids.length), reason: 'each once');
           for (final report in sheet.reports) {
@@ -1357,8 +1366,13 @@ void main() {
             final closesAt = report.closesAt;
             if (closesAt == null) continue;
             expect(closesAt.isUtc, isTrue, reason: where);
-            if (report.isOpen) {
-              expect(closesAt.isAfter(readFrom), isTrue, reason: where);
+            final years = _schoolYearName.firstMatch(workyear.name.trim());
+            if (years != null) {
+              expect(
+                brusselsWallTime(closesAt).year,
+                anyOf(int.parse(years[1]!), int.parse(years[2]!)),
+                reason: '$where closes in school year ${workyear.name}',
+              );
             }
             final closes = _reportInfoCloses.firstMatch(report.info)?[1];
             if (closes != null) {
@@ -1431,13 +1445,12 @@ void main() {
           run.client.dio.interceptors.insert(0, answers);
           addTearDown(() => run.client.dio.interceptors.remove(answers));
 
-          final readFrom = DateTime.now();
           final sheet = await gradebooks.getGradebook(book);
           print(
             'gradebook ${book.gradebookId}: reports '
             '${[for (final r in sheet.reports) '${r.name} ${r.id} ${r.isOpen ? 'open' : 'closed'} until ${r.closesAt?.toIso8601String()} type ${r.typeCode} rating ${r.rating}']}',
           );
-          expectReportPeriods(sheet, readFrom);
+          expectReportPeriods(sheet, year.workyear);
           if (book.gradebookId == _testGradebookId) {
             expect(sheet.reports, isNotEmpty);
           }
@@ -1468,9 +1481,8 @@ void main() {
             );
             return;
           }
-          final readFrom = DateTime.now();
           final sheet = await gradebooks.getGradebook(book);
-          expectReportPeriods(sheet, readFrom);
+          expectReportPeriods(sheet, year.workyear);
           expect(sheet.periods, isEmpty);
           expect(sheet.reports, isNotEmpty, reason: 'only a report period');
           for (final period in sheet.reports) {

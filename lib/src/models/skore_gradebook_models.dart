@@ -423,6 +423,11 @@ class SkoreReportPeriod {
 
   /// When the report closes (or closed), from Skore's `timestamp`
   /// (`"2026-10-30T23:00:00+0100"`), in UTC; `null` when Skore gives none.
+  ///
+  /// The school sets it, and Skore does not always close the report at it: a
+  /// report can stay open past this time (seen live: a report listed open after its
+  /// `timestamp`, #245). Whether its comments can be written is [isOpen],
+  /// not this time.
   final DateTime? closesAt;
 
   /// Skore's description of the report, as HTML (e.g. "Rapport 1", "Open

@@ -1,4 +1,4 @@
-## Unreleased
+## 0.4.3 - 2026-11-09
 
 ### Can break a build
 - A class that implements `MessagesService`, or overrides `searchRecipientsForCompose` or `searchRecipientsForComposeAll`, must take their new named parameter `includeOtherSchools`; one that implements `MessageSearchUser` must add `platformName` (#238). No new top-level names.

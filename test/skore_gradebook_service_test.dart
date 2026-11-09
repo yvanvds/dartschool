@@ -725,6 +725,26 @@ void main() {
       expect(periods.first.info, contains('Gesloten!'));
     });
 
+    test('the kind of a period: its scope, 1 an evaluation period, 2 a '
+        'project period; none an evaluation period (#236)', () {
+      final periods = SkoreGradebookService.parsePeriods([
+        {'id': '1704', 'name': 'DW1', 'timestamp': '', 'scope': '1'},
+        {'id': '1758', 'name': 'Digit', 'timestamp': '', 'scope': 2},
+        {'id': '9', 'name': 'P', 'timestamp': ''},
+      ]);
+      expect(periods.map((p) => (p.id, p.scope, p.isProject)), [
+        (1704, 1, false),
+        (1758, 2, true),
+        (9, 1, false),
+      ]);
+      expect(
+        () => SkoreGradebookService.parsePeriods([
+          {'id': '9', 'name': 'P', 'timestamp': '', 'scope': 'project'},
+        ]),
+        throwsA(_skoreError(contains('scope'))),
+      );
+    });
+
     test('a period without a closing time has none', () {
       final period = SkoreGradebookService.parsePeriods([
         {'id': '9', 'name': 'P', 'open': '1', 'timestamp': ''},
@@ -877,6 +897,77 @@ void main() {
         context: _result(_context22Answer),
       );
       expect(sheet.activePeriod?.name, 'DW1');
+    });
+
+    test('activePeriodE -1: no active period, though there are evaluation '
+        'periods, and no context needed (#236)', () {
+      final sheet = SkoreGradebookService.parseGradebook(
+        _bw,
+        _result(
+          _withResult(_init22Answer, (r) => {...r as Map, 'activePeriodE': -1}),
+        ),
+      );
+      expect(sheet.periods, hasLength(3));
+      expect(sheet.activePeriod, isNull);
+      expect(sheet.writable, isFalse);
+    });
+
+    test('a project gradebook, as seen live: init lists its one project '
+        'period (scope 2) in periods, with activePeriodE -1; no evaluation '
+        'periods, and no context needed (#236)', () {
+      final sheet = SkoreGradebookService.parseGradebook(
+        _ewi,
+        _result(
+          _withResult(
+            _initAnswer,
+            (r) => {
+              ...r as Map,
+              'periods': [
+                {
+                  'name': 'Digit',
+                  'fullname': 'Digitale vaardigheden',
+                  'id': '1758',
+                  'virtual': '0',
+                  'scope': '2',
+                  'open': 1,
+                  'timestamp': '2027-06-26T22:00:00+0200',
+                  'lockIcon': 0,
+                  'categoryMode': 1,
+                },
+              ],
+              'activePeriodE': -1,
+              'activePeriodP': 0,
+            },
+          ),
+        ),
+      );
+      expect(sheet.periods, isEmpty);
+      expect(sheet.activePeriod, isNull);
+      expect(sheet.writable, isFalse);
+      expect(sheet.projectPeriods.map((p) => (p.id, p.fullName)), [
+        (1758, 'Digitale vaardigheden'),
+      ]);
+      expect(sheet.pupils, hasLength(3));
+    });
+
+    test('a period of another scope (not seen) is in neither list', () {
+      final sheet = SkoreGradebookService.parseGradebook(
+        _ewi,
+        _result(
+          _withResult(
+            _initAnswer,
+            (r) => {
+              ...r as Map,
+              'periods': [
+                {'id': '9', 'name': 'X', 'timestamp': '', 'scope': '3'},
+              ],
+            },
+          ),
+        ),
+      );
+      expect(sheet.periods, isEmpty);
+      expect(sheet.projectPeriods, isEmpty);
+      expect(sheet.activePeriod, isNull);
     });
 
     test('not writable, and in coordinator mode', () {

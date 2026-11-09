@@ -38,6 +38,13 @@
 // loads them), and checks that every evaluation it reads is one the
 // library can read. It prints counts and thresholds only: no level's name.
 //
+// For #236 it reads a project gradebook (the developer's 5WW1, Digitale
+// vaardigheden, 34826; skipped when the account has no such gradebook) and
+// 6EWI with getGradebook and getProjectPeriods: Skore's `init` lists
+// evaluation periods and project periods alike, by their `scope`, and the
+// service tells them apart, without getGradebookContext for a project
+// period.
+//
 // For #192 it reads a gradebook without evaluation periods (the developer's
 // behaviour gradebook, 35158, which has only a report period; skipped when
 // the account has no such gradebook), and, last, a gradebook in a session
@@ -122,7 +129,8 @@ const _behaviourGradebookId = 35158;
 
 /// The developer's gradebook of 5WW1, Digitale vaardigheden (the live test
 /// spot of #70), whose course is not on the report of 2026-2027: Skore
-/// answers its report with HTTP 404 (seen live, #195). Read only.
+/// answers its report with HTTP 404 (seen live, #195). A project gradebook:
+/// one project period, no evaluation periods (#204, #236). Read only.
 const _notOnReportGradebookId = 34826;
 
 /// The closing time in the info of an open report, in Belgian time: "Open
@@ -427,6 +435,84 @@ void main() {
         }
         // Without periods, getGradebookContext is not asked.
         expect(answers.answers, [('init', 200, null)]);
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test('getGradebook reads a project gradebook without evaluation '
+          'periods, its project periods apart, and no getGradebookContext; '
+          'getProjectPeriods gives the same (#236)', () async {
+        final book = year.gradebooks
+            .where((g) => g.gradebookId == _notOnReportGradebookId)
+            .firstOrNull;
+        if (book == null) {
+          markTestSkipped(
+            'no gradebook $_notOnReportGradebookId in this account',
+          );
+          return;
+        }
+        final answers = _RpcAnswers();
+        run.client.dio.interceptors.insert(0, answers);
+        addTearDown(() => run.client.dio.interceptors.remove(answers));
+
+        final sheet = await gradebooks.getGradebook(book);
+        final read = [...answers.answers];
+        final projectPeriods = await gradebooks.getProjectPeriods(book);
+
+        print(
+          'project gradebook ${book.gradebookId}: ${sheet.periods.length} '
+          'evaluation periods, project periods '
+          '${[for (final p in sheet.projectPeriods) '${p.name} ${p.id} scope ${p.scope}']}, '
+          'active ${sheet.activePeriod?.name}, writable ${sheet.writable}; '
+          'getProjectPeriods ${projectPeriods.map((p) => p.id).toList()}',
+        );
+        _expectSheetOf(sheet, book);
+        expect(sheet.periods, isEmpty);
+        expect(sheet.activePeriod, isNull);
+        expect(sheet.writable, isFalse);
+        expect(sheet.projectPeriods, isNotEmpty);
+        expect(
+          sheet.projectPeriods.map((p) => p.isProject),
+          everyElement(true),
+        );
+        expect(sheet.pupils, isNotEmpty);
+        // No getGradebookContext for a project period.
+        expect(read, [('init', 200, null)]);
+        expect(
+          projectPeriods.map((p) => p.id),
+          sheet.projectPeriods.map((p) => p.id),
+        );
+        expect(run.guard.violations, isEmpty);
+      });
+
+      test('getGradebook reads the evaluation periods of 6EWI (gradebook '
+          '$_testGradebookId) only, and getProjectPeriods its project '
+          'periods only (#236)', () async {
+        final book = year.gradebooks
+            .where((g) => g.gradebookId == _testGradebookId)
+            .firstOrNull;
+        if (book == null) {
+          markTestSkipped('no gradebook $_testGradebookId in this account');
+          return;
+        }
+
+        final sheet = await gradebooks.getGradebook(book);
+        final projectPeriods = await gradebooks.getProjectPeriods(book);
+
+        print(
+          'gradebook ${book.gradebookId}: evaluation periods '
+          '${[for (final p in sheet.periods) '${p.name} ${p.id} scope ${p.scope}']}, '
+          '${sheet.projectPeriods.length} project periods; getProjectPeriods '
+          '${projectPeriods.map((p) => p.id).toList()}',
+        );
+        expect(sheet.periods, isNotEmpty);
+        expect(sheet.periods.map((p) => p.isProject), everyElement(false));
+        expect(sheet.periods, contains(sheet.activePeriod));
+        expect(sheet.periods.map((p) => p.id), contains(_testPeriodId));
+        expect(projectPeriods.map((p) => p.isProject), everyElement(true));
+        expect(
+          projectPeriods.map((p) => p.id),
+          sheet.projectPeriods.map((p) => p.id),
+        );
         expect(run.guard.violations, isEmpty);
       });
 

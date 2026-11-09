@@ -124,6 +124,7 @@ Map<String, Object?> _clusterJson({
   String name = 'Lussen',
   List<Object?> goals = const [],
   int lessons = 0,
+  int? goalCount,
 }) => {
   'id': _clusterId,
   'platformId': 4069,
@@ -138,7 +139,7 @@ Map<String, Object?> _clusterJson({
   'goals': goals,
   'numberOfLessons': lessons,
   'numberOfAssignments': 0,
-  'numberOfGoals': goals.length,
+  'numberOfGoals': goalCount ?? goals.length,
   'teachingHoursEstimate': 0,
   'numberOfAttachments': 0,
   'numberOfWebLinks': 0,
@@ -596,6 +597,32 @@ void main() {
       expect(cluster.numberOfLessons, 2);
       expect(cluster.numberOfGoals, 1);
       expect(cluster.teachingHoursEstimate, 0);
+    });
+
+    test('numberOfGoals is the count of the module, which also counts the '
+        "goals of the cluster's lesfiches, not goals.length (#237)", () async {
+      // As seen live (smartschool-mcp#206): a cluster with two lesfiches of
+      // 2 goals each and 1 goal of its own counted 3, and 2 once its own
+      // goal was cleared; with no estimate in its lesfiches its estimate
+      // was 0.
+      final path = 'GET $_api/$_me/4069/$_taId/lesson-clusters';
+      final (_, plans) = await serve({
+        path: [
+          _json([
+            _clusterJson(goals: [_goal.toJson()], lessons: 2, goalCount: 3),
+          ]),
+          _json([_clusterJson(lessons: 2, goalCount: 2)]),
+        ],
+      });
+
+      final withGoal = (await plans.getClusters(_ta)).single;
+      expect(withGoal.goals, [_goal]);
+      expect(withGoal.numberOfGoals, 3);
+      expect(withGoal.teachingHoursEstimate, 0);
+
+      final cleared = (await plans.getClusters(_ta)).single;
+      expect(cleared.goals, isEmpty);
+      expect(cleared.numberOfGoals, 2);
     });
 
     test('getCluster reads one cluster', () async {

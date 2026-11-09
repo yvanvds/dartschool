@@ -27,6 +27,12 @@
 // `SmartschoolOtherSchoolsNotRestoredError` (the option could not be set back;
 // it carries `leftOn`, the set-back's error as `cause` and the search's as
 // `searchFailure`). The other failures stay a plain `SmartschoolComposeError`.
+//
+// Issue #246: with the option on, Smartschool fills `ssPlName` for the people
+// of the own school too (seen live on 2026-11-09), so the fixture's user of
+// the own school has it. `MessageSearchUser.otherSchool` tells the own school
+// apart instead, whatever the option: the search compares each user's `ssID`
+// with the `ssID` of its compose form, the own platform.
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -272,7 +278,9 @@ void main() {
       expect(ned.platformName, 'Shelbyville High');
       expect(ned.schoolName, 'Shelbyville High');
       expect(users[2].platformName, 'Ogdenville College');
-      expect(users.first.platformName, isNull, reason: 'empty for own school');
+      // With the option on, Smartschool names the own school too (#246).
+      expect(users.first.platformName, 'Springfield Academy');
+      expect(users.map((u) => u.otherSchool), [false, true, true]);
     });
 
     test('the switch is the GET of the checkbox: val, and no uniqueUsc, as an '
@@ -525,6 +533,107 @@ void main() {
         }
       });
     }
+  });
+
+  group('otherSchool tells the own school apart, whatever the option '
+      '(#246)', () {
+    test("with the option on: the own school's user has a platformName too, "
+        'and otherSchool false; the others true', () async {
+      await serve(_Smartschool());
+
+      final (users, _) = await messages.searchRecipientsForCompose(
+        'Flanders',
+        includeOtherSchools: true,
+      );
+
+      final own = users.singleWhere((u) => u.ssId == _ownPlatform);
+      expect(own.platformName, isNotNull, reason: 'as Smartschool sends it');
+      expect(own.otherSchool, isFalse);
+      final others = users.where((u) => u.ssId != _ownPlatform).toList();
+      expect(others, hasLength(2));
+      expect(others.every((u) => u.otherSchool == true), isTrue);
+      // What an app went by before: a platformName said "another school",
+      // which no longer holds with the option on.
+      expect(users.every((u) => u.platformName != null), isTrue);
+    });
+
+    test('with the option off (false): every user of the own school, '
+        'otherSchool false, without a platformName', () async {
+      await serve(_Smartschool());
+
+      final (users, _) = await messages.searchRecipientsForCompose(
+        'Flanders',
+        includeOtherSchools: false,
+      );
+
+      expect(users, isNotEmpty);
+      expect(users.every((u) => u.otherSchool == false), isTrue);
+      expect(users.every((u) => u.platformName == null), isTrue);
+    });
+
+    test("with the account's setting (null): set as well, with the option "
+        'on and off', () async {
+      await serve(_Smartschool(otherSchools: true));
+      final (withOthers, _) = await messages.searchRecipientsForCompose(
+        'Flanders',
+      );
+      expect(withOthers.map((u) => u.otherSchool), [false, true, true]);
+
+      server.otherSchools = false;
+      final (ownOnly, _) = await messages.searchRecipientsForCompose(
+        'Flanders',
+      );
+      expect(ownOnly, isNotEmpty);
+      expect(ownOnly.every((u) => u.otherSchool == false), isTrue);
+    });
+
+    test(
+      'searchRecipientsForComposeAll: set for the users of every query',
+      () async {
+        await serve(_Smartschool());
+
+        final results = await messages.searchRecipientsForComposeAll([
+          'Flanders',
+          'Lovejoy',
+        ], includeOtherSchools: true);
+
+        for (final (users, _) in results.values) {
+          expect(
+            users.map((u) => u.otherSchool),
+            users.map((u) => u.ssId != _ownPlatform),
+          );
+        }
+      },
+    );
+
+    test('null when the compose form does not name the own platform', () async {
+      final form = _newMessageForm.replaceFirst(
+        RegExp(r"\bssID\s*:\s*'\d+',"),
+        '',
+      );
+      expect(form, isNot(_newMessageForm), reason: 'the ssID was removed');
+      await serve(_Smartschool(form: form));
+
+      final (users, _) = await messages.searchRecipientsForCompose(
+        'Flanders',
+        includeOtherSchools: true,
+      );
+
+      expect(users, hasLength(3));
+      expect(users.every((u) => u.otherSchool == null), isTrue);
+    });
+
+    test(
+      'getCurrentUserAsRecipient: the own account, otherSchool false',
+      () async {
+        await serve(_Smartschool());
+
+        final me = await messages.getCurrentUserAsRecipient();
+
+        expect(me.ssId, _ownPlatform);
+        expect(me.otherSchool, isFalse);
+      },
+    );
   });
 
   group('the setting is set back after a failure', () {

@@ -626,6 +626,9 @@ class MessageSearchUser {
   /// 2026-11-09). Such a user is registered on a compose form with that
   /// platform as its `ssid`, as Smartschool's web client registers them:
   /// tried live up to the registration, without sending.
+  ///
+  /// To tell whether a search result is of the own school, use
+  /// [otherSchool], which compares this with the own platform (#246).
   final int ssId;
 
   final String? coaccountName;
@@ -636,13 +639,34 @@ class MessageSearchUser {
   /// The name of the user's platform, the search answer's `ssPlName`, or
   /// `null` when it is empty (#238).
   ///
-  /// Smartschool's search leaves it empty for a user of the own school. For
-  /// a person of another school of the school group it named that school,
-  /// as [schoolName] did, in the answers seen live on 2026-11-09. `null`
-  /// for a user that does not come from a search, such as
-  /// [MessagesService.getCurrentUserAsRecipient] and the recipients of a
-  /// reply form.
+  /// For a person of another school of the school group it named that
+  /// school, as [schoolName] did, in the answers seen live on 2026-11-09.
+  /// For a user of the own school, it depends on the option "Toon personen
+  /// van andere scholen" the search ran with: with it off, Smartschool
+  /// leaves it empty; with it on (`includeOtherSchools: true`), Smartschool
+  /// names the own school in it too (seen live on 2026-11-09, #246). So a
+  /// [platformName] does not say that a user is of another school: use
+  /// [otherSchool] for that. `null` for a user that does not come from a
+  /// search, such as [MessagesService.getCurrentUserAsRecipient] and the
+  /// recipients of a reply form.
   final String? platformName;
+
+  /// Whether the user is of another school of the school group than the
+  /// account that searched (#246): `true` when [ssId] is not the own
+  /// platform, `false` when it is.
+  ///
+  /// [MessagesService.searchRecipientsForCompose] and
+  /// [MessagesService.searchRecipientsForComposeAll] set it for each user
+  /// they find, whatever `includeOtherSchools` is, by comparing [ssId] with
+  /// the own platform, the `ssID` of the compose form they search on (the
+  /// one [MessagesService.getCurrentUserAsRecipient] reads). It is `false`
+  /// for [MessagesService.getCurrentUserAsRecipient], the own account.
+  ///
+  /// `null` when it is not known: for a user whose [ssId] is `0` (an answer
+  /// without `ssID`), when the compose form does not name the own platform,
+  /// and for a user that does not come from a search, such as the
+  /// recipients of a reply form and of a sent message.
+  final bool? otherSchool;
 
   /// The `userLT` value from the search response (usually 0).
   final int userLt;
@@ -656,14 +680,27 @@ class MessageSearchUser {
     this.schoolName,
     this.picture,
     this.platformName,
+    this.otherSchool,
     this.userLt = 0,
   });
 
-  factory MessageSearchUser.fromXml(Map<String, dynamic> xml) {
+  /// A user of a search answer's `<user>` [xml].
+  ///
+  /// [ownPlatform] is the platform of the account that searched: with it,
+  /// [otherSchool] says whether the user's `ssID` differs from it (#246);
+  /// without it, or for a user without an `ssID`, [otherSchool] is `null`.
+  factory MessageSearchUser.fromXml(
+    Map<String, dynamic> xml, {
+    int? ownPlatform,
+  }) {
+    final ssId = _int(xml, 'ssID');
     return MessageSearchUser(
       userId: _int(xml, 'userID'),
       displayName: _str(xml, 'value'),
-      ssId: _int(xml, 'ssID'),
+      ssId: ssId,
+      otherSchool: ownPlatform == null || ssId == 0
+          ? null
+          : ssId != ownPlatform,
       coaccountName: _nullableStr(xml, 'coaccountname'),
       className: _nullableStr(xml, 'classname'),
       schoolName: _nullableStr(xml, 'schoolname'),

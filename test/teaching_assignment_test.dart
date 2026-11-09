@@ -66,6 +66,7 @@ const _clusterId = 'a2290000-0000-4000-8000-000000000002';
 const _titleId = 'a2290000-0000-4000-8000-000000000003';
 const _lessonId = 'a2290000-0000-4000-8000-000000000011';
 const _otherLessonId = 'a2290000-0000-4000-8000-000000000012';
+const _thirdLessonId = 'a2290000-0000-4000-8000-000000000013';
 
 const _ta = TeachingAssignmentRef(id: _taId, platformId: 4069);
 const _cluster = LessonClusterRef(
@@ -176,6 +177,9 @@ Map<String, Object?> _titleJson({String text = 'Week 1', int position = 0}) => {
 final _lesson = LessonContentItem.fromJson(_lessonJson());
 final _otherLesson = LessonContentItem.fromJson(
   _lessonJson(id: _otherLessonId),
+);
+final _thirdLesson = LessonContentItem.fromJson(
+  _lessonJson(id: _thirdLessonId),
 );
 
 const _homePage =
@@ -727,29 +731,176 @@ void main() {
         );
       });
 
-      test(
-        'some added and others not is unconfirmed, naming those added',
-        () async {
-          final (_, plans) = await serve({
-            path: [
-              _json({
-                'lessonContent': [_lessonJson()],
-                'exceptions': {
-                  '4069_lesson_$_otherLessonId': {'status': 403},
+      test('some added, one refused and one not named carries each as data '
+          '(#244)', () async {
+        final (server, plans) = await serve({
+          path: [
+            _json({
+              'lessonContent': [_lessonJson()],
+              'exceptions': {
+                '4069_lesson_$_otherLessonId': {
+                  'status': 403,
+                  'title': 'Forbidden',
+                  'detail': '',
+                  'type': '',
                 },
-              }, status: 201),
-            ],
-          });
-          await expectLater(
-            plans.addLessonContent(_cluster, [_lesson, _otherLesson]),
-            throwsA(
-              _unconfirmed(
-                allOf(contains('only lesfiche $_lessonId'), contains('403')),
-              ),
+              },
+            }, status: 201),
+          ],
+        });
+
+        final error = await plans
+            .addLessonContent(_cluster, [
+              _lesson,
+              _otherLesson,
+              _thirdLesson,
+              _lesson,
+            ])
+            .then<Object?>((_) => null, onError: (Object e) => e);
+
+        expect(server.bodiesOf(path), hasLength(1));
+        expect(
+          error,
+          _unconfirmed(
+            allOf(
+              contains('only lesfiche $_lessonId'),
+              contains('do not add them again'),
+              contains('lesfiche $_otherLessonId: {"status":403'),
+              contains('it named nothing for lesfiche $_thirdLessonId'),
             ),
-          );
-        },
-      );
+          ),
+        );
+        final e = error! as SmartschoolLessonContentBulkSaveUnconfirmedError;
+        expect(e.statusCode, 201);
+        expect(e.cause, isNull);
+        expect(e.lessonContentId, isNull);
+        expect(e.items, [_lesson, _otherLesson, _thirdLesson]);
+        expect(e.done, [_lesson]);
+        expect(e.added.keys, [_lesson]);
+        expect(e.added[_lesson]!.id, _lessonId);
+        expect(e.added[_lesson]!.name, 'Lussen 1');
+        expect(e.copies, isEmpty);
+        expect(e.failed.keys, [_otherLesson]);
+        final failure = e.failed[_otherLesson]!;
+        expect(failure.statusCode, 403);
+        expect(failure.message, 'Forbidden');
+        expect(failure.raw, containsPair('status', 403));
+        expect(e.unanswered, [_thirdLesson]);
+      });
+
+      test('a single lesfiche the answer does not name is unanswered, with '
+          'its ID (#244)', () async {
+        final (_, plans) = await serve({
+          path: [
+            _json({'lessonContent': [], 'exceptions': []}, status: 201),
+          ],
+        });
+        await expectLater(
+          plans.addLessonContent(_cluster, [_lesson]),
+          throwsA(
+            isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()
+                .having((e) => e.message, 'message', contains('none of them'))
+                .having((e) => e.lessonContentId, 'lessonContentId', _lessonId)
+                .having((e) => e.items, 'items', [_lesson])
+                .having((e) => e.done, 'done', isEmpty)
+                .having((e) => e.added, 'added', isEmpty)
+                .having((e) => e.failed, 'failed', isEmpty)
+                .having((e) => e.unanswered, 'unanswered', [_lesson]),
+          ),
+        );
+      });
+
+      test('an exception keyed in an unknown way stays a plain '
+          'SaveUnconfirmedError', () async {
+        final (_, plans) = await serve({
+          path: [
+            _json({
+              'lessonContent': [_lessonJson()],
+              'exceptions': {
+                'iets': {'status': 403},
+              },
+            }, status: 201),
+          ],
+        });
+        await expectLater(
+          plans.addLessonContent(_cluster, [_lesson, _otherLesson]),
+          throwsA(
+            allOf(
+              _unconfirmed(contains('in an unknown way ("iets")')),
+              isNot(isA<SmartschoolLessonContentBulkSaveUnconfirmedError>()),
+            ),
+          ),
+        );
+      });
+
+      test('flow: from the error, only the lesfiche not added and not in the '
+          'cluster is added again (#244)', () async {
+        Map<String, Object?> inCluster(String id, int position) => {
+          ..._lessonJson(id: id),
+          'lessonClusterId': _clusterId,
+          'lessonClusterPlatformId': 4069,
+          'position': position,
+          'teachingHoursEstimate': null,
+          'numberOfGoals': 0,
+        };
+        final (server, plans) = await serve({
+          path: [
+            _json({
+              'lessonContent': [_lessonJson()],
+              'exceptions': {
+                '4069_lesson_$_otherLessonId': {
+                  'status': 403,
+                  'title': 'Forbidden',
+                },
+              },
+            }, status: 201),
+            _json({
+              'lessonContent': [_lessonJson(id: _thirdLessonId)],
+              'exceptions': [],
+            }, status: 201),
+          ],
+          'GET $_clusterPath/lesson-cluster-content': [
+            _json([_titleJson(), inCluster(_lessonId, 1)]),
+          ],
+        });
+
+        final List<LessonContentItem> retried;
+        try {
+          await plans.addLessonContent(_cluster, [
+            _lesson,
+            _otherLesson,
+            _thirdLesson,
+          ]);
+          fail('addLessonContent should not confirm the add');
+        } on SmartschoolLessonContentBulkSaveUnconfirmedError catch (e) {
+          expect(e.added.values.map((i) => i.id), [_lessonId]);
+          expect(e.failed[_otherLesson]?.statusCode, 403);
+          final there = {
+            for (final entry in await plans.getClusterContent(_cluster))
+              if (entry is LessonClusterLesfiche) entry.item.id,
+          };
+          final missing = [
+            for (final fiche in e.unanswered)
+              if (!there.contains(fiche.id)) fiche,
+          ];
+          retried = await plans.addLessonContent(_cluster, missing);
+        }
+
+        expect(retried.single.id, _thirdLessonId);
+        expect(server.bodiesOf(path), [
+          {
+            'lessonContentIdentifiers': [
+              for (final id in [_lessonId, _otherLessonId, _thirdLessonId])
+                {'id': id, 'type': 'lessons', 'platformId': 4069},
+            ],
+          },
+          {
+            'lessonContentIdentifiers': [
+              {'id': _thirdLessonId, 'type': 'lessons', 'platformId': 4069},
+            ],
+          },
+        ]);
+      });
 
       test('no lesfiches, or a lesfiche of an unknown kind, is an '
           'ArgumentError before anything is sent', () async {

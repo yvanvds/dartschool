@@ -10,6 +10,7 @@ import '../models/lesson_content_models.dart';
 import '../models/planner_models.dart';
 import '../session.dart';
 import 'goal_refs.dart';
+import 'lesson_content_failures.dart';
 import 'smartschool_uploader.dart';
 
 export '../models/lesson_content_models.dart';
@@ -1820,7 +1821,7 @@ class LessonContentService {
       if (copy != null) {
         copies[fiche] = copy;
       } else if (exceptions.containsKey(key)) {
-        failed[fiche] = _failure(exceptions[key]);
+        failed[fiche] = LessonContentFailures.bulkFailure(exceptions[key]);
       } else {
         unknown.add(fiche);
       }
@@ -2410,7 +2411,7 @@ class LessonContentService {
       );
     }
     if (status >= 400 && status < 500) {
-      final violations = _violations(body);
+      final violations = LessonContentFailures.violations(body);
       final why = violations.isEmpty
           ? 'without saying why'
           : violations.map((v) => '"$v"').join(', ');
@@ -2427,28 +2428,6 @@ class LessonContentService {
       statusCode: status,
       lessonContentId: item?.id,
     );
-  }
-
-  /// The `violations` of the module's problem answer [body]: a list, or an
-  /// object whose values are the reasons; empty when there are none (the
-  /// bare `400` seen live), or when [body] is not such an answer.
-  static List<String> _violations(String body) {
-    final Object? decoded;
-    try {
-      decoded = jsonDecode(body);
-    } on FormatException {
-      return const [];
-    }
-    final raw = decoded is Map ? decoded['violations'] : null;
-    final Iterable<Object?> values = switch (raw) {
-      final List<Object?> list => list,
-      final Map<Object?, Object?> map => map.values,
-      _ => const [],
-    };
-    return List.unmodifiable([
-      for (final value in values)
-        if (value != null && '$value'.trim().isNotEmpty) '$value'.trim(),
-    ]);
   }
 
   /// [items] (at least one) as a bulk write of the module takes them, after
@@ -2534,7 +2513,7 @@ class LessonContentService {
     final described = <String>[];
     var unattributed = false;
     for (final (key, value) in exceptions) {
-      final failure = _failure(value);
+      final failure = LessonContentFailures.bulkFailure(value);
       final ref = _refKey(key);
       final fiche = ref == null ? null : byKey[ref];
       if (fiche == null) {
@@ -2564,27 +2543,6 @@ class LessonContentService {
         for (final fiche in list) fiche: ?failures[fiche],
       }),
       unanswered: unattributed ? List.unmodifiable(rest) : const [],
-    );
-  }
-
-  /// One of the `exceptions` of a bulk write as a
-  /// [LessonContentBulkFailure]: its `status`, and its `title`, `detail`
-  /// and `violations` when it is a problem object.
-  static LessonContentBulkFailure _failure(Object? exception) {
-    if (exception is! Map) {
-      return LessonContentBulkFailure(message: '"$exception"', raw: exception);
-    }
-    final parts = [
-      for (final key in const ['title', 'detail'])
-        if ('${exception[key] ?? ''}'.trim().isNotEmpty)
-          '${exception[key]}'.trim(),
-      ..._violations(jsonEncode(exception)),
-    ];
-    final status = exception['status'];
-    return LessonContentBulkFailure(
-      statusCode: status is int ? status : null,
-      message: parts.isEmpty ? jsonEncode(exception) : parts.join(': '),
-      raw: exception,
     );
   }
 

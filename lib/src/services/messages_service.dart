@@ -47,6 +47,17 @@ typedef _SearchAnswer = ({
   bool? otherSchoolsOn,
 });
 
+/// The compose form the searches of
+/// [MessagesService.searchRecipientsForComposeAll] go out on: its answer,
+/// which they go out in the session of, its `uniqueUsc`, and the own
+/// platform, its `ssID` (`null` when it names none), which the users found
+/// are compared with for [MessageSearchUser.otherSchool] (#246).
+typedef _SearchForm = ({
+  Response<String> form,
+  String uniqueUsc,
+  int? ownPlatform,
+});
+
 /// Provides access to the Smartschool messaging system.
 ///
 /// All Python message classes (`MessageHeaders`, `Message`, `Attachments`,
@@ -1353,6 +1364,12 @@ class MessagesService {
   /// `true`, it throws a [SmartschoolOtherSchoolsNotOfferedError] (a
   /// [SmartschoolComposeError]) for an account that Smartschool does not
   /// offer the option to, before anything is switched (#241).
+  ///
+  /// Each user found says with [MessageSearchUser.otherSchool] whether it is
+  /// of another school, whatever [includeOtherSchools] is (#246): it
+  /// compares the user's `ssId` with the own platform, the `ssID` of the
+  /// compose form. Do not go by [MessageSearchUser.platformName]: with the
+  /// option on, Smartschool fills it for the people of the own school too.
   Future<(List<MessageSearchUser>, List<MessageSearchGroup>)>
   searchRecipientsForCompose(String query, {bool? includeOtherSchools}) async =>
       (await searchRecipientsForComposeAll([
@@ -1676,18 +1693,24 @@ class MessagesService {
   static String _onOff(bool on) => on ? 'on' : 'off';
 
   /// Loads the new-message compose form for [searchRecipientsForComposeAll]:
-  /// its answer, which the searches go out in the session of, and its
-  /// `uniqueUsc`.
-  Future<({Response<String> form, String uniqueUsc})> _loadSearchForm() async {
+  /// its answer, which the searches go out in the session of, its
+  /// `uniqueUsc`, and the own platform, the `ssID` that
+  /// [getCurrentUserAsRecipient] reads from it (#246).
+  Future<_SearchForm> _loadSearchForm() async {
     final form = await _client.getResponse(_composeUrl());
-    final uniqueUsc = parseHiddenFields(form.data ?? '')['uniqueUsc'] ?? '';
+    final page = form.data ?? '';
+    final uniqueUsc = parseHiddenFields(page)['uniqueUsc'] ?? '';
     if (uniqueUsc.isEmpty) {
       throw const SmartschoolComposeError(
         'searchRecipientsForCompose: could not extract uniqueUsc from the '
         'compose form. Check that the account has permission to send messages.',
       );
     }
-    return (form: form, uniqueUsc: uniqueUsc);
+    return (
+      form: form,
+      uniqueUsc: uniqueUsc,
+      ownPlatform: parseComposeCurrentUserIds(page)?.$2,
+    );
   }
 
   /// Fetches the recipient of a plain reply to [msgId] with their platform
@@ -1967,6 +1990,8 @@ class MessagesService {
       displayName: 'Me',
       ssId: ids.$2,
       userLt: ids.$3,
+      // The own account, of the own school (#246).
+      otherSchool: false,
     );
   }
 
@@ -2837,10 +2862,7 @@ class MessagesService {
   /// andere scholen" (#238): its `<sgrdetails>`, which ends every answer
   /// seen live, holds `<sgrselect>` (Smartschool offers the option to the
   /// account) and `<dosgrsearch>` (the option is on).
-  Future<_SearchAnswer> _searchUsers(
-    String query,
-    ({Response<String> form, String uniqueUsc}) compose,
-  ) async {
+  Future<_SearchAnswer> _searchUsers(String query, _SearchForm compose) async {
     final answer = await _client.postFormResponse(
       '/?module=Messages&file=searchUsers',
       {
@@ -2870,7 +2892,10 @@ class MessagesService {
 
     return (
       found: (
-        users.map(MessageSearchUser.fromXml).toList(),
+        [
+          for (final user in users)
+            MessageSearchUser.fromXml(user, ownPlatform: compose.ownPlatform),
+        ],
         groups.map(MessageSearchGroup.fromXml).toList(),
       ),
       otherSchoolsOffered: _flag(details['sgrselect']),
